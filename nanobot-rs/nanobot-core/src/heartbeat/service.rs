@@ -67,7 +67,10 @@ impl HeartbeatService {
     {
         let mut ticker = interval(Duration::from_secs(self.interval_secs));
 
-        info!("Heartbeat service started (interval: {}s)", self.interval_secs);
+        info!(
+            "Heartbeat service started (interval: {}s)",
+            self.interval_secs
+        );
 
         loop {
             ticker.tick().await;

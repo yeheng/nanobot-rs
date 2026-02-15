@@ -51,7 +51,12 @@ fn default_true() -> bool {
 
 impl CronJob {
     /// Create a new cron job
-    pub fn new(id: impl Into<String>, name: impl Into<String>, cron: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        cron: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         let cron_str = cron.into();
         let next_run = Self::calculate_next_run(&cron_str);
 
@@ -177,10 +182,7 @@ impl CronService {
         let now = Utc::now();
 
         jobs.values()
-            .filter(|job| {
-                job.enabled
-                    && job.next_run.is_some_and(|next| next <= now)
-            })
+            .filter(|job| job.enabled && job.next_run.is_some_and(|next| next <= now))
             .cloned()
             .collect()
     }

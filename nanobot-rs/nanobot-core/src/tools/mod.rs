@@ -13,5 +13,5 @@ pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use registry::ToolRegistry;
 pub use shell::ExecTool;
-pub use spawn::{SpawnTool, TaskManager, SpawnRequest};
+pub use spawn::{SpawnRequest, SpawnTool, TaskManager};
 pub use web::{WebFetchTool, WebSearchTool};

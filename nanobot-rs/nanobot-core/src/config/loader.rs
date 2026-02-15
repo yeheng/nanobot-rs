@@ -107,8 +107,7 @@ impl ConfigLoader {
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
         }
 
-        let content = serde_json::to_string_pretty(config)
-            .context("Failed to serialize config")?;
+        let content = serde_json::to_string_pretty(config).context("Failed to serialize config")?;
 
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write config file: {:?}", path))?;

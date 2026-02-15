@@ -102,13 +102,16 @@ impl SlackChannel {
         let json: serde_json::Value = serde_json::from_str(&body)?;
 
         if json["ok"].as_bool() != Some(true) {
-            anyhow::bail!("Failed to get WebSocket URL: {}", json["error"].as_str().unwrap_or("unknown"));
+            anyhow::bail!(
+                "Failed to get WebSocket URL: {}",
+                json["error"].as_str().unwrap_or("unknown")
+            );
         }
 
         Ok(json["url"].as_str().unwrap_or_default().to_string())
     }
 
-    async fn handle_event<W>(&self, event: &serde_json::Value, write: &mut W) 
+    async fn handle_event<W>(&self, event: &serde_json::Value, write: &mut W)
     where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
     {
@@ -132,7 +135,9 @@ impl SlackChannel {
 
                     if msg_type == "message" {
                         // Skip bot messages
-                        if event_data.get("bot_id").is_some() || event_data["subtype"].as_str() == Some("bot_message") {
+                        if event_data.get("bot_id").is_some()
+                            || event_data["subtype"].as_str() == Some("bot_message")
+                        {
                             return;
                         }
 
@@ -181,7 +186,12 @@ impl SlackChannel {
     }
 
     /// Send a message to Slack
-    pub async fn send_message(&self, channel: &str, text: &str, thread_ts: Option<&str>) -> anyhow::Result<()> {
+    pub async fn send_message(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
         let url = "https://slack.com/api/chat.postMessage";
 
@@ -204,7 +214,10 @@ impl SlackChannel {
 
         let result: serde_json::Value = response.json().await?;
         if result["ok"].as_bool() != Some(true) {
-            anyhow::bail!("Failed to send Slack message: {}", result["error"].as_str().unwrap_or("unknown"));
+            anyhow::bail!(
+                "Failed to send Slack message: {}",
+                result["error"].as_str().unwrap_or("unknown")
+            );
         }
 
         Ok(())
@@ -227,7 +240,12 @@ impl Channel for SlackChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        let thread_ts = msg.metadata.as_ref().and_then(|m| m.get("thread_ts")).and_then(|v| v.as_str());
-        self.send_message(&msg.chat_id, &msg.content, thread_ts).await
+        let thread_ts = msg
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("thread_ts"))
+            .and_then(|v| v.as_str());
+        self.send_message(&msg.chat_id, &msg.content, thread_ts)
+            .await
     }
 }

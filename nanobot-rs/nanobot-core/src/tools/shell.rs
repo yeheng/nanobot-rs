@@ -23,7 +23,11 @@ pub struct ExecTool {
 
 impl ExecTool {
     /// Create a new exec tool
-    pub fn new(working_dir: impl Into<PathBuf>, timeout: Duration, restrict_to_workspace: bool) -> Self {
+    pub fn new(
+        working_dir: impl Into<PathBuf>,
+        timeout: Duration,
+        restrict_to_workspace: bool,
+    ) -> Self {
         Self {
             working_dir: working_dir.into(),
             timeout,
@@ -63,10 +67,13 @@ impl Tool for ExecTool {
             description: Option<String>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        debug!("Executing command: {} ({:?})", args.command, args.description);
+        debug!(
+            "Executing command: {} ({:?})",
+            args.command, args.description
+        );
 
         // Execute the command using tokio
         let working_dir = self.working_dir.clone();
@@ -80,7 +87,9 @@ impl Tool for ExecTool {
                 .arg(&command)
                 .current_dir(&working_dir)
                 .output()
-                .map_err(|e| ToolError::ExecutionError(format!("Failed to execute command: {}", e)))?;
+                .map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to execute command: {}", e))
+                })?;
 
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);

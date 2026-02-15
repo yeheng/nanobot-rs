@@ -10,7 +10,9 @@ use crate::agent::context::ContextBuilder;
 use crate::agent::memory::MemoryStore;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::session::SessionManager;
-use crate::tools::{ExecTool, ListDirTool, ReadFileTool, ToolRegistry, WriteFileTool, EditFileTool};
+use crate::tools::{
+    EditFileTool, ExecTool, ListDirTool, ReadFileTool, ToolRegistry, WriteFileTool,
+};
 
 /// Agent loop configuration
 pub struct AgentConfig {
@@ -48,11 +50,7 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     /// Create a new agent loop
-    pub fn new(
-        provider: Arc<dyn LlmProvider>,
-        workspace: PathBuf,
-        config: AgentConfig,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Self {
         let context = ContextBuilder::new(workspace.clone());
         let memory = MemoryStore::new(workspace.clone());
         let sessions = SessionManager::new(workspace.clone());
@@ -134,7 +132,10 @@ impl AgentLoop {
     }
 
     /// Run the agent iteration loop
-    async fn run_agent_loop(&self, initial_messages: Vec<ChatMessage>) -> Result<(String, Vec<String>)> {
+    async fn run_agent_loop(
+        &self,
+        initial_messages: Vec<ChatMessage>,
+    ) -> Result<(String, Vec<String>)> {
         let mut messages = initial_messages;
         let mut iteration = 0;
         let mut final_content = None;
@@ -164,9 +165,18 @@ impl AgentLoop {
                 // Execute each tool call
                 for tool_call in &response.tool_calls {
                     tools_used.push(tool_call.function.name.clone());
-                    info!("Tool call: {}({:?})", tool_call.function.name, tool_call.function.arguments);
+                    info!(
+                        "Tool call: {}({:?})",
+                        tool_call.function.name, tool_call.function.arguments
+                    );
 
-                    let result = self.tools.execute(&tool_call.function.name, tool_call.function.arguments.clone()).await;
+                    let result = self
+                        .tools
+                        .execute(
+                            &tool_call.function.name,
+                            tool_call.function.arguments.clone(),
+                        )
+                        .await;
 
                     let result_str = match result {
                         Ok(r) => r,
@@ -181,7 +191,9 @@ impl AgentLoop {
                 }
 
                 // Add a user message to prompt continuation
-                messages.push(ChatMessage::user("Reflect on the results and decide next steps."));
+                messages.push(ChatMessage::user(
+                    "Reflect on the results and decide next steps.",
+                ));
             } else {
                 final_content = response.content;
                 break;

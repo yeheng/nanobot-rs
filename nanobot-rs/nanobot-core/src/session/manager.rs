@@ -93,7 +93,9 @@ impl SessionManager {
         }
 
         // Try to load from disk
-        let session = self.load_from_disk(key).unwrap_or_else(|_| Session::new(key));
+        let session = self
+            .load_from_disk(key)
+            .unwrap_or_else(|_| Session::new(key));
         sessions.insert(key.to_string(), session.clone());
         session
     }

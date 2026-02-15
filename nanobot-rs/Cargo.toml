@@ -1,3 +1,13 @@
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["nanobot contributors"]
+repository = "https://github.com/YeHeng/nanobot-rs"
+keywords = ["ai", "agent", "chatbot", "llm"]
+description = "A lightweight personal AI assistant framework"
+
 [workspace]
 resolver = "2"
 members = [
@@ -5,20 +15,11 @@ members = [
     "nanobot-cli",
 ]
 
-[workspace.package]
-version = "2.0.0"
-edition = "2021"
-license = "MIT"
-authors = ["nanobot contributors"]
-repository = "https://github.com/HKUDS/nanobot"
-keywords = ["ai", "agent", "chatbot", "llm"]
-description = "A lightweight personal AI assistant framework"
-
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
-futures-util = "0.3"
+futures-util = "0.3.32"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -46,13 +47,13 @@ dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Telegram
-teloxide = { version = "0.13", features = ["rustls"] }
+teloxide = { version = "0.17", features = ["rustls"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["rustls_backend", "gateway", "model", "client"] }
 
 # WebSocket (for Slack)
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 
 # Cron
 cron = "0.15"
@@ -64,4 +65,4 @@ uuid = { version = "1", features = ["v4"] }
 nanobot-core = { path = "nanobot-core" }
 
 # Markdown rendering
-termimad = "0.31"
+termimad = "0.34.1"

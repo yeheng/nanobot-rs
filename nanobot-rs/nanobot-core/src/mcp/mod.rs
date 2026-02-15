@@ -198,7 +198,12 @@ impl McpManager {
     }
 
     /// Call a tool on a specific server
-    pub async fn call_tool(&mut self, server: &str, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    pub async fn call_tool(
+        &mut self,
+        server: &str,
+        name: &str,
+        arguments: Value,
+    ) -> anyhow::Result<Value> {
         if let Some(client) = self.clients.get_mut(server) {
             client.call_tool(name, arguments).await
         } else {

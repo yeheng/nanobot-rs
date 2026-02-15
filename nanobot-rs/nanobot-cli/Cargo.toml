@@ -46,8 +46,8 @@ dirs.workspace = true
 colored = "3"
 
 # REPL
-reedline = "0.38"
+reedline = "0.45"
 nu-ansi-term = "0.50"
 
 # Markdown rendering (optional)
-termimad = { version = "0.31", optional = true }
+termimad = { workspace = true, optional = true }

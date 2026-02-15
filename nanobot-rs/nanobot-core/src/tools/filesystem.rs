@@ -23,9 +23,9 @@ impl ReadFileTool {
     fn validate_path(&self, path: &str) -> Result<PathBuf, ToolError> {
         let path = PathBuf::from(path);
         if let Some(allowed) = &self.allowed_dir {
-            let canonical = path
-                .canonicalize()
-                .map_err(|e| ToolError::NotFound(format!("Path not found: {} - {}", path.display(), e)))?;
+            let canonical = path.canonicalize().map_err(|e| {
+                ToolError::NotFound(format!("Path not found: {} - {}", path.display(), e))
+            })?;
             if !canonical.starts_with(allowed) {
                 return Err(ToolError::PermissionDenied(format!(
                     "Path outside workspace: {}",
@@ -65,8 +65,8 @@ impl Tool for ReadFileTool {
             limit: Option<usize>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let path = self.validate_path(&args.absolute_path)?;
         debug!("Reading file: {:?}", path);
@@ -118,10 +118,7 @@ impl Tool for WriteFileTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[
-            ("file_path", "string", true),
-            ("content", "string", true),
-        ])
+        simple_schema(&[("file_path", "string", true), ("content", "string", true)])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -131,22 +128,27 @@ impl Tool for WriteFileTool {
             content: String,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let path = PathBuf::from(&args.file_path);
         debug!("Writing file: {:?}", path);
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ToolError::ExecutionError(format!("Failed to create directories: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to create directories: {}", e))
+            })?;
         }
 
         std::fs::write(&path, &args.content)
             .map_err(|e| ToolError::ExecutionError(format!("Failed to write file: {}", e)))?;
 
-        Ok(format!("Successfully wrote {} bytes to {}", args.content.len(), args.file_path))
+        Ok(format!(
+            "Successfully wrote {} bytes to {}",
+            args.content.len(),
+            args.file_path
+        ))
     }
 }
 
@@ -206,8 +208,8 @@ impl Tool for EditFileTool {
             instruction: String,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let path = PathBuf::from(&args.file_path);
         debug!("Editing file: {:?} - {}", path, args.instruction);
@@ -219,7 +221,7 @@ impl Tool for EditFileTool {
         let count = content.matches(&args.old_string).count();
         if count == 0 {
             return Err(ToolError::ExecutionError(
-                "old_string not found in file".to_string()
+                "old_string not found in file".to_string(),
             ));
         }
         if count > 1 {
@@ -270,8 +272,8 @@ impl Tool for ListDirTool {
             path: String,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let path = PathBuf::from(&args.path);
         debug!("Listing directory: {:?}", path);
@@ -283,7 +285,8 @@ impl Tool for ListDirTool {
         for entry in entries {
             let entry = entry.map_err(|e| ToolError::ExecutionError(e.to_string()))?;
             let name = entry.file_name().to_string_lossy().to_string();
-            let file_type = entry.file_type()
+            let file_type = entry
+                .file_type()
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
             if file_type.is_dir() {
@@ -339,7 +342,7 @@ mod tests {
         let tool = WriteFileTool::new(None);
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join("nanobot_test_write.txt");
-        
+
         let args = serde_json::json!({
             "file_path": test_file.to_str().unwrap(),
             "content": "Hello, World!"
@@ -361,7 +364,7 @@ mod tests {
         let tool = EditFileTool::new(None);
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join("nanobot_test_edit.txt");
-        
+
         // Create initial file
         fs::write(&test_file, "Hello, World!").unwrap();
 
@@ -388,7 +391,7 @@ mod tests {
         let tool = EditFileTool::new(None);
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join("nanobot_test_not_exist.txt");
-        
+
         let _ = fs::remove_file(&test_file);
 
         let args = serde_json::json!({
@@ -406,7 +409,7 @@ mod tests {
     async fn test_list_directory_tool() {
         let tool = ListDirTool::new(None);
         let temp_dir = std::env::temp_dir();
-        
+
         let args = serde_json::json!({
             "path": temp_dir.to_str().unwrap()
         });
@@ -420,7 +423,7 @@ mod tests {
         let tool = ReadFileTool::new(None);
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join("nanobot_test_read_offset.txt");
-        
+
         // Create test file
         let mut file = fs::File::create(&test_file).unwrap();
         for i in 0..10 {

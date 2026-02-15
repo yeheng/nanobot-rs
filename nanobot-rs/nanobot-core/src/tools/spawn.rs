@@ -44,10 +44,7 @@ impl Tool for SpawnTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[
-            ("task", "string", true),
-            ("timeout", "number", false),
-        ])
+        simple_schema(&[("task", "string", true), ("timeout", "number", false)])
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -55,7 +52,9 @@ impl Tool for SpawnTool {
         let timeout = args["timeout"].as_u64().unwrap_or(300);
 
         if task.is_empty() {
-            return Err(ToolError::InvalidArguments("Task description is required".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "Task description is required".to_string(),
+            ));
         }
 
         // In a real implementation, this would spawn a background task
@@ -87,9 +86,7 @@ pub struct TaskManager {
 impl TaskManager {
     /// Create a new task manager
     pub fn new() -> Self {
-        Self {
-            tasks: Vec::new(),
-        }
+        Self { tasks: Vec::new() }
     }
 
     /// Add a task

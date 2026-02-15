@@ -107,7 +107,11 @@ impl ChatMessage {
     }
 
     /// Create a tool response message
-    pub fn tool_result(id: impl Into<String>, name: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn tool_result(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             role: "tool".to_string(),
             content: Some(content.into()),
@@ -131,7 +135,11 @@ pub struct ToolDefinition {
 
 impl ToolDefinition {
     /// Create a new function tool definition
-    pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self {
+    pub fn function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
         Self {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
@@ -172,7 +180,11 @@ pub struct ToolCall {
 
 impl ToolCall {
     /// Create a new tool call
-    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+    ) -> Self {
         Self {
             id: id.into(),
             tool_type: "function".to_string(),

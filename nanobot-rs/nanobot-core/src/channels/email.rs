@@ -56,8 +56,8 @@ impl EmailChannel {
     async fn fetch_unread_emails(&self) -> anyhow::Result<Vec<InboundMessage>> {
         // Simplified IMAP fetch
         // In production, use async-imap or imap crate
-        use tokio::net::TcpStream;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
 
         let addr = format!("{}:{}", self.config.imap_host, self.config.imap_port);
 
@@ -75,8 +75,7 @@ impl EmailChannel {
                 // Send LOGIN
                 let login = format!(
                     "A002 LOGIN {} {}\r\n",
-                    self.config.imap_username,
-                    self.config.imap_password
+                    self.config.imap_username, self.config.imap_password
                 );
                 stream.write_all(login.as_bytes()).await?;
                 let _ = stream.read(&mut response).await;
@@ -108,8 +107,8 @@ impl EmailChannel {
 
     /// Send an email
     pub async fn send_email(&self, to: &str, subject: &str, body: &str) -> anyhow::Result<()> {
-        use tokio::net::TcpStream;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
 
         let addr = format!("{}:{}", self.config.smtp_host, self.config.smtp_port);
 
@@ -120,7 +119,9 @@ impl EmailChannel {
         let _ = stream.read(&mut greeting).await;
 
         // Send EHLO
-        stream.write_all(format!("EHLO {}\r\n", self.config.smtp_host).as_bytes()).await?;
+        stream
+            .write_all(format!("EHLO {}\r\n", self.config.smtp_host).as_bytes())
+            .await?;
         let _ = stream.read(&mut greeting).await;
 
         // Send STARTTLS (if port 587)
@@ -135,20 +136,28 @@ impl EmailChannel {
 
         // Send username (base64)
         let username_b64 = base64_encode(&self.config.smtp_username);
-        stream.write_all(format!("{}\r\n", username_b64).as_bytes()).await?;
+        stream
+            .write_all(format!("{}\r\n", username_b64).as_bytes())
+            .await?;
         let _ = stream.read(&mut greeting).await;
 
         // Send password (base64)
         let password_b64 = base64_encode(&self.config.smtp_password);
-        stream.write_all(format!("{}\r\n", password_b64).as_bytes()).await?;
+        stream
+            .write_all(format!("{}\r\n", password_b64).as_bytes())
+            .await?;
         let _ = stream.read(&mut greeting).await;
 
         // Send MAIL FROM
-        stream.write_all(format!("MAIL FROM:<{}>\r\n", self.config.from_address).as_bytes()).await?;
+        stream
+            .write_all(format!("MAIL FROM:<{}>\r\n", self.config.from_address).as_bytes())
+            .await?;
         let _ = stream.read(&mut greeting).await;
 
         // Send RCPT TO
-        stream.write_all(format!("RCPT TO:<{}>\r\n", to).as_bytes()).await?;
+        stream
+            .write_all(format!("RCPT TO:<{}>\r\n", to).as_bytes())
+            .await?;
         let _ = stream.read(&mut greeting).await;
 
         // Send DATA

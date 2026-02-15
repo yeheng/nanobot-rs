@@ -17,7 +17,11 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     /// Create a new OpenAI provider
-    pub fn new(api_key: impl Into<String>, api_base: Option<String>, default_model: Option<String>) -> Self {
+    pub fn new(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: Option<String>,
+    ) -> Self {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
@@ -86,7 +90,10 @@ impl LlmProvider for OpenAIProvider {
         }
 
         let openai_response: OpenAIResponse = response.json().await?;
-        debug!("Received response with {} choices", openai_response.choices.len());
+        debug!(
+            "Received response with {} choices",
+            openai_response.choices.len()
+        );
 
         let choice = openai_response
             .choices

@@ -64,7 +64,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Onboard) => cmd_onboard().await,
         Some(Commands::Status) => cmd_status().await,
-        Some(Commands::Agent { message, logs, no_markdown }) => cmd_agent(message, logs, no_markdown).await,
+        Some(Commands::Agent {
+            message,
+            logs,
+            no_markdown,
+        }) => cmd_agent(message, logs, no_markdown).await,
         Some(Commands::Gateway) => cmd_gateway().await,
         None => {
             // No command - show help
@@ -169,10 +173,8 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
             println!("🐈 nanobot interactive mode. Type '/help' for commands, '/exit' to quit.\n");
 
             let mut line_editor = Reedline::create();
-            let prompt = DefaultPrompt::new(
-                DefaultPromptSegment::Empty,
-                DefaultPromptSegment::Empty,
-            );
+            let prompt =
+                DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
 
             loop {
                 match line_editor.read_line(&prompt) {
@@ -224,7 +226,7 @@ fn print_response(response: &str, render_md: bool) {
         skin.print_text(response);
         return;
     }
-    
+
     // Fallback to plain text
     println!("{}", response);
 }
@@ -286,10 +288,8 @@ async fn cmd_gateway() -> Result<()> {
                 allow_from: telegram_config.allow_from.clone(),
             };
 
-            let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
-                telegram_cfg,
-                bus.clone(),
-            );
+            let telegram_channel =
+                nanobot_core::channels::telegram::TelegramChannel::new(telegram_cfg, bus.clone());
 
             let agent_clone = agent.clone();
             let bus_clone = bus.clone();
@@ -342,10 +342,8 @@ async fn cmd_gateway() -> Result<()> {
                 allow_from: discord_config.allow_from.clone(),
             };
 
-            let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
-                discord_cfg,
-                bus.clone(),
-            );
+            let discord_channel =
+                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, bus.clone());
 
             let task = tokio::spawn(async move {
                 let _ = discord_channel.start().await;

@@ -40,10 +40,7 @@ impl DiscordChannel {
         let bus = self.bus.clone();
         let allow_from = self.config.allow_from.clone();
 
-        let handler = DiscordHandler {
-            bus,
-            allow_from,
-        };
+        let handler = DiscordHandler { bus, allow_from };
 
         let mut client = Client::builder(&token, intents)
             .event_handler(handler)

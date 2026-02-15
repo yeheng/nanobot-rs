@@ -86,8 +86,8 @@ impl Tool for CronTool {
             job_id: Option<String>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         match args.action.as_str() {
             "add" => {
@@ -114,9 +114,10 @@ impl Tool for CronTool {
                 job.channel = channel;
                 job.chat_id = chat_id;
 
-                self.service.add_job(job).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to add job: {}", e))
-                })?;
+                self.service
+                    .add_job(job)
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to add job: {}", e)))?;
 
                 Ok(format!("Scheduled job '{}' with ID: {}", name, id))
             }

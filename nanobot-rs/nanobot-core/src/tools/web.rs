@@ -36,10 +36,7 @@ impl Tool for WebSearchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[
-            ("query", "string", true),
-            ("count", "number", false),
-        ])
+        simple_schema(&[("query", "string", true), ("count", "number", false)])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -54,8 +51,8 @@ impl Tool for WebSearchTool {
             5
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let api_key = self
             .api_key
@@ -178,10 +175,7 @@ impl Tool for WebFetchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[
-            ("url", "string", true),
-            ("prompt", "string", false),
-        ])
+        simple_schema(&[("url", "string", true), ("prompt", "string", false)])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -192,8 +186,8 @@ impl Tool for WebFetchTool {
             prompt: Option<String>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         debug!("Fetching URL: {}", args.url);
 
@@ -245,7 +239,11 @@ impl Tool for WebFetchTool {
 
         // Truncate if too long
         let truncated = if text.len() > 8000 {
-            format!("{}...\n\n[Content truncated, {} chars total]", &text[..8000], text.len())
+            format!(
+                "{}...\n\n[Content truncated, {} chars total]",
+                &text[..8000],
+                text.len()
+            )
         } else if let Some(prompt) = &args.prompt {
             format!("Prompt: {}\n\nContent:\n{}", prompt, text)
         } else {

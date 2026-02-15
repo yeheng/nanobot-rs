@@ -38,11 +38,7 @@ impl ToolRegistry {
         self.tools
             .values()
             .map(|tool| {
-                ToolDefinition::function(
-                    tool.name(),
-                    tool.description(),
-                    tool.parameters(),
-                )
+                ToolDefinition::function(tool.name(), tool.description(), tool.parameters())
             })
             .collect()
     }

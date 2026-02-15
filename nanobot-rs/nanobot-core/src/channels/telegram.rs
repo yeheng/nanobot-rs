@@ -37,44 +37,42 @@ impl TelegramChannel {
         let allow_from = self.config.allow_from.clone();
 
         // Use Dispatcher for proper handling
-        let handler = Update::filter_message().branch(
-            dptree::endpoint(move |msg: Message| {
-                let bus = bus.clone();
-                let allow_from = allow_from.clone();
-                async move {
-                    if let Some(ref user) = msg.from {
-                        let user_id = user.id.0;
-                        let user_id_str = user_id.to_string();
+        let handler = Update::filter_message().branch(dptree::endpoint(move |msg: Message| {
+            let bus = bus.clone();
+            let allow_from = allow_from.clone();
+            async move {
+                if let Some(ref user) = msg.from {
+                    let user_id = user.id.0;
+                    let user_id_str = user_id.to_string();
 
-                        // Check allowlist
-                        if !allow_from.is_empty() && !allow_from.contains(&user_id_str) {
-                            debug!("Ignoring message from unauthorized user: {}", user_id);
-                            return Ok::<_, teloxide::RequestError>(());
-                        }
-
-                        if let Some(text) = msg.text() {
-                            let chat_id = msg.chat.id.0;
-
-                            debug!("Received message from {}: {}", user_id, text);
-
-                            // Publish to bus
-                            let inbound = InboundMessage {
-                                channel: "telegram".to_string(),
-                                sender_id: user_id_str,
-                                chat_id: chat_id.to_string(),
-                                content: text.to_string(),
-                                media: None,
-                                metadata: None,
-                                timestamp: chrono::Utc::now(),
-                            };
-
-                            bus.publish_inbound(inbound).await;
-                        }
+                    // Check allowlist
+                    if !allow_from.is_empty() && !allow_from.contains(&user_id_str) {
+                        debug!("Ignoring message from unauthorized user: {}", user_id);
+                        return Ok::<_, teloxide::RequestError>(());
                     }
-                    Ok(())
+
+                    if let Some(text) = msg.text() {
+                        let chat_id = msg.chat.id.0;
+
+                        debug!("Received message from {}: {}", user_id, text);
+
+                        // Publish to bus
+                        let inbound = InboundMessage {
+                            channel: "telegram".to_string(),
+                            sender_id: user_id_str,
+                            chat_id: chat_id.to_string(),
+                            content: text.to_string(),
+                            media: None,
+                            metadata: None,
+                            timestamp: chrono::Utc::now(),
+                        };
+
+                        bus.publish_inbound(inbound).await;
+                    }
                 }
-            }),
-        );
+                Ok(())
+            }
+        }));
 
         Dispatcher::builder(bot, handler)
             .enable_ctrlc_handler()
