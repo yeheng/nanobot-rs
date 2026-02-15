@@ -9,6 +9,7 @@
 //! - Cron scheduling
 //! - Heartbeat service
 //! - MCP (Model Context Protocol) support
+//! - Skills system for dynamic skill loading
 
 pub mod agent;
 pub mod bus;
@@ -19,8 +20,13 @@ pub mod heartbeat;
 pub mod mcp;
 pub mod providers;
 pub mod session;
+pub mod skills;
 pub mod tools;
 
 pub use config::Config;
-pub use providers::LlmProvider;
-pub use tools::{Tool, ToolRegistry};
+pub use providers::{
+    DeepSeekProvider, GeminiProvider, LlmProvider, OpenAIProvider, ProviderMetadata,
+    ProviderRegistry,
+};
+pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
+pub use tools::{MessageTool, Tool, ToolRegistry};

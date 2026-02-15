@@ -23,6 +23,7 @@ futures-util = { workspace = true, optional = true }
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 
 # HTTP
 reqwest.workspace = true
@@ -47,6 +48,9 @@ cron.workspace = true
 
 # UUID
 uuid.workspace = true
+
+# Which (for checking binary existence)
+which = "6.0"
 
 # Telegram (optional)
 teloxide = { workspace = true, optional = true }

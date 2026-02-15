@@ -48,6 +48,18 @@ enum Commands {
 
     /// Start the gateway (for chat channels)
     Gateway,
+
+    /// Manage chat channels
+    Channels {
+        #[command(subcommand)]
+        command: ChannelsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChannelsCommands {
+    /// Show status of all configured channels
+    Status,
 }
 
 #[tokio::main]
@@ -70,6 +82,9 @@ async fn main() -> Result<()> {
             no_markdown,
         }) => cmd_agent(message, logs, no_markdown).await,
         Some(Commands::Gateway) => cmd_gateway().await,
+        Some(Commands::Channels { command }) => match command {
+            ChannelsCommands::Status => cmd_channels_status().await,
+        },
         None => {
             // No command - show help
             println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
@@ -78,6 +93,7 @@ async fn main() -> Result<()> {
             println!("  onboard   Initialize configuration");
             println!("  status    Show status");
             println!("  agent     Chat with the agent");
+            println!("  channels  Manage chat channels");
             println!("  gateway   Start the gateway\n");
             println!("Run 'nanobot --help' for more information.");
             Ok(())
@@ -400,4 +416,127 @@ fn find_provider(config: &Config) -> Result<(OpenAIProvider, String)> {
     anyhow::bail!(
         "No API key configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.json"
     )
+}
+
+/// Show status of all configured channels
+async fn cmd_channels_status() -> Result<()> {
+    println!("{}\n", "Channel Status".bold());
+
+    let config = load_config().context("Failed to load configuration")?;
+
+    // Helper function to check if env var is set
+    let has_env_credential = |env_var: &str| {
+        if env_var.starts_with("${") && env_var.ends_with("}") {
+            let var_name = &env_var[2..env_var.len()-1];
+            if std::env::var(var_name).is_ok() {
+                return "✓";
+            }
+        }
+        "✗"
+    };
+
+    // Helper to check credential (either direct or env var)
+    let check_credential = |key: &Option<String>| {
+        match key {
+            Some(k) if !k.is_empty() => {
+                if k.starts_with("${") {
+                    has_env_credential(k)
+                } else {
+                    "✓"
+                }
+            }
+            _ => "✗",
+        }
+    };
+
+    let mut has_channels = false;
+
+    // Check Telegram
+    #[cfg(feature = "telegram")]
+    {
+        if let Some(telegram) = &config.channels.telegram {
+            has_channels = true;
+            let status = if telegram.enabled { "enabled" } else { "disabled" };
+            let cred = check_credential(&telegram.token);
+
+            println!("{}", "Telegram".cyan().bold());
+            println!("  Status:     {}", status);
+            println!("  Token:      {}", cred);
+            println!("  Allow From: {} users", telegram.allow_from.len());
+            println!();
+        }
+    }
+
+    // Check Discord
+    #[cfg(feature = "discord")]
+    {
+        if let Some(discord) = &config.channels.discord {
+            has_channels = true;
+            let status = if discord.enabled { "enabled" } else { "disabled" };
+            let cred = check_credential(&discord.token);
+
+            println!("{}", "Discord".purple().bold());
+            println!("  Status:     {}", status);
+            println!("  Token:      {}", cred);
+            println!("  Allow From: {} users", discord.allow_from.len());
+            println!();
+        }
+    }
+
+    // Check Slack
+    #[cfg(feature = "slack")]
+    {
+        if let Some(slack) = &config.channels.slack {
+            has_channels = true;
+            let status = if slack.enabled { "enabled" } else { "disabled" };
+            let cred = check_credential(&slack.bot_token);
+
+            println!("{}", "Slack".yellow().bold());
+            println!("  Status:     {}", status);
+            println!("  Bot Token:  {}", cred);
+            println!("  Allow From: {} users", slack.allow_from.len());
+            println!();
+        }
+    }
+
+    // Check Email
+    #[cfg(feature = "email")]
+    {
+        if let Some(email) = &config.channels.email {
+            has_channels = true;
+            let status = if email.enabled { "enabled" } else { "disabled" };
+
+            println!("{}", "Email".blue().bold());
+            println!("  Status:     {}", status);
+            println!("  IMAP:       {}", if email.imap_host.is_some() { "✓" } else { "✗" });
+            println!("  SMTP:       {}", if email.smtp_host.is_some() { "✓" } else { "✗" });
+            println!();
+        }
+    }
+
+    if !has_channels {
+        println!("No channels configured.");
+        println!("\nAdd channel configuration to ~/.nanobot/config.json");
+        println!("Example:");
+        println!(r#"
+{{
+  "channels": {{
+    "telegram": {{
+      "enabled": true,
+      "token": "YOUR_BOT_TOKEN",
+      "allowFrom": []
+    }}
+  }}
+}}
+"#);
+    }
+
+    // Show compiled features
+    println!("{}", "\nCompiled Features:".dimmed());
+    println!("  Telegram: {}", if cfg!(feature = "telegram") { "✓" } else { "✗" });
+    println!("  Discord:  {}", if cfg!(feature = "discord") { "✓" } else { "✗" });
+    println!("  Slack:    {}", if cfg!(feature = "slack") { "✓" } else { "✗" });
+    println!("  Email:    {}", if cfg!(feature = "email") { "✓" } else { "✗" });
+
+    Ok(())
 }
