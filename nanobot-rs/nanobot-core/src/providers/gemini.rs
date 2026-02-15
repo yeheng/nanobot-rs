@@ -106,13 +106,19 @@ impl GeminiProvider {
             body["generationConfig"] = generation_config;
         }
 
-        debug!("Gemini request: {}", serde_json::to_string_pretty(&body).unwrap());
+        debug!(
+            "Gemini request: {}",
+            serde_json::to_string_pretty(&body).unwrap()
+        );
         body
     }
 
     /// Parse Gemini response
     fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse> {
-        debug!("Gemini response: {}", serde_json::to_string_pretty(&response).unwrap());
+        debug!(
+            "Gemini response: {}",
+            serde_json::to_string_pretty(&response).unwrap()
+        );
 
         // Check for errors
         if let Some(error) = response.get("error") {
@@ -199,8 +205,8 @@ mod tests {
 
     #[test]
     fn test_custom_model() {
-        let provider = GeminiProvider::new("test-key".to_string())
-            .with_model("gemini-ultra".to_string());
+        let provider =
+            GeminiProvider::new("test-key".to_string()).with_model("gemini-ultra".to_string());
         assert_eq!(provider.default_model(), "gemini-ultra");
     }
 

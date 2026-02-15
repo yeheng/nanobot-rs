@@ -56,13 +56,19 @@ impl DeepSeekProvider {
         // Add DeepSeek-specific parameters if needed
         // DeepSeek API is fully OpenAI-compatible
 
-        debug!("DeepSeek request: {}", serde_json::to_string_pretty(&body).unwrap());
+        debug!(
+            "DeepSeek request: {}",
+            serde_json::to_string_pretty(&body).unwrap()
+        );
         body
     }
 
     /// Parse chat completion response
     fn parse_response(&self, response: Value) -> Result<ChatResponse> {
-        debug!("DeepSeek response: {}", serde_json::to_string_pretty(&response).unwrap());
+        debug!(
+            "DeepSeek response: {}",
+            serde_json::to_string_pretty(&response).unwrap()
+        );
 
         // DeepSeek uses OpenAI-compatible response format
         let choices = response["choices"]
@@ -103,9 +109,7 @@ impl DeepSeekProvider {
         let has_tool_calls = !tool_calls.is_empty();
 
         // Check for reasoning content (DeepSeek R1 models)
-        let reasoning_content = message["reasoning_content"]
-            .as_str()
-            .map(|s| s.to_string());
+        let reasoning_content = message["reasoning_content"].as_str().map(|s| s.to_string());
 
         Ok(ChatResponse {
             content,
@@ -169,8 +173,8 @@ mod tests {
 
     #[test]
     fn test_custom_model() {
-        let provider = DeepSeekProvider::new("test-key".to_string())
-            .with_model("deepseek-coder".to_string());
+        let provider =
+            DeepSeekProvider::new("test-key".to_string()).with_model("deepseek-coder".to_string());
         assert_eq!(provider.default_model(), "deepseek-coder");
     }
 

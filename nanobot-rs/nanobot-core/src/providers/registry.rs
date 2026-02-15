@@ -96,7 +96,10 @@ impl ProviderRegistry {
             let prefix = &model[..slash_pos];
 
             if let Some(provider_name) = self.prefix_map.get(prefix) {
-                debug!("Detected provider '{}' from model prefix '{}'", provider_name, prefix);
+                debug!(
+                    "Detected provider '{}' from model prefix '{}'",
+                    provider_name, prefix
+                );
                 return self.get(provider_name);
             }
         }
@@ -157,9 +160,9 @@ impl ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::providers::{ChatRequest, ChatResponse};
     use anyhow::Result;
+    use async_trait::async_trait;
 
     // Mock provider for testing
     struct MockProvider {

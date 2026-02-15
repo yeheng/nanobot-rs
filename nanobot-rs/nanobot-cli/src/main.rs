@@ -427,7 +427,7 @@ async fn cmd_channels_status() -> Result<()> {
     // Helper function to check if env var is set
     let has_env_credential = |env_var: &str| {
         if env_var.starts_with("${") && env_var.ends_with("}") {
-            let var_name = &env_var[2..env_var.len()-1];
+            let var_name = &env_var[2..env_var.len() - 1];
             if std::env::var(var_name).is_ok() {
                 return "✓";
             }
@@ -436,17 +436,15 @@ async fn cmd_channels_status() -> Result<()> {
     };
 
     // Helper to check credential (either direct or env var)
-    let check_credential = |key: &Option<String>| {
-        match key {
-            Some(k) if !k.is_empty() => {
-                if k.starts_with("${") {
-                    has_env_credential(k)
-                } else {
-                    "✓"
-                }
+    let check_credential = |key: &Option<String>| match key {
+        Some(k) if !k.is_empty() => {
+            if k.starts_with("${") {
+                has_env_credential(k)
+            } else {
+                "✓"
             }
-            _ => "✗",
         }
+        _ => "✗",
     };
 
     let mut has_channels = false;
@@ -456,7 +454,11 @@ async fn cmd_channels_status() -> Result<()> {
     {
         if let Some(telegram) = &config.channels.telegram {
             has_channels = true;
-            let status = if telegram.enabled { "enabled" } else { "disabled" };
+            let status = if telegram.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let cred = check_credential(&telegram.token);
 
             println!("{}", "Telegram".cyan().bold());
@@ -472,7 +474,11 @@ async fn cmd_channels_status() -> Result<()> {
     {
         if let Some(discord) = &config.channels.discord {
             has_channels = true;
-            let status = if discord.enabled { "enabled" } else { "disabled" };
+            let status = if discord.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let cred = check_credential(&discord.token);
 
             println!("{}", "Discord".purple().bold());
@@ -508,8 +514,22 @@ async fn cmd_channels_status() -> Result<()> {
 
             println!("{}", "Email".blue().bold());
             println!("  Status:     {}", status);
-            println!("  IMAP:       {}", if email.imap_host.is_some() { "✓" } else { "✗" });
-            println!("  SMTP:       {}", if email.smtp_host.is_some() { "✓" } else { "✗" });
+            println!(
+                "  IMAP:       {}",
+                if email.imap_host.is_some() {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "  SMTP:       {}",
+                if email.smtp_host.is_some() {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
             println!();
         }
     }
@@ -518,7 +538,8 @@ async fn cmd_channels_status() -> Result<()> {
         println!("No channels configured.");
         println!("\nAdd channel configuration to ~/.nanobot/config.json");
         println!("Example:");
-        println!(r#"
+        println!(
+            r#"
 {{
   "channels": {{
     "telegram": {{
@@ -528,15 +549,44 @@ async fn cmd_channels_status() -> Result<()> {
     }}
   }}
 }}
-"#);
+"#
+        );
     }
 
     // Show compiled features
     println!("{}", "\nCompiled Features:".dimmed());
-    println!("  Telegram: {}", if cfg!(feature = "telegram") { "✓" } else { "✗" });
-    println!("  Discord:  {}", if cfg!(feature = "discord") { "✓" } else { "✗" });
-    println!("  Slack:    {}", if cfg!(feature = "slack") { "✓" } else { "✗" });
-    println!("  Email:    {}", if cfg!(feature = "email") { "✓" } else { "✗" });
+    println!(
+        "  Telegram: {}",
+        if cfg!(feature = "telegram") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  Discord:  {}",
+        if cfg!(feature = "discord") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  Slack:    {}",
+        if cfg!(feature = "slack") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  Email:    {}",
+        if cfg!(feature = "email") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
 
     Ok(())
 }

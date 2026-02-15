@@ -93,10 +93,7 @@ impl SkillsRegistry {
 
     /// List unavailable skills
     pub fn list_unavailable(&self) -> Vec<&Skill> {
-        self.skills
-            .values()
-            .filter(|s| !s.is_available())
-            .collect()
+        self.skills.values().filter(|s| !s.is_available()).collect()
     }
 
     /// Get skills that should always be loaded

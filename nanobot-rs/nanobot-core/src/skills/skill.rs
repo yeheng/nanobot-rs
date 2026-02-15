@@ -97,7 +97,10 @@ impl Skill {
     /// Get skill summary without path (for on-demand loading)
     pub fn brief_summary(&self) -> String {
         if self.available {
-            format!("- **{}**: {}", self.metadata.name, self.metadata.description)
+            format!(
+                "- **{}**: {}",
+                self.metadata.name, self.metadata.description
+            )
         } else {
             format!(
                 "- **{}**: {} (unavailable)",

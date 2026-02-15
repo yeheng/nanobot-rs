@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Skill metadata extracted from YAML frontmatter
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillMetadata {
     /// Unique skill name
     pub name: String,
@@ -25,19 +25,6 @@ pub struct SkillMetadata {
     /// Additional custom metadata
     #[serde(flatten)]
     pub extra: HashMap<String, serde_yaml::Value>,
-}
-
-impl Default for SkillMetadata {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            description: String::new(),
-            always: false,
-            bins: Vec::new(),
-            env_vars: Vec::new(),
-            extra: HashMap::new(),
-        }
-    }
 }
 
 impl SkillMetadata {
