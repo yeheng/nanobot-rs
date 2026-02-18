@@ -9,9 +9,9 @@ use super::schema::Config;
 
 /// Get the nanobot config directory
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("nanobot")
+        .join(".nanobot")
 }
 
 /// Get the config file path
@@ -59,7 +59,7 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
 
-        let mut config: Config = serde_json::from_str(&content)
+        let mut config: Config = json5::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {:?}", path))?;
 
         // Apply environment variable overrides

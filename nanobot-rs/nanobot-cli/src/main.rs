@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentLoop};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
-use nanobot_core::providers::{LlmProvider, OpenAICompatibleProvider};
+use nanobot_core::providers::{DeepSeekProvider, LlmProvider, OpenAICompatibleProvider};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -164,13 +164,23 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
     // Find a provider
     let (provider, model) = find_provider(&config)?;
 
-    // Create agent
+    // Create agent — treat 0 as "use default"
+    let defaults = AgentConfig::default();
     let agent_config = AgentConfig {
         model,
-        max_iterations: config.agents.defaults.max_iterations,
+        max_iterations: match config.agents.defaults.max_iterations {
+            0 => defaults.max_iterations,
+            v => v,
+        },
         temperature: config.agents.defaults.temperature,
-        max_tokens: config.agents.defaults.max_tokens,
-        memory_window: config.agents.defaults.memory_window,
+        max_tokens: match config.agents.defaults.max_tokens {
+            0 => defaults.max_tokens,
+            v => v,
+        },
+        memory_window: match config.agents.defaults.memory_window {
+            0 => defaults.memory_window,
+            v => v,
+        },
         restrict_to_workspace: config.tools.restrict_to_workspace,
     };
 
@@ -277,12 +287,22 @@ async fn cmd_gateway() -> Result<()> {
 
     // Create agent
     let (provider, model) = find_provider(&config)?;
+    let defaults = AgentConfig::default();
     let agent_config = AgentConfig {
         model,
-        max_iterations: config.agents.defaults.max_iterations,
+        max_iterations: match config.agents.defaults.max_iterations {
+            0 => defaults.max_iterations,
+            v => v,
+        },
         temperature: config.agents.defaults.temperature,
-        max_tokens: config.agents.defaults.max_tokens,
-        memory_window: config.agents.defaults.memory_window,
+        max_tokens: match config.agents.defaults.max_tokens {
+            0 => defaults.max_tokens,
+            v => v,
+        },
+        memory_window: match config.agents.defaults.memory_window {
+            0 => defaults.memory_window,
+            v => v,
+        },
         restrict_to_workspace: config.tools.restrict_to_workspace,
     };
 
@@ -390,6 +410,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     // Try providers in order of preference
     // Include Chinese providers: zhipu, dashscope, moonshot, minimax
     let provider_order = [
+        "deepseek",
         "openrouter",
         "openai",
         "anthropic",
@@ -410,6 +431,14 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
                     .unwrap_or_else(|| "gpt-4o".to_string());
 
                 let provider: Arc<dyn LlmProvider> = match *name {
+                    "deepseek" => {
+                        let p = if let Some(base) = &provider_config.api_base {
+                            DeepSeekProvider::with_api_base(api_key.clone(), base.clone())
+                        } else {
+                            DeepSeekProvider::new(api_key.clone())
+                        };
+                        Arc::new(p.with_model(model.clone()))
+                    }
                     "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, &model)),
                     "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, &model)),
                     "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, None, &model)),
@@ -462,7 +491,7 @@ async fn cmd_channels_status() -> Result<()> {
         _ => "✗",
     };
 
-    let mut has_channels = false;
+    let has_channels = false;
 
     // Check Telegram
     #[cfg(feature = "telegram")]
