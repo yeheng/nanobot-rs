@@ -11,7 +11,9 @@ use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentLoop};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
-use nanobot_core::providers::OpenAIProvider;
+use nanobot_core::providers::{
+    DashScopeProvider, LlmProvider, MiniMaxProvider, MoonshotProvider, OpenAIProvider, ZhipuProvider,
+};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -174,7 +176,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
         restrict_to_workspace: config.tools.restrict_to_workspace,
     };
 
-    let agent = AgentLoop::new(Arc::new(provider), workspace, agent_config);
+    let agent = AgentLoop::new(provider, workspace, agent_config);
     let render_md = !no_markdown;
 
     match message {
@@ -287,7 +289,7 @@ async fn cmd_gateway() -> Result<()> {
     };
 
     #[allow(unused_variables)]
-    let agent = Arc::new(AgentLoop::new(Arc::new(provider), workspace, agent_config));
+    let agent = Arc::new(AgentLoop::new(provider, workspace, agent_config));
 
     // Track running tasks
     #[allow(unused_mut)]
@@ -384,9 +386,18 @@ async fn cmd_gateway() -> Result<()> {
 }
 
 /// Find a configured provider
-fn find_provider(config: &Config) -> Result<(OpenAIProvider, String)> {
+fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     // Try providers in order of preference
-    let provider_order = ["openrouter", "openai", "anthropic"];
+    // Include Chinese providers: zhipu, dashscope, moonshot, minimax
+    let provider_order = [
+        "openrouter",
+        "openai",
+        "anthropic",
+        "zhipu",
+        "dashscope",
+        "moonshot",
+        "minimax",
+    ];
 
     for name in &provider_order {
         if let Some(provider_config) = config.providers.get(*name) {
@@ -398,14 +409,18 @@ fn find_provider(config: &Config) -> Result<(OpenAIProvider, String)> {
                     .clone()
                     .unwrap_or_else(|| "gpt-4o".to_string());
 
-                let provider = match *name {
-                    "openrouter" => OpenAIProvider::openrouter(api_key),
-                    "anthropic" => OpenAIProvider::anthropic(api_key),
-                    _ => OpenAIProvider::new(
+                let provider: Arc<dyn LlmProvider> = match *name {
+                    "openrouter" => Arc::new(OpenAIProvider::openrouter(api_key)),
+                    "anthropic" => Arc::new(OpenAIProvider::anthropic(api_key)),
+                    "zhipu" => Arc::new(ZhipuProvider::new(api_key, None, Some(model.clone()))),
+                    "dashscope" => Arc::new(DashScopeProvider::new(api_key, Some(model.clone()))),
+                    "moonshot" => Arc::new(MoonshotProvider::new(api_key, Some(model.clone()))),
+                    "minimax" => Arc::new(MiniMaxProvider::new(api_key, Some(model.clone()))),
+                    _ => Arc::new(OpenAIProvider::new(
                         api_key,
                         provider_config.api_base.clone(),
                         Some(model.clone()),
-                    ),
+                    )),
                 };
 
                 return Ok((provider, model));

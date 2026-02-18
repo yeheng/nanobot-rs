@@ -192,7 +192,9 @@ mod tests {
         let body = provider.build_request(request);
 
         assert_eq!(body["model"], "deepseek-chat");
-        assert_eq!(body["temperature"], 0.7);
+        // Use approximate comparison for floating point
+        let temp = body["temperature"].as_f64().unwrap();
+        assert!((temp - 0.7).abs() < 0.01);
         assert_eq!(body["max_tokens"], 100);
     }
 }

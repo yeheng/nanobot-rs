@@ -27,3 +27,5 @@ tests/
 .opencode
 nanobot
 *.lock
+.repomix*
+repomix*
