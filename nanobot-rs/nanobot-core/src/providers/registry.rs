@@ -148,11 +148,11 @@ impl ProviderRegistry {
     /// - "deepseek/chat" -> "chat"
     /// - "gemini/gemini-pro" -> "gemini-pro"
     /// - "gpt-4" -> "gpt-4"
-    pub fn strip_prefix(&self, model: &str) -> String {
+    pub fn strip_prefix<'a>(&self, model: &'a str) -> &'a str {
         if let Some(slash_pos) = model.find('/') {
-            model[slash_pos + 1..].to_string()
+            &model[slash_pos + 1..]
         } else {
-            model.to_string()
+            model
         }
     }
 }

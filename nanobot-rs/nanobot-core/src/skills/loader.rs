@@ -1,7 +1,7 @@
 use crate::skills::{Skill, SkillMetadata};
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{BufRead, Cursor};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
@@ -20,57 +20,78 @@ use tracing::{debug, warn};
 /// # Skill Content
 /// ...
 /// ```
-pub fn parse_skill_file(content: &str, path: PathBuf) -> Result<Skill> {
-    let (metadata, markdown_content) = parse_frontmatter(content)?;
+pub fn parse_skill_file(mut reader: impl BufRead, path: PathBuf) -> Result<Skill> {
+    let (metadata, markdown_content) = parse_frontmatter(&mut reader)?;
 
     Ok(Skill::new(metadata, markdown_content, path))
 }
 
 /// Parse YAML frontmatter and extract metadata + content
-fn parse_frontmatter(content: &str) -> Result<(SkillMetadata, String)> {
-    let reader = Cursor::new(content);
-    let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
+fn parse_frontmatter(reader: &mut impl BufRead) -> Result<(SkillMetadata, String)> {
+    let mut lines = reader.lines();
 
-    // Check if file starts with ---
-    if lines.is_empty() || lines[0].trim() != "---" {
-        // No frontmatter, use default metadata
-        return Ok((SkillMetadata::default(), content.to_string()));
-    }
-
-    // Find closing ---
-    let end_index = lines[1..]
-        .iter()
-        .position(|line| line.trim() == "---")
-        .map(|i| i + 1);
-
-    let end_index = match end_index {
-        Some(i) => i,
-        None => {
-            warn!("Unclosed frontmatter in skill file");
-            return Ok((SkillMetadata::default(), content.to_string()));
-        }
+    // Read the first line
+    let first_line = match lines.next() {
+        Some(Ok(line)) => line,
+        _ => return Ok((SkillMetadata::default(), String::new())),
     };
 
-    // Extract YAML content
-    let yaml_content: String = lines[1..end_index].join("\n");
+    // Check if file starts with ---
+    if first_line.trim() != "---" {
+        // No frontmatter, use default metadata
+        let mut content = first_line;
+        for line in lines {
+            content.push('\n');
+            content.push_str(&line?);
+        }
+        return Ok((SkillMetadata::default(), content));
+    }
+
+    let mut yaml_content = String::new();
+    let mut frontmatter_closed = false;
+
+    // Read YAML content until closing ---
+    for line in &mut lines {
+        let line = line?;
+        if line.trim() == "---" {
+            frontmatter_closed = true;
+            break;
+        }
+        yaml_content.push_str(&line);
+        yaml_content.push('\n');
+    }
+
+    if !frontmatter_closed {
+        warn!("Unclosed frontmatter in skill file");
+        let mut content = format!("---\n{}", yaml_content);
+        for line in lines {
+            content.push('\n');
+            content.push_str(&line?);
+        }
+        return Ok((SkillMetadata::default(), content));
+    }
 
     // Parse YAML
     let metadata: SkillMetadata = serde_yaml::from_str(&yaml_content)
         .with_context(|| format!("Failed to parse YAML frontmatter: {}", yaml_content))?;
 
     // Extract Markdown content (everything after closing ---)
-    let markdown_start = end_index + 1;
-    let markdown_content: String = if markdown_start < lines.len() {
-        // Skip empty lines at the beginning
-        lines[markdown_start..]
-            .iter()
-            .skip_while(|line| line.trim().is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        String::new()
-    };
+    let mut markdown_content = String::new();
+    let mut first_non_empty = false;
+
+    for line in lines {
+        let line = line?;
+        if !first_non_empty {
+            if line.trim().is_empty() {
+                continue;
+            }
+            first_non_empty = true;
+        }
+        if !markdown_content.is_empty() {
+            markdown_content.push('\n');
+        }
+        markdown_content.push_str(&line);
+    }
 
     Ok((metadata, markdown_content))
 }
@@ -139,12 +160,12 @@ impl SkillsLoader {
         Ok(())
     }
 
-    /// Load a single skill from a file
     fn load_skill(&self, path: &Path) -> Result<Skill> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read skill file: {:?}", path))?;
+        let file = fs::File::open(path)
+            .with_context(|| format!("Failed to open skill file: {:?}", path))?;
+        let reader = std::io::BufReader::new(file);
 
-        parse_skill_file(&content, path.to_path_buf())
+        parse_skill_file(reader, path.to_path_buf())
     }
 
     /// Get user skills directory
@@ -161,6 +182,7 @@ impl SkillsLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_parse_frontmatter_full() {
@@ -176,8 +198,8 @@ env_vars: ["GITHUB_TOKEN"]
 
 This is the skill content.
 "#;
-
-        let (metadata, markdown) = parse_frontmatter(content).unwrap();
+        let mut reader = Cursor::new(content);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
 
         assert_eq!(metadata.name, "test-skill");
         assert_eq!(metadata.description, "A test skill");
@@ -196,8 +218,8 @@ description: Minimal skill
 
 # Content
 "#;
-
-        let (metadata, markdown) = parse_frontmatter(content).unwrap();
+        let mut reader = Cursor::new(content);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
 
         assert_eq!(metadata.name, "minimal");
         assert_eq!(metadata.description, "Minimal skill");
@@ -209,8 +231,8 @@ description: Minimal skill
     #[test]
     fn test_parse_no_frontmatter() {
         let content = "# No Frontmatter\n\nJust content.";
-
-        let (metadata, markdown) = parse_frontmatter(content).unwrap();
+        let mut reader = Cursor::new(content);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
 
         assert_eq!(metadata.name, "");
         assert_eq!(markdown, content);
@@ -227,8 +249,8 @@ description: GitHub operations
 
 Use `gh` CLI for GitHub operations.
 "#;
-
-        let skill = parse_skill_file(content, PathBuf::from("/test/github.md")).unwrap();
+        let reader = Cursor::new(content);
+        let skill = parse_skill_file(reader, PathBuf::from("/test/github.md")).unwrap();
 
         assert_eq!(skill.name(), "github");
         assert_eq!(skill.description(), "GitHub operations");

@@ -12,7 +12,7 @@ const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"
 
 /// Context builder for constructing prompts
 pub struct ContextBuilder {
-    workspace: PathBuf,
+    _workspace: PathBuf,
     system_prompt: String,
     skills_context: Option<String>,
 }
@@ -30,7 +30,7 @@ impl ContextBuilder {
     pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
         let system_prompt = Self::build_system_prompt(&workspace)?;
         Ok(Self {
-            workspace,
+            _workspace: workspace,
             system_prompt,
             skills_context: None,
         })

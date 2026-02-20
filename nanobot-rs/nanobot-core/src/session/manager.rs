@@ -166,20 +166,59 @@ impl SessionManager {
 
     fn load_from_disk(&self, key: &str) -> anyhow::Result<Session> {
         let path = self.session_path(key);
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read session file '{}': {}", path.display(), e))?;
-        let session: Session = serde_json::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse session file '{}': {}", path.display(), e))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            anyhow::anyhow!("Failed to read session file '{}': {}", path.display(), e)
+        })?;
+        let session: Session = serde_json::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("Failed to parse session file '{}': {}", path.display(), e)
+        })?;
         debug!("Loaded session {} from disk", key);
         Ok(session)
     }
 
     fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
         let path = self.session_path(&session.key);
+        let tmp_path = path.with_extension("tmp");
+
+        // Serialize
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| anyhow::anyhow!("Failed to serialize session '{}': {}", session.key, e))?;
-        std::fs::write(&path, content)
-            .map_err(|e| anyhow::anyhow!("Failed to write session file '{}': {}", path.display(), e))?;
+
+        // Write to tmp and sync
+        {
+            let mut file = std::fs::File::create(&tmp_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create tmp session file '{}': {}",
+                    tmp_path.display(),
+                    e
+                )
+            })?;
+            std::io::Write::write_all(&mut file, content.as_bytes()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to write tmp session file '{}': {}",
+                    tmp_path.display(),
+                    e
+                )
+            })?;
+            file.sync_all().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to sync tmp session file '{}': {}",
+                    tmp_path.display(),
+                    e
+                )
+            })?;
+        }
+
+        // Rename atomically
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to rename tmp session file '{}' to '{}': {}",
+                tmp_path.display(),
+                path.display(),
+                e
+            )
+        })?;
+
         debug!("Saved session {} to disk", session.key);
         Ok(())
     }

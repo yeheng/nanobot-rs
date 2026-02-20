@@ -699,7 +699,7 @@ async fn cmd_channels_status() -> Result<()> {
         _ => "✗",
     };
 
-    let mut has_channels = false;
+    let has_channels = false;
 
     // Check Telegram
     #[cfg(feature = "telegram")]
