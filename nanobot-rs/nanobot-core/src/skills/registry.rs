@@ -2,7 +2,7 @@ use crate::skills::{Skill, SkillsLoader};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Registry for managing loaded skills
 pub struct SkillsRegistry {
@@ -58,7 +58,7 @@ impl SkillsRegistry {
         let name = skill.name().to_string();
 
         if self.skills.contains_key(&name) {
-            warn!("Overriding existing skill: {}", name);
+            info!("Overriding existing skill: {}", name);
         }
 
         debug!("Registering skill: {}", name);
