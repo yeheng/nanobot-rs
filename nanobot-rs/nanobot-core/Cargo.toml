@@ -12,7 +12,8 @@ telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
 email = []
-all-channels = ["telegram", "discord", "slack", "email"]
+feishu = []
+all-channels = ["telegram", "discord", "slack", "email", "feishu"]
 
 [dependencies]
 # Async

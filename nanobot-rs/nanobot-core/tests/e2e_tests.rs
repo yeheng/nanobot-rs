@@ -1064,7 +1064,7 @@ async fn test_config_loader_with_dir() {
     let _ = std::fs::create_dir_all(&temp_dir);
 
     let loader = ConfigLoader::with_dir(temp_dir.clone());
-    assert!(loader.config_path().ends_with("config.json"));
+    assert!(loader.config_path().ends_with("config.yaml"));
     assert!(!loader.exists());
 
     // Cleanup

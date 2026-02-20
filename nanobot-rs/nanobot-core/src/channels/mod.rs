@@ -15,5 +15,8 @@ pub mod slack;
 #[cfg(feature = "email")]
 pub mod email;
 
+#[cfg(feature = "feishu")]
+pub mod feishu;
+
 pub use base::Channel;
 pub use manager::ChannelManager;

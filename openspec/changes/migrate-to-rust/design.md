@@ -17,7 +17,7 @@ nanobot/
 ```
 
 ### 迁移约束
-- 配置文件格式 (`~/.nanobot/config.json`) 必须保持兼容
+- 配置文件格式 (`~/.nanobot/config.yaml`) 保持兼容
 - CLI 命令接口必须保持兼容
 - 工作区目录结构保持不变
 
@@ -31,7 +31,6 @@ nanobot/
 
 ### Non-Goals
 - 不重写 `bridge/` 目录（TypeScript WhatsApp 桥接）
-- 不改变配置文件格式
 - 不改变用户工作区结构
 
 ## Decisions

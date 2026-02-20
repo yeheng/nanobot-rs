@@ -1,6 +1,6 @@
 //! Configuration schema
 //!
-//! Compatible with Python nanobot's config.json format
+//! Compatible with Python nanobot's config format (now uses YAML)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -96,6 +96,10 @@ pub struct ChannelsConfig {
     /// Slack channel
     #[serde(default)]
     pub slack: Option<SlackConfig>,
+
+    /// Feishu channel
+    #[serde(default)]
+    pub feishu: Option<FeishuConfig>,
 }
 
 /// Telegram channel configuration
@@ -148,6 +152,34 @@ pub struct SlackConfig {
     /// Group policy: mention, open, or allowlist
     #[serde(default)]
     pub group_policy: Option<String>,
+}
+
+/// Feishu channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// App ID
+    #[serde(alias = "appId")]
+    pub app_id: String,
+
+    /// App Secret
+    #[serde(alias = "appSecret")]
+    pub app_secret: String,
+
+    /// Verification token for webhook validation
+    #[serde(default, alias = "verificationToken")]
+    pub verification_token: Option<String>,
+
+    /// Encrypt key for event decryption
+    #[serde(default, alias = "encryptKey")]
+    pub encrypt_key: Option<String>,
+
+    /// Allowed users/groups (empty = allow all)
+    #[serde(default, alias = "allowFrom")]
+    pub allow_from: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -232,26 +264,22 @@ mod tests {
 
     #[test]
     fn test_parse_empty_config() {
-        let json = "{}";
-        let config: Config = serde_json::from_str(json).unwrap();
+        let yaml = "";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.providers.is_empty());
     }
 
     #[test]
     fn test_parse_provider_config() {
-        let json = r#"{
-            "providers": {
-                "openrouter": {
-                    "api_key": "sk-or-v1-xxx"
-                }
-            },
-            "agents": {
-                "defaults": {
-                    "model": "anthropic/claude-opus-4-5"
-                }
-            }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
+        let yaml = r#"
+providers:
+  openrouter:
+    api_key: sk-or-v1-xxx
+agents:
+  defaults:
+    model: anthropic/claude-opus-4-5
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             config.providers.get("openrouter").unwrap().api_key,
             Some("sk-or-v1-xxx".to_string())

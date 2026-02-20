@@ -1,6 +1,6 @@
 //! Configuration management
 //!
-//! Compatible with Python nanobot config format (`~/.nanobot/config.json`)
+//! Compatible with Python nanobot config format (`~/.nanobot/config.yaml`)
 
 mod loader;
 mod schema;

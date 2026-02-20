@@ -16,7 +16,7 @@ The system SHALL provide a CLI command to display channel status.
 #### Scenario: Show configured channels only
 
 - **WHEN** displaying channel status
-- **THEN** the system SHALL only show channels that are configured in config.json
+- **THEN** the system SHALL only show channels that are configured in config.yaml
 - **AND** indicate which channels are available but not configured
 
 #### Scenario: Show credential availability

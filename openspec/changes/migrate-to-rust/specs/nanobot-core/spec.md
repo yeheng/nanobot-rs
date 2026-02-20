@@ -25,7 +25,7 @@ nanobot core SHALL be implemented in Rust, providing a lightweight AI assistant 
 
 The Rust implementation SHALL maintain full backward compatibility with existing Python configuration format.
 
-- Configuration file location: `~/.nanobot/config.json`
+- Configuration file location: `~/.nanobot/config.yaml`
 - All existing configuration fields SHALL be supported
 - New fields MAY be added with sensible defaults
 

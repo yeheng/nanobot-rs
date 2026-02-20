@@ -50,7 +50,7 @@ nanobot 是一个超轻量级 AI 助手框架，当前核心代码约 7,618 行 
 | `slack-sdk` | `slack-morphism` | Slack API |
 
 ### 保留兼容性
-- 配置文件格式 `~/.nanobot/config.json` 保持不变
+- 配置文件格式 `~/.nanobot/config.yaml` (从 JSON 迁移到 YAML)
 - 工作区目录结构保持不变
 - CLI 命令接口保持兼容
 

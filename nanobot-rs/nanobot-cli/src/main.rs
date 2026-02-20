@@ -10,6 +10,7 @@ use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentDependencies, AgentLoop};
+use nanobot_core::channels::Channel;
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 
@@ -339,8 +340,9 @@ async fn cmd_gateway() -> Result<()> {
     let has_telegram = config.channels.telegram.as_ref().is_some_and(|c| c.enabled);
     let has_discord = config.channels.discord.as_ref().is_some_and(|c| c.enabled);
     let has_slack = config.channels.slack.as_ref().is_some_and(|c| c.enabled);
+    let has_feishu = config.channels.feishu.as_ref().is_some_and(|c| c.enabled);
 
-    if !has_telegram && !has_discord && !has_slack {
+    if !has_telegram && !has_discord && !has_slack && !has_feishu {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
         println!("\n  channels:");
@@ -532,6 +534,31 @@ async fn cmd_gateway() -> Result<()> {
         }
     }
 
+    // Start Feishu if configured
+    #[cfg(feature = "feishu")]
+    if let Some(feishu_config) = &config.channels.feishu {
+        if feishu_config.enabled {
+            println!("{} Feishu channel", "✓".green());
+
+            let feishu_cfg = nanobot_core::channels::feishu::FeishuConfig {
+                app_id: feishu_config.app_id.clone(),
+                app_secret: feishu_config.app_secret.clone(),
+                verification_token: feishu_config.verification_token.clone(),
+                encrypt_key: feishu_config.encrypt_key.clone(),
+                allow_from: feishu_config.allow_from.clone(),
+            };
+
+            let mut feishu_channel =
+                nanobot_core::channels::feishu::FeishuChannel::new(feishu_cfg, (*bus).clone());
+
+            let task = tokio::spawn(async move {
+                let _ = feishu_channel.start().await;
+            });
+
+            tasks.push(task);
+        }
+    }
+
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
 
     // Wait for Ctrl+C signal
@@ -666,7 +693,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     }
 
     anyhow::bail!(
-        "No API key configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.json"
+        "No API key configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.yaml"
     )
 }
 
@@ -674,7 +701,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
 async fn cmd_channels_status() -> Result<()> {
     println!("{}\n", "Channel Status".bold());
 
-    let _config = load_config().context("Failed to load configuration")?;
+    let config = load_config().context("Failed to load configuration")?;
 
     // Helper function to check if env var is set
     let has_env_credential = |env_var: &str| {
@@ -688,7 +715,7 @@ async fn cmd_channels_status() -> Result<()> {
     };
 
     // Helper to check credential (either direct or env var)
-    let _check_credential = |key: &Option<String>| match key {
+    let check_credential = |key: &Option<String>| match key {
         Some(k) if !k.is_empty() => {
             if k.starts_with("${") {
                 has_env_credential(k)
@@ -699,7 +726,7 @@ async fn cmd_channels_status() -> Result<()> {
         _ => "✗",
     };
 
-    let has_channels = false;
+    let mut has_channels = false;
 
     // Check Telegram
     #[cfg(feature = "telegram")]
@@ -786,21 +813,33 @@ async fn cmd_channels_status() -> Result<()> {
         }
     }
 
+    // Check Feishu
+    #[cfg(feature = "feishu")]
+    {
+        if let Some(feishu) = &config.channels.feishu {
+            has_channels = true;
+            let status = if feishu.enabled { "enabled" } else { "disabled" };
+            let cred = check_credential(&Some(feishu.app_id.clone()));
+
+            println!("{}", "Feishu".magenta().bold());
+            println!("  Status:     {}", status);
+            println!("  App ID:     {}", cred);
+            println!("  Allow From: {} users", feishu.allow_from.len());
+            println!();
+        }
+    }
+
     if !has_channels {
         println!("No channels configured.");
-        println!("\nAdd channel configuration to ~/.nanobot/config.json");
+        println!("\nAdd channel configuration to ~/.nanobot/config.yaml");
         println!("Example:");
         println!(
             r#"
-{{
-  "channels": {{
-    "telegram": {{
-      "enabled": true,
-      "token": "YOUR_BOT_TOKEN",
-      "allowFrom": []
-    }}
-  }}
-}}
+channels:
+  telegram:
+    enabled: true
+    token: "YOUR_BOT_TOKEN"
+    allowFrom: []
 "#
         );
     }
@@ -834,6 +873,14 @@ async fn cmd_channels_status() -> Result<()> {
     println!(
         "  Email:    {}",
         if cfg!(feature = "email") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  Feishu:   {}",
+        if cfg!(feature = "feishu") {
             "✓"
         } else {
             "✗"

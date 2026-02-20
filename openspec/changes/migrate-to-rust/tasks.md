@@ -7,7 +7,7 @@
 
 ### 1.2 配置系统
 - [x] 1.2.1 定义 `Config` 结构体 (`serde` + `serde_json`)
-- [x] 1.2.2 实现配置加载 (`~/.nanobot/config.json`)
+- [x] 1.2.2 实现配置加载 (`~/.nanobot/config.yaml`)
 - [x] 1.2.3 实现环境变量覆盖
 - [x] 1.2.4 单元测试
 

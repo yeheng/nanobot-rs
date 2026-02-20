@@ -16,7 +16,7 @@ pub fn config_dir() -> PathBuf {
 
 /// Get the config file path
 pub fn config_path() -> PathBuf {
-    config_dir().join("config.json")
+    config_dir().join("config.yaml")
 }
 
 /// Configuration loader
@@ -39,7 +39,7 @@ impl ConfigLoader {
 
     /// Get the config file path
     pub fn config_path(&self) -> PathBuf {
-        self.config_dir.join("config.json")
+        self.config_dir.join("config.yaml")
     }
 
     /// Check if config exists
@@ -59,7 +59,7 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
 
-        let mut config: Config = json5::from_str(&content)
+        let mut config: Config = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {:?}", path))?;
 
         // Apply environment variable overrides
@@ -107,7 +107,7 @@ impl ConfigLoader {
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
         }
 
-        let content = serde_json::to_string_pretty(config).context("Failed to serialize config")?;
+        let content = serde_yaml::to_string(config).context("Failed to serialize config")?;
 
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write config file: {:?}", path))?;
@@ -142,6 +142,6 @@ mod tests {
     #[test]
     fn test_config_loader_new() {
         let loader = ConfigLoader::new();
-        assert!(loader.config_path().ends_with("config.json"));
+        assert!(loader.config_path().ends_with("config.yaml"));
     }
 }
