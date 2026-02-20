@@ -132,7 +132,10 @@ impl GeminiProvider {
             generation_config["maxOutputTokens"] = json!(tokens);
         }
 
-        if generation_config.as_object().map_or(false, |obj| !obj.is_empty()) {
+        if generation_config
+            .as_object()
+            .map_or(false, |obj| !obj.is_empty())
+        {
             body["generationConfig"] = generation_config;
         }
 
@@ -157,7 +160,8 @@ impl GeminiProvider {
 
         debug!(
             "Gemini request: {}",
-            serde_json::to_string_pretty(&body).unwrap_or_else(|_| "<serialization error>".to_string())
+            serde_json::to_string_pretty(&body)
+                .unwrap_or_else(|_| "<serialization error>".to_string())
         );
         body
     }
@@ -166,7 +170,8 @@ impl GeminiProvider {
     fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse> {
         debug!(
             "Gemini response: {}",
-            serde_json::to_string_pretty(&response).unwrap_or_else(|_| "<serialization error>".to_string())
+            serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|_| "<serialization error>".to_string())
         );
 
         // Check for errors
@@ -214,12 +219,9 @@ impl GeminiProvider {
             Some(text_parts.join(""))
         };
 
-        let has_tool_calls = !tool_calls.is_empty();
-
         Ok(ChatResponse {
             content,
             tool_calls,
-            has_tool_calls,
             reasoning_content: None,
         })
     }
@@ -242,10 +244,7 @@ impl LlmProvider for GeminiProvider {
             &request.model
         };
 
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.api_base, model, self.api_key
-        );
+        let url = format!("{}/models/{}:generateContent", self.api_base, model);
 
         let body = self.build_gemini_request(request);
 
@@ -254,6 +253,7 @@ impl LlmProvider for GeminiProvider {
         let response = self
             .client
             .post(&url)
+            .header("x-goog-api-key", &self.api_key)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -269,8 +269,13 @@ impl LlmProvider for GeminiProvider {
             anyhow::bail!("Gemini API error: {} - {}", status, response_text);
         }
 
-        let response_value: Value = serde_json::from_str(&response_text)
-            .map_err(|e| anyhow!("Gemini API response parse error: {} | body: {}", e, response_text))?;
+        let response_value: Value = serde_json::from_str(&response_text).map_err(|e| {
+            anyhow!(
+                "Gemini API response parse error: {} | body: {}",
+                e,
+                response_text
+            )
+        })?;
 
         self.parse_gemini_response(response_value)
     }

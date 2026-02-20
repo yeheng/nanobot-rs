@@ -56,7 +56,11 @@ impl OpenAICompatibleProvider {
     // -- Convenience constructors for well-known providers --
 
     /// Create an OpenAI provider
-    pub fn openai(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn openai(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "openai".to_string(),
             api_base: api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
@@ -67,7 +71,11 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create an OpenRouter provider
-    pub fn openrouter(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn openrouter(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "openrouter".to_string(),
             api_base: api_base.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
@@ -78,7 +86,11 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create an Anthropic provider (via OpenAI-compatible endpoint)
-    pub fn anthropic(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn anthropic(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "anthropic".to_string(),
             api_base: api_base.unwrap_or_else(|| "https://api.anthropic.com/v1".to_string()),
@@ -89,10 +101,15 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a DashScope (阿里云通义千问) provider
-    pub fn dashscope(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn dashscope(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "dashscope".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
+            api_base: api_base
+                .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -100,7 +117,11 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a Moonshot AI (Kimi) provider
-    pub fn moonshot(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn moonshot(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "moonshot".to_string(),
             api_base: api_base.unwrap_or_else(|| "https://api.moonshot.cn/v1".to_string()),
@@ -111,10 +132,15 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a Zhipu AI (智谱) provider
-    pub fn zhipu(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn zhipu(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "zhipu".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
+            api_base: api_base
+                .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -122,7 +148,12 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a MiniMax provider
-    pub fn minimax(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>, group_id: Option<String>) -> Self {
+    pub fn minimax(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+        group_id: Option<String>,
+    ) -> Self {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
@@ -137,7 +168,11 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a DeepSeek provider (OpenAI-compatible, supports `reasoning_content`)
-    pub fn deepseek(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+    pub fn deepseek(
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self::new(ProviderConfig {
             name: "deepseek".to_string(),
             api_base: api_base.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string()),
@@ -204,18 +239,20 @@ impl LlmProvider for OpenAICompatibleProvider {
         debug!("[{}] response status: {}", self.config.name, status);
 
         let body = response.text().await?;
-        debug!(
-            "[{}] response body:\n{}",
-            self.config.name,
-            body
-        );
+        debug!("[{}] response body:\n{}", self.config.name, body);
 
         if !status.is_success() {
             anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
         }
 
-        let api_response: OpenAICompatibleResponse = serde_json::from_str(&body)
-            .map_err(|e| anyhow::anyhow!("{} API response parse error: {} | body: {}", self.config.name, e, body))?;
+        let api_response: OpenAICompatibleResponse = serde_json::from_str(&body).map_err(|e| {
+            anyhow::anyhow!(
+                "{} API response parse error: {} | body: {}",
+                self.config.name,
+                e,
+                body
+            )
+        })?;
 
         let choice = api_response
             .choices
@@ -237,12 +274,9 @@ impl LlmProvider for OpenAICompatibleProvider {
             })
             .collect();
 
-        let has_tool_calls = !tool_calls.is_empty();
-
         Ok(ChatResponse {
             content: choice.message.content,
             tool_calls,
-            has_tool_calls,
             reasoning_content: choice.message.reasoning_content,
         })
     }
@@ -329,14 +363,16 @@ mod tests {
 
     #[test]
     fn test_openrouter_provider() {
-        let provider = OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
+        let provider =
+            OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
 
     #[test]
     fn test_anthropic_provider() {
-        let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
+        let provider =
+            OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
@@ -346,7 +382,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::dashscope("test-key", None, "qwen-max");
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
-        assert_eq!(provider.api_base(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
+        assert_eq!(
+            provider.api_base(),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
     }
 
     #[test]
@@ -366,7 +405,12 @@ mod tests {
 
     #[test]
     fn test_minimax_provider() {
-        let provider = OpenAICompatibleProvider::minimax("test-key", None, "abab6.5-chat", Some("group123".to_string()));
+        let provider = OpenAICompatibleProvider::minimax(
+            "test-key",
+            None,
+            "abab6.5-chat",
+            Some("group123".to_string()),
+        );
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }

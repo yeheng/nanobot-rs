@@ -183,7 +183,6 @@ mod tests {
             Ok(ChatResponse {
                 content: Some("mock response".to_string()),
                 tool_calls: vec![],
-                has_tool_calls: false,
                 reasoning_content: None,
             })
         }

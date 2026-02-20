@@ -148,7 +148,10 @@ impl SubagentTask {
     pub fn is_finished(&self) -> bool {
         matches!(
             self.status,
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Timeout
+            TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+                | TaskStatus::Timeout
         )
     }
 
@@ -156,9 +159,7 @@ impl SubagentTask {
     pub fn duration(&self) -> Option<Duration> {
         self.started_at.map(|start| {
             let end = self.completed_at.unwrap_or_else(Utc::now);
-            (end - start)
-                .to_std()
-                .unwrap_or(Duration::ZERO)
+            (end - start).to_std().unwrap_or(Duration::ZERO)
         })
     }
 }
@@ -216,6 +217,9 @@ pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
 
+    /// Task handles
+    handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+
     /// LLM provider (shared across subagents)
     provider: Arc<dyn LlmProvider>,
 
@@ -228,13 +232,10 @@ pub struct SubagentManager {
 
 impl SubagentManager {
     /// Create a new subagent manager
-    pub fn new(
-        provider: Arc<dyn LlmProvider>,
-        workspace: PathBuf,
-        config: SubagentConfig,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: SubagentConfig) -> Self {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
+            handles: Arc::new(RwLock::new(HashMap::new())),
             provider,
             workspace,
             config,
@@ -263,10 +264,7 @@ impl SubagentManager {
         let timeout = Duration::from_secs(task.timeout_secs);
 
         // Store as pending
-        self.tasks
-            .write()
-            .await
-            .insert(task_id.clone(), task);
+        self.tasks.write().await.insert(task_id.clone(), task);
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
@@ -274,7 +272,7 @@ impl SubagentManager {
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             // Mark as running
             {
                 let mut tasks = tasks_ref.write().await;
@@ -284,7 +282,11 @@ impl SubagentManager {
                 }
             }
 
-            info!("Subagent task {} started: {}", tid, &prompt[..prompt.len().min(80)]);
+            info!(
+                "Subagent task {} started: {}",
+                tid,
+                &prompt[..prompt.len().min(80)]
+            );
 
             // Create a lightweight agent loop for this task
             let agent_config = AgentConfig {
@@ -306,7 +308,8 @@ impl SubagentManager {
 
             // Execute with timeout
             let session_key = format!("subagent:{}", tid);
-            let result = tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
+            let result =
+                tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
 
             // Update task state
             let mut tasks = tasks_ref.write().await;
@@ -335,6 +338,8 @@ impl SubagentManager {
             }
         });
 
+        self.handles.write().await.insert(task_id.clone(), handle);
+
         info!("Submitted subagent task: {}", task_id);
         Ok(task_id)
     }
@@ -362,6 +367,9 @@ impl SubagentManager {
 
     /// Cancel a task
     pub async fn cancel(&self, task_id: &str) -> bool {
+        if let Some(handle) = self.handles.write().await.remove(task_id) {
+            handle.abort();
+        }
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(task_id) {
             if !task.is_finished() {
@@ -377,8 +385,8 @@ impl SubagentManager {
     /// Clean up finished tasks older than the specified duration
     pub async fn cleanup_old_tasks(&self, older_than: Duration) -> usize {
         let mut tasks = self.tasks.write().await;
-        let cutoff = Utc::now()
-            - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::zero());
+        let cutoff =
+            Utc::now() - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::zero());
 
         let initial_count = tasks.len();
         tasks.retain(|_, t| {
@@ -454,8 +462,8 @@ mod tests {
 
     #[test]
     fn test_task_priority() {
-        let task = SubagentTask::new("test", "test", "test", "test")
-            .with_priority(TaskPriority::High);
+        let task =
+            SubagentTask::new("test", "test", "test", "test").with_priority(TaskPriority::High);
         assert_eq!(task.priority, TaskPriority::High);
     }
 

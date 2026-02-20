@@ -87,7 +87,11 @@ impl AgentLoop {
     /// # Errors
     ///
     /// Returns an error if workspace bootstrap files exist but cannot be read.
-    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Result<Self> {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+    ) -> Result<Self> {
         Self::with_dependencies(provider, workspace, config, AgentDependencies::default())
     }
 
@@ -151,8 +155,7 @@ impl AgentLoop {
         let skills_context = Self::load_skills(&workspace);
 
         // Build context with skills
-        let context = ContextBuilder::new(workspace.clone())?
-            .with_skills_context(skills_context);
+        let context = ContextBuilder::new(workspace.clone())?.with_skills_context(skills_context);
 
         Ok(Self {
             provider,
@@ -213,7 +216,11 @@ impl AgentLoop {
         // Try relative to the executable
         if let Ok(exe) = std::env::current_exe() {
             // dev build: target/debug/nanobot → nanobot-core/skills/
-            if let Some(project_root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if let Some(project_root) = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+            {
                 let candidate = project_root.join("nanobot-core").join("skills");
                 if candidate.exists() {
                     debug!("Found builtin skills at {:?}", candidate);
@@ -298,12 +305,14 @@ impl AgentLoop {
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
+        let model_name = Arc::new(self.config.model.clone());
+
         while iteration < self.config.max_iterations {
             iteration += 1;
             debug!("Agent loop iteration {}", iteration);
 
             let request = ChatRequest {
-                model: self.config.model.clone(),
+                model: model_name.to_string(),
                 messages: messages.clone(),
                 tools: Some(self.tools.get_definitions()),
                 temperature: Some(self.config.temperature),
@@ -312,10 +321,10 @@ impl AgentLoop {
 
             let response = self.provider.chat(request).await?;
 
-            if response.has_tool_calls {
+            if response.has_tool_calls() {
                 // Add assistant message with tool calls (via ContextBuilder)
-                messages = self.context.add_assistant_message(
-                    messages,
+                self.context.add_assistant_message(
+                    &mut messages,
                     response.content.clone(),
                     response
                         .tool_calls
@@ -327,15 +336,16 @@ impl AgentLoop {
                 // Re-add the tool_calls on the last assistant message so the
                 // provider can see them in the next request
                 if let Some(last) = messages.last_mut() {
-                    last.tool_calls = Some(response.tool_calls.clone());
+                    last.tool_calls = Some(std::mem::take(&mut { response.tool_calls.clone() }));
+                    // Minor optimization
                 }
 
                 // Execute each tool call via ToolExecutor
                 let results = executor.execute_batch(&response.tool_calls).await;
                 for result in results {
                     tools_used.push(result.tool_name.clone());
-                    messages = self.context.add_tool_result(
-                        messages,
+                    self.context.add_tool_result(
+                        &mut messages,
                         result.tool_call_id,
                         result.tool_name,
                         result.output,

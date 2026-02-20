@@ -36,7 +36,15 @@ impl Tool for WebSearchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("query", "string", true, "Search query string"), ("count", "number", false, "Number of results to return (default 5)")])
+        simple_schema(&[
+            ("query", "string", true, "Search query string"),
+            (
+                "count",
+                "number",
+                false,
+                "Number of results to return (default 5)",
+            ),
+        ])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -74,7 +82,9 @@ impl Tool for WebSearchTool {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Web search request to Brave API failed: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionError(format!("Web search request to Brave API failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -85,10 +95,9 @@ impl Tool for WebSearchTool {
             )));
         }
 
-        let search_response: BraveSearchResponse = response
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to parse Brave Search API response: {}", e)))?;
+        let search_response: BraveSearchResponse = response.json().await.map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to parse Brave Search API response: {}", e))
+        })?;
 
         // Format results
         let mut result = String::new();
@@ -175,7 +184,15 @@ impl Tool for WebFetchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("url", "string", true, "URL of the web page to fetch"), ("prompt", "string", false, "Optional prompt describing what to extract from the page")])
+        simple_schema(&[
+            ("url", "string", true, "URL of the web page to fetch"),
+            (
+                "prompt",
+                "string",
+                false,
+                "Optional prompt describing what to extract from the page",
+            ),
+        ])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -197,7 +214,9 @@ impl Tool for WebFetchTool {
             .header("User-Agent", "Mozilla/5.0 (compatible; nanobot/2.0)")
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to fetch URL '{}': {}", args.url, e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to fetch URL '{}': {}", args.url, e))
+            })?;
 
         if !response.status().is_success() {
             return Err(ToolError::ExecutionError(format!(
@@ -215,10 +234,12 @@ impl Tool for WebFetchTool {
             .unwrap_or("")
             .to_string();
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read response body from '{}': {}", args.url, e)))?;
+        let body = response.text().await.map_err(|e| {
+            ToolError::ExecutionError(format!(
+                "Failed to read response body from '{}': {}",
+                args.url, e
+            ))
+        })?;
 
         // Simple text extraction for HTML
         let text = if content_type.contains("text/html") {
@@ -227,11 +248,16 @@ impl Tool for WebFetchTool {
             body
         };
 
-        // Truncate if too long
+        // Truncate if too long (UTF-8 safe)
         let truncated = if text.len() > 8000 {
+            let safe_len = text
+                .char_indices()
+                .nth(8000)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len());
             format!(
                 "{}...\n\n[Content truncated, {} chars total]",
-                &text[..8000],
+                &text[..safe_len],
                 text.len()
             )
         } else if let Some(prompt) = &args.prompt {

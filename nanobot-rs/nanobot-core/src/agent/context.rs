@@ -146,31 +146,25 @@ impl ContextBuilder {
     /// Add an assistant message to the history
     pub fn add_assistant_message(
         &self,
-        messages: Vec<ChatMessage>,
+        messages: &mut Vec<ChatMessage>,
         content: Option<String>,
         _tool_calls: Vec<serde_json::Value>,
         _reasoning_content: Option<String>,
-    ) -> Vec<ChatMessage> {
-        let mut result = messages;
-
+    ) {
         if let Some(c) = content {
-            result.push(ChatMessage::assistant(c));
+            messages.push(ChatMessage::assistant(c));
         }
-
-        result
     }
 
     /// Add a tool result to the messages
     pub fn add_tool_result(
         &self,
-        messages: Vec<ChatMessage>,
+        messages: &mut Vec<ChatMessage>,
         tool_id: String,
         tool_name: String,
         result: String,
-    ) -> Vec<ChatMessage> {
-        let mut result_messages = messages;
-        result_messages.push(ChatMessage::tool_result(tool_id, tool_name, result));
-        result_messages
+    ) {
+        messages.push(ChatMessage::tool_result(tool_id, tool_name, result));
     }
 }
 

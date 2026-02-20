@@ -10,6 +10,22 @@ use tracing::debug;
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
 
+fn validate_path(path: &str, allowed_dir: &Option<PathBuf>) -> Result<PathBuf, ToolError> {
+    let path = PathBuf::from(path);
+    if let Some(allowed) = allowed_dir {
+        let canonical = path.canonicalize().map_err(|e| {
+            ToolError::NotFound(format!("Path not found: {} - {}", path.display(), e))
+        })?;
+        if !canonical.starts_with(allowed) {
+            return Err(ToolError::PermissionDenied(format!(
+                "Path outside workspace: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(path)
+}
+
 /// Read file tool
 pub struct ReadFileTool {
     allowed_dir: Option<PathBuf>,
@@ -18,22 +34,6 @@ pub struct ReadFileTool {
 impl ReadFileTool {
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
         Self { allowed_dir }
-    }
-
-    fn validate_path(&self, path: &str) -> Result<PathBuf, ToolError> {
-        let path = PathBuf::from(path);
-        if let Some(allowed) = &self.allowed_dir {
-            let canonical = path.canonicalize().map_err(|e| {
-                ToolError::NotFound(format!("Path not found: {} - {}", path.display(), e))
-            })?;
-            if !canonical.starts_with(allowed) {
-                return Err(ToolError::PermissionDenied(format!(
-                    "Path outside workspace: {}",
-                    path.display()
-                )));
-            }
-        }
-        Ok(path)
     }
 }
 
@@ -49,8 +49,18 @@ impl Tool for ReadFileTool {
 
     fn parameters(&self) -> Value {
         simple_schema(&[
-            ("absolute_path", "string", true, "Absolute path to the file to read"),
-            ("offset", "number", false, "Line offset to start reading from (0-based)"),
+            (
+                "absolute_path",
+                "string",
+                true,
+                "Absolute path to the file to read",
+            ),
+            (
+                "offset",
+                "number",
+                false,
+                "Line offset to start reading from (0-based)",
+            ),
             ("limit", "number", false, "Maximum number of lines to read"),
         ])
     }
@@ -68,11 +78,12 @@ impl Tool for ReadFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = self.validate_path(&args.absolute_path)?;
+        let path = validate_path(&args.absolute_path, &self.allowed_dir)?;
         debug!("Reading file: {:?}", path);
 
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file '{}': {}", path.display(), e)))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to read file '{}': {}", path.display(), e))
+        })?;
 
         // Handle offset and limit
         let result = if args.offset.is_some() || args.limit.is_some() {
@@ -118,7 +129,10 @@ impl Tool for WriteFileTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("file_path", "string", true, "Path to the file to write"), ("content", "string", true, "Content to write to the file")])
+        simple_schema(&[
+            ("file_path", "string", true, "Path to the file to write"),
+            ("content", "string", true, "Content to write to the file"),
+        ])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -131,18 +145,41 @@ impl Tool for WriteFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
+        // Extract path (and handle non-existent path validation properly later if needed, but we check prefix first)
         let path = PathBuf::from(&args.file_path);
+        if let Some(allowed) = &self.allowed_dir {
+            // For write, the file might not exist yet, so we canonicalize the parent
+            let parent = path.parent().unwrap_or(&path);
+            let canonical_parent = parent.canonicalize().map_err(|e| {
+                ToolError::NotFound(format!(
+                    "Parent path not found: {} - {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+            if !canonical_parent.starts_with(allowed) {
+                return Err(ToolError::PermissionDenied(format!(
+                    "Path outside workspace: {}",
+                    path.display()
+                )));
+            }
+        }
         debug!("Writing file: {:?}", path);
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to create directories for '{}': {}", parent.display(), e))
+                ToolError::ExecutionError(format!(
+                    "Failed to create directories for '{}': {}",
+                    parent.display(),
+                    e
+                ))
             })?;
         }
 
-        std::fs::write(&path, &args.content)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to write file '{}': {}", path.display(), e)))?;
+        std::fs::write(&path, &args.content).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to write file '{}': {}", path.display(), e))
+        })?;
 
         Ok(format!(
             "Successfully wrote {} bytes to {}",
@@ -211,11 +248,16 @@ impl Tool for EditFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = PathBuf::from(&args.file_path);
+        let path = validate_path(&args.file_path, &self.allowed_dir)?;
         debug!("Editing file: {:?} - {}", path, args.instruction);
 
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file '{}' for editing: {}", path.display(), e)))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            ToolError::ExecutionError(format!(
+                "Failed to read file '{}' for editing: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         // Check uniqueness
         let count = content.matches(&args.old_string).count();
@@ -233,8 +275,13 @@ impl Tool for EditFileTool {
 
         let new_content = content.replace(&args.old_string, &args.new_string);
 
-        std::fs::write(&path, new_content)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to write edited file '{}': {}", path.display(), e)))?;
+        std::fs::write(&path, new_content).map_err(|e| {
+            ToolError::ExecutionError(format!(
+                "Failed to write edited file '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         Ok(format!("Successfully edited {}", args.file_path))
     }
@@ -263,7 +310,12 @@ impl Tool for ListDirTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("path", "string", true, "Absolute path to the directory to list")])
+        simple_schema(&[(
+            "path",
+            "string",
+            true,
+            "Absolute path to the directory to list",
+        )])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -278,8 +330,13 @@ impl Tool for ListDirTool {
         let path = PathBuf::from(&args.path);
         debug!("Listing directory: {:?}", path);
 
-        let entries = std::fs::read_dir(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read directory '{}': {}", path.display(), e)))?;
+        let entries = std::fs::read_dir(&path).map_err(|e| {
+            ToolError::ExecutionError(format!(
+                "Failed to read directory '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         let mut result = String::new();
         for entry in entries {

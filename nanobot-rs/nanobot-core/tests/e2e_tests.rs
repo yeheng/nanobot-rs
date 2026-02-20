@@ -27,7 +27,8 @@ async fn test_agent_initialization() {
     let provider =
         nanobot_core::providers::OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
 
-    let agent = nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config).unwrap();
+    let agent =
+        nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config).unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
     assert_eq!(agent.workspace(), &workspace);
@@ -207,7 +208,10 @@ async fn test_tool_registry_multiple() {
 async fn test_simple_schema() {
     use nanobot_core::tools::simple_schema;
 
-    let schema = simple_schema(&[("path", "string", true, "File path"), ("limit", "number", false, "Max results")]);
+    let schema = simple_schema(&[
+        ("path", "string", true, "File path"),
+        ("limit", "number", false, "Max results"),
+    ]);
 
     assert_eq!(schema["type"], "object");
     assert!(schema["properties"]["path"].is_object());
@@ -465,7 +469,8 @@ async fn test_provider_trait() {
 async fn test_openrouter_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
+    let provider =
+        OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
 
     assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
@@ -475,7 +480,8 @@ async fn test_openrouter_provider() {
 async fn test_anthropic_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
+    let provider =
+        OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
 
     assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
@@ -647,9 +653,9 @@ async fn test_exec_tool_echo() {
     let tool = ExecTool::new("/tmp", Duration::from_secs(30), false);
 
     assert_eq!(tool.name(), "exec");
-    assert!(
-        tool.description().contains("Execute an arbitrary shell command")
-    );
+    assert!(tool
+        .description()
+        .contains("Execute an arbitrary shell command"));
 
     let args = serde_json::json!({
         "command": "echo 'Hello from exec tool'"
@@ -773,10 +779,7 @@ async fn test_spawn_tool_without_manager() {
         .await;
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("not available"));
+    assert!(result.unwrap_err().to_string().contains("not available"));
 }
 
 // =============================================================================
@@ -1030,7 +1033,7 @@ async fn test_chat_response_text() {
         Some("Hello, I'm the assistant.".to_string())
     );
     assert!(response.tool_calls.is_empty());
-    assert!(!response.has_tool_calls);
+    assert!(!response.has_tool_calls());
 }
 
 #[tokio::test]
@@ -1046,7 +1049,7 @@ async fn test_chat_response_tool_calls() {
     let response = ChatResponse::tool_calls(tool_calls);
     assert!(response.content.is_none());
     assert!(!response.tool_calls.is_empty());
-    assert!(response.has_tool_calls);
+    assert!(response.has_tool_calls());
 }
 
 // =============================================================================
@@ -1221,8 +1224,9 @@ async fn test_context_builder_new() {
 async fn test_context_builder_with_system_prompt() {
     use nanobot_core::agent::context::ContextBuilder;
 
-    let builder =
-        ContextBuilder::new(PathBuf::from("/tmp")).unwrap().with_system_prompt("Custom system prompt");
+    let builder = ContextBuilder::new(PathBuf::from("/tmp"))
+        .unwrap()
+        .with_system_prompt("Custom system prompt");
 
     let messages = builder.build_messages(vec![], "Hello", None, "test", "chat1");
     assert_eq!(messages[0].role, "system");
@@ -1284,12 +1288,11 @@ async fn test_context_builder_add_assistant_message() {
 
     let builder = ContextBuilder::new(PathBuf::from("/tmp")).unwrap();
 
-    let messages = vec![ChatMessage::user("Hello")];
-    let updated =
-        builder.add_assistant_message(messages, Some("Hi there!".to_string()), vec![], None);
+    let mut messages = vec![ChatMessage::user("Hello")];
+    builder.add_assistant_message(&mut messages, Some("Hi there!".to_string()), vec![], None);
 
-    assert_eq!(updated.len(), 2);
-    assert_eq!(updated[1].role, "assistant");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].role, "assistant");
 }
 
 #[tokio::test]
@@ -1299,17 +1302,17 @@ async fn test_context_builder_add_tool_result() {
 
     let builder = ContextBuilder::new(PathBuf::from("/tmp")).unwrap();
 
-    let messages = vec![ChatMessage::user("Read the file")];
-    let updated = builder.add_tool_result(
-        messages,
+    let mut messages = vec![ChatMessage::user("Read the file")];
+    builder.add_tool_result(
+        &mut messages,
         "call_123".to_string(),
         "read_file".to_string(),
         "File content".to_string(),
     );
 
-    assert_eq!(updated.len(), 2);
-    assert_eq!(updated[1].role, "tool");
-    assert_eq!(updated[1].tool_call_id, Some("call_123".to_string()));
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].role, "tool");
+    assert_eq!(messages[1].tool_call_id, Some("call_123".to_string()));
 }
 
 // =============================================================================

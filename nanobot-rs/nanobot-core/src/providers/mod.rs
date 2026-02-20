@@ -7,14 +7,12 @@
 
 mod base;
 mod common;
-mod deepseek;
 mod gemini;
 mod model_spec;
 mod registry;
 
 pub use base::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolDefinition};
 pub use common::{OpenAICompatibleProvider, ProviderConfig};
-pub use deepseek::DeepSeekProvider;
 pub use gemini::GeminiProvider;
 pub use model_spec::ModelSpec;
 pub use registry::{ProviderMetadata, ProviderRegistry};
