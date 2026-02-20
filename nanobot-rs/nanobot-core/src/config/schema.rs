@@ -177,9 +177,25 @@ pub struct ToolsConfig {
 /// Web tools configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebToolsConfig {
+    /// Provider to use for web search (brave, tavily, exa, firecrawl)
+    #[serde(default, alias = "searchProvider")]
+    pub search_provider: Option<String>,
+
     /// Brave Search API key for web_search tool
     #[serde(default, alias = "braveApiKey")]
     pub brave_api_key: Option<String>,
+
+    /// Tavily Search API key
+    #[serde(default, alias = "tavilyApiKey")]
+    pub tavily_api_key: Option<String>,
+
+    /// Exa Search API key
+    #[serde(default, alias = "exaApiKey")]
+    pub exa_api_key: Option<String>,
+
+    /// Firecrawl API key
+    #[serde(default, alias = "firecrawlApiKey")]
+    pub firecrawl_api_key: Option<String>,
 }
 
 /// MCP server configuration

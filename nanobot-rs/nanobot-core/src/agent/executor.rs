@@ -45,7 +45,10 @@ impl<'a> ToolExecutor<'a> {
 
         let result = self
             .registry
-            .execute(&tool_call.function.name, tool_call.function.arguments.clone())
+            .execute(
+                &tool_call.function.name,
+                tool_call.function.arguments.clone(),
+            )
             .await;
 
         let mut result_str = match result {
@@ -65,13 +68,10 @@ impl<'a> ToolExecutor<'a> {
         }
     }
 
-    /// Execute a batch of tool calls sequentially and return all results.
+    /// Execute a batch of tool calls concurrently and return all results.
     pub async fn execute_batch(&self, tool_calls: &[ToolCall]) -> Vec<ToolCallResult> {
-        let mut results = Vec::with_capacity(tool_calls.len());
-        for tc in tool_calls {
-            results.push(self.execute_one(tc).await);
-        }
-        results
+        let futures = tool_calls.iter().map(|tc| self.execute_one(tc));
+        futures_util::future::join_all(futures).await
     }
 
     /// Execute a single tool call by name and raw arguments (convenience method).
@@ -95,7 +95,7 @@ impl<'a> ToolExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{Tool, ToolError, ToolResult as TResult, ToolRegistry};
+    use crate::tools::{Tool, ToolError, ToolRegistry, ToolResult as TResult};
     use async_trait::async_trait;
 
     struct EchoTool;
@@ -186,7 +186,11 @@ mod tests {
         let reg = make_registry();
         let executor = ToolExecutor::new(&reg, 10);
 
-        let tc = ToolCall::new("c1", "echo", serde_json::json!({"long": "abcdefghijklmnopqrstuvwxyz"}));
+        let tc = ToolCall::new(
+            "c1",
+            "echo",
+            serde_json::json!({"long": "abcdefghijklmnopqrstuvwxyz"}),
+        );
         let result = executor.execute_one(&tc).await;
 
         assert!(result.output.len() <= 10 + "\n\n[... truncated]".len());

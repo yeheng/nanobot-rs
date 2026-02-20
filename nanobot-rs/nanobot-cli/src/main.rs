@@ -140,12 +140,30 @@ fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
     fs::create_dir_all(workspace.join("skills"))?;
 
     let templates: &[(&str, &str)] = &[
-        ("AGENTS.md", include_str!("../../nanobot-core/workspace/AGENTS.md")),
-        ("SOUL.md", include_str!("../../nanobot-core/workspace/SOUL.md")),
-        ("USER.md", include_str!("../../nanobot-core/workspace/USER.md")),
-        ("TOOLS.md", include_str!("../../nanobot-core/workspace/TOOLS.md")),
-        ("HEARTBEAT.md", include_str!("../../nanobot-core/workspace/HEARTBEAT.md")),
-        ("memory/MEMORY.md", include_str!("../../nanobot-core/workspace/memory/MEMORY.md")),
+        (
+            "AGENTS.md",
+            include_str!("../../nanobot-core/workspace/AGENTS.md"),
+        ),
+        (
+            "SOUL.md",
+            include_str!("../../nanobot-core/workspace/SOUL.md"),
+        ),
+        (
+            "USER.md",
+            include_str!("../../nanobot-core/workspace/USER.md"),
+        ),
+        (
+            "TOOLS.md",
+            include_str!("../../nanobot-core/workspace/TOOLS.md"),
+        ),
+        (
+            "HEARTBEAT.md",
+            include_str!("../../nanobot-core/workspace/HEARTBEAT.md"),
+        ),
+        (
+            "memory/MEMORY.md",
+            include_str!("../../nanobot-core/workspace/memory/MEMORY.md"),
+        ),
     ];
 
     for (filename, content) in templates {
@@ -233,7 +251,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
     let deps = AgentDependencies {
         bus: None,
         cron_service: None,
-        brave_api_key: config.tools.web.brave_api_key.clone(),
+        web_tools: Some(config.tools.web.clone()),
         mcp_tools: Vec::new(),
     };
 
@@ -361,13 +379,14 @@ async fn cmd_gateway() -> Result<()> {
     let deps = AgentDependencies {
         bus: Some(bus.clone()),
         cron_service: Some(cron_service.clone()),
-        brave_api_key: config.tools.web.brave_api_key.clone(),
+        web_tools: Some(config.tools.web.clone()),
         mcp_tools,
     };
 
-    let agent = Arc::new(AgentLoop::with_dependencies(
-        provider, workspace.clone(), agent_config, deps,
-    ).context("Failed to initialize agent (check workspace bootstrap files)")?);
+    let agent = Arc::new(
+        AgentLoop::with_dependencies(provider, workspace.clone(), agent_config, deps)
+            .context("Failed to initialize agent (check workspace bootstrap files)")?,
+    );
 
     // Track running tasks
     #[allow(unused_mut)]
@@ -411,8 +430,7 @@ async fn cmd_gateway() -> Result<()> {
 
     // --- Heartbeat service ---
     {
-        let heartbeat =
-            nanobot_core::heartbeat::HeartbeatService::new(workspace.clone());
+        let heartbeat = nanobot_core::heartbeat::HeartbeatService::new(workspace.clone());
         let bus_for_heartbeat = bus.clone();
         tasks.push(tokio::spawn(async move {
             heartbeat
@@ -479,11 +497,10 @@ async fn cmd_gateway() -> Result<()> {
                 allow_from: telegram_config.allow_from.clone(),
             };
 
-            let telegram_channel =
-                nanobot_core::channels::telegram::TelegramChannel::new(
-                    telegram_cfg,
-                    (*bus).clone(),
-                );
+            let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
+                telegram_cfg,
+                (*bus).clone(),
+            );
 
             let task = tokio::spawn(async move {
                 let _ = telegram_channel.start().await;
@@ -505,10 +522,7 @@ async fn cmd_gateway() -> Result<()> {
             };
 
             let discord_channel =
-                nanobot_core::channels::discord::DiscordChannel::new(
-                    discord_cfg,
-                    (*bus).clone(),
-                );
+                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, (*bus).clone());
 
             let task = tokio::spawn(async move {
                 let _ = discord_channel.start().await;
@@ -540,13 +554,42 @@ fn build_provider(
     model: &str,
 ) -> Arc<dyn LlmProvider> {
     match name {
-        "deepseek" => Arc::new(OpenAICompatibleProvider::deepseek(api_key, provider_config.api_base.clone(), model)),
-        "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, provider_config.api_base.clone(), model)),
-        "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, provider_config.api_base.clone(), model)),
-        "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, provider_config.api_base.clone(), model)),
-        "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(api_key, provider_config.api_base.clone(), model)),
-        "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(api_key, provider_config.api_base.clone(), model)),
-        "minimax" => Arc::new(OpenAICompatibleProvider::minimax(api_key, provider_config.api_base.clone(), model, None)),
+        "deepseek" => Arc::new(OpenAICompatibleProvider::deepseek(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+        "minimax" => Arc::new(OpenAICompatibleProvider::minimax(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+            None,
+        )),
         _ => Arc::new(OpenAICompatibleProvider::openai(
             api_key,
             provider_config.api_base.clone(),
@@ -571,31 +614,29 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         .unwrap_or_else(|| "gpt-4o".to_string());
 
     // Parse once into a strongly-typed ModelSpec
-    let spec: ModelSpec = raw_model.parse().expect("ModelSpec::from_str is infallible");
+    let spec: ModelSpec = raw_model
+        .parse()
+        .expect("ModelSpec::from_str is infallible");
 
     // If the user specified a provider prefix, use that provider directly.
     if let Some(provider_name) = spec.provider() {
-        let provider_config = config
-            .providers
-            .get(provider_name)
-            .ok_or_else(|| anyhow::anyhow!(
+        let provider_config = config.providers.get(provider_name).ok_or_else(|| {
+            anyhow::anyhow!(
                 "Provider '{}' specified in model '{}' is not configured in providers section",
-                provider_name, spec
-            ))?;
+                provider_name,
+                spec
+            )
+        })?;
 
-        let api_key = provider_config
-            .api_key
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!(
-                "Provider '{}' has no API key configured",
-                provider_name
-            ))?;
+        let api_key = provider_config.api_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Provider '{}' has no API key configured", provider_name)
+        })?;
 
         let provider = build_provider(provider_name, api_key, provider_config, spec.model());
         return Ok((provider, spec.model().to_string()));
     }
 
-    // No explicit provider — fall back to trying providers in order of preference.
+    // First, try providers in order of preference.
     let provider_order = [
         "deepseek",
         "openrouter",
@@ -616,6 +657,14 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         }
     }
 
+    // Fall back to any configured provider with an API key
+    for (name, provider_config) in &config.providers {
+        if let Some(api_key) = &provider_config.api_key {
+            let provider = build_provider(name, api_key, provider_config, spec.model());
+            return Ok((provider, spec.model().to_string()));
+        }
+    }
+
     anyhow::bail!(
         "No API key configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.json"
     )
@@ -625,7 +674,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
 async fn cmd_channels_status() -> Result<()> {
     println!("{}\n", "Channel Status".bold());
 
-    let config = load_config().context("Failed to load configuration")?;
+    let _config = load_config().context("Failed to load configuration")?;
 
     // Helper function to check if env var is set
     let has_env_credential = |env_var: &str| {
@@ -639,7 +688,7 @@ async fn cmd_channels_status() -> Result<()> {
     };
 
     // Helper to check credential (either direct or env var)
-    let check_credential = |key: &Option<String>| match key {
+    let _check_credential = |key: &Option<String>| match key {
         Some(k) if !k.is_empty() => {
             if k.starts_with("${") {
                 has_env_credential(k)
@@ -650,7 +699,7 @@ async fn cmd_channels_status() -> Result<()> {
         _ => "✗",
     };
 
-    let has_channels = false;
+    let mut has_channels = false;
 
     // Check Telegram
     #[cfg(feature = "telegram")]

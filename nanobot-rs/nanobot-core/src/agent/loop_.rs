@@ -53,8 +53,8 @@ pub struct AgentDependencies {
     pub bus: Option<Arc<MessageBus>>,
     /// Cron service for the `cron` tool
     pub cron_service: Option<Arc<CronService>>,
-    /// Brave Search API key for the `web_search` tool
-    pub brave_api_key: Option<String>,
+    /// Web tools configuration
+    pub web_tools: Option<crate::config::WebToolsConfig>,
     /// Pre-started MCP tool bridges (created via `mcp::start_mcp_servers`)
     pub mcp_tools: Vec<Box<dyn crate::tools::Tool>>,
 }
@@ -64,7 +64,7 @@ impl Default for AgentDependencies {
         Self {
             bus: None,
             cron_service: None,
-            brave_api_key: None,
+            web_tools: None,
             mcp_tools: Vec::new(),
         }
     }
@@ -131,7 +131,7 @@ impl AgentLoop {
 
         // Register web tools
         tools.register(Box::new(WebFetchTool::new()));
-        tools.register(Box::new(WebSearchTool::new(deps.brave_api_key)));
+        tools.register(Box::new(WebSearchTool::new(deps.web_tools)));
 
         // Register spawn tool
         tools.register(Box::new(SpawnTool::new()));
@@ -319,7 +319,27 @@ impl AgentLoop {
                 max_tokens: Some(self.config.max_tokens),
             };
 
-            let response = self.provider.chat(request).await?;
+            let mut retries = 0;
+            let max_retries = 3;
+            let response = loop {
+                match self.provider.chat(request.clone()).await {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if retries >= max_retries {
+                            return Err(e.context("Provider API request failed after retries"));
+                        }
+                        warn!(
+                            "Provider error: {}. Retrying {}/{}",
+                            e,
+                            retries + 1,
+                            max_retries
+                        );
+                        retries += 1;
+                        tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries)))
+                            .await;
+                    }
+                }
+            };
 
             if response.has_tool_calls() {
                 // Add assistant message with tool calls (via ContextBuilder)
