@@ -17,6 +17,7 @@ pub enum ChannelType {
     Email,
     DingTalk,
     Feishu,
+    WeCom,
     Cli,
 }
 
@@ -29,6 +30,7 @@ impl fmt::Display for ChannelType {
             ChannelType::Email => write!(f, "email"),
             ChannelType::DingTalk => write!(f, "dingtalk"),
             ChannelType::Feishu => write!(f, "feishu"),
+            ChannelType::WeCom => write!(f, "wecom"),
             ChannelType::Cli => write!(f, "cli"),
         }
     }

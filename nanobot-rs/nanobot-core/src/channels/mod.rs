@@ -22,6 +22,9 @@ pub mod dingtalk;
 #[cfg(feature = "feishu")]
 pub mod feishu;
 
+#[cfg(feature = "wecom")]
+pub mod wecom;
+
 pub use base::{Channel, MessageContext};
 pub use manager::ChannelManager;
 pub use middleware::{

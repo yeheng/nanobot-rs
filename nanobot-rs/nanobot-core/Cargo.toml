@@ -14,7 +14,8 @@ slack = ["tokio-tungstenite"]
 email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
 dingtalk = ["base64", "sha2"]
 feishu = []
-all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu"]
+wecom = []
+all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom"]
 
 [dependencies]
 # Async
@@ -81,3 +82,5 @@ rustls-native-certs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
+dotenvy = "0.15"
+rustls = { version = "0.23", features = ["ring"] }

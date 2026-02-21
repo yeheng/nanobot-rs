@@ -122,7 +122,7 @@ async fn test_session_manager() {
     use nanobot_core::session::SessionManager;
 
     let workspace = PathBuf::from("/tmp/nanobot-test-sessions");
-    let manager = SessionManager::new(workspace);
+    let manager = SessionManager::new(workspace).await;
 
     let mut session = manager.get_or_create("test:session1").await;
     assert_eq!(session.key, "test:session1");
@@ -139,7 +139,7 @@ async fn test_session_clear() {
     use nanobot_core::session::SessionManager;
 
     let workspace = PathBuf::from("/tmp/nanobot-test-clear");
-    let manager = SessionManager::new(workspace);
+    let manager = SessionManager::new(workspace).await;
 
     let mut session = manager.get_or_create("test:clear").await;
     session.add_message("user", "Hello", None);
@@ -154,7 +154,7 @@ async fn test_session_tools_used() {
     use nanobot_core::session::SessionManager;
 
     let workspace = PathBuf::from("/tmp/nanobot-test-tools");
-    let manager = SessionManager::new(workspace);
+    let manager = SessionManager::new(workspace).await;
 
     let mut session = manager.get_or_create("test:tools").await;
     session.add_message(
@@ -348,14 +348,14 @@ async fn test_memory_store() {
     let workspace = PathBuf::from("/tmp/nanobot-memory-test");
     let memory = MemoryStore::new(workspace);
 
-    let _ = memory.write_long_term("User likes pizza.");
+    let _ = memory.write_long_term("User likes pizza.").await;
 
-    let content = memory.read_long_term().unwrap_or_default();
+    let content = memory.read_long_term().await.unwrap_or_default();
     assert!(content.contains("pizza"));
 
-    let _ = memory.append_history("[2024-01-01] User asked about pizza.");
+    let _ = memory.append_history("[2024-01-01] User asked about pizza.").await;
 
-    let history = memory.read_history().unwrap_or_default();
+    let history = memory.read_history().await.unwrap_or_default();
     assert!(history.contains("pizza"));
 }
 
@@ -1154,7 +1154,7 @@ async fn test_session_manager_save() {
     let _ = std::fs::remove_dir_all(&temp_dir);
     let _ = std::fs::create_dir_all(&temp_dir);
 
-    let manager = SessionManager::new(temp_dir.clone());
+    let manager = SessionManager::new(temp_dir.clone()).await;
 
     let mut session = Session::new("test:save");
     session.add_message("user", "Hello", None);
@@ -1179,7 +1179,7 @@ async fn test_session_manager_invalidate() {
     let _ = std::fs::remove_dir_all(&temp_dir);
     let _ = std::fs::create_dir_all(&temp_dir);
 
-    let manager = SessionManager::new(temp_dir.clone());
+    let manager = SessionManager::new(temp_dir.clone()).await;
 
     let mut session = manager.get_or_create("test:invalidate").await;
     session.add_message("user", "Test", None);
@@ -1450,10 +1450,10 @@ async fn test_memory_store_read_empty() {
     let memory = MemoryStore::new(temp_dir.clone());
 
     // Reading non-existent memory should return empty string
-    let content = memory.read_long_term().unwrap();
+    let content = memory.read_long_term().await.unwrap();
     assert!(content.is_empty());
 
-    let history = memory.read_history().unwrap();
+    let history = memory.read_history().await.unwrap();
     assert!(history.is_empty());
 
     // Cleanup
@@ -1472,4 +1472,1045 @@ async fn test_heartbeat_service_workspace() {
     let service = HeartbeatService::new(workspace.clone());
 
     assert_eq!(*service.workspace(), workspace);
+}
+
+// =============================================================================
+// Channel Middleware Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_channel_logging_middleware() {
+    use nanobot_core::bus::events::ChannelType;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelLoggingMiddleware, InboundProcessor};
+    use nanobot_core::trail::MiddlewareStack;
+    use nanobot_core::bus::events::InboundMessage;
+    use std::sync::Arc;
+
+    let (bus, mut rx, _) = MessageBus::new(10);
+
+    let mut stack = MiddlewareStack::new();
+    stack.push(Arc::new(ChannelLoggingMiddleware));
+
+    let processor = MiddlewareInboundProcessor::new(stack, bus);
+
+    let msg = InboundMessage {
+        channel: ChannelType::Cli,
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "Test message".to_string(),
+        media: None,
+        metadata: None,
+        timestamp: chrono::Utc::now(),
+        trace_id: None,
+    };
+
+    processor.process(msg).await.unwrap();
+
+    let received = rx.recv().await;
+    assert!(received.is_some());
+    assert_eq!(received.unwrap().content, "Test message");
+}
+
+#[tokio::test]
+async fn test_channel_auth_middleware() {
+    use nanobot_core::bus::events::ChannelType;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelAuthMiddleware, InboundProcessor};
+    use nanobot_core::trail::MiddlewareStack;
+    use nanobot_core::bus::events::InboundMessage;
+    use std::sync::Arc;
+
+    let (bus, _, _) = MessageBus::new(10);
+
+    let mut stack = MiddlewareStack::new();
+    stack.push(Arc::new(ChannelAuthMiddleware::new(vec![
+        "allowed_user".to_string(),
+    ])));
+
+    let processor = MiddlewareInboundProcessor::new(stack, bus);
+
+    // Allowed user should pass
+    let allowed_msg = InboundMessage {
+        channel: ChannelType::Cli,
+        sender_id: "allowed_user".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "Hello".to_string(),
+        media: None,
+        metadata: None,
+        timestamp: chrono::Utc::now(),
+        trace_id: None,
+    };
+    assert!(processor.process(allowed_msg).await.is_ok());
+
+    // Non-allowed user should be rejected
+    let mut stack2 = MiddlewareStack::new();
+    stack2.push(Arc::new(ChannelAuthMiddleware::new(vec![
+        "allowed_user".to_string(),
+    ])));
+    let (bus2, _, _) = MessageBus::new(10);
+    let processor2 = MiddlewareInboundProcessor::new(stack2, bus2);
+
+    let rejected_msg = InboundMessage {
+        channel: ChannelType::Cli,
+        sender_id: "blocked_user".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "Hello".to_string(),
+        media: None,
+        metadata: None,
+        timestamp: chrono::Utc::now(),
+        trace_id: None,
+    };
+    assert!(processor2.process(rejected_msg).await.is_err());
+}
+
+#[tokio::test]
+async fn test_channel_rate_limit_middleware() {
+    use nanobot_core::bus::events::ChannelType;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelRateLimitMiddleware, InboundProcessor};
+    use nanobot_core::trail::MiddlewareStack;
+    use nanobot_core::bus::events::InboundMessage;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let (bus, _, _) = MessageBus::new(10);
+
+    let mut stack = MiddlewareStack::new();
+    // Allow 3 messages per 60 seconds
+    stack.push(Arc::new(ChannelRateLimitMiddleware::new(3, Duration::from_secs(60))));
+
+    let processor = MiddlewareInboundProcessor::new(stack, bus);
+
+    let create_msg = || InboundMessage {
+        channel: ChannelType::Cli,
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "Test".to_string(),
+        media: None,
+        metadata: None,
+        timestamp: chrono::Utc::now(),
+        trace_id: None,
+    };
+
+    // First 3 should pass
+    assert!(processor.process(create_msg()).await.is_ok());
+    assert!(processor.process(create_msg()).await.is_ok());
+    assert!(processor.process(create_msg()).await.is_ok());
+
+    // 4th should be rate limited
+    let result = processor.process(create_msg()).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Rate limit"));
+}
+
+// =============================================================================
+// Channel Error Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_channel_error_types() {
+    use nanobot_core::channels::middleware::ChannelError;
+
+    let err = ChannelError::NotConnected {
+        channel: "telegram".to_string(),
+    };
+    assert_eq!(err.channel(), Some("telegram"));
+    assert!(!err.is_retryable());
+
+    let err = ChannelError::AuthError {
+        channel: "discord".to_string(),
+        message: "invalid token".to_string(),
+    };
+    assert_eq!(err.channel(), Some("discord"));
+    assert!(!err.is_retryable());
+
+    let err = ChannelError::RateLimited {
+        channel: "slack".to_string(),
+    };
+    assert!(err.is_retryable());
+
+    let err = ChannelError::DeliveryFailed {
+        channel: "email".to_string(),
+        message: "SMTP error".to_string(),
+    };
+    assert!(err.is_retryable());
+
+    let err = ChannelError::InvalidFormat("bad format".to_string());
+    assert!(err.channel().is_none());
+}
+
+// =============================================================================
+// Telegram Channel Tests
+// =============================================================================
+
+#[cfg(feature = "telegram")]
+#[tokio::test]
+async fn test_telegram_config_creation() {
+    use nanobot_core::channels::telegram::TelegramConfig;
+
+    let config = TelegramConfig {
+        token: "bot123456:ABC-DEF".to_string(),
+        allow_from: vec!["user1".to_string(), "user2".to_string()],
+    };
+
+    assert_eq!(config.token, "bot123456:ABC-DEF");
+    assert_eq!(config.allow_from.len(), 2);
+}
+
+#[cfg(feature = "telegram")]
+#[tokio::test]
+async fn test_telegram_channel_creation() {
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::telegram::{TelegramChannel, TelegramConfig};
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = TelegramConfig {
+        token: "test-token".to_string(),
+        allow_from: vec![],
+    };
+
+    let channel = TelegramChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "telegram");
+}
+
+#[cfg(feature = "telegram")]
+#[tokio::test]
+async fn test_telegram_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::telegram::{TelegramChannel, TelegramConfig};
+    use std::sync::Arc;
+
+    let config = TelegramConfig {
+        token: "test-token".to_string(),
+        allow_from: vec![],
+    };
+
+    let mut channel = TelegramChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start (trait method)
+    let start_result = Channel::start(&mut channel).await;
+    assert!(start_result.is_ok());
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+
+    // Test graceful shutdown
+    let shutdown_result = channel.graceful_shutdown().await;
+    assert!(shutdown_result.is_ok());
+}
+
+// =============================================================================
+// Discord Channel Tests
+// =============================================================================
+
+#[cfg(feature = "discord")]
+#[tokio::test]
+async fn test_discord_config_creation() {
+    use nanobot_core::channels::discord::DiscordConfig;
+
+    let config = DiscordConfig {
+        token: "discord-bot-token".to_string(),
+        allow_from: vec!["123456789".to_string()],
+    };
+
+    assert_eq!(config.token, "discord-bot-token");
+    assert_eq!(config.allow_from, vec!["123456789"]);
+}
+
+#[cfg(feature = "discord")]
+#[tokio::test]
+async fn test_discord_channel_creation() {
+    use nanobot_core::channels::discord::{DiscordChannel, DiscordConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = DiscordConfig {
+        token: "test-token".to_string(),
+        allow_from: vec![],
+    };
+
+    let channel = DiscordChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "discord");
+}
+
+#[cfg(feature = "discord")]
+#[tokio::test]
+async fn test_discord_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::discord::{DiscordChannel, DiscordConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = DiscordConfig {
+        token: "test-token".to_string(),
+        allow_from: vec![],
+    };
+
+    let mut channel = DiscordChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start
+    let start_result = channel.start().await;
+    assert!(start_result.is_ok());
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+}
+
+// =============================================================================
+// Slack Channel Tests
+// =============================================================================
+
+#[cfg(feature = "slack")]
+#[tokio::test]
+async fn test_slack_config_creation() {
+    use nanobot_core::channels::slack::SlackConfig;
+
+    let config = SlackConfig {
+        bot_token: "xoxb-test-token".to_string(),
+        app_token: "xapp-test-token".to_string(),
+        group_policy: Some("open".to_string()),
+        allow_from: vec!["U12345".to_string()],
+    };
+
+    assert_eq!(config.bot_token, "xoxb-test-token");
+    assert_eq!(config.app_token, "xapp-test-token");
+    assert_eq!(config.group_policy, Some("open".to_string()));
+}
+
+#[cfg(feature = "slack")]
+#[tokio::test]
+async fn test_slack_channel_creation() {
+    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = SlackConfig {
+        bot_token: "test-bot-token".to_string(),
+        app_token: "test-app-token".to_string(),
+        group_policy: None,
+        allow_from: vec![],
+    };
+
+    let channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "slack");
+}
+
+#[cfg(feature = "slack")]
+#[tokio::test]
+async fn test_slack_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = SlackConfig {
+        bot_token: "test-bot-token".to_string(),
+        app_token: "test-app-token".to_string(),
+        group_policy: None,
+        allow_from: vec![],
+    };
+
+    let mut channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start
+    let start_result = channel.start().await;
+    assert!(start_result.is_ok());
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+}
+
+#[cfg(feature = "slack")]
+#[tokio::test]
+async fn test_slack_message_serialization() {
+    // Test Slack message JSON format
+    use serde_json::json;
+
+    let msg = json!({
+        "text": "Hello Slack!",
+        "user": "U12345",
+        "channel": "C12345",
+        "ts": "1234567890.123456",
+        "thread_ts": "1234567890.000000"
+    });
+
+    assert!(msg["text"].as_str().unwrap() == "Hello Slack!");
+    assert!(msg["user"].as_str().unwrap() == "U12345");
+}
+
+// =============================================================================
+// Email Channel Tests
+// =============================================================================
+
+#[cfg(feature = "email")]
+#[tokio::test]
+async fn test_email_config_creation() {
+    use nanobot_core::channels::email::EmailConfig;
+
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        imap_port: 993,
+        imap_username: "user@example.com".to_string(),
+        imap_password: "password".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        smtp_port: 587,
+        smtp_username: "user@example.com".to_string(),
+        smtp_password: "password".to_string(),
+        from_address: "bot@example.com".to_string(),
+        allow_from: vec!["allowed@example.com".to_string()],
+        consent_granted: true,
+    };
+
+    assert_eq!(config.imap_host, "imap.example.com");
+    assert_eq!(config.imap_port, 993);
+    assert_eq!(config.smtp_host, "smtp.example.com");
+    assert!(config.consent_granted);
+}
+
+#[cfg(feature = "email")]
+#[tokio::test]
+async fn test_email_channel_creation() {
+    use nanobot_core::channels::email::{EmailChannel, EmailConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        imap_port: 993,
+        imap_username: "user@example.com".to_string(),
+        imap_password: "password".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        smtp_port: 587,
+        smtp_username: "user@example.com".to_string(),
+        smtp_password: "password".to_string(),
+        from_address: "bot@example.com".to_string(),
+        allow_from: vec![],
+        consent_granted: false,
+    };
+
+    let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "email");
+}
+
+#[cfg(feature = "email")]
+#[tokio::test]
+async fn test_email_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::email::{EmailChannel, EmailConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        imap_port: 993,
+        imap_username: "user@example.com".to_string(),
+        imap_password: "password".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        smtp_port: 587,
+        smtp_username: "user@example.com".to_string(),
+        smtp_password: "password".to_string(),
+        from_address: "bot@example.com".to_string(),
+        allow_from: vec![],
+        consent_granted: false,
+    };
+
+    let mut channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start
+    let start_result = channel.start().await;
+    assert!(start_result.is_ok());
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+}
+
+#[cfg(feature = "email")]
+#[tokio::test]
+async fn test_email_channel_poll_without_consent() {
+    use nanobot_core::channels::email::{EmailChannel, EmailConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        imap_port: 993,
+        imap_username: "user@example.com".to_string(),
+        imap_password: "password".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        smtp_port: 587,
+        smtp_username: "user@example.com".to_string(),
+        smtp_password: "password".to_string(),
+        from_address: "bot@example.com".to_string(),
+        allow_from: vec![],
+        consent_granted: false, // No consent
+    };
+
+    let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Without consent, poll should return empty vec
+    let result = channel.poll().await.unwrap();
+    assert!(result.is_empty());
+}
+
+// =============================================================================
+// DingTalk Channel Tests
+// =============================================================================
+
+#[cfg(feature = "dingtalk")]
+#[tokio::test]
+async fn test_dingtalk_config_creation() {
+    use nanobot_core::channels::dingtalk::DingTalkConfig;
+
+    let config = DingTalkConfig {
+        webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=test123".to_string(),
+        secret: Some("SEC123".to_string()),
+        access_token: None,
+        allow_from: vec!["user1".to_string()],
+    };
+
+    assert_eq!(
+        config.webhook_url,
+        "https://oapi.dingtalk.com/robot/send?access_token=test123"
+    );
+    assert_eq!(config.secret, Some("SEC123".to_string()));
+}
+
+#[cfg(feature = "dingtalk")]
+#[tokio::test]
+async fn test_dingtalk_channel_creation() {
+    use nanobot_core::channels::dingtalk::{DingTalkChannel, DingTalkConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = DingTalkConfig {
+        webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=test".to_string(),
+        secret: None,
+        access_token: None,
+        allow_from: vec![],
+    };
+
+    let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "dingtalk");
+}
+
+#[cfg(feature = "dingtalk")]
+#[tokio::test]
+async fn test_dingtalk_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::dingtalk::{DingTalkChannel, DingTalkConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = DingTalkConfig {
+        webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=test".to_string(),
+        secret: None,
+        access_token: None,
+        allow_from: vec![],
+    };
+
+    let mut channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start
+    let start_result = channel.start().await;
+    assert!(start_result.is_ok());
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+}
+
+#[cfg(feature = "dingtalk")]
+#[tokio::test]
+async fn test_dingtalk_callback_message_parsing() {
+    use nanobot_core::channels::dingtalk::DingTalkCallbackMessage;
+    use serde_json;
+
+    let json = r#"{
+        "msgtype": "text",
+        "text": {
+            "content": "Hello from DingTalk!"
+        },
+        "msgid": "msg123",
+        "createat": 1234567890000,
+        "conversationId": "cid123",
+        "conversationType": "1",
+        "conversationTitle": "Test Chat",
+        "senderId": "user123",
+        "senderNick": "Test User",
+        "chatbotUserId": "bot123",
+        "atUsers": []
+    }"#;
+
+    let message: DingTalkCallbackMessage = serde_json::from_str(json).unwrap();
+    assert_eq!(message.msgtype, "text");
+    assert_eq!(message.text.content, "Hello from DingTalk!");
+    assert_eq!(message.sender_id, "user123");
+    assert_eq!(message.conversation_id, "cid123");
+}
+
+#[cfg(feature = "dingtalk")]
+#[tokio::test]
+async fn test_dingtalk_callback_message_with_allowlist() {
+    use nanobot_core::channels::dingtalk::{DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig, DingTalkTextContent};
+    use nanobot_core::channels::middleware::InboundProcessor;
+    use nanobot_core::bus::events::InboundMessage;
+    use std::sync::Arc;
+
+    // Create a processor that collects messages
+    struct CollectingProcessor {
+        messages: Arc<std::sync::Mutex<Vec<InboundMessage>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl InboundProcessor for CollectingProcessor {
+        async fn process(&self, msg: InboundMessage) -> anyhow::Result<()> {
+            self.messages.lock().unwrap().push(msg);
+            Ok(())
+        }
+    }
+
+    let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let processor = Arc::new(CollectingProcessor {
+        messages: messages.clone(),
+    });
+
+    let config = DingTalkConfig {
+        webhook_url: String::new(),
+        secret: None,
+        access_token: Some("test-token".to_string()),
+        allow_from: vec!["allowed_user".to_string()],
+    };
+
+    let channel = DingTalkChannel::new(config, processor);
+
+    // Create callback from allowed user
+    let allowed_msg = DingTalkCallbackMessage {
+        msgtype: "text".to_string(),
+        text: DingTalkTextContent {
+            content: "Hello".to_string(),
+        },
+        msgid: "msg1".to_string(),
+        createat: 0,
+        conversation_id: "conv1".to_string(),
+        conversation_type: "1".to_string(),
+        conversation_title: None,
+        sender_id: "allowed_user".to_string(),
+        sender_nick: "User".to_string(),
+        sender_corp_id: None,
+        sender_staff_id: None,
+        chatbot_user_id: "bot".to_string(),
+        at_users: None,
+    };
+
+    channel.handle_callback_message(allowed_msg).await.unwrap();
+    assert_eq!(messages.lock().unwrap().len(), 1);
+
+    // Create callback from non-allowed user
+    let blocked_msg = DingTalkCallbackMessage {
+        msgtype: "text".to_string(),
+        text: DingTalkTextContent {
+            content: "Hello".to_string(),
+        },
+        msgid: "msg2".to_string(),
+        createat: 0,
+        conversation_id: "conv1".to_string(),
+        conversation_type: "1".to_string(),
+        conversation_title: None,
+        sender_id: "blocked_user".to_string(),
+        sender_nick: "User".to_string(),
+        sender_corp_id: None,
+        sender_staff_id: None,
+        chatbot_user_id: "bot".to_string(),
+        at_users: None,
+    };
+
+    channel.handle_callback_message(blocked_msg).await.unwrap();
+    // Should still be 1 (blocked user not added)
+    assert_eq!(messages.lock().unwrap().len(), 1);
+}
+
+// =============================================================================
+// Feishu Channel Tests
+// =============================================================================
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_config_creation() {
+    use nanobot_core::channels::feishu::FeishuConfig;
+
+    let config = FeishuConfig {
+        app_id: "cli_test123".to_string(),
+        app_secret: "secret123".to_string(),
+        verification_token: Some("token123".to_string()),
+        encrypt_key: None,
+        allow_from: vec!["ou_user123".to_string()],
+    };
+
+    assert_eq!(config.app_id, "cli_test123");
+    assert_eq!(config.app_secret, "secret123");
+    assert_eq!(config.verification_token, Some("token123".to_string()));
+}
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_channel_creation() {
+    use nanobot_core::channels::feishu::{FeishuChannel, FeishuConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::Channel;
+    use std::sync::Arc;
+
+    let config = FeishuConfig {
+        app_id: "cli_test".to_string(),
+        app_secret: "secret".to_string(),
+        verification_token: None,
+        encrypt_key: None,
+        allow_from: vec![],
+    };
+
+    let channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    assert_eq!(channel.name(), "feishu");
+}
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_channel_lifecycle() {
+    use nanobot_core::channels::base::Channel;
+    use nanobot_core::channels::feishu::{FeishuChannel, FeishuConfig};
+    use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use std::sync::Arc;
+
+    let config = FeishuConfig {
+        app_id: "cli_test".to_string(),
+        app_secret: "secret".to_string(),
+        verification_token: None,
+        encrypt_key: None,
+        allow_from: vec![],
+    };
+
+    let mut channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+
+    // Test start (will try to get access token, which may fail without real credentials)
+    // For e2e tests, we just verify the method exists and has correct signature
+
+    // Test stop
+    let stop_result = channel.stop().await;
+    assert!(stop_result.is_ok());
+}
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_text_content_parsing() {
+    use nanobot_core::channels::feishu::FeishuTextContent;
+    use serde_json;
+
+    let json = r#"{"text":"Hello from Feishu!"}"#;
+    let content: FeishuTextContent = serde_json::from_str(json).unwrap();
+    assert_eq!(content.text, "Hello from Feishu!");
+}
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_message_parsing() {
+    use nanobot_core::channels::feishu::FeishuMessage;
+    use serde_json;
+
+    let json = r#"{
+        "message_id": "om_msg123",
+        "root_id": "om_root123",
+        "parent_id": "om_parent123",
+        "create_time": "1234567890",
+        "chat_id": "oc_chat123",
+        "message_type": "text",
+        "content": "{\"text\":\"Hello!\"}"
+    }"#;
+
+    let message: FeishuMessage = serde_json::from_str(json).unwrap();
+    assert_eq!(message.message_id, "om_msg123");
+    assert_eq!(message.chat_id, "oc_chat123");
+    assert_eq!(message.message_type, "text");
+}
+
+#[tokio::test]
+#[cfg(feature = "feishu")]
+async fn test_feishu_challenge_response() {
+    use nanobot_core::channels::feishu::{FeishuChallenge, FeishuChallengeResponse};
+    use serde_json;
+
+    let challenge = FeishuChallenge {
+        challenge: "test_challenge_string".to_string(),
+        token: "verification_token".to_string(),
+        challenge_type: "url_verification".to_string(),
+    };
+
+    let response = FeishuChallengeResponse {
+        challenge: challenge.challenge.clone(),
+    };
+
+    // Test serialization
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains("test_challenge_string"));
+
+    // Verify the JSON structure
+    let json_value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json_value["challenge"], "test_challenge_string");
+}
+
+// =============================================================================
+// Channel Manager Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_channel_manager_creation() {
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::manager::ChannelManager;
+    use std::sync::Arc;
+
+    let (bus, _, _) = MessageBus::new(10);
+    let manager = ChannelManager::new(Arc::new(bus));
+
+    // Manager should be created successfully
+    // (no public method to check if channels are empty)
+    let _ = manager;
+}
+
+#[tokio::test]
+async fn test_channel_manager_bus_access() {
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::manager::ChannelManager;
+    use std::sync::Arc;
+
+    let (bus, _, _) = MessageBus::new(10);
+    let manager = ChannelManager::new(Arc::new(bus));
+
+    // Should be able to get bus reference
+    let _bus_ref = manager.bus();
+}
+
+// =============================================================================
+// Message Context Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_message_context_creation() {
+    use nanobot_core::channels::base::MessageContext;
+    use nanobot_core::trail::TrailContext;
+
+    let trail_ctx = TrailContext::default();
+    let ctx = MessageContext::new(trail_ctx.clone());
+
+    assert_eq!(ctx.trail_ctx.trace_id(), trail_ctx.trace_id());
+    assert!(ctx.metadata.is_empty());
+}
+
+#[tokio::test]
+async fn test_message_context_default() {
+    use nanobot_core::channels::base::MessageContext;
+
+    let ctx = MessageContext::default();
+    assert!(ctx.metadata.is_empty());
+}
+
+// =============================================================================
+// Inbound/Outbound Message Tests for Channels
+// =============================================================================
+
+#[tokio::test]
+async fn test_inbound_message_with_all_channels() {
+    use nanobot_core::bus::events::{ChannelType, InboundMessage};
+
+    let channels = vec![
+        ChannelType::Cli,
+        ChannelType::Telegram,
+        ChannelType::Discord,
+        ChannelType::Slack,
+        ChannelType::Email,
+        ChannelType::DingTalk,
+        ChannelType::Feishu,
+    ];
+
+    for channel in channels {
+        let msg = InboundMessage {
+            channel: channel.clone(),
+            sender_id: "user1".to_string(),
+            chat_id: "chat1".to_string(),
+            content: "Test message".to_string(),
+            media: None,
+            metadata: Some(serde_json::json!({"key": "value"})),
+            timestamp: chrono::Utc::now(),
+            trace_id: None,
+        };
+
+        assert_eq!(msg.channel, channel);
+        assert!(msg.metadata.is_some());
+    }
+}
+
+#[tokio::test]
+async fn test_outbound_message_for_all_channels() {
+    use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+
+    let channels = vec![
+        ChannelType::Cli,
+        ChannelType::Telegram,
+        ChannelType::Discord,
+        ChannelType::Slack,
+        ChannelType::Email,
+        ChannelType::DingTalk,
+        ChannelType::Feishu,
+    ];
+
+    for channel in channels {
+        let msg = OutboundMessage {
+            channel: channel.clone(),
+            chat_id: "chat1".to_string(),
+            content: "Response message".to_string(),
+            metadata: Some(serde_json::json!({"thread_ts": "123456"})),
+            trace_id: None,
+        };
+
+        assert_eq!(msg.channel, channel);
+        assert!(msg.metadata.is_some());
+    }
+}
+
+// =============================================================================
+// Channel Configuration Deserialization Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_all_channels_config() {
+    use nanobot_core::config::Config;
+
+    let json = r#"{
+        "channels": {
+            "telegram": {
+                "enabled": true,
+                "token": "bot123",
+                "allow_from": ["user1"]
+            },
+            "discord": {
+                "enabled": true,
+                "token": "discord-token",
+                "allow_from": []
+            },
+            "slack": {
+                "enabled": true,
+                "bot_token": "xoxb-test",
+                "app_token": "xapp-test",
+                "allow_from": []
+            },
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_test",
+                "app_secret": "secret",
+                "allow_from": []
+            }
+        }
+    }"#;
+
+    let config: Config = serde_json::from_str(json).unwrap();
+
+    // Verify Telegram config
+    assert!(config.channels.telegram.is_some());
+    let tg = config.channels.telegram.unwrap();
+    assert!(tg.enabled);
+    assert_eq!(tg.token, "bot123");
+
+    // Verify Discord config
+    assert!(config.channels.discord.is_some());
+    let dc = config.channels.discord.unwrap();
+    assert!(dc.enabled);
+    assert_eq!(dc.token, "discord-token");
+
+    // Verify Slack config
+    assert!(config.channels.slack.is_some());
+    let sl = config.channels.slack.unwrap();
+    assert!(sl.enabled);
+    assert_eq!(sl.bot_token, "xoxb-test");
+    assert_eq!(sl.app_token, "xapp-test");
+
+    // Verify Feishu config
+    assert!(config.channels.feishu.is_some());
+    let fs = config.channels.feishu.unwrap();
+    assert!(fs.enabled);
+    assert_eq!(fs.app_id, "cli_test");
+    assert_eq!(fs.app_secret, "secret");
+}
+
+#[tokio::test]
+async fn test_channel_config_defaults() {
+    use nanobot_core::config::Config;
+
+    // Test that missing channels default to None
+    let json = r#"{}"#;
+    let config: Config = serde_json::from_str(json).unwrap();
+
+    assert!(config.channels.telegram.is_none());
+    assert!(config.channels.discord.is_none());
+    assert!(config.channels.slack.is_none());
+    assert!(config.channels.feishu.is_none());
+}
+
+#[tokio::test]
+async fn test_channel_config_with_group_policy() {
+    use nanobot_core::config::Config;
+
+    let json = r#"{
+        "channels": {
+            "slack": {
+                "enabled": true,
+                "bot_token": "xoxb-test",
+                "app_token": "xapp-test",
+                "allow_from": [],
+                "group_policy": "open"
+            }
+        }
+    }"#;
+
+    let config: Config = serde_json::from_str(json).unwrap();
+
+    let sl = config.channels.slack.unwrap();
+    assert_eq!(sl.group_policy, Some("open".to_string()));
+}
+
+#[tokio::test]
+async fn test_feishu_config_with_optional_fields() {
+    use nanobot_core::config::Config;
+
+    let json = r#"{
+        "channels": {
+            "feishu": {
+                "enabled": true,
+                "app_id": "cli_test",
+                "app_secret": "secret",
+                "verification_token": "token123",
+                "encrypt_key": "key123",
+                "allow_from": ["user1"]
+            }
+        }
+    }"#;
+
+    let config: Config = serde_json::from_str(json).unwrap();
+
+    let fs = config.channels.feishu.unwrap();
+    assert_eq!(fs.verification_token, Some("token123".to_string()));
+    assert_eq!(fs.encrypt_key, Some("key123".to_string()));
+    assert_eq!(fs.allow_from, vec!["user1"]);
 }

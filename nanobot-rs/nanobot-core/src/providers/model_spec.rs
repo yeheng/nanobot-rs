@@ -19,6 +19,7 @@ const KNOWN_PROVIDERS: &[&str] = &[
     "dashscope",
     "moonshot",
     "minimax",
+    "ollama",
 ];
 
 /// A parsed model identifier, optionally qualified with a provider.

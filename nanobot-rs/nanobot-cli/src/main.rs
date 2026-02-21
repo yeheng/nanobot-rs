@@ -632,6 +632,10 @@ fn build_provider(
             model,
             None,
         )),
+        "ollama" => Arc::new(OpenAICompatibleProvider::ollama(
+            provider_config.api_base.clone(),
+            model,
+        )),
         _ => Arc::new(OpenAICompatibleProvider::openai(
             api_key,
             provider_config.api_base.clone(),
@@ -684,6 +688,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         "openrouter",
         "openai",
         "anthropic",
+        "ollama",
         "zhipu",
         "dashscope",
         "moonshot",
@@ -692,6 +697,11 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
 
     for name in &provider_order {
         if let Some(provider_config) = config.providers.get(*name) {
+            // Ollama is a local service and doesn't require an API key
+            if *name == "ollama" {
+                let provider = build_provider(name, "", provider_config, spec.model());
+                return Ok((provider, spec.model().to_string()));
+            }
             if let Some(api_key) = &provider_config.api_key {
                 let provider = build_provider(name, api_key, provider_config, spec.model());
                 return Ok((provider, spec.model().to_string()));
@@ -699,8 +709,13 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         }
     }
 
-    // Fall back to any configured provider with an API key
+    // Fall back to any configured provider (check for ollama without api_key, or others with api_key)
     for (name, provider_config) in &config.providers {
+        // Ollama is a local service and doesn't require an API key
+        if name == "ollama" {
+            let provider = build_provider(name, "", provider_config, spec.model());
+            return Ok((provider, spec.model().to_string()));
+        }
         if let Some(api_key) = &provider_config.api_key {
             let provider = build_provider(name, api_key, provider_config, spec.model());
             return Ok((provider, spec.model().to_string()));

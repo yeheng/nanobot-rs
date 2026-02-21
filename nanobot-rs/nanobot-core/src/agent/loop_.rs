@@ -113,7 +113,7 @@ impl AgentLoop {
         deps: AgentDependencies,
     ) -> Result<Self> {
         let memory = MemoryStore::new(workspace.clone());
-        let sessions = SessionManager::new(workspace.clone());
+        let sessions = SessionManager::new_sync(workspace.clone());
         let mut tools = ToolRegistry::new();
 
         // Register filesystem tools
@@ -290,7 +290,7 @@ impl AgentLoop {
         }
 
         // Build messages
-        let memory_content = self.memory.read_long_term().ok();
+        let memory_content = self.memory.read_long_term().await.ok();
         let messages = self.context.build_messages(
             session.get_history(self.config.memory_window),
             content,

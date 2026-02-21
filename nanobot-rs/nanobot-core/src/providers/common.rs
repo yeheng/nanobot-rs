@@ -183,6 +183,25 @@ impl OpenAICompatibleProvider {
         })
     }
 
+    /// Create an Ollama provider (local LLM server with OpenAI-compatible API)
+    ///
+    /// Ollama runs locally and provides an OpenAI-compatible API endpoint.
+    /// Default endpoint is `http://localhost:11434/v1`.
+    /// Since Ollama is a local service, no API key is required (uses placeholder).
+    pub fn ollama(
+        api_base: Option<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
+        Self::new(ProviderConfig {
+            name: "ollama".to_string(),
+            api_base: api_base.unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
+            // Ollama doesn't require an API key, but we need a placeholder for the Authorization header
+            api_key: "ollama".to_string(),
+            default_model: default_model.into(),
+            extra_headers: HashMap::new(),
+        })
+    }
+
     /// Get the provider name
     pub fn provider_name(&self) -> &str {
         &self.config.name
@@ -414,6 +433,23 @@ mod tests {
         );
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
+    }
+
+    #[test]
+    fn test_ollama_provider() {
+        let provider = OpenAICompatibleProvider::ollama(None, "llama2");
+        assert_eq!(provider.name(), "ollama");
+        assert_eq!(provider.default_model(), "llama2");
+        assert_eq!(provider.api_base(), "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn test_ollama_provider_custom_base() {
+        let provider =
+            OpenAICompatibleProvider::ollama(Some("http://192.168.1.100:11434/v1".to_string()), "mistral");
+        assert_eq!(provider.name(), "ollama");
+        assert_eq!(provider.default_model(), "mistral");
+        assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");
     }
 
     #[test]

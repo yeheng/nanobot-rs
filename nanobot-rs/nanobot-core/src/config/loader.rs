@@ -95,6 +95,15 @@ impl ConfigLoader {
                 .or_default()
                 .api_key = Some(key);
         }
+
+        // Ollama is a local service, so we only need to check for custom API base
+        if let Ok(api_base) = std::env::var("OLLAMA_API_BASE") {
+            config
+                .providers
+                .entry("ollama".to_string())
+                .or_default()
+                .api_base = Some(api_base);
+        }
     }
 
     /// Save configuration to file

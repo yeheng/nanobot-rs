@@ -77,9 +77,11 @@ impl FeishuChannel {
 
         #[derive(Deserialize)]
         struct TokenResponse {
-            tenant_access_token: String,
+            code: i32,
+            msg: String,
+            tenant_access_token: Option<String>,
             #[allow(dead_code)]
-            expire: i64,
+            expire: Option<i64>,
         }
 
         let response = self
@@ -99,7 +101,20 @@ impl FeishuChannel {
         }
 
         let token_response: TokenResponse = response.json().await?;
-        self.access_token = Some(token_response.tenant_access_token);
+
+        if token_response.code != 0 {
+            anyhow::bail!(
+                "Feishu API error (code={}): {}",
+                token_response.code,
+                token_response.msg
+            );
+        }
+
+        let token = token_response.tenant_access_token.ok_or_else(|| {
+            anyhow::anyhow!("Feishu API returned code=0 but no tenant_access_token")
+        })?;
+
+        self.access_token = Some(token);
 
         info!("Obtained Feishu tenant access token");
         Ok(self.access_token.as_ref().expect("access_token was just set on the line above"))
@@ -180,6 +195,19 @@ impl FeishuChannel {
         Ok(())
     }
 
+    /// Determine receive_id_type based on ID prefix
+    ///
+    /// - `oc` prefix -> `chat_id`
+    /// - `ou` prefix -> `open_id`
+    fn get_receive_id_type(id: &str) -> &'static str {
+        if id.starts_with("ou") {
+            "open_id"
+        } else {
+            // Default to chat_id for "oc" prefix and others
+            "chat_id"
+        }
+    }
+
     /// Send a text message to a chat
     pub async fn send_text(&self, chat_id: &str, text: &str) -> anyhow::Result<()> {
         let token = self
@@ -194,11 +222,23 @@ impl FeishuChannel {
             content: String,
         }
 
+        #[derive(Deserialize)]
+        struct ApiResponse {
+            code: i32,
+            msg: String,
+        }
+
         let content = serde_json::to_string(&serde_json::json!({ "text": text }))?;
+        let receive_id_type = Self::get_receive_id_type(chat_id);
+
+        let url = format!(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}",
+            receive_id_type
+        );
 
         let response = self
             .client
-            .post("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id")
+            .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(&SendMessageRequest {
                 receive_id: chat_id.to_string(),
@@ -212,6 +252,15 @@ impl FeishuChannel {
             let status = response.status();
             let body = response.text().await?;
             anyhow::bail!("Failed to send Feishu message: {} - {}", status, body);
+        }
+
+        let api_resp: ApiResponse = response.json().await?;
+        if api_resp.code != 0 {
+            anyhow::bail!(
+                "Feishu send message API error (code={}): {}",
+                api_resp.code,
+                api_resp.msg
+            );
         }
 
         debug!("Sent Feishu message to chat: {}", chat_id);
@@ -386,5 +435,26 @@ mod tests {
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test_challenge"));
+    }
+
+    #[test]
+    fn test_get_receive_id_type() {
+        // oc prefix should return chat_id
+        assert_eq!(FeishuChannel::get_receive_id_type("oc_xxx"), "chat_id");
+        assert_eq!(
+            FeishuChannel::get_receive_id_type("oc_1234567890abcdef"),
+            "chat_id"
+        );
+
+        // ou prefix should return open_id
+        assert_eq!(FeishuChannel::get_receive_id_type("ou_xxx"), "open_id");
+        assert_eq!(
+            FeishuChannel::get_receive_id_type("ou_1234567890abcdef"),
+            "open_id"
+        );
+
+        // other prefixes default to chat_id
+        assert_eq!(FeishuChannel::get_receive_id_type("xxx"), "chat_id");
+        assert_eq!(FeishuChannel::get_receive_id_type("cli_xxx"), "chat_id");
     }
 }

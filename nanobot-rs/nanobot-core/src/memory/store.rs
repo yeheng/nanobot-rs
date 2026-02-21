@@ -6,7 +6,6 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 /// A single memory entry.
@@ -16,9 +15,6 @@ pub struct MemoryEntry {
     pub key: String,
 
     /// The stored value.
-    pub value: String,
-
-    /// When this entry was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -62,12 +58,12 @@ pub trait MemoryStore: Send + Sync {
 /// Compatible with the original `agent::memory::MemoryStore` file layout
 /// (`memory/MEMORY.md`, `memory/HISTORY.md`).
 ///
-/// Uses an async mutex to serialize write operations, preventing data
-/// corruption from concurrent writes.
+/// Uses per-key locks (via a HashMap of mutex guards) instead of a global lock,
+/// allowing concurrent operations on different keys.
 pub struct FileMemoryStore {
     memory_dir: PathBuf,
-    /// Lock for write operations to prevent concurrent file corruption
-    write_lock: AsyncMutex<()>,
+    /// Per-key locks for write operations to prevent concurrent file corruption
+    key_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl FileMemoryStore {
@@ -77,7 +73,7 @@ impl FileMemoryStore {
         let _ = std::fs::create_dir_all(&memory_dir);
         Self {
             memory_dir,
-            write_lock: AsyncMutex::new(()),
+            key_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -85,6 +81,15 @@ impl FileMemoryStore {
         // Use the key directly as filename (sanitised)
         let safe_key = key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         self.memory_dir.join(safe_key)
+    }
+
+    /// Get or create a lock for a specific key
+    fn get_key_lock(&self, key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.key_locks.lock().unwrap();
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 }
 
@@ -107,15 +112,20 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        // Acquire write lock to serialize writes
-        let _guard = self.write_lock.lock().await;
+        // Acquire per-key lock (not global lock)
+        let lock = self.get_key_lock(key);
+        let _guard = lock.lock().await;
 
         let path = self.key_to_path(key);
+        let tmp_path = path.with_extension("tmp");
         let key_owned = key.to_string();
         let value_owned = value.to_string();
 
         tokio::task::spawn_blocking(move || {
-            std::fs::write(&path, value_owned)?;
+            // Write to tmp file first
+            std::fs::write(&tmp_path, value_owned)?;
+            // Atomic rename
+            std::fs::rename(&tmp_path, &path)?;
             debug!("Wrote memory key: {}", key_owned);
             Ok::<_, anyhow::Error>(())
         })
@@ -125,8 +135,9 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn delete(&self, key: &str) -> anyhow::Result<bool> {
-        // Acquire write lock to serialize deletes
-        let _guard = self.write_lock.lock().await;
+        // Acquire per-key lock (not global lock)
+        let lock = self.get_key_lock(key);
+        let _guard = lock.lock().await;
 
         let path = self.key_to_path(key);
 
@@ -144,8 +155,11 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        // Acquire write lock to serialize appends
-        let _guard = self.write_lock.lock().await;
+        // Acquire per-key lock (not global lock)
+        // Note: We still need per-key lock to prevent interleaved appends
+        // to the same file from different tasks
+        let lock = self.get_key_lock(key);
+        let _guard = lock.lock().await;
 
         let path = self.key_to_path(key);
         let key_owned = key.to_string();
@@ -153,6 +167,7 @@ impl MemoryStore for FileMemoryStore {
 
         tokio::task::spawn_blocking(move || {
             use std::io::Write;
+            // O_APPEND is used here for atomic append at the OS level
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -179,19 +194,16 @@ impl MemoryStore for FileMemoryStore {
                             continue;
                         }
                     }
-                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        let modified = entry
-                            .metadata()
-                            .ok()
-                            .and_then(|m| m.modified().ok())
-                            .map(|t| DateTime::<Utc>::from(t))
-                            .unwrap_or_else(Utc::now);
-                        entries.push(MemoryEntry {
-                            key: filename,
-                            value: content,
-                            updated_at: modified,
-                        });
-                    }
+                    let modified = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| DateTime::<Utc>::from(t))
+                        .unwrap_or_else(Utc::now);
+                    entries.push(MemoryEntry {
+                        key: filename,
+                        updated_at: modified,
+                    });
                     if let Some(limit) = query.limit {
                         if entries.len() >= limit {
                             break;
@@ -264,9 +276,8 @@ impl MemoryStore for InMemoryStore {
                     true
                 }
             })
-            .map(|(k, v)| MemoryEntry {
+            .map(|(k, _)| MemoryEntry {
                 key: k.clone(),
-                value: v.clone(),
                 updated_at: Utc::now(),
             })
             .collect();
@@ -378,6 +389,36 @@ mod tests {
 
         assert!(store.delete("MEMORY.md").await.unwrap());
         assert_eq!(store.read("MEMORY.md").await.unwrap(), None);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Test that concurrent writes to different keys don't block each other
+    #[tokio::test]
+    async fn test_file_memory_store_concurrent_different_keys() {
+        let dir = std::env::temp_dir().join(format!("nanobot_test_concurrent_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let store = std::sync::Arc::new(FileMemoryStore::new(dir.clone()));
+
+        // Spawn concurrent writes to different keys
+        let mut handles = vec![];
+        for i in 0..10 {
+            let store = store.clone();
+            let handle = tokio::spawn(async move {
+                let key = format!("key_{}", i);
+                store.write(&key, &format!("value_{}", i)).await.unwrap();
+                let read = store.read(&key).await.unwrap();
+                assert_eq!(read, Some(format!("value_{}", i)));
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
 
         // Cleanup
         let _ = std::fs::remove_dir_all(dir);

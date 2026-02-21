@@ -72,12 +72,14 @@ struct CachedSession {
     dirty: bool,
 }
 
-/// Session manager with in-memory cache and lazy disk persistence.
+/// Session manager with in-memory cache and async disk persistence.
 ///
 /// Sessions are kept in an LRU-style HashMap. Disk writes only happen when a
 /// session is marked dirty (i.e. its content has actually changed). This avoids
 /// the previous behaviour of flushing to disk on every single `save()` call,
 /// which was pure I/O abuse for high-frequency conversations.
+///
+/// All disk I/O uses `tokio::fs` to avoid blocking the async runtime.
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, CachedSession>>>,
     sessions_dir: PathBuf,
@@ -85,7 +87,20 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new session manager
-    pub fn new(workspace: PathBuf) -> Self {
+    pub async fn new(workspace: PathBuf) -> Self {
+        let sessions_dir = workspace.join("sessions");
+        let _ = tokio::fs::create_dir_all(&sessions_dir).await;
+
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions_dir,
+        }
+    }
+
+    /// Create a new session manager synchronously (for backwards compatibility)
+    ///
+    /// Note: This uses blocking I/O for directory creation. Prefer `new()` when possible.
+    pub fn new_sync(workspace: PathBuf) -> Self {
         let sessions_dir = workspace.join("sessions");
         let _ = std::fs::create_dir_all(&sessions_dir);
 
@@ -109,6 +124,7 @@ impl SessionManager {
         // Try to load from disk
         let session = self
             .load_from_disk(key)
+            .await
             .unwrap_or_else(|_| Session::new(key));
         sessions.insert(
             key.to_string(),
@@ -137,7 +153,7 @@ impl SessionManager {
         );
         // Persist this session immediately (compatible with old behaviour).
         // In a future optimisation this can be batched.
-        let _ = self.save_to_disk(session);
+        let _ = self.save_to_disk(session).await;
     }
 
     /// Flush all dirty sessions to disk.
@@ -146,7 +162,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         for cached in sessions.values_mut() {
             if cached.dirty {
-                let _ = self.save_to_disk(&cached.session);
+                let _ = self.save_to_disk(&cached.session).await;
                 cached.dirty = false;
             }
         }
@@ -164,9 +180,9 @@ impl SessionManager {
         self.sessions_dir.join(format!("{}.json", safe_key))
     }
 
-    fn load_from_disk(&self, key: &str) -> anyhow::Result<Session> {
+    async fn load_from_disk(&self, key: &str) -> anyhow::Result<Session> {
         let path = self.session_path(key);
-        let content = std::fs::read_to_string(&path).map_err(|e| {
+        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
             anyhow::anyhow!("Failed to read session file '{}': {}", path.display(), e)
         })?;
         let session: Session = serde_json::from_str(&content).map_err(|e| {
@@ -176,7 +192,7 @@ impl SessionManager {
         Ok(session)
     }
 
-    fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
+    async fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
         let path = self.session_path(&session.key);
         let tmp_path = path.with_extension("tmp");
 
@@ -184,23 +200,24 @@ impl SessionManager {
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| anyhow::anyhow!("Failed to serialize session '{}': {}", session.key, e))?;
 
-        // Write to tmp and sync
+        // Write to tmp using async file operations
         {
-            let mut file = std::fs::File::create(&tmp_path).map_err(|e| {
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to create tmp session file '{}': {}",
                     tmp_path.display(),
                     e
                 )
             })?;
-            std::io::Write::write_all(&mut file, content.as_bytes()).map_err(|e| {
+            file.write_all(content.as_bytes()).await.map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to write tmp session file '{}': {}",
                     tmp_path.display(),
                     e
                 )
             })?;
-            file.sync_all().map_err(|e| {
+            file.sync_all().await.map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to sync tmp session file '{}': {}",
                     tmp_path.display(),
@@ -210,7 +227,7 @@ impl SessionManager {
         }
 
         // Rename atomically
-        std::fs::rename(&tmp_path, &path).map_err(|e| {
+        tokio::fs::rename(&tmp_path, &path).await.map_err(|e| {
             anyhow::anyhow!(
                 "Failed to rename tmp session file '{}' to '{}': {}",
                 tmp_path.display(),
