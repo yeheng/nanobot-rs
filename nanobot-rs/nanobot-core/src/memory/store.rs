@@ -1,12 +1,17 @@
 //! Memory store trait and implementations
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tracing::debug;
+
+/// Number of lock stripes for FileMemoryStore.
+/// A fixed-size array prevents unbounded memory growth from per-key locks.
+const NUM_LOCK_STRIPES: usize = 64;
 
 /// A single memory entry.
 #[derive(Debug, Clone)]
@@ -58,12 +63,13 @@ pub trait MemoryStore: Send + Sync {
 /// Compatible with the original `agent::memory::MemoryStore` file layout
 /// (`memory/MEMORY.md`, `memory/HISTORY.md`).
 ///
-/// Uses per-key locks (via a HashMap of mutex guards) instead of a global lock,
-/// allowing concurrent operations on different keys.
+/// Uses lock striping (fixed-size array of mutexes) instead of per-key locks
+/// to prevent unbounded memory growth while still allowing concurrent
+/// operations on different keys.
 pub struct FileMemoryStore {
     memory_dir: PathBuf,
-    /// Per-key locks for write operations to prevent concurrent file corruption
-    key_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Fixed-size stripe locks — keys are hashed to a stripe index.
+    stripe_locks: Vec<tokio::sync::Mutex<()>>,
 }
 
 impl FileMemoryStore {
@@ -71,9 +77,12 @@ impl FileMemoryStore {
     pub fn new(workspace: PathBuf) -> Self {
         let memory_dir = workspace.join("memory");
         let _ = std::fs::create_dir_all(&memory_dir);
+        let stripe_locks = (0..NUM_LOCK_STRIPES)
+            .map(|_| tokio::sync::Mutex::new(()))
+            .collect();
         Self {
             memory_dir,
-            key_locks: Mutex::new(HashMap::new()),
+            stripe_locks,
         }
     }
 
@@ -83,13 +92,12 @@ impl FileMemoryStore {
         self.memory_dir.join(safe_key)
     }
 
-    /// Get or create a lock for a specific key
-    fn get_key_lock(&self, key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self.key_locks.lock().unwrap();
-        locks
-            .entry(key.to_string())
-            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+    /// Get the stripe lock for a given key (hash-based).
+    fn get_stripe_lock(&self, key: &str) -> &tokio::sync::Mutex<()> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let index = (hasher.finish() as usize) % NUM_LOCK_STRIPES;
+        &self.stripe_locks[index]
     }
 }
 
@@ -112,9 +120,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        // Acquire per-key lock (not global lock)
-        let lock = self.get_key_lock(key);
-        let _guard = lock.lock().await;
+        let _guard = self.get_stripe_lock(key).lock().await;
 
         let path = self.key_to_path(key);
         let tmp_path = path.with_extension("tmp");
@@ -135,9 +141,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn delete(&self, key: &str) -> anyhow::Result<bool> {
-        // Acquire per-key lock (not global lock)
-        let lock = self.get_key_lock(key);
-        let _guard = lock.lock().await;
+        let _guard = self.get_stripe_lock(key).lock().await;
 
         let path = self.key_to_path(key);
 
@@ -155,11 +159,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        // Acquire per-key lock (not global lock)
-        // Note: We still need per-key lock to prevent interleaved appends
-        // to the same file from different tasks
-        let lock = self.get_key_lock(key);
-        let _guard = lock.lock().await;
+        let _guard = self.get_stripe_lock(key).lock().await;
 
         let path = self.key_to_path(key);
         let key_owned = key.to_string();

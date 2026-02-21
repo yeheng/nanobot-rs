@@ -194,7 +194,7 @@ impl SessionManager {
 
     async fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
         let path = self.session_path(&session.key);
-        let tmp_path = path.with_extension("tmp");
+        let tmp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
 
         // Serialize
         let content = serde_json::to_string_pretty(session)

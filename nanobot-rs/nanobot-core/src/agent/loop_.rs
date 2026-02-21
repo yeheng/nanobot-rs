@@ -18,8 +18,7 @@ use crate::tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
     ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
-use crate::tools::middleware::{ToolInvocation, ToolLoggingMiddleware};
-use crate::trail::{Middleware, MiddlewareStack, TrailContext};
+use crate::trail::TrailContext;
 
 /// Agent loop configuration
 pub struct AgentConfig {
@@ -59,8 +58,6 @@ pub struct AgentDependencies {
     pub web_tools: Option<crate::config::WebToolsConfig>,
     /// Pre-started MCP tool bridges (created via `mcp::start_mcp_servers`)
     pub mcp_tools: Vec<Box<dyn crate::tools::Tool>>,
-    /// Tool execution middlewares (logging, permission, timeout, etc.)
-    pub tool_middleware: Vec<Arc<dyn Middleware<ToolInvocation, String> + Send + Sync>>,
 }
 
 impl Default for AgentDependencies {
@@ -70,7 +67,6 @@ impl Default for AgentDependencies {
             cron_service: None,
             web_tools: None,
             mcp_tools: Vec::new(),
-            tool_middleware: Vec::new(),
         }
     }
 }
@@ -84,7 +80,6 @@ pub struct AgentLoop {
     tools: ToolRegistry,
     config: AgentConfig,
     workspace: PathBuf,
-    tool_middleware: MiddlewareStack<ToolInvocation, String>,
 }
 
 impl AgentLoop {
@@ -163,15 +158,6 @@ impl AgentLoop {
         // Build context with skills
         let context = ContextBuilder::new(workspace.clone())?.with_skills_context(skills_context);
 
-        // Build tool middleware stack
-        let mut tool_middleware = MiddlewareStack::new();
-        // Always add logging as the outermost layer
-        tool_middleware.push(Arc::new(ToolLoggingMiddleware));
-        // Add user-provided middlewares
-        for mw in deps.tool_middleware {
-            tool_middleware.push(mw);
-        }
-
         Ok(Self {
             provider,
             context,
@@ -180,7 +166,6 @@ impl AgentLoop {
             tools,
             config,
             workspace,
-            tool_middleware,
         })
     }
 
@@ -319,11 +304,7 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut final_content = None;
         let mut tools_used = Vec::new();
-        let executor = ToolExecutor::new(
-            &self.tools,
-            self.config.max_tool_result_chars,
-            &self.tool_middleware,
-        );
+        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
         // Create a trail context for this agent run
         let trail_ctx = TrailContext::new();

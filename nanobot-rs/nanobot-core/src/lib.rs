@@ -10,6 +10,7 @@
 //! - Heartbeat service
 //! - MCP (Model Context Protocol) support
 //! - Skills system for dynamic skill loading
+//! - Webhook server for receiving callbacks
 
 pub mod agent;
 pub mod bus;
@@ -24,6 +25,9 @@ pub mod session;
 pub mod skills;
 pub mod tools;
 pub mod trail;
+
+#[cfg(feature = "webhook")]
+pub mod webhook;
 
 pub use config::Config;
 pub use providers::{
