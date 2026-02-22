@@ -36,6 +36,7 @@ pub fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Respo
 }
 
 /// Create an XML response
+#[allow(dead_code)]
 pub fn xml_response(status: StatusCode, body: &str) -> Response<Body> {
     Response::builder()
         .status(status)
@@ -60,11 +61,13 @@ pub fn bad_request(message: &str) -> Response<Body> {
 }
 
 /// Unauthorized response helper
+#[allow(dead_code)]
 pub fn unauthorized(message: &str) -> Response<Body> {
     error(StatusCode::UNAUTHORIZED, message)
 }
 
 /// Internal server error response helper
+#[allow(dead_code)]
 pub fn internal_error(message: &str) -> Response<Body> {
     error(StatusCode::INTERNAL_SERVER_ERROR, message)
 }

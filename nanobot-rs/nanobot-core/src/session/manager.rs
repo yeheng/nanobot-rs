@@ -74,16 +74,13 @@ struct CachedSession {
 
 /// Session manager with in-memory cache and async disk persistence.
 ///
-/// Sessions are kept in an LRU-style HashMap. Disk writes only happen when a
-/// session is marked dirty (i.e. its content has actually changed). This avoids
-/// the previous behaviour of flushing to disk on every single `save()` call,
-/// which was pure I/O abuse for high-frequency conversations.
+/// Sessions are kept in an LRU-style HashMap. Disk writes happen immediately
+/// on `save()` calls.
 ///
 /// All disk I/O uses `tokio::fs` to avoid blocking the async runtime.
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, CachedSession>>>,
     sessions_dir: PathBuf,
-    _flusher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl SessionManager {
@@ -94,20 +91,9 @@ impl SessionManager {
 
         let sessions = Arc::new(RwLock::new(HashMap::new()));
 
-        let sessions_clone = sessions.clone();
-        let dir_clone = sessions_dir.clone();
-        let flusher_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-                Self::flush_dirty_internal(&sessions_clone, &dir_clone).await;
-            }
-        });
-
         Self {
             sessions,
             sessions_dir,
-            _flusher_handle: Some(flusher_handle),
         }
     }
 
@@ -121,7 +107,6 @@ impl SessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             sessions_dir,
-            _flusher_handle: None,
         }
     }
 
@@ -159,43 +144,22 @@ impl SessionManager {
         session
     }
 
-    /// Save a session — updates the in-memory cache and marks it dirty.
-    ///
-    /// The actual disk write is deferred: call `flush()` or `flush_dirty()`
-    /// to persist. For convenience, this method also flushes the specific
-    /// session immediately so callers that rely on the old always-persist
-    /// semantics keep working.
+    /// Save a session — updates the in-memory cache and flushes immediately to disk.
     #[instrument(name = "session.save", skip(self), fields(key = %session.key))]
     pub async fn save(&self, session: &Session) {
+        let key = session.key.clone();
         let mut sessions = self.sessions.write().await;
         sessions.insert(
-            session.key.clone(),
+            key.clone(),
             CachedSession {
                 session: session.clone(),
-                dirty: true,
+                dirty: false,
             },
         );
-        // Disk write is now purely deferred to flush_dirty / background flusher.
-    }
+        drop(sessions); // Release lock before I/O
 
-    /// Flush all dirty sessions to disk.
-    #[allow(dead_code)]
-    #[instrument(name = "session.flush_dirty", skip_all)]
-    pub async fn flush_dirty(&self) {
-        Self::flush_dirty_internal(&self.sessions, &self.sessions_dir).await;
-    }
-
-    async fn flush_dirty_internal(
-        sessions_lock: &Arc<RwLock<HashMap<String, CachedSession>>>,
-        sessions_dir: &PathBuf,
-    ) {
-        let mut sessions = sessions_lock.write().await;
-        for cached in sessions.values_mut() {
-            if cached.dirty {
-                let _ = Self::save_to_disk_internal(&cached.session, sessions_dir).await;
-                cached.dirty = false;
-            }
-        }
+        // Flush immediately - KISS
+        let _ = Self::save_to_disk_internal(session, &self.sessions_dir).await;
     }
 
     /// Invalidate a session from cache

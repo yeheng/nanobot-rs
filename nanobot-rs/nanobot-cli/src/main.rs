@@ -760,6 +760,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
 }
 
 /// Show status of all configured channels
+#[allow(unused_variables)]
 async fn cmd_channels_status() -> Result<()> {
     println!("{}\n", "Channel Status".bold());
 
@@ -788,6 +789,7 @@ async fn cmd_channels_status() -> Result<()> {
         _ => "✗",
     };
 
+    #[allow(unused_mut)]
     let mut has_channels = false;
 
     // Check Telegram

@@ -24,6 +24,7 @@ pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod tools;
+#[cfg(feature = "webhook")]
 pub mod webhook;
 
 pub use config::Config;
