@@ -1,8 +1,6 @@
 //! Cron service for scheduled tasks
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
@@ -88,15 +86,12 @@ impl CronJob {
     }
 }
 
-/// Cron service with dirty-flag persistence.
+/// Cron service for scheduled tasks.
 ///
-/// Jobs are kept in memory and flushed to disk by a background task
-/// every 5 seconds, but only when changes have actually occurred.
+/// Jobs are kept in memory and immediately flushed to disk on any changes.
 pub struct CronService {
-    jobs: Arc<RwLock<HashMap<String, CronJob>>>,
+    jobs: RwLock<HashMap<String, CronJob>>,
     jobs_dir: std::path::PathBuf,
-    dirty: Arc<AtomicBool>,
-    _flusher_handle: tokio::task::JoinHandle<()>,
 }
 
 impl CronService {
@@ -105,8 +100,7 @@ impl CronService {
         let jobs_dir = workspace.join("cron");
         let _ = std::fs::create_dir_all(&jobs_dir);
 
-        let jobs = Arc::new(RwLock::new(HashMap::new()));
-        let dirty = Arc::new(AtomicBool::new(false));
+        let jobs = RwLock::new(HashMap::new());
 
         // Load existing jobs synchronously during init
         {
@@ -133,44 +127,10 @@ impl CronService {
             }
         }
 
-        // Spawn background flusher (every 5 seconds)
-        let flusher_handle = {
-            let jobs = jobs.clone();
-            let dirty = dirty.clone();
-            let jobs_dir = jobs_dir.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-                loop {
-                    interval.tick().await;
-                    if dirty.swap(false, Ordering::AcqRel) {
-                        let jobs_snapshot = jobs.read().await.clone();
-                        let path = jobs_dir.join("jobs.json");
-                        match serde_json::to_string_pretty(&jobs_snapshot) {
-                            Ok(content) => {
-                                if let Err(e) = std::fs::write(&path, content) {
-                                    warn!("Failed to flush cron jobs: {}", e);
-                                } else {
-                                    debug!("Flushed {} cron jobs to disk", jobs_snapshot.len());
-                                }
-                            }
-                            Err(e) => warn!("Failed to serialize cron jobs: {}", e),
-                        }
-                    }
-                }
-            })
-        };
-
         Self {
             jobs,
             jobs_dir,
-            dirty,
-            _flusher_handle: flusher_handle,
         }
-    }
-
-    /// Mark jobs as dirty (will be flushed by background task)
-    fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Release);
     }
 
     /// Force-flush jobs to disk immediately
@@ -227,14 +187,16 @@ impl CronService {
             .collect()
     }
 
-    /// Mark a job as run (debounced — only marks dirty, flushed by background task)
+    /// Mark a job as run (immediately flushed)
     #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
     pub async fn mark_job_run(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.get_mut(id) {
             job.update_next_run();
         }
-        self.mark_dirty();
+        let jobs_clone = jobs.clone();
+        drop(jobs);
+        self.flush_sync(&jobs_clone);
         debug!("Marked job {} as run", id);
     }
 }
