@@ -12,7 +12,7 @@ use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::ChannelType;
+use crate::bus::dingtalk;
 
 /// DingTalk channel configuration
 #[derive(Debug, Clone)]
@@ -196,7 +196,7 @@ impl DingTalkChannel {
         let metadata = serde_json::to_value(&message).ok();
 
         let inbound = InboundMessage {
-            channel: ChannelType::DingTalk,
+            channel: dingtalk(),
             sender_id: message.sender_id.clone(),
             chat_id: message.conversation_id.clone(),
             content,

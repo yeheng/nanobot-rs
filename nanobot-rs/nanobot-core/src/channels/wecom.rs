@@ -17,7 +17,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
-use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
+use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::wecom;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
@@ -504,7 +505,7 @@ impl WeComChannel {
                 let ctx_trace_id = None;
 
                 let inbound = InboundMessage {
-                    channel: ChannelType::WeCom,
+                    channel: wecom(),
                     sender_id: message.from_user_name.clone(),
                     chat_id: message.from_user_name.clone(),
                     content: content.to_string(),

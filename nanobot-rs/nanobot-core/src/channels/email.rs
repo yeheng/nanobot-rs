@@ -15,7 +15,7 @@ use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::ChannelType;
+use crate::bus::email;
 
 /// Email channel configuration
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl EmailChannel {
 
         for msg in &messages {
             let inbound = InboundMessage {
-                channel: ChannelType::Email,
+                channel: email(),
                 sender_id: msg.sender_id.clone(),
                 chat_id: msg.chat_id.clone(),
                 content: msg.content.clone(),
@@ -202,7 +202,7 @@ impl EmailChannel {
         let content = self.extract_body(&body_str);
 
         Some(InboundMessage {
-            channel: ChannelType::Email,
+            channel: email(),
             sender_id: sender_id.clone(),
             chat_id: format!("email:{}", sender_id),
             content: format!("Subject: {}\n\n{}", subject, content),

@@ -113,14 +113,15 @@ mod dingtalk_e2e {
     #[ignore]
     async fn test_dingtalk_send_via_channel_trait_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let channel = DingTalkChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
-            channel: ChannelType::DingTalk,
+            channel: dingtalk(),
             chat_id: "unused".to_string(), // DingTalk send() uses webhook, not chat_id
             content: "[E2E Test] DingTalk Channel::send trait - nanobot".to_string(),
             metadata: None,
@@ -231,7 +232,8 @@ mod feishu_e2e {
     #[ignore]
     async fn test_feishu_send_via_channel_trait_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -245,7 +247,7 @@ mod feishu_e2e {
             .expect("Feishu start failed");
 
         let msg = OutboundMessage {
-            channel: ChannelType::Feishu,
+            channel: feishu(),
             chat_id,
             content: "[E2E Test] Feishu Channel::send trait - nanobot".to_string(),
             metadata: None,
@@ -360,7 +362,8 @@ mod slack_e2e {
     #[ignore]
     async fn test_slack_send_via_channel_trait_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -369,7 +372,7 @@ mod slack_e2e {
         let channel = SlackChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
-            channel: ChannelType::Slack,
+            channel: slack(),
             chat_id: channel_id,
             content: "[E2E Test] Slack Channel::send trait - nanobot".to_string(),
             metadata: None,
@@ -388,7 +391,8 @@ mod slack_e2e {
     #[ignore]
     async fn test_slack_send_via_channel_trait_with_thread_metadata_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -398,7 +402,7 @@ mod slack_e2e {
 
         // Send with thread_ts metadata (thread_ts is null, but the code path is exercised)
         let msg = OutboundMessage {
-            channel: ChannelType::Slack,
+            channel: slack(),
             chat_id: channel_id,
             content: "[E2E Test] Slack Channel::send with metadata - nanobot".to_string(),
             metadata: Some(serde_json::json!({
@@ -550,7 +554,8 @@ mod email_e2e {
     #[ignore]
     async fn test_email_send_via_channel_trait_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
@@ -560,7 +565,7 @@ mod email_e2e {
 
         // Channel::send parses chat_id as "email:recipient@example.com"
         let msg = OutboundMessage {
-            channel: ChannelType::Email,
+            channel: email(),
             chat_id: format!("email:{}", to_address),
             content: "[E2E Test] Email Channel::send trait - nanobot".to_string(),
             metadata: None,
@@ -643,7 +648,8 @@ mod telegram_e2e {
     #[ignore]
     async fn test_telegram_send_message_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -652,7 +658,7 @@ mod telegram_e2e {
         let channel = TelegramChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
-            channel: ChannelType::Telegram,
+            channel: telegram(),
             chat_id,
             content: "[E2E Test] Telegram Channel::send - nanobot channel test".to_string(),
             metadata: None,
@@ -707,7 +713,8 @@ mod telegram_e2e {
     #[ignore]
     async fn test_telegram_send_long_message_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -721,7 +728,7 @@ mod telegram_e2e {
         );
 
         let msg = OutboundMessage {
-            channel: ChannelType::Telegram,
+            channel: telegram(),
             chat_id,
             content: long_content,
             metadata: None,
@@ -1065,7 +1072,8 @@ mod wecom_e2e {
     #[ignore]
     async fn test_wecom_send_via_channel_trait_real_api() {
         load_env();
-        use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+        use nanobot_core::bus::events::OutboundMessage;
+        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -1077,7 +1085,7 @@ mod wecom_e2e {
             .expect("WeCom start failed");
 
         let msg = OutboundMessage {
-            channel: ChannelType::WeCom,
+            channel: wecom(),
             chat_id: to_user,
             content: "[E2E Test] WeCom Channel::send trait - nanobot".to_string(),
             metadata: None,

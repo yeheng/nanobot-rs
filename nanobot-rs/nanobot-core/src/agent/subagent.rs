@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -216,9 +215,7 @@ impl Default for SubagentConfig {
 /// Each spawned task creates an independent `AgentLoop` that shares the same
 /// LLM provider but operates in its own session.
 ///
-/// Task state is persisted to disk using a dirty-flag/debounce mechanism:
-/// instead of writing to disk on every status change, a background flusher
-/// checks every 5 seconds and only writes when there are actual changes.
+/// Task state is persisted to disk immediately on changes - KISS.
 pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
@@ -240,12 +237,6 @@ pub struct SubagentManager {
 
     /// Path to the tasks persistence file
     tasks_file: PathBuf,
-
-    /// Dirty flag: set to true when in-memory state differs from disk
-    dirty: Arc<AtomicBool>,
-
-    /// Handle to the background flusher task
-    _flusher_handle: tokio::task::JoinHandle<()>,
 }
 
 impl SubagentManager {
@@ -262,23 +253,6 @@ impl SubagentManager {
         let tasks = Self::load_tasks(&tasks_file);
 
         let tasks = Arc::new(RwLock::new(tasks));
-        let dirty = Arc::new(AtomicBool::new(false));
-
-        // Spawn background flusher (every 5 seconds)
-        let flusher_handle = {
-            let tasks = tasks.clone();
-            let dirty = dirty.clone();
-            let tasks_file = tasks_file.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(5));
-                loop {
-                    interval.tick().await;
-                    if dirty.swap(false, Ordering::AcqRel) {
-                        Self::flush_to_disk(&tasks, &tasks_file).await;
-                    }
-                }
-            })
-        };
 
         Self {
             tasks,
@@ -288,8 +262,6 @@ impl SubagentManager {
             config,
             tool_factory,
             tasks_file,
-            dirty,
-            _flusher_handle: flusher_handle,
         }
     }
 
@@ -319,14 +291,9 @@ impl SubagentManager {
         }
     }
 
-    /// Mark in-memory state as dirty (will be flushed by background task)
-    fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Release);
-    }
-
-    /// Flush tasks to disk (called by the background flusher)
-    async fn flush_to_disk(
-        tasks: &Arc<RwLock<HashMap<String, SubagentTask>>>,
+    /// Flush tasks to disk immediately - KISS (internal implementation)
+    async fn flush_to_disk_internal(
+        tasks: &RwLock<HashMap<String, SubagentTask>>,
         tasks_file: &PathBuf,
     ) {
         let tasks_vec: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
@@ -351,7 +318,7 @@ impl SubagentManager {
 
     /// Force-flush to disk immediately (for shutdown or critical transitions)
     pub async fn flush(&self) {
-        Self::flush_to_disk(&self.tasks, &self.tasks_file).await;
+        Self::flush_to_disk_internal(&self.tasks, &self.tasks_file).await;
     }
 
     /// Recover tasks that were interrupted (mark running tasks as failed)
@@ -373,7 +340,6 @@ impl SubagentManager {
 
         if recovered > 0 {
             info!("Recovered {} interrupted tasks", recovered);
-            self.mark_dirty();
             self.flush().await;
         }
     }
@@ -401,15 +367,15 @@ impl SubagentManager {
         let prompt = task.prompt.clone();
         let timeout = Duration::from_secs(task.timeout_secs);
 
-        // Mark dirty (background flusher will persist)
-        self.mark_dirty();
+        // Flush immediately - KISS
+        self.flush().await;
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
+        let tasks_file = self.tasks_file.clone();
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
-        let dirty = self.dirty.clone();
         let tool_factory = self.tool_factory.clone();
 
         let handle = tokio::spawn(async move {
@@ -421,7 +387,7 @@ impl SubagentManager {
                     t.started_at = Some(Utc::now());
                 }
             }
-            dirty.store(true, Ordering::Release);
+            Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
 
             info!(
                 "Subagent task {} started: {}",
@@ -444,7 +410,8 @@ impl SubagentManager {
                         t.status = TaskStatus::Failed;
                         t.error = Some(format!("Failed to initialise subagent: {}", e));
                     }
-                    dirty.store(true, Ordering::Release);
+                    drop(tasks);
+                    Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
                     return;
                 }
             };
@@ -480,8 +447,8 @@ impl SubagentManager {
                         }
                     }
                 }
-                dirty.store(true, Ordering::Release);
             }
+            Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
         });
 
         self.handles.write().await.insert(task_id.clone(), handle);
@@ -524,7 +491,7 @@ impl SubagentManager {
                 task.completed_at = Some(Utc::now());
                 info!("Cancelled task: {}", task_id);
                 drop(tasks);
-                self.mark_dirty();
+                self.flush().await;
                 return true;
             }
         }

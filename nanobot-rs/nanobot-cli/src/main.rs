@@ -481,7 +481,7 @@ async fn cmd_gateway() -> Result<()> {
                     let bus_inner = bus_for_heartbeat.clone();
                     tokio::spawn(async move {
                         let inbound = nanobot_core::bus::events::InboundMessage {
-                            channel: nanobot_core::bus::events::ChannelType::Cli,
+                            channel: nanobot_core::bus::cli(),
                             sender_id: "heartbeat".to_string(),
                             chat_id: "heartbeat".to_string(),
                             content: task_text,
@@ -512,7 +512,7 @@ async fn cmd_gateway() -> Result<()> {
                         .channel
                         .as_deref()
                         .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                        .unwrap_or(nanobot_core::bus::events::ChannelType::Cli);
+                        .unwrap_or_else(nanobot_core::bus::cli);
                     let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
                     let inbound = nanobot_core::bus::events::InboundMessage {
                         channel,

@@ -62,13 +62,13 @@ async fn test_agent_config_default() {
 
 #[tokio::test]
 async fn test_message_bus() {
-    use nanobot_core::bus::events::{ChannelType, InboundMessage};
-    use nanobot_core::bus::MessageBus;
+    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::{cli, MessageBus};
 
     let (bus, mut rx, _outbound_rx) = MessageBus::new(10);
 
     let inbound = InboundMessage {
-        channel: ChannelType::Cli,
+        channel: cli(),
         sender_id: "user1".to_string(),
         chat_id: "chat1".to_string(),
         content: "Hello".to_string(),
@@ -84,15 +84,16 @@ async fn test_message_bus() {
     assert!(received.is_some());
     let received = received.unwrap();
     assert_eq!(received.content, "Hello");
-    assert_eq!(received.channel, ChannelType::Cli);
+    assert_eq!(received.channel, cli());
 }
 
 #[tokio::test]
 async fn test_message_bus_session_key() {
-    use nanobot_core::bus::events::{ChannelType, InboundMessage};
+    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::telegram;
 
     let msg = InboundMessage {
-        channel: ChannelType::Telegram,
+        channel: telegram(),
         sender_id: "user123".to_string(),
         chat_id: "chat456".to_string(),
         content: "Test".to_string(),
@@ -107,17 +108,18 @@ async fn test_message_bus_session_key() {
 
 #[tokio::test]
 async fn test_outbound_message() {
-    use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+    use nanobot_core::bus::discord;
+    use nanobot_core::bus::events::OutboundMessage;
 
     let outbound = OutboundMessage {
-        channel: ChannelType::Discord,
+        channel: discord(),
         chat_id: "channel789".to_string(),
         content: "Response".to_string(),
         metadata: Some(serde_json::json!({"thread_ts": "12345"})),
         trace_id: None,
     };
 
-    assert_eq!(outbound.channel, ChannelType::Discord);
+    assert_eq!(outbound.channel, discord());
     assert_eq!(outbound.chat_id, "channel789");
     assert!(outbound.metadata.is_some());
 }
@@ -1216,16 +1218,17 @@ async fn test_channel_manager_bus_access() {
 
 #[tokio::test]
 async fn test_inbound_message_with_all_channels() {
-    use nanobot_core::bus::events::{ChannelType, InboundMessage};
+    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::{cli, dingtalk, discord, email, feishu, slack, telegram};
 
     let channels = vec![
-        ChannelType::Cli,
-        ChannelType::Telegram,
-        ChannelType::Discord,
-        ChannelType::Slack,
-        ChannelType::Email,
-        ChannelType::DingTalk,
-        ChannelType::Feishu,
+        cli(),
+        telegram(),
+        discord(),
+        slack(),
+        email(),
+        dingtalk(),
+        feishu(),
     ];
 
     for channel in channels {
@@ -1247,16 +1250,17 @@ async fn test_inbound_message_with_all_channels() {
 
 #[tokio::test]
 async fn test_outbound_message_for_all_channels() {
-    use nanobot_core::bus::events::{ChannelType, OutboundMessage};
+    use nanobot_core::bus::events::OutboundMessage;
+    use nanobot_core::bus::{cli, dingtalk, discord, email, feishu, slack, telegram};
 
     let channels = vec![
-        ChannelType::Cli,
-        ChannelType::Telegram,
-        ChannelType::Discord,
-        ChannelType::Slack,
-        ChannelType::Email,
-        ChannelType::DingTalk,
-        ChannelType::Feishu,
+        cli(),
+        telegram(),
+        discord(),
+        slack(),
+        email(),
+        dingtalk(),
+        feishu(),
     ];
 
     for channel in channels {

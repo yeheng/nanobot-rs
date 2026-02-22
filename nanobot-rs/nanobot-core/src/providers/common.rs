@@ -4,6 +4,11 @@
 //! LLM service that speaks the OpenAI-compatible API format. Instead of
 //! copy-pasting a new file per vendor, instantiate `OpenAICompatibleProvider`
 //! with the right config.
+//!
+//! # Adding a new provider
+//!
+//! To add support for a new OpenAI-compatible provider, simply add an entry
+//! to the `PROVIDER_DEFAULTS` map below. No code changes needed.
 
 use std::collections::HashMap;
 
@@ -13,6 +18,37 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
 use super::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolDefinition};
+
+/// Default configuration for known providers
+///
+/// This is data, not code. Adding a new provider just means adding a row here.
+static PROVIDER_DEFAULTS: &[(&str, &str, Option<&str>)] = &[
+    // (name, api_base, default_model)
+    ("openai", "https://api.openai.com/v1", Some("gpt-4o")),
+    ("openrouter", "https://openrouter.ai/api/v1", Some("anthropic/claude-sonnet-4")),
+    ("anthropic", "https://api.anthropic.com/v1", Some("claude-sonnet-4-20250514")),
+    ("dashscope", "https://dashscope.aliyuncs.com/compatible-mode/v1", Some("qwen-max")),
+    ("moonshot", "https://api.moonshot.cn/v1", Some("kimi-k2.5")),
+    ("zhipu", "https://open.bigmodel.cn/api/paas/v4", Some("glm-5")),
+    ("zhipu_coding", "https://open.bigmodel.cn/api/coding/paas/v4", Some("glm-5")),
+    ("minimax", "https://api.minimax.chat/v1", Some("M2.2")),
+    ("deepseek", "https://api.deepseek.com/v1", Some("deepseek-chat")),
+    ("ollama", "http://localhost:11434/v1", Some("llama3")),
+];
+
+/// Get default API base URL for a provider name
+pub fn get_default_api_base(name: &str) -> Option<&'static str> {
+    PROVIDER_DEFAULTS.iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, url, _)| *url)
+}
+
+/// Get default model for a provider name
+pub fn get_default_model(name: &str) -> Option<&'static str> {
+    PROVIDER_DEFAULTS.iter()
+        .find(|(n, _, _)| *n == name)
+        .and_then(|(_, _, model)| *model)
+}
 
 /// Common provider configuration
 #[derive(Debug, Clone)]
@@ -53,7 +89,52 @@ impl OpenAICompatibleProvider {
         Self { client, config }
     }
 
-    // -- Convenience constructors for well-known providers --
+    /// Create a provider by name, looking up defaults from PROVIDER_DEFAULTS.
+    ///
+    /// This is the recommended way to create providers. The URL and default model
+    /// are looked up from the data table, so adding new providers requires no code changes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None);
+    /// ```
+    pub fn from_name(
+        name: &str,
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: Option<String>,
+    ) -> Self {
+        let resolved_base = api_base
+            .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
+            .unwrap_or_else(|| panic!("Unknown provider: {}. Add it to PROVIDER_DEFAULTS or provide api_base.", name));
+
+        let resolved_model = default_model
+            .or_else(|| get_default_model(name).map(|s| s.to_string()))
+            .unwrap_or_else(|| "default".to_string());
+
+        Self::new(ProviderConfig {
+            name: name.to_string(),
+            api_base: resolved_base,
+            api_key: api_key.into(),
+            default_model: resolved_model,
+            extra_headers: HashMap::new(),
+        })
+    }
+
+    /// Create a provider by name with extra headers (e.g., for MiniMax's X-Group-Id)
+    pub fn from_name_with_headers(
+        name: &str,
+        api_key: impl Into<String>,
+        api_base: Option<String>,
+        default_model: Option<String>,
+        extra_headers: HashMap<String, String>,
+    ) -> Self {
+        let mut provider = Self::from_name(name, api_key, api_base, default_model);
+        provider.config.extra_headers = extra_headers;
+        provider
+    }
+
+    // -- Convenience constructors for well-known providers (delegate to from_name) --
 
     /// Create an OpenAI provider
     pub fn openai(
@@ -61,13 +142,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "openai".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("openai", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create an OpenRouter provider
@@ -76,13 +151,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "openrouter".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("openrouter", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create an Anthropic provider (via OpenAI-compatible endpoint)
@@ -91,13 +160,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "anthropic".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://api.anthropic.com/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("anthropic", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create a DashScope (阿里云通义千问) provider
@@ -106,14 +169,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "dashscope".to_string(),
-            api_base: api_base
-                .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("dashscope", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create a Moonshot AI (Kimi) provider
@@ -122,13 +178,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "moonshot".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://api.moonshot.cn/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("moonshot", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create a Zhipu AI (智谱) provider
@@ -137,14 +187,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "zhipu".to_string(),
-            api_base: api_base
-                .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("zhipu", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create a MiniMax provider
@@ -158,13 +201,7 @@ impl OpenAICompatibleProvider {
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
         }
-        Self::new(ProviderConfig {
-            name: "minimax".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://api.minimax.chat/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers,
-        })
+        Self::from_name_with_headers("minimax", api_key, api_base, Some(default_model.into()), extra_headers)
     }
 
     /// Create a DeepSeek provider (OpenAI-compatible, supports `reasoning_content`)
@@ -173,13 +210,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "deepseek".to_string(),
-            api_base: api_base.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string()),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("deepseek", api_key, api_base, Some(default_model.into()))
     }
 
     /// Create an Ollama provider (local LLM server with OpenAI-compatible API)
@@ -191,14 +222,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::new(ProviderConfig {
-            name: "ollama".to_string(),
-            api_base: api_base.unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
-            // Ollama doesn't require an API key, but we need a placeholder for the Authorization header
-            api_key: "ollama".to_string(),
-            default_model: default_model.into(),
-            extra_headers: HashMap::new(),
-        })
+        Self::from_name("ollama", "ollama", api_base, Some(default_model.into()))
     }
 
     /// Get the provider name

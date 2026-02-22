@@ -9,7 +9,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
+use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::feishu;
 
 /// Feishu channel configuration
 #[derive(Debug, Clone)]
@@ -165,7 +166,7 @@ impl FeishuChannel {
             let metadata = serde_json::to_value(&message).ok();
 
             let inbound = InboundMessage {
-                channel: ChannelType::Feishu,
+                channel: feishu(),
                 sender_id: sender_info.sender_id.user_id.clone(),
                 chat_id: message.chat_id.clone(),
                 content,

@@ -187,12 +187,12 @@ pub fn log_outbound(channel: &str, chat_id: &str, content_len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::events::ChannelType;
+    use crate::bus::cli;
     use chrono::Utc;
 
     fn make_inbound(sender: &str) -> InboundMessage {
         InboundMessage {
-            channel: ChannelType::Cli,
+            channel: cli(),
             sender_id: sender.to_string(),
             chat_id: "chat1".to_string(),
             content: "hello".to_string(),
