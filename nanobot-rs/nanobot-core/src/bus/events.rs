@@ -9,7 +9,7 @@ use std::fmt;
 /// Uses an enum for known channels with a Custom variant for extensibility.
 /// This provides compile-time exhaustiveness checking while still allowing
 /// new channels to be added without modifying core code.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ChannelType {
     /// Telegram channel
     Telegram,
@@ -26,6 +26,7 @@ pub enum ChannelType {
     /// WeCom (企业微信) channel
     Wecom,
     /// CLI (command-line interface) channel
+    #[default]
     Cli,
     /// Custom channel for extensibility
     Custom(String),
@@ -99,12 +100,6 @@ impl From<&str> for ChannelType {
 impl From<String> for ChannelType {
     fn from(s: String) -> Self {
         Self::new(s)
-    }
-}
-
-impl Default for ChannelType {
-    fn default() -> Self {
-        ChannelType::Cli
     }
 }
 

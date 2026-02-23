@@ -12,7 +12,7 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
-use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse};
+use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 use nanobot_core::config::{load_config, Config, ConfigLoader, ProviderConfig};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 use nanobot_core::tools::{
@@ -55,6 +55,10 @@ enum Commands {
         /// Enable thinking/reasoning mode for deep reasoning models
         #[arg(long)]
         thinking: bool,
+
+        /// Disable streaming output (stream is enabled by default)
+        #[arg(long)]
+        no_stream: bool,
     },
 
     /// Start the gateway (for chat channels)
@@ -97,7 +101,8 @@ async fn main() -> Result<()> {
             logs,
             no_markdown,
             thinking,
-        }) => cmd_agent(message, logs, no_markdown, thinking).await,
+            no_stream,
+        }) => cmd_agent(message, logs, no_markdown, thinking, no_stream).await,
         Some(Commands::Gateway) => cmd_gateway().await,
         Some(Commands::Channels { command }) => match command {
             ChannelsCommands::Status => cmd_channels_status().await,
@@ -240,6 +245,7 @@ fn build_agent_config(config: &Config) -> AgentConfig {
         },
         max_tool_result_chars: defaults.max_tool_result_chars,
         thinking_enabled: config.agents.defaults.thinking_enabled,
+        streaming: config.agents.defaults.streaming,
     }
 }
 
@@ -248,6 +254,7 @@ async fn cmd_agent(
     logs: bool,
     no_markdown: bool,
     thinking: bool,
+    no_stream: bool,
 ) -> Result<()> {
     // Enable debug logging if requested
     if logs {
@@ -284,6 +291,11 @@ async fn cmd_agent(
         }
     }
 
+    // Handle streaming mode
+    if no_stream {
+        agent_config.streaming = false;
+    }
+
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -309,13 +321,45 @@ async fn cmd_agent(
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
+    let use_streaming = !no_stream;
+
+    // Create streaming callback for progressive CLI output
+    let stream_callback: StreamCallback = Box::new(|event| {
+        use std::io::Write;
+        match event {
+            StreamEvent::Content(text) => {
+                print!("{}", text);
+                std::io::stdout().flush().ok();
+            }
+            StreamEvent::Reasoning(text) => {
+                print!("{}", text.dimmed().italic());
+                std::io::stdout().flush().ok();
+            }
+            StreamEvent::ToolStart { name } => {
+                println!("\n{} {}", "→".dimmed(), name.dimmed());
+            }
+            StreamEvent::ToolEnd { name: _, output: _ } => {}
+            StreamEvent::Done => {
+                println!();
+            }
+        }
+    });
 
     match message {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let response = agent.process_direct(&msg, "cli:direct").await?;
-            print_response_with_reasoning(&response, render_md);
+            if use_streaming {
+                let _response = agent
+                    .process_direct_with_callback(&msg, "cli:direct", Some(&stream_callback))
+                    .await?;
+                // Reasoning was already streamed; print nothing extra for streamed content.
+                // But if there was reasoning that was shown inline, we don't need print_response_with_reasoning
+                // because the callback already displayed everything.
+            } else {
+                let response = agent.process_direct(&msg, "cli:direct").await?;
+                print_response_with_reasoning(&response, render_md);
+            }
         }
         None => {
             // Interactive mode
@@ -341,13 +385,30 @@ async fn cmd_agent(
                         }
 
                         // Process the message
-                        match agent.process_direct(line, "cli:interactive").await {
-                            Ok(response) => {
-                                println!();
-                                print_response_with_reasoning(&response, render_md);
-                                println!();
+                        if use_streaming {
+                            println!();
+                            match agent
+                                .process_direct_with_callback(
+                                    line,
+                                    "cli:interactive",
+                                    Some(&stream_callback),
+                                )
+                                .await
+                            {
+                                Ok(_response) => {
+                                    println!();
+                                }
+                                Err(e) => println!("\n{} {}\n", "Error:".red(), e),
                             }
-                            Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                        } else {
+                            match agent.process_direct(line, "cli:interactive").await {
+                                Ok(response) => {
+                                    println!();
+                                    print_response_with_reasoning(&response, render_md);
+                                    println!();
+                                }
+                                Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                            }
                         }
                     }
                     Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {

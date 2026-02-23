@@ -1,7 +1,13 @@
 //! Base traits and types for LLM providers
 
+use std::pin::Pin;
+
 use async_trait::async_trait;
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Type alias for a boxed stream of chat stream chunks
+pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<ChatStreamChunk>> + Send>>;
 
 /// LLM Provider trait
 #[async_trait]
@@ -17,6 +23,17 @@ pub trait LlmProvider: Send + Sync {
     /// Observability is handled automatically via the `tracing` crate's
     /// implicit span context — no manual context passing needed.
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse>;
+
+    /// Send a streaming chat completion request.
+    ///
+    /// The default implementation falls back to `chat()` and wraps the
+    /// complete response in a single-chunk stream.
+    async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
+        let response = self.chat(request).await?;
+        Ok(Box::pin(stream::once(async move {
+            Ok(ChatStreamChunk::from_response(response))
+        })))
+    }
 }
 
 /// Chat completion request
@@ -320,4 +337,99 @@ impl ChatResponse {
             reasoning_content: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming types
+// ---------------------------------------------------------------------------
+
+/// Reason why the stream finished
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinishReason {
+    /// Model finished generating normally
+    Stop,
+    /// Model wants to call tool(s)
+    ToolCalls,
+    /// Hit max token limit
+    Length,
+    /// Other/unknown reason
+    Other(String),
+}
+
+impl FinishReason {
+    /// Parse from the string value returned by OpenAI-compatible APIs.
+    pub fn from_api_str(s: &str) -> Self {
+        match s {
+            "stop" => Self::Stop,
+            "tool_calls" => Self::ToolCalls,
+            "length" => Self::Length,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+/// A single incremental chunk from a streaming response.
+#[derive(Debug, Clone)]
+pub struct ChatStreamChunk {
+    /// The incremental content in this chunk
+    pub delta: ChatStreamDelta,
+    /// Set on the final chunk to indicate why the stream ended
+    pub finish_reason: Option<FinishReason>,
+}
+
+impl ChatStreamChunk {
+    /// Create a ChatStreamChunk that wraps an entire non-streaming response.
+    ///
+    /// Used by the default `chat_stream` implementation.
+    pub fn from_response(response: ChatResponse) -> Self {
+        let finish_reason = if response.has_tool_calls() {
+            Some(FinishReason::ToolCalls)
+        } else {
+            Some(FinishReason::Stop)
+        };
+        Self {
+            delta: ChatStreamDelta {
+                content: response.content,
+                reasoning_content: response.reasoning_content,
+                tool_calls: response
+                    .tool_calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, tc)| ToolCallDelta {
+                        index: i,
+                        id: Some(tc.id),
+                        function_name: Some(tc.function.name),
+                        function_arguments: Some(
+                            serde_json::to_string(&tc.function.arguments).unwrap_or_default(),
+                        ),
+                    })
+                    .collect(),
+            },
+            finish_reason,
+        }
+    }
+}
+
+/// Incremental delta content within a stream chunk.
+#[derive(Debug, Clone, Default)]
+pub struct ChatStreamDelta {
+    /// Incremental text content
+    pub content: Option<String>,
+    /// Incremental reasoning/thinking content
+    pub reasoning_content: Option<String>,
+    /// Tool call deltas (may arrive across multiple chunks)
+    pub tool_calls: Vec<ToolCallDelta>,
+}
+
+/// Incremental tool call data within a stream chunk.
+#[derive(Debug, Clone)]
+pub struct ToolCallDelta {
+    /// Index of this tool call (for matching across chunks)
+    pub index: usize,
+    /// Tool call ID (only present in the first chunk for this tool call)
+    pub id: Option<String>,
+    /// Function name (only present in the first chunk for this tool call)
+    pub function_name: Option<String>,
+    /// Incremental function arguments string
+    pub function_arguments: Option<String>,
 }

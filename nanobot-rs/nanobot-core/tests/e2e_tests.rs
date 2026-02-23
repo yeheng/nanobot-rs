@@ -31,6 +31,7 @@ async fn test_agent_initialization() {
         memory_window: 20,
         max_tool_result_chars: 8000,
         thinking_enabled: false,
+        streaming: false,
     };
 
     let provider =

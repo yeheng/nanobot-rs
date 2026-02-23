@@ -96,10 +96,7 @@ async fn handle_post(
         Ok(()) => {
             debug!("Feishu event processed successfully");
             // Feishu expects a JSON response
-            handlers::json_response(
-                axum::http::StatusCode::OK,
-                &serde_json::json!({"code": 0}),
-            )
+            handlers::json_response(axum::http::StatusCode::OK, &serde_json::json!({"code": 0}))
         }
         Err(e) => {
             error!("Feishu event processing failed: {}", e);

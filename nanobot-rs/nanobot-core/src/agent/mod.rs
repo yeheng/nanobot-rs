@@ -10,7 +10,7 @@ pub mod task_store_sqlite;
 
 pub use context::ContextBuilder;
 pub use executor::ToolExecutor;
-pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
+pub use loop_::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 pub use memory::MemoryStore;
 pub use subagent::{
     SubagentConfig, SubagentManager, SubagentTask, TaskNotification, TaskPriority, TaskStatus,

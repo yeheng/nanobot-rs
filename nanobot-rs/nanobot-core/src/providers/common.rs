@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
 use super::{
-    ChatMessage, ChatRequest, ChatResponse, LlmProvider, ThinkingConfig, ToolCall, ToolDefinition,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
+    ToolDefinition,
 };
 
 /// Default configuration for known providers
@@ -293,6 +294,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             temperature: request.temperature,
             max_tokens: request.max_tokens,
             thinking: request.thinking,
+            stream: false,
         };
 
         debug!(
@@ -361,6 +363,54 @@ impl LlmProvider for OpenAICompatibleProvider {
             reasoning_content: choice.message.reasoning_content,
         })
     }
+
+    #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
+    async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
+        let url = format!("{}/chat/completions", self.config.api_base);
+
+        let openai_request = OpenAICompatibleRequest {
+            model: request.model,
+            messages: request.messages,
+            tools: request.tools,
+            temperature: request.temperature,
+            max_tokens: request.max_tokens,
+            thinking: request.thinking,
+            stream: true,
+        };
+
+        debug!(
+            "[{}] POST {} (stream) | request body:\n{}",
+            self.config.name,
+            url,
+            serde_json::to_string_pretty(&openai_request)
+                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
+        );
+
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json");
+
+        for (key, value) in &self.config.extra_headers {
+            req = req.header(key, value);
+        }
+
+        let response = req.json(&openai_request).send().await?;
+
+        let status = response.status();
+        debug!("[{}] stream response status: {}", self.config.name, status);
+
+        if !status.is_success() {
+            let body = response.text().await?;
+            anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
+        }
+
+        let byte_stream = response.bytes_stream();
+        let chunk_stream = super::streaming::parse_sse_stream(byte_stream);
+
+        Ok(Box::pin(chunk_stream))
+    }
 }
 
 /// Parse JSON arguments from string
@@ -382,6 +432,8 @@ struct OpenAICompatibleRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Debug, Deserialize)]

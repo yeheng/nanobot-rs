@@ -97,6 +97,10 @@ pub struct AgentDefaults {
     /// Enable thinking/reasoning mode for deep reasoning models (GLM-5, DeepSeek R1, etc.)
     #[serde(default)]
     pub thinking_enabled: bool,
+
+    /// Enable streaming mode for progressive output (default: true)
+    #[serde(default = "default_streaming")]
+    pub streaming: bool,
 }
 
 fn default_temperature() -> f32 {
@@ -110,6 +114,9 @@ fn default_max_iterations() -> u32 {
 }
 fn default_memory_window() -> usize {
     50
+}
+fn default_streaming() -> bool {
+    true
 }
 
 /// Channels configuration

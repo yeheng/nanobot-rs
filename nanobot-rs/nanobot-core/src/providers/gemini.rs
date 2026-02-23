@@ -1,8 +1,12 @@
 //! Google Gemini LLM provider
 
+use crate::providers::base::{
+    ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta,
+};
 use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, instrument};
@@ -280,6 +284,192 @@ impl LlmProvider for GeminiProvider {
 
         self.parse_gemini_response(response_value)
     }
+
+    #[instrument(skip(self, request), fields(provider = "gemini", model = %request.model))]
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream> {
+        let model = if request.model.is_empty() {
+            &self.default_model
+        } else {
+            &request.model
+        };
+
+        // Gemini streaming uses the streamGenerateContent endpoint with alt=sse
+        let url = format!(
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.api_base, model
+        );
+
+        let body = self.build_gemini_request(request);
+
+        debug!("[gemini] POST {} (stream)", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        debug!("[gemini] stream response status: {}", status);
+
+        if !status.is_success() {
+            let body = response.text().await?;
+            anyhow::bail!("Gemini API error: {} - {}", status, body);
+        }
+
+        // Gemini SSE stream: each event has `data: <gemini-json>` lines.
+        // We use the raw byte stream and parse SSE lines ourselves.
+        let byte_stream = response.bytes_stream();
+        let chunk_stream = parse_gemini_sse_stream(byte_stream);
+        Ok(Box::pin(chunk_stream))
+    }
+}
+
+/// Parse a Gemini SSE byte stream into `ChatStreamChunk`s.
+///
+/// Gemini with `alt=sse` returns SSE events where each `data:` payload is
+/// a Gemini-format JSON response (with `candidates[].content.parts`).
+fn parse_gemini_sse_stream(
+    byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> impl futures::Stream<Item = Result<ChatStreamChunk>> + Send + 'static {
+    // Re-use the generic SSE line splitter from the streaming module,
+    // but parse the JSON payload as Gemini format instead of OpenAI.
+    let lines = sse_lines_raw(byte_stream);
+
+    lines.filter_map(|line_result| async move {
+        match line_result {
+            Err(e) => Some(Err(e)),
+            Ok(line) => {
+                let line = line.trim().to_string();
+                if line.is_empty() || line.starts_with(':') {
+                    return None;
+                }
+                let data = match line.strip_prefix("data: ") {
+                    Some(d) => d,
+                    None => return None,
+                };
+                if data.trim() == "[DONE]" {
+                    return None;
+                }
+                match serde_json::from_str::<serde_json::Value>(data) {
+                    Ok(value) => Some(Ok(convert_gemini_chunk(value))),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse Gemini SSE chunk: {} | data: {}", e, data);
+                        None
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Convert a Gemini response JSON value into a ChatStreamChunk.
+fn convert_gemini_chunk(value: serde_json::Value) -> ChatStreamChunk {
+    let candidates = value["candidates"].as_array();
+    let first = candidates.and_then(|c| c.first());
+
+    let finish_reason = first
+        .and_then(|c| c["finishReason"].as_str())
+        .map(|r| match r {
+            "STOP" => FinishReason::Stop,
+            "MAX_TOKENS" => FinishReason::Length,
+            other => FinishReason::Other(other.to_string()),
+        });
+
+    let parts = first
+        .and_then(|c| c["content"]["parts"].as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for (i, part) in parts.iter().enumerate() {
+        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+            text_parts.push(text.to_string());
+        }
+        if let Some(fc) = part.get("functionCall") {
+            let name = fc["name"].as_str().unwrap_or("").to_string();
+            let args = fc.get("args").cloned().unwrap_or(json!({}));
+            tool_calls.push(ToolCallDelta {
+                index: i,
+                id: Some(format!("call_{}", i)),
+                function_name: Some(name),
+                function_arguments: Some(serde_json::to_string(&args).unwrap_or_default()),
+            });
+        }
+    }
+
+    let content = if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join(""))
+    };
+
+    // If there are tool calls, set the finish reason accordingly
+    let finish_reason = if !tool_calls.is_empty() && finish_reason.is_none() {
+        Some(FinishReason::ToolCalls)
+    } else {
+        finish_reason
+    };
+
+    ChatStreamChunk {
+        delta: ChatStreamDelta {
+            content,
+            reasoning_content: None,
+            tool_calls,
+        },
+        finish_reason,
+    }
+}
+
+/// Split a raw byte stream into SSE lines (shared helper for Gemini).
+fn sse_lines_raw(
+    byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> impl futures::Stream<Item = Result<String>> + Send + 'static {
+    futures::stream::unfold(
+        (
+            Box::pin(byte_stream)
+                as std::pin::Pin<
+                    Box<dyn futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
+                >,
+            String::new(),
+        ),
+        |(mut stream, mut buffer)| async move {
+            loop {
+                if let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+                    if !line.trim().is_empty() {
+                        return Some((Ok(line), (stream, buffer)));
+                    }
+                    continue;
+                }
+                match stream.next().await {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        buffer.push_str(&text);
+                    }
+                    Some(Err(e)) => {
+                        return Some((
+                            Err(anyhow::anyhow!("Stream error: {}", e)),
+                            (stream, buffer),
+                        ));
+                    }
+                    None => {
+                        if !buffer.trim().is_empty() {
+                            let remaining = std::mem::take(&mut buffer);
+                            return Some((Ok(remaining), (stream, buffer)));
+                        }
+                        return None;
+                    }
+                }
+            }
+        },
+    )
 }
 
 #[cfg(test)]

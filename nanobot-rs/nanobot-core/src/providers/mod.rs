@@ -10,11 +10,13 @@ mod common;
 mod gemini;
 mod model_spec;
 mod registry;
+pub mod streaming;
 
 pub use base::{
-    ChatMessage, ChatRequest, ChatResponse, LlmProvider, ThinkingConfig, ToolCall, ToolDefinition,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta,
+    FinishReason, LlmProvider, ThinkingConfig, ToolCall, ToolCallDelta, ToolDefinition,
 };
-pub use common::{OpenAICompatibleProvider, ProviderConfig};
+pub use common::{parse_json_args, OpenAICompatibleProvider, ProviderConfig};
 pub use gemini::GeminiProvider;
 pub use model_spec::ModelSpec;
 pub use registry::{ProviderMetadata, ProviderRegistry};
