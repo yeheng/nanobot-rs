@@ -55,10 +55,7 @@ impl ChannelError {
 
     /// Whether this error is likely transient and retryable.
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::RateLimited { .. } | Self::DeliveryFailed { .. }
-        )
+        matches!(self, Self::RateLimited { .. } | Self::DeliveryFailed { .. })
     }
 }
 

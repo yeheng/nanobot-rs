@@ -16,10 +16,7 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Observability is handled automatically via the `tracing` crate's
     /// implicit span context — no manual context passing needed.
-    async fn chat(
-        &self,
-        request: ChatRequest,
-    ) -> anyhow::Result<ChatResponse>;
+    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse>;
 }
 
 /// Chat completion request
@@ -42,6 +39,10 @@ pub struct ChatRequest {
     /// Maximum tokens to generate
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+
+    /// Thinking configuration for deep reasoning mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
 }
 
 /// Chat message
@@ -168,6 +169,46 @@ pub struct FunctionDefinition {
 
     /// JSON Schema for parameters
     pub parameters: serde_json::Value,
+}
+
+/// Thinking configuration for LLM deep reasoning mode
+///
+/// This is a generic configuration that works with any model that supports
+/// thinking/reasoning mode (e.g., GLM-5, DeepSeek R1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    /// Type of thinking mode: "enabled" or "disabled"
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+}
+
+impl ThinkingConfig {
+    /// Create an enabled thinking config
+    pub fn enabled() -> Self {
+        Self {
+            thinking_type: "enabled".to_string(),
+        }
+    }
+
+    /// Create a disabled thinking config
+    #[allow(dead_code)]
+    pub fn disabled() -> Self {
+        Self {
+            thinking_type: "disabled".to_string(),
+        }
+    }
+
+    /// Check if thinking is enabled
+    #[allow(dead_code)]
+    pub fn is_enabled(&self) -> bool {
+        self.thinking_type == "enabled"
+    }
+}
+
+impl Default for ThinkingConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
 }
 
 /// Tool call from LLM

@@ -35,6 +35,32 @@ pub struct ProviderConfig {
     /// API base URL (for custom endpoints)
     #[serde(default, alias = "apiBase")]
     pub api_base: Option<String>,
+
+    /// Whether this provider supports thinking/reasoning mode
+    /// (e.g., zhipu/glm-5, deepseek/deepseek-reasoner)
+    /// If not set, defaults to known providers list
+    #[serde(default, alias = "supportsThinking")]
+    pub supports_thinking: Option<bool>,
+}
+
+/// Known providers that support thinking/reasoning mode
+pub const THINKING_CAPABLE_PROVIDERS: &[&str] = &[
+    "zhipu",        // GLM-5
+    "zhipu_coding", // GLM-5 Coding
+    "deepseek",     // DeepSeek R1
+    "moonshot",     // Kimi K2.5 (partial support)
+];
+
+impl ProviderConfig {
+    /// Check if this provider supports thinking mode
+    pub fn supports_thinking(&self, provider_name: &str) -> bool {
+        // Explicit configuration takes precedence
+        if let Some(supported) = self.supports_thinking {
+            return supported;
+        }
+        // Fall back to known providers list
+        THINKING_CAPABLE_PROVIDERS.contains(&provider_name)
+    }
 }
 
 /// Agents configuration
@@ -67,6 +93,10 @@ pub struct AgentDefaults {
     /// Memory window size
     #[serde(default = "default_memory_window")]
     pub memory_window: usize,
+
+    /// Enable thinking/reasoning mode for deep reasoning models (GLM-5, DeepSeek R1, etc.)
+    #[serde(default)]
+    pub thinking_enabled: bool,
 }
 
 fn default_temperature() -> f32 {

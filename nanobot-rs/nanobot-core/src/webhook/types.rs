@@ -1,11 +1,8 @@
 //! Webhook types and error definitions
 
-use std::sync::Arc;
 use async_trait::async_trait;
-use axum::{
-    body::Body,
-    http::Response,
-};
+use axum::{body::Body, http::Response};
+use std::sync::Arc;
 
 /// Result type for webhook operations
 pub type WebhookResult<T> = Result<T, WebhookError>;

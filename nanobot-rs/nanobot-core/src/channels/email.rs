@@ -14,8 +14,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::email;
+use crate::bus::events::{InboundMessage, OutboundMessage};
 
 /// Email channel configuration
 #[derive(Debug, Clone)]
@@ -84,9 +84,12 @@ impl EmailChannel {
     async fn fetch_unread_emails(&self) -> anyhow::Result<Vec<InboundMessage>> {
         use async_imap::Client;
         use futures_util::StreamExt;
-        use tokio::net::TcpStream;
-        use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore}};
         use std::sync::Arc;
+        use tokio::net::TcpStream;
+        use tokio_rustls::{
+            rustls::{ClientConfig, RootCertStore},
+            TlsConnector,
+        };
 
         let addr = format!("{}:{}", self.config.imap_host, self.config.imap_port);
         let username = &self.config.imap_username;
@@ -117,8 +120,9 @@ impl EmailChannel {
         };
 
         // Upgrade to TLS
-        let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(&*self.config.imap_host)
-            .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
+        let server_name =
+            tokio_rustls::rustls::pki_types::ServerName::try_from(&*self.config.imap_host)
+                .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
         let tls_stream = match connector.connect(server_name.to_owned(), tcp_stream).await {
             Ok(s) => s,
             Err(e) => {
@@ -165,13 +169,11 @@ impl EmailChannel {
 
         for seq in unseen.iter() {
             // Fetch the message
-            let fetch_result = session
-                .fetch(seq.to_string(), "RFC822")
-                .await;
+            let fetch_result = session.fetch(seq.to_string(), "RFC822").await;
 
             if let Ok(mut fetches) = fetch_result {
                 while let Some(fetch) = fetches.next().await {
-                    if let Some(fetch) = fetch.ok() {
+                    if let Ok(fetch) = fetch {
                         if let Some(email_data) = self.parse_fetch(&fetch) {
                             messages.push(email_data);
                         }
@@ -192,10 +194,12 @@ impl EmailChannel {
         let body_str = String::from_utf8_lossy(body);
 
         // Simple email parsing (extract From and Subject)
-        let sender_id = self.extract_header(&body_str, "From")
+        let sender_id = self
+            .extract_header(&body_str, "From")
             .unwrap_or_else(|| "unknown@unknown".to_string());
 
-        let subject = self.extract_header(&body_str, "Subject")
+        let subject = self
+            .extract_header(&body_str, "Subject")
             .unwrap_or_else(|| "(no subject)".to_string());
 
         // Extract plain text body (very basic)
@@ -216,7 +220,11 @@ impl EmailChannel {
     fn extract_header(&self, email: &str, header: &str) -> Option<String> {
         for line in email.lines() {
             if line.starts_with(header) {
-                return Some(line.trim_start_matches(&format!("{}:", header)).trim().to_string());
+                return Some(
+                    line.trim_start_matches(&format!("{}:", header))
+                        .trim()
+                        .to_string(),
+                );
             }
             if line.is_empty() {
                 break;
@@ -255,18 +263,17 @@ impl EmailChannel {
         );
 
         // Build TLS transport
-        let mailer: AsyncSmtpTransport<Tokio1Executor> =
-            if self.config.smtp_port == 465 {
-                AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.smtp_host)?
-                    .credentials(creds)
-                    .build()
-            } else {
-                // Port 587 - use STARTTLS
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.config.smtp_host)?
-                    .credentials(creds)
-                    .port(self.config.smtp_port)
-                    .build()
-            };
+        let mailer: AsyncSmtpTransport<Tokio1Executor> = if self.config.smtp_port == 465 {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.smtp_host)?
+                .credentials(creds)
+                .build()
+        } else {
+            // Port 587 - use STARTTLS
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.config.smtp_host)?
+                .credentials(creds)
+                .port(self.config.smtp_port)
+                .build()
+        };
 
         mailer.send(email).await?;
         info!("Email sent to {}", to);

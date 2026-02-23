@@ -55,10 +55,8 @@ impl WebhookHandler for WeComWebhookHandler {
         debug!("WeCom URL verification request: {:?}", query);
 
         // Parse query parameters
-        let callback_query: WeComCallbackQuery =
-            serde_json::from_value(query).map_err(|e| {
-                WebhookError::InvalidBody(format!("Invalid query parameters: {}", e))
-            })?;
+        let callback_query: WeComCallbackQuery = serde_json::from_value(query)
+            .map_err(|e| WebhookError::InvalidBody(format!("Invalid query parameters: {}", e)))?;
 
         let channel = self.channel.read().await;
 
@@ -69,7 +67,10 @@ impl WebhookHandler for WeComWebhookHandler {
             }
             Err(e) => {
                 error!("WeCom URL verification failed: {}", e);
-                Ok(handlers::bad_request(&format!("Verification failed: {}", e)))
+                Ok(handlers::bad_request(&format!(
+                    "Verification failed: {}",
+                    e
+                )))
             }
         }
     }
@@ -83,20 +84,19 @@ impl WebhookHandler for WeComWebhookHandler {
         debug!("WeCom callback POST request");
 
         // Parse query parameters
-        let callback_query: WeComCallbackQuery =
-            serde_json::from_value(query).map_err(|e| {
-                WebhookError::InvalidBody(format!("Invalid query parameters: {}", e))
-            })?;
+        let callback_query: WeComCallbackQuery = serde_json::from_value(query)
+            .map_err(|e| WebhookError::InvalidBody(format!("Invalid query parameters: {}", e)))?;
 
         // Parse body
-        let callback_body: WeComCallbackBody =
-            serde_json::from_slice(&body).map_err(|e| {
-                WebhookError::InvalidBody(format!("Invalid request body: {}", e))
-            })?;
+        let callback_body: WeComCallbackBody = serde_json::from_slice(&body)
+            .map_err(|e| WebhookError::InvalidBody(format!("Invalid request body: {}", e)))?;
 
         let channel = self.channel.read().await;
 
-        match channel.handle_callback_message(&callback_query, &callback_body).await {
+        match channel
+            .handle_callback_message(&callback_query, &callback_body)
+            .await
+        {
             Ok(()) => {
                 debug!("WeCom callback processed successfully");
                 // WeCom expects "success" as response
@@ -135,11 +135,8 @@ mod tests {
     #[test]
     fn test_wecom_webhook_handler_creation() {
         let config = create_test_config();
-        let handler = WeComWebhookHandler::from_config(
-            config,
-            create_test_sender(),
-            Some("/custom/wecom"),
-        );
+        let handler =
+            WeComWebhookHandler::from_config(config, create_test_sender(), Some("/custom/wecom"));
         assert_eq!(handler.path(), "/custom/wecom");
     }
 

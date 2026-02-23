@@ -27,4 +27,6 @@ pub mod wecom;
 
 pub use base::Channel;
 pub use manager::ChannelManager;
-pub use middleware::{ChannelError, SimpleAuthChecker, SimpleRateLimiter, log_inbound, log_outbound};
+pub use middleware::{
+    log_inbound, log_outbound, ChannelError, SimpleAuthChecker, SimpleRateLimiter,
+};

@@ -11,8 +11,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::dingtalk;
+use crate::bus::events::{InboundMessage, OutboundMessage};
 
 /// DingTalk channel configuration
 #[derive(Debug, Clone)]
@@ -66,13 +66,10 @@ impl DingTalkChannel {
 
             let mut hmac = Sha256::new();
             hmac.update(string_to_sign.as_bytes());
-            let sign = BASE64.encode(&hmac.finalize());
+            let sign = BASE64.encode(hmac.finalize());
             let sign_encoded = urlencoding::encode(&sign);
 
-            format!(
-                "{}&timestamp={}&sign={}",
-                base_url, timestamp, sign_encoded
-            )
+            format!("{}&timestamp={}&sign={}", base_url, timestamp, sign_encoded)
         } else {
             base_url
         }
@@ -174,12 +171,18 @@ impl DingTalkChannel {
 
     /// Handle incoming callback message (for 2.0 robots with callback mode)
     #[instrument(name = "channel.dingtalk.handle_callback", skip_all)]
-    pub async fn handle_callback_message(&self, message: DingTalkCallbackMessage) -> anyhow::Result<()> {
+    pub async fn handle_callback_message(
+        &self,
+        message: DingTalkCallbackMessage,
+    ) -> anyhow::Result<()> {
         // Check allowlist
         if !self.config.allow_from.is_empty() {
             let sender_id = message.sender_id.clone();
             if !self.config.allow_from.contains(&sender_id) {
-                debug!("Ignoring message from unauthorized DingTalk user: {}", sender_id);
+                debug!(
+                    "Ignoring message from unauthorized DingTalk user: {}",
+                    sender_id
+                );
                 return Ok(());
             }
         }
@@ -333,7 +336,10 @@ mod tests {
         let channel = DingTalkChannel::new(config, create_test_sender());
 
         let url = channel.get_signed_webhook_url();
-        assert_eq!(url, "https://oapi.dingtalk.com/robot/send?access_token=test");
+        assert_eq!(
+            url,
+            "https://oapi.dingtalk.com/robot/send?access_token=test"
+        );
     }
 
     #[test]

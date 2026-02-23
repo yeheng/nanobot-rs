@@ -12,8 +12,8 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
-use nanobot_core::agent::{AgentConfig, AgentLoop};
-use nanobot_core::config::{load_config, Config, ConfigLoader};
+use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse};
+use nanobot_core::config::{load_config, Config, ConfigLoader, ProviderConfig};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 use nanobot_core::tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
@@ -51,6 +51,10 @@ enum Commands {
         /// Disable Markdown rendering
         #[arg(long)]
         no_markdown: bool,
+
+        /// Enable thinking/reasoning mode for deep reasoning models
+        #[arg(long)]
+        thinking: bool,
     },
 
     /// Start the gateway (for chat channels)
@@ -76,7 +80,11 @@ async fn main() -> Result<()> {
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
     if !init_telemetry(env_filter.clone()) {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_level(true)
+            .with_ansi(true)
+            .init();
     }
 
     let cli = Cli::parse();
@@ -88,7 +96,8 @@ async fn main() -> Result<()> {
             message,
             logs,
             no_markdown,
-        }) => cmd_agent(message, logs, no_markdown).await,
+            thinking,
+        }) => cmd_agent(message, logs, no_markdown, thinking).await,
         Some(Commands::Gateway) => cmd_gateway().await,
         Some(Commands::Channels { command }) => match command {
             ChannelsCommands::Status => cmd_channels_status().await,
@@ -230,10 +239,16 @@ fn build_agent_config(config: &Config) -> AgentConfig {
             v => v,
         },
         max_tool_result_chars: defaults.max_tool_result_chars,
+        thinking_enabled: config.agents.defaults.thinking_enabled,
     }
 }
 
-async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Result<()> {
+async fn cmd_agent(
+    message: Option<String>,
+    logs: bool,
+    no_markdown: bool,
+    thinking: bool,
+) -> Result<()> {
     // Enable debug logging if requested
     if logs {
         tracing_subscriber::fmt()
@@ -248,11 +263,26 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
         .join(".nanobot");
 
     // Find a provider
-    let (provider, model) = find_provider(&config)?;
+    let provider_info = find_provider(&config)?;
 
     // Create agent config
     let mut agent_config = build_agent_config(&config);
-    agent_config.model = model;
+    agent_config.model = provider_info.model;
+
+    // Handle thinking mode
+    if thinking || agent_config.thinking_enabled {
+        if provider_info.supports_thinking {
+            agent_config.thinking_enabled = true;
+        } else {
+            // Warn if thinking is requested but not supported
+            println!(
+                "{} Provider '{}' does not support thinking mode. Thinking disabled.",
+                "⚠️".yellow(),
+                provider_info.provider_name
+            );
+            agent_config.thinking_enabled = false;
+        }
+    }
 
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
     let restrict = config.tools.restrict_to_workspace;
@@ -276,7 +306,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
     tools.register(Box::new(WebSearchTool::new(Some(config.tools.web.clone()))));
     tools.register(Box::new(SpawnTool::new()));
 
-    let agent = AgentLoop::new(provider, workspace, agent_config, tools)
+    let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
 
@@ -285,7 +315,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
             // Single message mode
             info!("Processing message: {}", msg);
             let response = agent.process_direct(&msg, "cli:direct").await?;
-            print_response(&response, render_md);
+            print_response_with_reasoning(&response, render_md);
         }
         None => {
             // Interactive mode
@@ -314,7 +344,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
                         match agent.process_direct(line, "cli:interactive").await {
                             Ok(response) => {
                                 println!();
-                                print_response(&response, render_md);
+                                print_response_with_reasoning(&response, render_md);
                                 println!();
                             }
                             Err(e) => println!("\n{} {}\n", "Error:".red(), e),
@@ -350,6 +380,41 @@ fn print_response(response: &str, render_md: bool) {
     println!("{}", response);
 }
 
+/// Print reasoning content in a styled block
+fn print_reasoning_block(reasoning: &str) {
+    // Print a header with dimmed color and box drawing
+    println!(
+        "{}",
+        "┌─ Thinking ─────────────────────────────────".dimmed()
+    );
+
+    // Print reasoning content with dimmed/italic style
+    // Split by lines to handle multi-line reasoning
+    for line in reasoning.lines() {
+        println!("│ {}", line.dimmed().italic());
+    }
+
+    // Print footer
+    println!(
+        "{}",
+        "└─────────────────────────────────────────────".dimmed()
+    );
+}
+
+/// Print response with optional reasoning content and Markdown rendering
+fn print_response_with_reasoning(response: &AgentResponse, render_md: bool) {
+    // Print reasoning content first (if present) with special styling
+    if let Some(ref reasoning) = response.reasoning_content {
+        if !reasoning.is_empty() {
+            print_reasoning_block(reasoning);
+            println!(); // Add blank line between reasoning and main response
+        }
+    }
+
+    // Print main response content
+    print_response(&response.content, render_md);
+}
+
 async fn cmd_gateway() -> Result<()> {
     let config = load_config().context("Failed to load config")?;
     let workspace = dirs::home_dir()
@@ -383,9 +448,18 @@ async fn cmd_gateway() -> Result<()> {
     let cron_service = Arc::new(nanobot_core::cron::CronService::new(workspace.clone()));
 
     // Create agent with all dependencies
-    let (provider, model) = find_provider(&config)?;
+    let provider_info = find_provider(&config)?;
     let mut agent_config = build_agent_config(&config);
-    agent_config.model = model;
+    agent_config.model = provider_info.model;
+
+    // Handle thinking mode for gateway
+    if agent_config.thinking_enabled && !provider_info.supports_thinking {
+        tracing::warn!(
+            "Provider '{}' does not support thinking mode. Thinking disabled.",
+            provider_info.provider_name
+        );
+        agent_config.thinking_enabled = false;
+    }
 
     // Start MCP servers (if configured)
     let mcp_tools = if !config.tools.mcp_servers.is_empty() {
@@ -426,8 +500,13 @@ async fn cmd_gateway() -> Result<()> {
     }
 
     let agent = Arc::new(
-        AgentLoop::new(provider, workspace.clone(), agent_config, tools)
-            .context("Failed to initialize agent (check workspace bootstrap files)")?,
+        AgentLoop::new(
+            provider_info.provider,
+            workspace.clone(),
+            agent_config,
+            tools,
+        )
+        .context("Failed to initialize agent (check workspace bootstrap files)")?,
     );
 
     // Track running tasks
@@ -456,7 +535,7 @@ async fn cmd_gateway() -> Result<()> {
                             let outbound = nanobot_core::bus::events::OutboundMessage {
                                 channel: msg.channel,
                                 chat_id: msg.chat_id,
-                                content: response,
+                                content: response.content,
                                 metadata: None,
                                 trace_id: None,
                             };
@@ -620,6 +699,18 @@ async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
+/// Provider information returned by find_provider
+struct ProviderInfo {
+    /// The provider instance
+    provider: Arc<dyn LlmProvider>,
+    /// The model name to use
+    model: String,
+    /// Provider name (e.g., "zhipu", "deepseek")
+    provider_name: String,
+    /// Whether this provider supports thinking/reasoning mode
+    supports_thinking: bool,
+}
+
 /// Build a provider instance from its name and config.
 fn build_provider(
     name: &str,
@@ -683,7 +774,7 @@ fn build_provider(
 ///   - `"deepseek/deepseek-chat"` → use the deepseek provider with model deepseek-chat
 ///   - `"zhipu/glm-4"`           → use the zhipu provider with model glm-4
 ///   - `"deepseek-chat"`          → legacy behaviour, pick the first provider with an API key
-fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
+fn find_provider(config: &Config) -> Result<ProviderInfo> {
     let raw_model = config
         .agents
         .defaults
@@ -695,6 +786,18 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     let spec: ModelSpec = raw_model
         .parse()
         .expect("ModelSpec::from_str is infallible");
+
+    // Helper to build ProviderInfo
+    let build_info =
+        |name: &str, provider_config: &ProviderConfig, api_key: &str| -> ProviderInfo {
+            let provider = build_provider(name, api_key, provider_config, spec.model());
+            ProviderInfo {
+                provider,
+                model: spec.model().to_string(),
+                provider_name: name.to_string(),
+                supports_thinking: provider_config.supports_thinking(name),
+            }
+        };
 
     // If the user specified a provider prefix, use that provider directly.
     if let Some(provider_name) = spec.provider() {
@@ -710,8 +813,7 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
             anyhow::anyhow!("Provider '{}' has no API key configured", provider_name)
         })?;
 
-        let provider = build_provider(provider_name, api_key, provider_config, spec.model());
-        return Ok((provider, spec.model().to_string()));
+        return Ok(build_info(provider_name, provider_config, api_key));
     }
 
     // First, try providers in order of preference.
@@ -731,12 +833,10 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         if let Some(provider_config) = config.providers.get(*name) {
             // Ollama is a local service and doesn't require an API key
             if *name == "ollama" {
-                let provider = build_provider(name, "", provider_config, spec.model());
-                return Ok((provider, spec.model().to_string()));
+                return Ok(build_info(name, provider_config, ""));
             }
             if let Some(api_key) = &provider_config.api_key {
-                let provider = build_provider(name, api_key, provider_config, spec.model());
-                return Ok((provider, spec.model().to_string()));
+                return Ok(build_info(name, provider_config, api_key));
             }
         }
     }
@@ -745,12 +845,10 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     for (name, provider_config) in &config.providers {
         // Ollama is a local service and doesn't require an API key
         if name == "ollama" {
-            let provider = build_provider(name, "", provider_config, spec.model());
-            return Ok((provider, spec.model().to_string()));
+            return Ok(build_info(name, provider_config, ""));
         }
         if let Some(api_key) = &provider_config.api_key {
-            let provider = build_provider(name, api_key, provider_config, spec.model());
-            return Ok((provider, spec.model().to_string()));
+            return Ok(build_info(name, provider_config, api_key));
         }
     }
 

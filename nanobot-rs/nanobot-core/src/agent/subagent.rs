@@ -18,9 +18,7 @@ use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentConfig, AgentLoop};
-use super::task_store::{JsonTaskStore, TaskStore};
-
-#[cfg(feature = "sqlite")]
+use super::task_store::TaskStore;
 use super::task_store_sqlite::SqliteTaskStore;
 
 /// Status of a subagent task
@@ -41,18 +39,13 @@ pub enum TaskStatus {
 }
 
 /// Priority level for tasks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TaskPriority {
     Low,
+    #[default]
     Normal,
     High,
     Urgent,
-}
-
-impl Default for TaskPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// A subagent task
@@ -255,8 +248,7 @@ impl SubagentManager {
         let data_dir = workspace.join("data");
         let json_path = data_dir.join("tasks.json");
 
-        // Select persistence backend: SQLite when available, JSON fallback.
-        #[cfg(feature = "sqlite")]
+        // SQLite persistence backend
         let store: Arc<dyn TaskStore> = {
             let db_path = data_dir.join("tasks.db");
             match SqliteTaskStore::new(db_path) {
@@ -270,14 +262,10 @@ impl SubagentManager {
                     Arc::new(s)
                 }
                 Err(e) => {
-                    warn!("Failed to open SqliteTaskStore, falling back to JSON: {}", e);
-                    Arc::new(JsonTaskStore::new(json_path))
+                    panic!("Failed to open SqliteTaskStore: {}", e);
                 }
             }
         };
-
-        #[cfg(not(feature = "sqlite"))]
-        let store: Arc<dyn TaskStore> = Arc::new(JsonTaskStore::new(json_path));
 
         // Load existing tasks from the store (sync at init is acceptable)
         let tasks = tokio::task::block_in_place(|| {
@@ -440,7 +428,7 @@ impl SubagentManager {
                     match result {
                         Ok(Ok(response)) => {
                             t.status = TaskStatus::Completed;
-                            t.result = Some(response);
+                            t.result = Some(response.content);
                             t.completed_at = Some(Utc::now());
                             t.progress = 100;
                             info!("Subagent task {} completed", tid);

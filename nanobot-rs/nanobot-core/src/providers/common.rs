@@ -17,7 +17,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
-use super::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolDefinition};
+use super::{
+    ChatMessage, ChatRequest, ChatResponse, LlmProvider, ThinkingConfig, ToolCall, ToolDefinition,
+};
 
 /// Default configuration for known providers
 ///
@@ -25,27 +27,53 @@ use super::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolD
 static PROVIDER_DEFAULTS: &[(&str, &str, Option<&str>)] = &[
     // (name, api_base, default_model)
     ("openai", "https://api.openai.com/v1", Some("gpt-4o")),
-    ("openrouter", "https://openrouter.ai/api/v1", Some("anthropic/claude-sonnet-4")),
-    ("anthropic", "https://api.anthropic.com/v1", Some("claude-sonnet-4-20250514")),
-    ("dashscope", "https://dashscope.aliyuncs.com/compatible-mode/v1", Some("qwen-max")),
+    (
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        Some("anthropic/claude-sonnet-4"),
+    ),
+    (
+        "anthropic",
+        "https://api.anthropic.com/v1",
+        Some("claude-sonnet-4-20250514"),
+    ),
+    (
+        "dashscope",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        Some("qwen-max"),
+    ),
     ("moonshot", "https://api.moonshot.cn/v1", Some("kimi-k2.5")),
-    ("zhipu", "https://open.bigmodel.cn/api/paas/v4", Some("glm-5")),
-    ("zhipu_coding", "https://open.bigmodel.cn/api/coding/paas/v4", Some("glm-5")),
+    (
+        "zhipu",
+        "https://open.bigmodel.cn/api/paas/v4",
+        Some("glm-5"),
+    ),
+    (
+        "zhipu_coding",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+        Some("glm-5"),
+    ),
     ("minimax", "https://api.minimax.chat/v1", Some("M2.2")),
-    ("deepseek", "https://api.deepseek.com/v1", Some("deepseek-chat")),
+    (
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        Some("deepseek-chat"),
+    ),
     ("ollama", "http://localhost:11434/v1", Some("llama3")),
 ];
 
 /// Get default API base URL for a provider name
 pub fn get_default_api_base(name: &str) -> Option<&'static str> {
-    PROVIDER_DEFAULTS.iter()
+    PROVIDER_DEFAULTS
+        .iter()
         .find(|(n, _, _)| *n == name)
         .map(|(_, url, _)| *url)
 }
 
 /// Get default model for a provider name
 pub fn get_default_model(name: &str) -> Option<&'static str> {
-    PROVIDER_DEFAULTS.iter()
+    PROVIDER_DEFAULTS
+        .iter()
         .find(|(n, _, _)| *n == name)
         .and_then(|(_, _, model)| *model)
 }
@@ -106,7 +134,12 @@ impl OpenAICompatibleProvider {
     ) -> Self {
         let resolved_base = api_base
             .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
-            .unwrap_or_else(|| panic!("Unknown provider: {}. Add it to PROVIDER_DEFAULTS or provide api_base.", name));
+            .unwrap_or_else(|| {
+                panic!(
+                    "Unknown provider: {}. Add it to PROVIDER_DEFAULTS or provide api_base.",
+                    name
+                )
+            });
 
         let resolved_model = default_model
             .or_else(|| get_default_model(name).map(|s| s.to_string()))
@@ -201,7 +234,13 @@ impl OpenAICompatibleProvider {
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
         }
-        Self::from_name_with_headers("minimax", api_key, api_base, Some(default_model.into()), extra_headers)
+        Self::from_name_with_headers(
+            "minimax",
+            api_key,
+            api_base,
+            Some(default_model.into()),
+            extra_headers,
+        )
     }
 
     /// Create a DeepSeek provider (OpenAI-compatible, supports `reasoning_content`)
@@ -218,10 +257,7 @@ impl OpenAICompatibleProvider {
     /// Ollama runs locally and provides an OpenAI-compatible API endpoint.
     /// Default endpoint is `http://localhost:11434/v1`.
     /// Since Ollama is a local service, no API key is required (uses placeholder).
-    pub fn ollama(
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
+    pub fn ollama(api_base: Option<String>, default_model: impl Into<String>) -> Self {
         Self::from_name("ollama", "ollama", api_base, Some(default_model.into()))
     }
 
@@ -256,6 +292,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             tools: request.tools,
             temperature: request.temperature,
             max_tokens: request.max_tokens,
+            thinking: request.thinking,
         };
 
         debug!(
@@ -343,6 +380,8 @@ struct OpenAICompatibleRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -469,8 +508,10 @@ mod tests {
 
     #[test]
     fn test_ollama_provider_custom_base() {
-        let provider =
-            OpenAICompatibleProvider::ollama(Some("http://192.168.1.100:11434/v1".to_string()), "mistral");
+        let provider = OpenAICompatibleProvider::ollama(
+            Some("http://192.168.1.100:11434/v1".to_string()),
+            "mistral",
+        );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
         assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");

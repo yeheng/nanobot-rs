@@ -11,7 +11,7 @@ name = "nanobot"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-channels", "sqlite"]
+default = ["markdown", "all-channels"]
 markdown = ["termimad"]
 telegram = ["nanobot-core/telegram"]
 discord = ["nanobot-core/discord"]
@@ -19,7 +19,6 @@ slack = ["nanobot-core/slack"]
 email = ["nanobot-core/email"]
 feishu = ["nanobot-core/feishu"]
 all-channels = ["nanobot-core/all-channels"]
-sqlite = ["nanobot-core/sqlite"]
 
 [dependencies]
 nanobot-core = { path = "../nanobot-core" }

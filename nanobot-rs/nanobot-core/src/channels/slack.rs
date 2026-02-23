@@ -76,13 +76,8 @@ impl SlackChannel {
             match msg {
                 Ok(WsMessage::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                        Self::handle_event(
-                            &event,
-                            &mut write,
-                            &inbound_sender,
-                            &group_policy,
-                        )
-                        .await;
+                        Self::handle_event(&event, &mut write, &inbound_sender, &group_policy)
+                            .await;
                     }
                 }
                 Ok(WsMessage::Ping(data)) => {

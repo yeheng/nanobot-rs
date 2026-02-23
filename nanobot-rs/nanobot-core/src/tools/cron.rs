@@ -116,10 +116,9 @@ impl Tool for CronTool {
                 job.channel = channel;
                 job.chat_id = chat_id;
 
-                self.service
-                    .add_job(job)
-                    .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to add cron job '{}': {}", name, e)))?;
+                self.service.add_job(job).await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to add cron job '{}': {}", name, e))
+                })?;
 
                 Ok(format!("Scheduled job '{}' with ID: {}", name, id))
             }
@@ -147,7 +146,10 @@ impl Tool for CronTool {
                 })?;
 
                 let removed = self.service.remove_job(&job_id).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to remove cron job '{}': {}", job_id, e))
+                    ToolError::ExecutionError(format!(
+                        "Failed to remove cron job '{}': {}",
+                        job_id, e
+                    ))
                 })?;
 
                 if removed {

@@ -134,7 +134,7 @@ impl GeminiProvider {
 
         if generation_config
             .as_object()
-            .map_or(false, |obj| !obj.is_empty())
+            .is_some_and(|obj| !obj.is_empty())
         {
             body["generationConfig"] = generation_config;
         }
@@ -316,6 +316,7 @@ mod tests {
             tools: None,
             temperature: Some(0.7),
             max_tokens: Some(100),
+            thinking: None,
         };
 
         let body = provider.build_gemini_request(request);

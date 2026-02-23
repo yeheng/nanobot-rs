@@ -30,6 +30,7 @@ async fn test_agent_initialization() {
         max_tokens: 1024,
         memory_window: 20,
         max_tool_result_chars: 8000,
+        thinking_enabled: false,
     };
 
     let provider =
@@ -51,8 +52,8 @@ async fn test_agent_config_default() {
     let config = AgentConfig::default();
     assert_eq!(config.model, "gpt-4o");
     assert_eq!(config.max_iterations, 20);
-    assert_eq!(config.temperature, 0.7);
-    assert_eq!(config.max_tokens, 4096);
+    assert_eq!(config.temperature, 1.0);
+    assert_eq!(config.max_tokens, 65536);
     assert_eq!(config.memory_window, 50);
 }
 
@@ -130,10 +131,12 @@ async fn test_outbound_message() {
 
 #[tokio::test]
 async fn test_session_manager() {
+    use nanobot_core::memory::SqliteStore;
     use nanobot_core::session::SessionManager;
 
-    let workspace = PathBuf::from("/tmp/nanobot-test-sessions");
-    let manager = SessionManager::new(workspace).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:session1").await;
     assert_eq!(session.key, "test:session1");
@@ -147,10 +150,12 @@ async fn test_session_manager() {
 
 #[tokio::test]
 async fn test_session_clear() {
+    use nanobot_core::memory::SqliteStore;
     use nanobot_core::session::SessionManager;
 
-    let workspace = PathBuf::from("/tmp/nanobot-test-clear");
-    let manager = SessionManager::new(workspace).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:clear").await;
     session.add_message("user", "Hello", None);
@@ -162,10 +167,12 @@ async fn test_session_clear() {
 
 #[tokio::test]
 async fn test_session_tools_used() {
+    use nanobot_core::memory::SqliteStore;
     use nanobot_core::session::SessionManager;
 
-    let workspace = PathBuf::from("/tmp/nanobot-test-tools");
-    let manager = SessionManager::new(workspace).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:tools").await;
     session.add_message(
@@ -355,9 +362,11 @@ async fn test_cron_job_fields() {
 #[tokio::test]
 async fn test_memory_store() {
     use nanobot_core::agent::MemoryStore;
+    use nanobot_core::memory::SqliteStore;
 
-    let workspace = PathBuf::from("/tmp/nanobot-memory-test");
-    let memory = MemoryStore::new(workspace);
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::with_path(dir.path().join("mem.db")).unwrap();
+    let memory = MemoryStore::with_store(store);
 
     let _ = memory.write_long_term("User likes pizza.").await;
 

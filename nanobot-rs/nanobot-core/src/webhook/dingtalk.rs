@@ -48,10 +48,7 @@ impl WebhookHandler for DingTalkWebhookHandler {
         &self.path
     }
 
-    async fn handle_get(
-        &self,
-        _query: Query<serde_json::Value>,
-    ) -> WebhookResult<Response<Body>> {
+    async fn handle_get(&self, _query: Query<serde_json::Value>) -> WebhookResult<Response<Body>> {
         // DingTalk doesn't use GET for callbacks
         debug!("DingTalk GET request (unexpected)");
         Ok(handlers::bad_request("Use POST for DingTalk webhooks"))
@@ -66,9 +63,8 @@ impl WebhookHandler for DingTalkWebhookHandler {
         debug!("DingTalk callback POST request");
 
         // Parse the callback message
-        let message: DingTalkCallbackMessage = serde_json::from_slice(&body).map_err(|e| {
-            WebhookError::InvalidBody(format!("Invalid request body: {}", e))
-        })?;
+        let message: DingTalkCallbackMessage = serde_json::from_slice(&body)
+            .map_err(|e| WebhookError::InvalidBody(format!("Invalid request body: {}", e)))?;
 
         let channel = self.channel.read().await;
 
@@ -76,12 +72,18 @@ impl WebhookHandler for DingTalkWebhookHandler {
             Ok(()) => {
                 debug!("DingTalk callback processed successfully");
                 // DingTalk expects a JSON response with success
-                Ok(handlers::json_response(axum::http::StatusCode::OK, &serde_json::json!({"msg": "success"})))
+                Ok(handlers::json_response(
+                    axum::http::StatusCode::OK,
+                    &serde_json::json!({"msg": "success"}),
+                ))
             }
             Err(e) => {
                 error!("DingTalk callback processing failed: {}", e);
                 // Return success anyway to avoid retries for non-recoverable errors
-                Ok(handlers::json_response(axum::http::StatusCode::OK, &serde_json::json!({"msg": "success"})))
+                Ok(handlers::json_response(
+                    axum::http::StatusCode::OK,
+                    &serde_json::json!({"msg": "success"}),
+                ))
             }
         }
     }

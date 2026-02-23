@@ -1,59 +1,51 @@
 //! Memory store for long-term context
 //!
-//! This module wraps the `MemoryStore` trait to provide the high-level
+//! This module wraps `SqliteStore` to provide the high-level
 //! `read_long_term`, `write_long_term`, `read_history`, and `append_history`
 //! API used by the agent loop.
-//!
-//! When the `sqlite` feature is enabled, the default backend is `SqliteStore`.
-//! Otherwise it falls back to `FileMemoryStore`.
-
-use std::path::PathBuf;
 
 use anyhow::Result;
 use tracing::instrument;
 
-use crate::memory::{
-    FileMemoryStore, MemoryEntry, MemoryQuery,
-    MemoryStore as MemoryStoreTrait,
-};
+use crate::memory::{MemoryEntry, MemoryQuery, MemoryStore as MemoryStoreTrait, SqliteStore};
 
 /// Memory store for long-term context.
 ///
-/// Uses `SqliteStore` by default (when the `sqlite` feature is enabled),
-/// falling back to `FileMemoryStore` otherwise. Also keeps a `FileMemoryStore`
-/// for legacy raw-file operations (MEMORY.md, HISTORY.md).
+/// Backed by `SqliteStore` for all operations:
+/// - Structured memories (save/get/delete/search)
+/// - Long-term memory (MEMORY.md equivalent via kv_store)
+/// - History (via history table)
 pub struct MemoryStore {
-    store: Box<dyn MemoryStoreTrait>,
-    file_store: FileMemoryStore,
+    store: SqliteStore,
+}
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryStore {
-    /// Create a new memory store backed by the workspace directory.
+    /// Create a new memory store.
     ///
-    /// With the `sqlite` feature enabled, structured memory operations go
-    /// through `SqliteStore` (persisted at `~/.nanobot/memory.db`).
-    /// Legacy file operations always use `FileMemoryStore`.
-    pub fn new(workspace: PathBuf) -> Self {
-        let file_store = FileMemoryStore::new(workspace);
+    /// Opens the default `SqliteStore` at `~/.nanobot/memory.db`.
+    pub fn new() -> Self {
+        let store = SqliteStore::new().expect("Failed to open SqliteStore");
 
-        #[cfg(feature = "sqlite")]
-        let store: Box<dyn MemoryStoreTrait> = match crate::memory::SqliteStore::new() {
-            Ok(s) => Box::new(s),
-            Err(e) => {
-                tracing::warn!("Failed to open SqliteStore, falling back to FileMemoryStore: {}", e);
-                Box::new(FileMemoryStore::new(file_store.workspace().to_path_buf()))
-            }
-        };
-
-        #[cfg(not(feature = "sqlite"))]
-        let store: Box<dyn MemoryStoreTrait> = Box::new(
-            FileMemoryStore::new(file_store.workspace().to_path_buf()),
-        );
-
-        Self { store, file_store }
+        Self { store }
     }
 
-    // ── Structured memory API (delegates to trait store) ──
+    /// Create a memory store with a specific `SqliteStore` instance.
+    pub fn with_store(store: SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Get a reference to the underlying `SqliteStore`.
+    pub fn sqlite_store(&self) -> &SqliteStore {
+        &self.store
+    }
+
+    // ── Structured memory API ──
 
     /// Save a structured memory entry.
     #[instrument(name = "memory.save", skip_all, fields(id = %entry.id))]
@@ -79,39 +71,33 @@ impl MemoryStore {
         self.store.search(query).await
     }
 
-    // ── Legacy file-based API (MEMORY.md / HISTORY.md) ──
+    // ── Long-term memory API ──
 
-    /// Read long-term memory (`MEMORY.md`).
+    /// Read long-term memory (MEMORY.md equivalent).
     #[instrument(name = "memory.read_long_term", skip_all)]
     pub async fn read_long_term(&self) -> Result<String> {
-        Ok(self
-            .file_store
-            .read_raw("MEMORY.md")
-            .await?
-            .unwrap_or_default())
+        Ok(self.store.read_raw("MEMORY.md").await?.unwrap_or_default())
     }
 
-    /// Write long-term memory (`MEMORY.md`).
+    /// Write long-term memory (MEMORY.md equivalent).
     #[instrument(name = "memory.write_long_term", skip_all)]
     pub async fn write_long_term(&self, content: &str) -> Result<()> {
-        self.file_store.write_raw("MEMORY.md", content).await
+        self.store.write_raw("MEMORY.md", content).await
     }
 
-    /// Read history (`HISTORY.md`).
+    // ── History API ──
+
+    /// Read history.
     #[instrument(name = "memory.read_history", skip_all)]
     pub async fn read_history(&self) -> Result<String> {
-        Ok(self
-            .file_store
-            .read_raw("HISTORY.md")
-            .await?
-            .unwrap_or_default())
+        self.store.read_history().await
     }
 
-    /// Append to history (`HISTORY.md`).
+    /// Append to history.
     #[instrument(name = "memory.append_history", skip_all)]
     pub async fn append_history(&self, entry: &str) -> Result<()> {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
         let content = format!("\n[{}] {}\n", timestamp, entry);
-        self.file_store.append_raw("HISTORY.md", &content).await
+        self.store.append_history(&content).await
     }
 }

@@ -20,23 +20,23 @@
 //! }
 //! ```
 
-mod server;
 mod handlers;
+mod server;
 mod types;
 
-#[cfg(feature = "wecom")]
-mod wecom;
-#[cfg(feature = "feishu")]
-mod feishu;
 #[cfg(feature = "dingtalk")]
 mod dingtalk;
+#[cfg(feature = "feishu")]
+mod feishu;
+#[cfg(feature = "wecom")]
+mod wecom;
 
-pub use server::{WebhookServer, WebhookConfig};
+pub use server::{WebhookConfig, WebhookServer};
 pub use types::{WebhookError, WebhookResult};
 
-#[cfg(feature = "wecom")]
-pub use wecom::WeComWebhookHandler;
-#[cfg(feature = "feishu")]
-pub use feishu::FeishuWebhookHandler;
 #[cfg(feature = "dingtalk")]
 pub use dingtalk::DingTalkWebhookHandler;
+#[cfg(feature = "feishu")]
+pub use feishu::FeishuWebhookHandler;
+#[cfg(feature = "wecom")]
+pub use wecom::WeComWebhookHandler;

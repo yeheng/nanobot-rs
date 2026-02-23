@@ -78,11 +78,8 @@ impl WebhookServer {
     /// Build the router with all registered handlers using native Axum routing
     fn build_router(self) -> Router {
         // Convert to Arc HashMap for shared state
-        let handlers_map: HashMap<String, Arc<dyn super::types::WebhookHandler>> = self
-            .handlers
-            .into_iter()
-            .map(|(k, v)| (k, Arc::from(v)))
-            .collect();
+        let handlers_map: HashMap<String, Arc<dyn super::types::WebhookHandler>> =
+            self.handlers.into_iter().collect();
 
         let state = Arc::new(WebhookState {
             handlers: Arc::new(handlers_map),

@@ -13,8 +13,10 @@ use super::store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
 
 /// SQLite-backed memory store with FTS5 full-text search.
 ///
-/// Persists memory entries in a SQLite database file. Uses a single
-/// `Connection` behind a `tokio::sync::Mutex` for async safety.
+/// Persists memory entries, history, long-term memory, and sessions in a
+/// single SQLite database file. Uses a single `Connection` behind a
+/// `tokio::sync::Mutex` for async safety.
+#[derive(Clone)]
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -85,10 +87,168 @@ impl SqliteStore {
                 VALUES (new.rowid, new.id, new.content);
             END;
 
+            -- History table for conversation history
+            CREATE TABLE IF NOT EXISTS history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                content     TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at);
+
+            -- Key-value store for long-term memory and other raw data
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
+            -- Sessions table
+            CREATE TABLE IF NOT EXISTS sessions (
+                key         TEXT PRIMARY KEY,
+                data        TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+
             PRAGMA foreign_keys = ON;
             ",
         )?;
         Ok(())
+    }
+
+    // ── History API ──
+
+    /// Read all history entries, ordered by creation time (oldest first).
+    pub async fn read_history(&self) -> anyhow::Result<String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT content FROM history ORDER BY id ASC")?;
+
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+        let mut result = String::new();
+        for row in rows {
+            result.push_str(&row?);
+        }
+
+        Ok(result)
+    }
+
+    /// Append a new history entry.
+    pub async fn append_history(&self, content: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        let created_at = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
+            rusqlite::params![content, created_at],
+        )?;
+
+        debug!("Appended history entry");
+        Ok(())
+    }
+
+    /// Write (replace) the entire history with new content.
+    pub async fn write_history(&self, content: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+
+        // Clear existing history
+        conn.execute("DELETE FROM history", [])?;
+
+        // Insert new content as a single entry
+        let created_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
+            rusqlite::params![content, created_at],
+        )?;
+
+        debug!("Wrote history");
+        Ok(())
+    }
+
+    /// Clear all history entries.
+    pub async fn clear_history(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM history", [])?;
+        debug!("Cleared history");
+        Ok(())
+    }
+
+    // ── Key-value store API (replaces file-based MEMORY.md etc.) ──
+
+    /// Read a raw value by key.
+    pub async fn read_raw(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+
+        if let Some(row) = rows.next()? {
+            let value: String = row.get(0)?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Write a raw value by key (upsert).
+    pub async fn write_raw(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        let updated_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, value, updated_at],
+        )?;
+        debug!("Wrote kv_store key: {}", key);
+        Ok(())
+    }
+
+    /// Delete a raw key. Returns `true` if the key existed.
+    pub async fn delete_raw(&self, key: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "DELETE FROM kv_store WHERE key = ?1",
+            rusqlite::params![key],
+        )?;
+        Ok(changed > 0)
+    }
+
+    // ── Session API ──
+
+    /// Load a session by key.
+    pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+
+        if let Some(row) = rows.next()? {
+            let data: String = row.get(0)?;
+            Ok(Some(data))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Save a session (upsert).
+    pub async fn save_session(&self, key: &str, data: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        let updated_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, data, updated_at],
+        )?;
+        debug!("Saved session: {}", key);
+        Ok(())
+    }
+
+    /// Delete a session by key.
+    pub async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "DELETE FROM sessions WHERE key = ?1",
+            rusqlite::params![key],
+        )?;
+        Ok(changed > 0)
     }
 }
 
@@ -139,10 +299,7 @@ impl MemoryStore for SqliteStore {
 
     async fn delete(&self, id: &str) -> anyhow::Result<bool> {
         let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "DELETE FROM memories WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
+        let changed = conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![id])?;
         Ok(changed > 0)
     }
 
@@ -431,10 +588,7 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 2);
 
-        let all = store
-            .search(&MemoryQuery::default())
-            .await
-            .unwrap();
+        let all = store.search(&MemoryQuery::default()).await.unwrap();
         assert_eq!(all.len(), 5);
     }
 
@@ -474,8 +628,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_persistence() {
-        let path =
-            std::env::temp_dir().join(format!("nanobot_sqlite_persist_{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "nanobot_sqlite_persist_{}.db",
+            uuid::Uuid::new_v4()
+        ));
 
         // Write with first store instance
         {
@@ -515,5 +671,151 @@ mod tests {
 
         let all = store.search(&MemoryQuery::default()).await.unwrap();
         assert_eq!(all.len(), 10);
+    }
+
+    // ── History tests ──
+
+    #[tokio::test]
+    async fn test_sqlite_history_append_and_read() {
+        let store = temp_store();
+
+        store.append_history("First entry\n").await.unwrap();
+        store.append_history("Second entry\n").await.unwrap();
+
+        let history = store.read_history().await.unwrap();
+        assert!(history.contains("First entry"));
+        assert!(history.contains("Second entry"));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_history_read_empty() {
+        let store = temp_store();
+        let history = store.read_history().await.unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_history_write() {
+        let store = temp_store();
+
+        store.append_history("Old entry\n").await.unwrap();
+        store.write_history("New content\n").await.unwrap();
+
+        let history = store.read_history().await.unwrap();
+        assert!(!history.contains("Old entry"));
+        assert!(history.contains("New content"));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_history_clear() {
+        let store = temp_store();
+
+        store.append_history("Entry 1\n").await.unwrap();
+        store.append_history("Entry 2\n").await.unwrap();
+
+        store.clear_history().await.unwrap();
+
+        let history = store.read_history().await.unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_history_persistence() {
+        let path = std::env::temp_dir().join(format!(
+            "nanobot_sqlite_history_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+
+        // Write with first store instance
+        {
+            let store = SqliteStore::with_path(path.clone()).unwrap();
+            store.append_history("Persisted history\n").await.unwrap();
+        }
+
+        // Read with second store instance
+        {
+            let store = SqliteStore::with_path(path.clone()).unwrap();
+            let history = store.read_history().await.unwrap();
+            assert!(history.contains("Persisted history"));
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── Key-value store tests ──
+
+    #[tokio::test]
+    async fn test_sqlite_kv_read_write() {
+        let store = temp_store();
+
+        store.write_raw("MEMORY.md", "# Memory").await.unwrap();
+        assert_eq!(
+            store.read_raw("MEMORY.md").await.unwrap(),
+            Some("# Memory".to_string())
+        );
+
+        assert!(store.delete_raw("MEMORY.md").await.unwrap());
+        assert_eq!(store.read_raw("MEMORY.md").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_kv_upsert() {
+        let store = temp_store();
+
+        store.write_raw("key1", "v1").await.unwrap();
+        store.write_raw("key1", "v2").await.unwrap();
+
+        assert_eq!(
+            store.read_raw("key1").await.unwrap(),
+            Some("v2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_kv_nonexistent() {
+        let store = temp_store();
+        assert_eq!(store.read_raw("nope").await.unwrap(), None);
+    }
+
+    // ── Session tests ──
+
+    #[tokio::test]
+    async fn test_sqlite_session_save_and_load() {
+        let store = temp_store();
+
+        let data = r#"{"key":"test:123","messages":[],"last_consolidated":0}"#;
+        store.save_session("test:123", data).await.unwrap();
+
+        let loaded = store.load_session("test:123").await.unwrap();
+        assert_eq!(loaded, Some(data.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_upsert() {
+        let store = temp_store();
+
+        store.save_session("key1", "v1").await.unwrap();
+        store.save_session("key1", "v2").await.unwrap();
+
+        assert_eq!(
+            store.load_session("key1").await.unwrap(),
+            Some("v2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_delete() {
+        let store = temp_store();
+
+        store.save_session("key1", "data").await.unwrap();
+        assert!(store.delete_session("key1").await.unwrap());
+        assert!(!store.delete_session("key1").await.unwrap());
+        assert!(store.load_session("key1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_nonexistent() {
+        let store = temp_store();
+        assert!(store.load_session("nope").await.unwrap().is_none());
     }
 }

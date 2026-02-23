@@ -49,7 +49,10 @@ impl<'a> ToolExecutor<'a> {
         let start = Instant::now();
         let result = self
             .registry
-            .execute(&tool_call.function.name, tool_call.function.arguments.clone())
+            .execute(
+                &tool_call.function.name,
+                tool_call.function.arguments.clone(),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
         let elapsed = start.elapsed();

@@ -1,6 +1,6 @@
 //! Context builder for constructing LLM prompts
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tracing::debug;
 
@@ -41,7 +41,7 @@ impl ContextBuilder {
     /// Files that don't exist are silently skipped. Files that exist but fail
     /// to read cause an immediate error — silent degradation on core config is
     /// dangerous.
-    fn build_system_prompt(workspace: &PathBuf) -> Result<String, std::io::Error> {
+    fn build_system_prompt(workspace: &Path) -> Result<String, std::io::Error> {
         let mut parts = Vec::new();
 
         // Identity header
@@ -183,10 +183,7 @@ fn truncate_content(text: &str, max_chars: usize) -> String {
     }
     // If it looks like structured data, don't truncate mid-stream
     let trimmed = text.trim_start();
-    if trimmed.starts_with('{')
-        || trimmed.starts_with('[')
-        || trimmed.starts_with('<')
-    {
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('<') {
         return "[Content too long, omitted to save context]".to_string();
     }
     // Plain text: find a safe char boundary

@@ -21,13 +21,7 @@ impl MessageBus {
     ///
     /// The caller must move each `Receiver` to its single consumer at
     /// initialization time. This avoids wrapping receivers in `Arc<Mutex<Option<…>>>`.
-    pub fn new(
-        buffer_size: usize,
-    ) -> (
-        Self,
-        Receiver<InboundMessage>,
-        Receiver<OutboundMessage>,
-    ) {
+    pub fn new(buffer_size: usize) -> (Self, Receiver<InboundMessage>, Receiver<OutboundMessage>) {
         let (inbound_tx, inbound_rx) = channel(buffer_size);
         let (outbound_tx, outbound_rx) = channel(buffer_size);
 

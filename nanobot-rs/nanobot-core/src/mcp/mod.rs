@@ -95,7 +95,11 @@ impl McpClient {
                     continue;
                 }
 
-                debug!("[MCP:{}] stdout: {}", server_name, &line[..line.len().min(200)]);
+                debug!(
+                    "[MCP:{}] stdout: {}",
+                    server_name,
+                    &line[..line.len().min(200)]
+                );
 
                 match serde_json::from_str::<Value>(&line) {
                     Ok(msg) => {
@@ -109,7 +113,12 @@ impl McpClient {
                         // Notifications (no id) are logged but not dispatched
                     }
                     Err(e) => {
-                        debug!("[MCP:{}] non-JSON line: {} ({})", server_name, &line[..line.len().min(80)], e);
+                        debug!(
+                            "[MCP:{}] non-JSON line: {} ({})",
+                            server_name,
+                            &line[..line.len().min(80)],
+                            e
+                        );
                     }
                 }
             }
@@ -134,11 +143,7 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request and wait for the response
-    async fn send_request(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-    ) -> anyhow::Result<Value> {
+    async fn send_request(&mut self, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
         let id = self.request_id;
         self.request_id += 1;
 
@@ -150,7 +155,11 @@ impl McpClient {
         });
 
         let request_str = serde_json::to_string(&request)?;
-        debug!("[MCP:{}] → {}", self.name, &request_str[..request_str.len().min(200)]);
+        debug!(
+            "[MCP:{}] → {}",
+            self.name,
+            &request_str[..request_str.len().min(200)]
+        );
 
         // Register pending request
         let (tx, rx) = oneshot::channel();
@@ -166,13 +175,12 @@ impl McpClient {
         }
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            rx,
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("MCP server {} timed out on method '{}'", self.name, method))?
-        .map_err(|_| anyhow::anyhow!("MCP server {} dropped response channel", self.name))?;
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("MCP server {} timed out on method '{}'", self.name, method)
+            })?
+            .map_err(|_| anyhow::anyhow!("MCP server {} dropped response channel", self.name))?;
 
         // Check for JSON-RPC error
         if let Some(err) = response.get("error") {
@@ -225,7 +233,8 @@ impl McpClient {
         debug!("[MCP:{}] initialized: {:?}", self.name, result);
 
         // Send initialized notification
-        self.send_notification("notifications/initialized", None).await?;
+        self.send_notification("notifications/initialized", None)
+            .await?;
 
         info!("MCP server {} initialized", self.name);
         Ok(())
@@ -241,11 +250,7 @@ impl McpClient {
                 .filter_map(|t| serde_json::from_value(t.clone()).ok())
                 .collect();
 
-            info!(
-                "[MCP:{}] discovered {} tools",
-                self.name,
-                self.tools.len()
-            );
+            info!("[MCP:{}] discovered {} tools", self.name, self.tools.len());
             for tool in &self.tools {
                 debug!(
                     "[MCP:{}] tool: {} — {}",
@@ -265,11 +270,7 @@ impl McpClient {
     }
 
     /// Call a tool on this server
-    pub async fn call_tool(
-        &mut self,
-        name: &str,
-        arguments: Value,
-    ) -> anyhow::Result<String> {
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<String> {
         let params = serde_json::json!({
             "name": name,
             "arguments": arguments
@@ -381,8 +382,8 @@ impl Default for McpManager {
 // MCP Tool Bridge — adapts MCP tools to the `Tool` trait
 // ---------------------------------------------------------------------------
 
-use async_trait::async_trait;
 use crate::tools::{Tool, ToolError};
+use async_trait::async_trait;
 
 /// A bridge that wraps an MCP tool as an `impl Tool` so it can be registered
 /// in the `ToolRegistry` alongside native tools.
@@ -498,15 +499,15 @@ pub async fn start_mcp_servers(
     let tools: Vec<Box<dyn Tool>> = tool_info
         .iter()
         .map(|(server, tool)| {
-            Box::new(McpToolBridge::new(
-                server.clone(),
-                tool,
-                manager.clone(),
-            )) as Box<dyn Tool>
+            Box::new(McpToolBridge::new(server.clone(), tool, manager.clone())) as Box<dyn Tool>
         })
         .collect();
 
-    info!("MCP bridge: {} tools ready from {} servers", tools.len(), configs.len());
+    info!(
+        "MCP bridge: {} tools ready from {} servers",
+        tools.len(),
+        configs.len()
+    );
 
     (manager, tools)
 }

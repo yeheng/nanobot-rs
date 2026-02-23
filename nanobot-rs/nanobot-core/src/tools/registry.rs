@@ -33,7 +33,10 @@ impl ToolRegistry {
     /// Register a tool with associated metadata
     pub fn register_with_metadata(&mut self, tool: Box<dyn Tool>, meta: ToolMetadata) {
         let name = tool.name().to_string();
-        debug!("Registering tool with metadata: {} (category: {:?})", name, meta.category);
+        debug!(
+            "Registering tool with metadata: {} (category: {:?})",
+            name, meta.category
+        );
         self.metadata.insert(name.clone(), meta);
         self.tools.insert(name, tool);
     }

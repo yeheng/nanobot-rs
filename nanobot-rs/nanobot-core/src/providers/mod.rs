@@ -8,16 +8,13 @@
 mod base;
 mod common;
 mod gemini;
-pub mod middleware;
 mod model_spec;
 mod registry;
 
-pub use base::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolDefinition};
+pub use base::{
+    ChatMessage, ChatRequest, ChatResponse, LlmProvider, ThinkingConfig, ToolCall, ToolDefinition,
+};
 pub use common::{OpenAICompatibleProvider, ProviderConfig};
 pub use gemini::GeminiProvider;
-pub use middleware::{
-    LoggingProvider, MetricsHandle, MetricsProvider, ProviderBuilder, ProviderError,
-    ProviderMetrics, RateLimitProvider,
-};
 pub use model_spec::ModelSpec;
 pub use registry::{ProviderMetadata, ProviderRegistry};

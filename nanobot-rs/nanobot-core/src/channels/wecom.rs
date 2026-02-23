@@ -52,7 +52,7 @@ pub struct WeComConfig {
 ///
 /// `dev_msg_signature = SHA1(sort([token, timestamp, nonce, msg_encrypt]))`
 fn compute_signature(token: &str, timestamp: &str, nonce: &str, msg_encrypt: &str) -> String {
-    let mut params = vec![token, timestamp, nonce, msg_encrypt];
+    let mut params = [token, timestamp, nonce, msg_encrypt];
     params.sort();
     let joined: String = params.concat();
 
@@ -70,10 +70,7 @@ fn decode_aes_key(encoding_aes_key: &str) -> anyhow::Result<Vec<u8>> {
     let padded = format!("{}=", encoding_aes_key);
     let key = BASE64.decode(&padded)?;
     if key.len() != 32 {
-        anyhow::bail!(
-            "EncodingAESKey decoded to {} bytes, expected 32",
-            key.len()
-        );
+        anyhow::bail!("EncodingAESKey decoded to {} bytes, expected 32", key.len());
     }
     Ok(key)
 }
@@ -129,8 +126,7 @@ fn decrypt_message(
         );
     }
 
-    let msg_len =
-        u32::from_be_bytes(decrypted[16..20].try_into().unwrap()) as usize;
+    let msg_len = u32::from_be_bytes(decrypted[16..20].try_into().unwrap()) as usize;
 
     if 20 + msg_len > decrypted.len() {
         anyhow::bail!(
@@ -460,8 +456,7 @@ impl WeComChannel {
             .ok_or_else(|| anyhow::anyhow!("Token not configured for callback"))?;
 
         // Verify signature
-        let expected_sig =
-            compute_signature(token, &query.timestamp, &query.nonce, &body.encrypt);
+        let expected_sig = compute_signature(token, &query.timestamp, &query.nonce, &body.encrypt);
         if expected_sig != query.msg_signature {
             error!(
                 "WeCom callback signature mismatch: expected={}, got={}",
@@ -891,7 +886,10 @@ mod tests {
         let result = decrypt_message(aes_key, &ciphertext_b64, "wrong_corpid");
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("ReceiveId mismatch"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ReceiveId mismatch"),
             "Expected ReceiveId mismatch error"
         );
     }
@@ -975,7 +973,10 @@ mod tests {
 
         let result = channel.verify_url(&query);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Signature mismatch"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Signature mismatch"));
     }
 
     #[test]
@@ -1000,7 +1001,10 @@ mod tests {
 
         let result = channel.verify_url(&query);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Token not configured"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Token not configured"));
     }
 
     // ── Full verify_url roundtrip ────────────────────────────

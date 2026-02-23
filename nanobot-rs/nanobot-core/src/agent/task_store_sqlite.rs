@@ -88,10 +88,7 @@ impl SqliteTaskStore {
         // For simplicity, use the blocking approach since this runs at init.
         if !tasks.is_empty() {
             // Use the path from the existing connection
-            let conn_path = json_path
-                .parent()
-                .unwrap_or(json_path)
-                .join("tasks.db");
+            let conn_path = json_path.parent().unwrap_or(json_path).join("tasks.db");
             let conn = Connection::open(&conn_path)?;
             Self::init_db(&conn)?;
             let tx = conn.unchecked_transaction()?;

@@ -128,7 +128,9 @@ impl SkillsRegistry {
 
         if !on_demand_skills.is_empty() {
             summary.push_str("## On-Demand Skills\n\n");
-            summary.push_str("Available skills (use `read_file` to load full content when needed):\n\n");
+            summary.push_str(
+                "Available skills (use `read_file` to load full content when needed):\n\n",
+            );
 
             for skill in on_demand_skills {
                 summary.push_str(&skill.brief_summary());

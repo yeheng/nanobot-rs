@@ -108,7 +108,12 @@ impl Tool for ExecTool {
     fn parameters(&self) -> Value {
         simple_schema(&[
             ("command", "string", true, "Shell command to execute"),
-            ("description", "string", false, "Brief description of what the command does"),
+            (
+                "description",
+                "string",
+                false,
+                "Brief description of what the command does",
+            ),
         ])
     }
 
@@ -173,8 +178,9 @@ impl Tool for ExecTool {
 
         // Enforce timeout
         match tokio::time::timeout(timeout, result).await {
-            Ok(join_result) => join_result
-                .map_err(|e| ToolError::ExecutionError(format!("Task error: {}", e)))?,
+            Ok(join_result) => {
+                join_result.map_err(|e| ToolError::ExecutionError(format!("Task error: {}", e)))?
+            }
             Err(_) => Err(ToolError::ExecutionError(format!(
                 "Command timed out after {} seconds",
                 timeout.as_secs()
@@ -193,10 +199,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(serde_json::json!({"command": "echo hi"})));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("disabled"));
+        assert!(result.unwrap_err().to_string().contains("disabled"));
     }
 
     #[test]

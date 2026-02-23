@@ -64,7 +64,9 @@ mod dingtalk_e2e {
     macro_rules! make_config {
         () => {{
             let webhook_url = env_or_skip!("DINGTALK_WEBHOOK_URL");
-            let secret = std::env::var("DINGTALK_SECRET").ok().filter(|s| !s.is_empty());
+            let secret = std::env::var("DINGTALK_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty());
             DingTalkConfig {
                 webhook_url,
                 secret,
@@ -85,7 +87,11 @@ mod dingtalk_e2e {
             .send_text("[E2E Test] DingTalk send_text - nanobot channel test")
             .await;
 
-        assert!(result.is_ok(), "DingTalk send_text failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "DingTalk send_text failed: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -114,7 +120,7 @@ mod dingtalk_e2e {
     async fn test_dingtalk_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -218,7 +224,10 @@ mod feishu_e2e {
         );
 
         let result = channel
-            .send_text(&chat_id, "[E2E Test] Feishu send_text - nanobot channel test")
+            .send_text(
+                &chat_id,
+                "[E2E Test] Feishu send_text - nanobot channel test",
+            )
             .await;
 
         assert!(
@@ -233,7 +242,7 @@ mod feishu_e2e {
     async fn test_feishu_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -363,7 +372,7 @@ mod slack_e2e {
     async fn test_slack_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -392,7 +401,7 @@ mod slack_e2e {
     async fn test_slack_send_via_channel_trait_with_thread_metadata_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -540,11 +549,7 @@ mod email_e2e {
         // poll() connects to IMAP and fetches unread emails
         let result = channel.poll().await;
 
-        assert!(
-            result.is_ok(),
-            "Email IMAP poll failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Email IMAP poll failed: {:?}", result.err());
 
         let messages = result.unwrap();
         println!("Fetched {} unread emails via IMAP", messages.len());
@@ -555,7 +560,7 @@ mod email_e2e {
     async fn test_email_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
@@ -649,7 +654,7 @@ mod telegram_e2e {
     async fn test_telegram_send_message_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -666,11 +671,7 @@ mod telegram_e2e {
         };
 
         let result = channel.send(msg).await;
-        assert!(
-            result.is_ok(),
-            "Telegram send failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Telegram send failed: {:?}", result.err());
     }
 
     #[tokio::test]
@@ -685,7 +686,11 @@ mod telegram_e2e {
 
         let response = client.get(&url).send().await;
 
-        assert!(response.is_ok(), "HTTP request failed: {:?}", response.err());
+        assert!(
+            response.is_ok(),
+            "HTTP request failed: {:?}",
+            response.err()
+        );
 
         let resp = response.unwrap();
         assert!(
@@ -714,7 +719,7 @@ mod telegram_e2e {
     async fn test_telegram_send_long_message_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -802,7 +807,11 @@ mod discord_e2e {
             .send()
             .await;
 
-        assert!(response.is_ok(), "HTTP request failed: {:?}", response.err());
+        assert!(
+            response.is_ok(),
+            "HTTP request failed: {:?}",
+            response.err()
+        );
 
         let resp = response.unwrap();
         assert!(
@@ -851,7 +860,11 @@ mod discord_e2e {
             .send()
             .await;
 
-        assert!(response.is_ok(), "HTTP request failed: {:?}", response.err());
+        assert!(
+            response.is_ok(),
+            "HTTP request failed: {:?}",
+            response.err()
+        );
 
         let resp = response.unwrap();
         assert!(
@@ -896,7 +909,11 @@ mod discord_e2e {
             .send()
             .await;
 
-        assert!(response.is_ok(), "HTTP request failed: {:?}", response.err());
+        assert!(
+            response.is_ok(),
+            "HTTP request failed: {:?}",
+            response.err()
+        );
 
         let resp = response.unwrap();
         assert!(
@@ -939,10 +956,7 @@ mod discord_e2e {
         let channel_id = env_or_skip!("DISCORD_CHANNEL_ID");
 
         let client = reqwest::Client::new();
-        let url = format!(
-            "https://discord.com/api/v10/channels/{}",
-            channel_id
-        );
+        let url = format!("https://discord.com/api/v10/channels/{}", channel_id);
 
         let response = client
             .get(&url)
@@ -950,7 +964,11 @@ mod discord_e2e {
             .send()
             .await;
 
-        assert!(response.is_ok(), "HTTP request failed: {:?}", response.err());
+        assert!(
+            response.is_ok(),
+            "HTTP request failed: {:?}",
+            response.err()
+        );
 
         let resp = response.unwrap();
         assert!(
@@ -1035,11 +1053,7 @@ mod wecom_e2e {
             )
             .await;
 
-        assert!(
-            result.is_ok(),
-            "WeCom send_text failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "WeCom send_text failed: {:?}", result.err());
     }
 
     #[tokio::test]
@@ -1073,7 +1087,7 @@ mod wecom_e2e {
     async fn test_wecom_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, feishu, slack, email, telegram, wecom};
+        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();

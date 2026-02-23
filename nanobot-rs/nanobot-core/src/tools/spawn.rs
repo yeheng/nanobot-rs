@@ -86,8 +86,8 @@ impl Tool for SpawnTool {
 
     #[instrument(name = "tool.spawn", skip_all)]
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let args: SpawnArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: SpawnArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let manager = match &self.manager {
             Some(m) => m,
@@ -114,8 +114,7 @@ impl Tool for SpawnTool {
                     ));
                 }
 
-                let mut task =
-                    SubagentTask::new(&prompt, "agent", "internal", "internal");
+                let mut task = SubagentTask::new(&prompt, "agent", "internal", "internal");
 
                 if let Some(timeout) = args.timeout {
                     task = task.with_timeout(timeout);

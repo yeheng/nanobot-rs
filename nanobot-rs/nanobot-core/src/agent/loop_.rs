@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::agent::context::ContextBuilder;
 use crate::agent::executor::ToolExecutor;
 use crate::agent::memory::MemoryStore;
-use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
+use crate::providers::{ChatMessage, ChatRequest, LlmProvider, ThinkingConfig};
 use crate::session::SessionManager;
 use crate::skills::{SkillsLoader, SkillsRegistry};
 use crate::tools::ToolRegistry;
@@ -23,6 +23,8 @@ pub struct AgentConfig {
     pub memory_window: usize,
     /// Maximum characters for tool result output (0 = unlimited)
     pub max_tool_result_chars: usize,
+    /// Enable thinking/reasoning mode for deep reasoning models
+    pub thinking_enabled: bool,
 }
 
 impl Default for AgentConfig {
@@ -30,12 +32,24 @@ impl Default for AgentConfig {
         Self {
             model: "gpt-4o".to_string(),
             max_iterations: 20,
-            temperature: 0.7,
-            max_tokens: 4096,
+            temperature: 1.0,
+            max_tokens: 65536,
             memory_window: 50,
             max_tool_result_chars: 8000,
+            thinking_enabled: false,
         }
     }
+}
+
+/// Response from agent processing
+#[derive(Debug, Clone)]
+pub struct AgentResponse {
+    /// Main response content
+    pub content: String,
+    /// Reasoning/thinking content (if thinking mode enabled)
+    pub reasoning_content: Option<String>,
+    /// Tools used during processing
+    pub tools_used: Vec<String>,
 }
 
 /// The agent loop - core processing engine
@@ -65,8 +79,8 @@ impl AgentLoop {
         config: AgentConfig,
         tools: ToolRegistry,
     ) -> Result<Self> {
-        let memory = MemoryStore::new(workspace.clone());
-        let sessions = SessionManager::new_sync(workspace.clone());
+        let memory = MemoryStore::new();
+        let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         // Load skills
         let skills_context = Self::load_skills(&workspace);
@@ -176,7 +190,7 @@ impl AgentLoop {
 
     /// Process a message directly (for CLI or testing)
     #[instrument(skip(self, content))]
-    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<String> {
+    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<AgentResponse> {
         let mut session = self.sessions.get_or_create(session_key).await;
 
         // Handle slash commands
@@ -184,10 +198,18 @@ impl AgentLoop {
         if cmd == "/new" {
             session.clear();
             self.sessions.save(&session).await;
-            return Ok("New session started.".to_string());
+            return Ok(AgentResponse {
+                content: "New session started.".to_string(),
+                reasoning_content: None,
+                tools_used: Vec::new(),
+            });
         }
         if cmd == "/help" {
-            return Ok("🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands".to_string());
+            return Ok(AgentResponse {
+                content: "🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands".to_string(),
+                reasoning_content: None,
+                tools_used: Vec::new(),
+            });
         }
 
         // Build messages
@@ -201,14 +223,18 @@ impl AgentLoop {
         );
 
         // Run the agent loop
-        let (response, _tools_used) = self.run_agent_loop(messages).await?;
+        let (response, reasoning, tools_used) = self.run_agent_loop(messages).await?;
 
         // Save to session
         session.add_message("user", content, None);
         session.add_message("assistant", &response, None);
         self.sessions.save(&session).await;
 
-        Ok(response)
+        Ok(AgentResponse {
+            content: response,
+            reasoning_content: reasoning,
+            tools_used,
+        })
     }
 
     /// Run the agent iteration loop
@@ -216,10 +242,11 @@ impl AgentLoop {
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,
-    ) -> Result<(String, Vec<String>)> {
+    ) -> Result<(String, Option<String>, Vec<String>)> {
         let mut messages = initial_messages;
         let mut iteration = 0;
         let mut final_content = None;
+        let mut final_reasoning = None;
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
@@ -235,6 +262,11 @@ impl AgentLoop {
                 tools: Some(self.tools.get_definitions()),
                 temperature: Some(self.config.temperature),
                 max_tokens: Some(self.config.max_tokens),
+                thinking: if self.config.thinking_enabled {
+                    Some(ThinkingConfig::enabled())
+                } else {
+                    None
+                },
             };
 
             let mut retries = 0;
@@ -260,6 +292,32 @@ impl AgentLoop {
             };
 
             if response.has_tool_calls() {
+                // Log reasoning content if present
+                if let Some(ref reasoning) = response.reasoning_content {
+                    if !reasoning.is_empty() {
+                        info!("[Agent] Reasoning: {}", reasoning);
+                    }
+                }
+
+                // Log LLM response content if present
+                if let Some(ref content) = response.content {
+                    if !content.is_empty() {
+                        info!("[Agent] Response: {}", content);
+                    }
+                }
+
+                // Log tool calls being executed
+                info!(
+                    "[Agent] Executing {} tool call(s): {}",
+                    response.tool_calls.len(),
+                    response
+                        .tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+
                 // Add assistant message with tool calls (via ContextBuilder)
                 self.context.add_assistant_message(
                     &mut messages,
@@ -279,20 +337,45 @@ impl AgentLoop {
 
                 // Execute each tool call via ToolExecutor
                 let results = executor.execute_batch(&response.tool_calls).await;
-                for result in results {
+                for result in &results {
                     tools_used.push(result.tool_name.clone());
+
+                    // Log tool execution result
+                    let output_preview = if result.output.len() > 500 {
+                        format!(
+                            "{}... (truncated, {} chars total)",
+                            &result.output[..500],
+                            result.output.len()
+                        )
+                    } else {
+                        result.output.clone()
+                    };
+                    info!("[Tool] {} -> {}", result.tool_name, output_preview);
+
                     self.context.add_tool_result(
                         &mut messages,
-                        result.tool_call_id,
-                        result.tool_name,
-                        result.output,
+                        result.tool_call_id.clone(),
+                        result.tool_name.clone(),
+                        result.output.clone(),
                     );
                 }
 
                 // No reflection message — the LLM already has the tool results
                 // and will decide next steps on its own.
             } else {
+                // Log final response
+                if let Some(ref reasoning) = response.reasoning_content {
+                    if !reasoning.is_empty() {
+                        info!("[Agent] Reasoning: {}", reasoning);
+                    }
+                }
+                if let Some(ref content) = response.content {
+                    if !content.is_empty() {
+                        info!("[Agent] Final response: {}", content);
+                    }
+                }
                 final_content = response.content;
+                final_reasoning = response.reasoning_content;
                 break;
             }
         }
@@ -301,6 +384,6 @@ impl AgentLoop {
             "I've completed processing but have no response to give.".to_string()
         });
 
-        Ok((content, tools_used))
+        Ok((content, final_reasoning, tools_used))
     }
 }

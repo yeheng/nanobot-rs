@@ -108,7 +108,9 @@ impl CronService {
             if path.exists() {
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
-                        if let Ok(loaded) = serde_json::from_str::<HashMap<String, CronJob>>(&content) {
+                        if let Ok(loaded) =
+                            serde_json::from_str::<HashMap<String, CronJob>>(&content)
+                        {
                             let loaded: HashMap<String, CronJob> = loaded
                                 .into_iter()
                                 .map(|(id, mut job)| {
@@ -127,10 +129,7 @@ impl CronService {
             }
         }
 
-        Self {
-            jobs,
-            jobs_dir,
-        }
+        Self { jobs, jobs_dir }
     }
 
     /// Force-flush jobs to disk immediately (async, atomic write via temp file)

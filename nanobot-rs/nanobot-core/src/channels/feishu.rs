@@ -106,7 +106,10 @@ impl FeishuChannel {
         self.access_token = Some(token);
 
         info!("Obtained Feishu tenant access token");
-        Ok(self.access_token.as_ref().expect("access_token was just set on the line above"))
+        Ok(self
+            .access_token
+            .as_ref()
+            .expect("access_token was just set on the line above"))
     }
 
     /// Handle incoming webhook event
@@ -123,7 +126,8 @@ impl FeishuChannel {
         match event.event_type.as_str() {
             "im.message.receive_v1" => {
                 if let Some(message) = event.event.message {
-                    self.handle_message_event(message, event.event.sender).await?;
+                    self.handle_message_event(message, event.event.sender)
+                        .await?;
                 }
             }
             _ => {
@@ -143,10 +147,11 @@ impl FeishuChannel {
         // Check allowlist
         if let Some(ref sender_info) = sender {
             let sender_id = &sender_info.sender_id.user_id;
-            if !self.config.allow_from.is_empty()
-                && !self.config.allow_from.contains(sender_id)
-            {
-                debug!("Ignoring message from unauthorized Feishu user: {}", sender_id);
+            if !self.config.allow_from.is_empty() && !self.config.allow_from.contains(sender_id) {
+                debug!(
+                    "Ignoring message from unauthorized Feishu user: {}",
+                    sender_id
+                );
                 return Ok(());
             }
 
@@ -198,10 +203,9 @@ impl FeishuChannel {
     /// Send a text message to a chat
     #[instrument(name = "channel.feishu.send_text", skip(self, text), fields(chat_id = %chat_id))]
     pub async fn send_text(&self, chat_id: &str, text: &str) -> anyhow::Result<()> {
-        let token = self
-            .access_token
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No access token available. Call get_access_token first."))?;
+        let token = self.access_token.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("No access token available. Call get_access_token first.")
+        })?;
 
         #[derive(Serialize)]
         struct SendMessageRequest {
