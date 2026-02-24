@@ -290,10 +290,30 @@ impl AgentLoop {
             });
         }
 
-        // Build messages
+        // Save user message BEFORE calling LLM so it persists even if
+        // the LLM call fails or the process is interrupted.
+        // Capture history BEFORE appending so build_messages won't duplicate.
+        let history_snapshot = session.get_history(self.config.memory_window);
+
+        if let Err(e) = self
+            .sessions
+            .append_message(&mut session, "user", content, None)
+            .await
+        {
+            warn!("Failed to persist user message to SQLite: {}", e);
+        }
+        if let Err(e) = self
+            .memory
+            .append_history(&format!("User: {}", content))
+            .await
+        {
+            warn!("Failed to persist user history to SQLite: {}", e);
+        }
+
+        // Build messages using the history snapshot (without the just-appended user message)
         let memory_content = self.memory.read_long_term().await.ok();
         let messages = self.context.build_messages(
-            session.get_history(self.config.memory_window),
+            history_snapshot,
             content,
             memory_content.as_deref(),
             "cli",
@@ -306,26 +326,26 @@ impl AgentLoop {
             _ => self.run_agent_loop(messages).await?,
         };
 
-        // Save to session using O(1) append operations
-        self.sessions
-            .append_message(&mut session, "user", content, None)
-            .await;
-        self.sessions
+        // Save assistant response AFTER LLM call completes
+        if let Err(e) = self
+            .sessions
             .append_message(
                 &mut session,
                 "assistant",
                 &response,
                 Some(tools_used.clone()),
             )
-            .await;
-
-        // Save to history for long-term storage
-        self.memory
-            .append_history(&format!("User: {}", content))
-            .await?;
-        self.memory
+            .await
+        {
+            warn!("Failed to persist assistant message to SQLite: {}", e);
+        }
+        if let Err(e) = self
+            .memory
             .append_history(&format!("Assistant: {}", response))
-            .await?;
+            .await
+        {
+            warn!("Failed to persist assistant history to SQLite: {}", e);
+        }
 
         Ok(AgentResponse {
             content: response,

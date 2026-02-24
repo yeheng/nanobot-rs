@@ -281,6 +281,10 @@ impl SessionManager {
 
     /// Append a single message to session (O(1) operation).
     /// This is the preferred way to add messages for better performance.
+    ///
+    /// Returns an error if the SQLite persist fails. The message is still
+    /// added to the in-memory session so the current conversation can
+    /// continue, but the caller should log / handle the error.
     #[instrument(name = "session.append_message", skip(self), fields(key = %session.key))]
     pub async fn append_message(
         &self,
@@ -288,7 +292,7 @@ impl SessionManager {
         role: &str,
         content: &str,
         tools_used: Option<Vec<String>>,
-    ) {
+    ) -> anyhow::Result<()> {
         let timestamp = Utc::now();
 
         // Add to in-memory session
@@ -299,9 +303,8 @@ impl SessionManager {
             tools_used: tools_used.clone(),
         });
 
-        // Persist to SQLite (single INSERT)
-        if let Err(e) = self
-            .store
+        // Persist to SQLite (single INSERT) — propagate errors
+        self.store
             .append_session_message(
                 &session.key,
                 role,
@@ -309,16 +312,15 @@ impl SessionManager {
                 &timestamp,
                 tools_used.as_deref(),
             )
-            .await
-        {
-            warn!("Failed to append message to SQLite: {}", e);
-        }
+            .await?;
 
         // Update in-memory cache
         {
             let mut sessions = self.sessions.write().await;
             sessions.insert(session.key.clone(), session.clone());
         }
+
+        Ok(())
     }
 
     /// Invalidate a session from cache (also removes from SQLite).

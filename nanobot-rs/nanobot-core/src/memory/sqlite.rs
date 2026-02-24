@@ -52,13 +52,36 @@ impl SqliteStore {
         }
         let conn = Connection::open(&path)?;
         Self::init_db(&conn)?;
+        Self::health_check(&conn)?;
         debug!("Opened SqliteStore at {:?}", path);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
+    /// Verify that the database is usable (integrity + read/write).
+    fn health_check(conn: &Connection) -> anyhow::Result<()> {
+        // Integrity check
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!("SQLite integrity check failed: {}", integrity);
+        }
+
+        // Write check — try inserting and deleting a sentinel row in kv_store
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('__health_check__', '1', datetime('now'))",
+            [],
+        )?;
+        conn.execute("DELETE FROM kv_store WHERE key = '__health_check__'", [])?;
+
+        debug!("SQLite health check passed");
+        Ok(())
+    }
+
     fn init_db(conn: &Connection) -> anyhow::Result<()> {
+        // Enable WAL mode for better concurrent read/write performance
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS memories (
