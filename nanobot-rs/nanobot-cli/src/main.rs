@@ -1067,9 +1067,7 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
     // Set default provider based on preference order
     let default_order = ["openrouter", "deepseek", "openai", "anthropic", "ollama"];
     for default_name in default_order {
-        if registry.contains(default_name)
-            && registry.set_default(default_name).is_ok()
-        {
+        if registry.contains(default_name) && registry.set_default(default_name).is_ok() {
             break;
         }
     }
