@@ -301,11 +301,9 @@ impl AgentLoop {
         );
 
         // Run the agent loop (streaming or non-streaming)
-        let (response, reasoning, tools_used) = if self.config.streaming && callback.is_some() {
-            self.run_agent_loop_streaming(messages, callback.unwrap())
-                .await?
-        } else {
-            self.run_agent_loop(messages).await?
+        let (response, reasoning, tools_used) = match (self.config.streaming, callback) {
+            (true, Some(cb)) => self.run_agent_loop_streaming(messages, cb).await?,
+            _ => self.run_agent_loop(messages).await?,
         };
 
         // Save to session using O(1) append operations

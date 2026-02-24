@@ -13,7 +13,6 @@
 //!   cargo test --test channel_e2e_tests --features email     -- --ignored test_email
 //!   cargo test --test channel_e2e_tests --features telegram  -- --ignored test_telegram
 //!   cargo test --test channel_e2e_tests --features discord   -- --ignored test_discord
-
 use std::sync::Arc;
 
 /// Load .env file and install the rustls CryptoProvider.
@@ -22,6 +21,7 @@ use std::sync::Arc;
 /// `aws-lc-rs` features are present in the dependency tree. We pick `ring`
 /// here. The call is idempotent — `install_default` returns `Err` if a
 /// provider was already installed, so we just ignore that.
+#[allow(dead_code)]
 fn load_env() -> bool {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -46,6 +46,7 @@ macro_rules! env_or_skip {
 
 /// Create a test sender for inbound messages (middleware-aware).
 /// The receiver is leaked to keep the channel open for the test duration.
+#[allow(dead_code)]
 fn create_test_sender() -> nanobot_core::channels::InboundSender {
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     std::mem::forget(rx);
@@ -663,7 +664,7 @@ mod telegram_e2e {
     async fn test_telegram_send_message_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::telegram;
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();

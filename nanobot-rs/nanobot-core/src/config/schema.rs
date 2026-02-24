@@ -137,6 +137,10 @@ pub struct ChannelsConfig {
     /// Feishu channel
     #[serde(default)]
     pub feishu: Option<FeishuConfig>,
+
+    /// Email channel
+    #[serde(default)]
+    pub email: Option<EmailConfig>,
 }
 
 /// Telegram channel configuration
@@ -217,6 +221,66 @@ pub struct FeishuConfig {
     /// Allowed users/groups (empty = allow all)
     #[serde(default, alias = "allowFrom")]
     pub allow_from: Vec<String>,
+}
+
+/// Email channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// IMAP server host
+    #[serde(default, alias = "imapHost")]
+    pub imap_host: Option<String>,
+
+    /// IMAP server port (default: 993)
+    #[serde(default = "default_imap_port", alias = "imapPort")]
+    pub imap_port: u16,
+
+    /// IMAP username
+    #[serde(default, alias = "imapUsername")]
+    pub imap_username: Option<String>,
+
+    /// IMAP password
+    #[serde(default, alias = "imapPassword")]
+    pub imap_password: Option<String>,
+
+    /// SMTP server host
+    #[serde(default, alias = "smtpHost")]
+    pub smtp_host: Option<String>,
+
+    /// SMTP server port (default: 587)
+    #[serde(default = "default_smtp_port", alias = "smtpPort")]
+    pub smtp_port: u16,
+
+    /// SMTP username
+    #[serde(default, alias = "smtpUsername")]
+    pub smtp_username: Option<String>,
+
+    /// SMTP password
+    #[serde(default, alias = "smtpPassword")]
+    pub smtp_password: Option<String>,
+
+    /// From email address
+    #[serde(default, alias = "fromAddress")]
+    pub from_address: Option<String>,
+
+    /// Allowed senders (empty = allow all)
+    #[serde(default, alias = "allowFrom")]
+    pub allow_from: Vec<String>,
+
+    /// User consent for email access
+    #[serde(default)]
+    pub consent_granted: bool,
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+
+fn default_smtp_port() -> u16 {
+    587
 }
 
 fn default_true() -> bool {

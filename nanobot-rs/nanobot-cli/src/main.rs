@@ -928,6 +928,50 @@ async fn cmd_gateway() -> Result<()> {
         }
     }
 
+    // Start Email if configured
+    #[cfg(feature = "email")]
+    if let Some(email_config) = &config.channels.email {
+        if email_config.enabled {
+            println!("{} Email channel", "✓".green());
+
+            // Check if required fields are present
+            let has_imap = email_config.imap_host.is_some()
+                && email_config.imap_username.is_some()
+                && email_config.imap_password.is_some();
+            let has_smtp = email_config.smtp_host.is_some()
+                && email_config.smtp_username.is_some()
+                && email_config.smtp_password.is_some()
+                && email_config.from_address.is_some();
+
+            if has_imap || has_smtp {
+                let email_cfg = nanobot_core::channels::email::EmailConfig {
+                    imap_host: email_config.imap_host.clone().unwrap_or_default(),
+                    imap_port: email_config.imap_port,
+                    imap_username: email_config.imap_username.clone().unwrap_or_default(),
+                    imap_password: email_config.imap_password.clone().unwrap_or_default(),
+                    smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
+                    smtp_port: email_config.smtp_port,
+                    smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
+                    smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
+                    from_address: email_config.from_address.clone().unwrap_or_default(),
+                    allow_from: email_config.allow_from.clone(),
+                    consent_granted: email_config.consent_granted,
+                };
+
+                let email_channel = nanobot_core::channels::email::EmailChannel::new(
+                    email_cfg,
+                    inbound_processor.raw_sender(),
+                );
+
+                let task = tokio::spawn(async move {
+                    let _ = email_channel.start_polling().await;
+                });
+
+                tasks.push(task);
+            }
+        }
+    }
+
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
 
     // Wait for Ctrl+C signal
@@ -1023,10 +1067,10 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
     // Set default provider based on preference order
     let default_order = ["openrouter", "deepseek", "openai", "anthropic", "ollama"];
     for default_name in default_order {
-        if registry.contains(default_name) {
-            if registry.set_default(default_name).is_ok() {
-                break;
-            }
+        if registry.contains(default_name)
+            && registry.set_default(default_name).is_ok()
+        {
+            break;
         }
     }
 
@@ -1037,14 +1081,14 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
 fn get_default_model_for_provider(name: &str) -> &'static str {
     match name {
         "deepseek" => "deepseek-chat",
-        "openrouter" => "anthropic/claude-3.5-sonnet",
-        "anthropic" => "claude-3-5-sonnet-20241022",
-        "zhipu" => "glm-4",
-        "dashscope" => "qwen-turbo",
-        "moonshot" => "moonshot-v1-8k",
-        "minimax" => "abab6.5s-chat",
+        "openrouter" => "anthropic/claude-4.5-sonnet",
+        "anthropic" => "claude-4-6-sonnet",
+        "zhipu" => "glm-5",
+        "dashscope" => "Qwen/Qwen3.5-397B-A17B",
+        "moonshot" => "kimi-k2.5",
+        "minimax" => "MiniMax-M2.5",
         "ollama" => "llama3",
-        "openai" | _ => "gpt-4o",
+        _ => "gpt-4o",
     }
 }
 
@@ -1207,6 +1251,40 @@ async fn cmd_channels_status() -> Result<()> {
             println!("  Status:     {}", status);
             println!("  App ID:     {}", cred);
             println!("  Allow From: {} users", feishu.allow_from.len());
+            println!();
+        }
+    }
+
+    // Check Email
+    #[cfg(feature = "email")]
+    {
+        if let Some(email) = &config.channels.email {
+            has_channels = true;
+            let status = if email.enabled { "enabled" } else { "disabled" };
+
+            println!("{}", "Email".blue().bold());
+            println!("  Status:     {}", status);
+            println!(
+                "  IMAP:       {}",
+                if email.imap_host.is_some() {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "  SMTP:       {}",
+                if email.smtp_host.is_some() {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "  Consent:    {}",
+                if email.consent_granted { "✓" } else { "✗" }
+            );
+            println!("  Allow From: {} users", email.allow_from.len());
             println!();
         }
     }
