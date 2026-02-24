@@ -201,7 +201,6 @@ mod tests {
             name: "test".to_string(),
             api_base: None,
             default_model: "mock-model".to_string(),
-            model_prefix: "test".to_string(),
             available: true,
             missing_config: vec![],
         };
@@ -213,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_provider_with_prefix() {
+    fn test_get_provider_by_name() {
         let mut registry = ProviderRegistry::new();
 
         let provider = Arc::new(MockProvider {
@@ -224,25 +223,19 @@ mod tests {
             name: "deepseek".to_string(),
             api_base: Some("https://api.deepseek.com/v1".to_string()),
             default_model: "deepseek-chat".to_string(),
-            model_prefix: "deepseek".to_string(),
             available: true,
             missing_config: vec![],
         };
 
         registry.register(provider, metadata);
 
-        let detected = registry.detect_provider("deepseek/chat");
-        assert!(detected.is_some());
-        assert_eq!(detected.unwrap().name(), "deepseek");
-    }
+        // Test basic get by name
+        let result = registry.get("deepseek");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name(), "deepseek");
 
-    #[test]
-    fn test_strip_prefix() {
-        let registry = ProviderRegistry::new();
-
-        assert_eq!(registry.strip_prefix("deepseek/chat"), "chat");
-        assert_eq!(registry.strip_prefix("gemini/gemini-pro"), "gemini-pro");
-        assert_eq!(registry.strip_prefix("gpt-4"), "gpt-4");
+        // Test get non-existent
+        assert!(registry.get("nonexistent").is_none());
     }
 
     #[test]
@@ -257,7 +250,6 @@ mod tests {
             name: "available".to_string(),
             api_base: None,
             default_model: "model1".to_string(),
-            model_prefix: "avail".to_string(),
             available: true,
             missing_config: vec![],
         };
@@ -271,7 +263,6 @@ mod tests {
             name: "unavailable".to_string(),
             api_base: None,
             default_model: "model2".to_string(),
-            model_prefix: "unavail".to_string(),
             available: false,
             missing_config: vec!["API key not set".to_string()],
         };
@@ -296,7 +287,6 @@ mod tests {
             name: "test_provider".to_string(),
             api_base: None,
             default_model: "mock-model".to_string(),
-            model_prefix: "tp".to_string(),
             available: true,
             missing_config: vec![],
         };
@@ -323,7 +313,6 @@ mod tests {
             name: "my_provider".to_string(),
             api_base: None,
             default_model: "m".to_string(),
-            model_prefix: "mp".to_string(),
             available: true,
             missing_config: vec![],
         };

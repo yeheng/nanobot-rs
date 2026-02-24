@@ -321,6 +321,14 @@ impl AgentLoop {
             )
             .await;
 
+        // Save to history for long-term storage
+        self.memory
+            .append_history(&format!("User: {}", content))
+            .await?;
+        self.memory
+            .append_history(&format!("Assistant: {}", response))
+            .await?;
+
         Ok(AgentResponse {
             content: response,
             reasoning_content: reasoning,
@@ -672,9 +680,6 @@ impl AgentLoop {
         // Tool call accumulation: index -> (id, name, arguments)
         let mut tool_calls_map: HashMap<usize, (String, String, String)> = HashMap::new();
 
-        // Log streaming start
-        info!("[LLM Streaming] <<<START>>>");
-
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
 
@@ -712,8 +717,7 @@ impl AgentLoop {
             }
         }
 
-        // Log streaming end with summary
-        info!("[LLM Streaming] <<<END>>>");
+        info!("[Streaming] {}", content);
 
         // Convert accumulated tool calls into ToolCall objects
         let mut tool_calls: Vec<ToolCall> = tool_calls_map

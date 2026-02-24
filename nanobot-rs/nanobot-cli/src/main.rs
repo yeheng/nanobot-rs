@@ -6,6 +6,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use nanobot_core::channels::manager::ChannelManager;
+
+#[cfg(feature = "feishu")]
+use nanobot_core::channels::Channel;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
@@ -414,11 +417,12 @@ async fn cmd_agent(
             }
             StreamEvent::ToolEnd { name: _, output: _ } => {}
             StreamEvent::Done => {
-                println!();
+                println!("\n");
                 std::io::stdout().flush().ok();
             }
         }
     });
+    println!("\n");
 
     match message {
         Some(msg) => {
@@ -862,7 +866,7 @@ async fn cmd_gateway() -> Result<()> {
 
             let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
                 telegram_cfg,
-                inbound_processor.clone(),
+                inbound_processor.raw_sender(),
             );
 
             let task = tokio::spawn(async move {
@@ -886,7 +890,7 @@ async fn cmd_gateway() -> Result<()> {
 
             let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
                 discord_cfg,
-                inbound_processor.clone(),
+                inbound_processor.raw_sender(),
             );
 
             let task = tokio::spawn(async move {
@@ -1118,15 +1122,14 @@ async fn cmd_channels_status() -> Result<()> {
     };
 
     // Helper to check credential (either direct or env var)
-    let check_credential = |key: &Option<String>| match key {
-        Some(k) if !k.is_empty() => {
-            if k.starts_with("${") {
-                has_env_credential(k)
-            } else {
-                "✓"
-            }
+    let check_credential = |key: &str| {
+        if key.is_empty() {
+            "✗"
+        } else if key.starts_with("${") {
+            has_env_credential(key)
+        } else {
+            "✓"
         }
-        _ => "✗",
     };
 
     #[allow(unused_mut)]
@@ -1188,35 +1191,6 @@ async fn cmd_channels_status() -> Result<()> {
         }
     }
 
-    // Check Email
-    #[cfg(feature = "email")]
-    {
-        if let Some(email) = &config.channels.email {
-            has_channels = true;
-            let status = if email.enabled { "enabled" } else { "disabled" };
-
-            println!("{}", "Email".blue().bold());
-            println!("  Status:     {}", status);
-            println!(
-                "  IMAP:       {}",
-                if email.imap_host.is_some() {
-                    "✓"
-                } else {
-                    "✗"
-                }
-            );
-            println!(
-                "  SMTP:       {}",
-                if email.smtp_host.is_some() {
-                    "✓"
-                } else {
-                    "✗"
-                }
-            );
-            println!();
-        }
-    }
-
     // Check Feishu
     #[cfg(feature = "feishu")]
     {
@@ -1227,7 +1201,7 @@ async fn cmd_channels_status() -> Result<()> {
             } else {
                 "disabled"
             };
-            let cred = check_credential(&Some(feishu.app_id.clone()));
+            let cred = check_credential(&feishu.app_id);
 
             println!("{}", "Feishu".magenta().bold());
             println!("  Status:     {}", status);

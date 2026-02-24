@@ -223,6 +223,7 @@ impl TokenBudgetStrategy {
         text.len() / 3
     }
 
+    #[allow(dead_code)]
     fn estimate_tokens(messages: &[SessionMessage]) -> usize {
         messages
             .iter()
@@ -307,8 +308,10 @@ impl HistoryStrategy for TokenBudgetStrategy {
 /// of older conversation segments. It requires an LLM provider.
 pub struct SummarizeStrategy {
     /// LLM provider for summarization
+    #[allow(dead_code)]
     provider: Arc<dyn LlmProvider>,
     /// Maximum messages to include in a single summary
+    #[allow(dead_code)]
     summary_batch_size: usize,
     /// Maximum tokens for the summary
     max_summary_tokens: usize,
@@ -347,6 +350,7 @@ impl SummarizeStrategy {
         None
     }
 
+    #[allow(dead_code)]
     fn estimate_tokens(messages: &[SessionMessage]) -> usize {
         messages.iter().map(|m| m.content.len() / 3).sum()
     }

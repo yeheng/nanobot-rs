@@ -962,42 +962,97 @@ mod tests {
     // ── Session tests ──
 
     #[tokio::test]
-    async fn test_sqlite_session_save_and_load() {
+    async fn test_sqlite_session_meta_and_messages() {
         let store = temp_store();
 
-        let data = r#"{"key":"test:123","messages":[],"last_consolidated":0}"#;
-        store.save_session("test:123", data).await.unwrap();
+        // Test session metadata
+        store.save_session_meta("test:123", 0).await.unwrap();
+        let meta = store.load_session_meta("test:123").await.unwrap();
+        assert!(meta.is_some());
+        assert_eq!(meta.unwrap().key, "test:123");
 
-        let loaded = store.load_session("test:123").await.unwrap();
-        assert_eq!(loaded, Some(data.to_string()));
+        // Test appending messages
+        let ts1 = Utc::now();
+        store
+            .append_session_message("test:123", "user", "Hello", &ts1, None)
+            .await
+            .unwrap();
+        let ts2 = Utc::now();
+        store
+            .append_session_message(
+                "test:123",
+                "assistant",
+                "Hi!",
+                &ts2,
+                Some(&["tool1".to_string()]),
+            )
+            .await
+            .unwrap();
+
+        let messages = store.load_session_messages("test:123").await.unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "Hello");
+        assert_eq!(messages[1].role, "assistant");
+        // tools_used is stored as JSON array string
+        assert_eq!(messages[1].tools_used, Some("[\"tool1\"]".to_string()));
     }
 
     #[tokio::test]
-    async fn test_sqlite_session_upsert() {
+    async fn test_sqlite_session_upsert_meta() {
         let store = temp_store();
 
-        store.save_session("key1", "v1").await.unwrap();
-        store.save_session("key1", "v2").await.unwrap();
+        // First insert
+        store.save_session_meta("key1", 5).await.unwrap();
+        let meta1 = store.load_session_meta("key1").await.unwrap();
+        assert_eq!(meta1.unwrap().last_consolidated, 5);
 
-        assert_eq!(
-            store.load_session("key1").await.unwrap(),
-            Some("v2".to_string())
-        );
+        // Update (upsert)
+        store.save_session_meta("key1", 10).await.unwrap();
+        let meta2 = store.load_session_meta("key1").await.unwrap();
+        assert_eq!(meta2.unwrap().last_consolidated, 10);
     }
 
     #[tokio::test]
     async fn test_sqlite_session_delete() {
         let store = temp_store();
 
-        store.save_session("key1", "data").await.unwrap();
+        // Create session with metadata and messages
+        store.save_session_meta("key1", 0).await.unwrap();
+        let ts = Utc::now();
+        store
+            .append_session_message("key1", "user", "test", &ts, None)
+            .await
+            .unwrap();
+
+        // Verify session exists
+        assert!(store.load_session_meta("key1").await.unwrap().is_some());
+        assert!(!store
+            .load_session_messages("key1")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Delete and verify
         assert!(store.delete_session("key1").await.unwrap());
         assert!(!store.delete_session("key1").await.unwrap());
-        assert!(store.load_session("key1").await.unwrap().is_none());
+        assert!(store.load_session_meta("key1").await.unwrap().is_none());
+        // Messages should be cascade deleted
+        assert!(store
+            .load_session_messages("key1")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn test_sqlite_session_nonexistent() {
         let store = temp_store();
-        assert!(store.load_session("nope").await.unwrap().is_none());
+        assert!(store.load_session_meta("nope").await.unwrap().is_none());
+        assert!(store
+            .load_session_messages("nope")
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

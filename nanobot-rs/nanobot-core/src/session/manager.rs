@@ -72,6 +72,7 @@ impl Session {
         self.dirty
     }
 
+    #[allow(dead_code)]
     /// Mark session as saved
     fn mark_clean(&mut self) {
         self.dirty = false;

@@ -43,8 +43,12 @@ async fn test_agent_initialization() {
         streaming: false,
     };
 
-    let provider =
-        nanobot_core::providers::OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
+    let provider = nanobot_core::providers::OpenAICompatibleProvider::from_name(
+        "openai",
+        "test-key",
+        None,
+        Some("gpt-4o".to_string()),
+    );
 
     let tools = nanobot_core::tools::ToolRegistry::new();
     let agent =
@@ -494,7 +498,8 @@ async fn test_provider_trait() {
     use nanobot_core::providers::LlmProvider;
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
+    let provider =
+        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()));
 
     assert_eq!(provider.name(), "openai");
     assert_eq!(provider.default_model(), "gpt-4o");
@@ -504,8 +509,12 @@ async fn test_provider_trait() {
 async fn test_openrouter_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider =
-        OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
+    let provider = OpenAICompatibleProvider::from_name(
+        "openrouter",
+        "sk-or-test",
+        None,
+        Some("anthropic/claude-sonnet-4".to_string()),
+    );
 
     assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
@@ -515,8 +524,12 @@ async fn test_openrouter_provider() {
 async fn test_anthropic_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider =
-        OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
+    let provider = OpenAICompatibleProvider::from_name(
+        "anthropic",
+        "sk-ant-test",
+        None,
+        Some("claude-sonnet-4-20250514".to_string()),
+    );
 
     assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
