@@ -418,7 +418,12 @@ mod tests {
 
     #[test]
     fn test_openai_provider() {
-        let provider = OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "openai",
+            "test-key",
+            None,
+            Some("gpt-4o".to_string()),
+        );
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "https://api.openai.com/v1");
@@ -426,23 +431,36 @@ mod tests {
 
     #[test]
     fn test_openrouter_provider() {
-        let provider =
-            OpenAICompatibleProvider::from_name("openrouter", "sk-or-test", None, Some("anthropic/claude-sonnet-4".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "openrouter",
+            "sk-or-test",
+            None,
+            Some("anthropic/claude-sonnet-4".to_string()),
+        );
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
 
     #[test]
     fn test_anthropic_provider() {
-        let provider =
-            OpenAICompatibleProvider::from_name("anthropic", "sk-ant-test", None, Some("claude-sonnet-4-20250514".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "anthropic",
+            "sk-ant-test",
+            None,
+            Some("claude-sonnet-4-20250514".to_string()),
+        );
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
 
     #[test]
     fn test_dashscope_provider() {
-        let provider = OpenAICompatibleProvider::from_name("dashscope", "test-key", None, Some("qwen-max".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "dashscope",
+            "test-key",
+            None,
+            Some("qwen-max".to_string()),
+        );
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(
@@ -453,14 +471,24 @@ mod tests {
 
     #[test]
     fn test_moonshot_provider() {
-        let provider = OpenAICompatibleProvider::from_name("moonshot", "test-key", None, Some("moonshot-v1-8k".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "moonshot",
+            "test-key",
+            None,
+            Some("moonshot-v1-8k".to_string()),
+        );
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
 
     #[test]
     fn test_zhipu_provider() {
-        let provider = OpenAICompatibleProvider::from_name("zhipu", "test-jwt", None, Some("GLM-5".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "zhipu",
+            "test-jwt",
+            None,
+            Some("GLM-5".to_string()),
+        );
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
         assert_eq!(provider.api_base(), "https://open.bigmodel.cn/api/paas/v4");
@@ -480,7 +508,12 @@ mod tests {
 
     #[test]
     fn test_ollama_provider() {
-        let provider = OpenAICompatibleProvider::from_name("ollama", "ollama", None, Some("llama2".to_string()));
+        let provider = OpenAICompatibleProvider::from_name(
+            "ollama",
+            "ollama",
+            None,
+            Some("llama2".to_string()),
+        );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
         assert_eq!(provider.api_base(), "http://localhost:11434/v1");

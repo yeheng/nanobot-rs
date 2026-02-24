@@ -12,9 +12,9 @@ pub mod task_store_sqlite;
 pub use context::ContextBuilder;
 pub use executor::ToolExecutor;
 pub use history_processor::{
-    CombinedStrategy, DirectInjectStrategy, HistoryConfig, HistoryStrategy,
-    ProcessedHistory, RelevanceFilterStrategy, StrategyFactory, SummarizeStrategy,
-    TokenBudgetStrategy, TruncateStrategy,
+    CombinedStrategy, DirectInjectStrategy, HistoryConfig, HistoryStrategy, ProcessedHistory,
+    RelevanceFilterStrategy, StrategyFactory, SummarizeStrategy, TokenBudgetStrategy,
+    TruncateStrategy,
 };
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 pub use memory::MemoryStore;

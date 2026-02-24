@@ -71,7 +71,12 @@ pub struct ProcessedHistory {
 /// - Context-aware responses: use `RelevanceFilterStrategy`
 pub trait HistoryStrategy: Send + Sync {
     /// Process the given history according to this strategy
-    fn process(&self, history: Vec<SessionMessage>, current_input: &str, config: &HistoryConfig) -> ProcessedHistory;
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory;
 
     /// Get the name of this strategy
     fn name(&self) -> &str;
@@ -87,7 +92,12 @@ pub trait HistoryStrategy: Send + Sync {
 pub struct DirectInjectStrategy;
 
 impl HistoryStrategy for DirectInjectStrategy {
-    fn process(&self, history: Vec<SessionMessage>, _current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        _current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
         let messages: Vec<SessionMessage> = history.into_iter().take(config.max_messages).collect();
         let estimated_tokens = Self::estimate_tokens(&messages);
 
@@ -137,7 +147,12 @@ impl Default for TruncateStrategy {
 }
 
 impl HistoryStrategy for TruncateStrategy {
-    fn process(&self, history: Vec<SessionMessage>, _current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        _current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
         let total = history.len().min(config.max_messages);
         let trim_boundary = total.saturating_sub(self.recent_keep);
         let mut messages = Vec::with_capacity(total);
@@ -209,7 +224,10 @@ impl TokenBudgetStrategy {
     }
 
     fn estimate_tokens(messages: &[SessionMessage]) -> usize {
-        messages.iter().map(|m| Self::count_tokens(&m.content)).sum()
+        messages
+            .iter()
+            .map(|m| Self::count_tokens(&m.content))
+            .sum()
     }
 }
 
@@ -223,8 +241,14 @@ impl Default for TokenBudgetStrategy {
 }
 
 impl HistoryStrategy for TokenBudgetStrategy {
-    fn process(&self, history: Vec<SessionMessage>, _current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
-        let mut messages: Vec<SessionMessage> = history.into_iter().take(config.max_messages).collect();
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        _current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
+        let mut messages: Vec<SessionMessage> =
+            history.into_iter().take(config.max_messages).collect();
         let total = messages.len();
 
         // Separate protected (recent) and unprotected messages
@@ -232,7 +256,10 @@ impl HistoryStrategy for TokenBudgetStrategy {
         let mut protected: Vec<SessionMessage> = messages.split_off(protected_start);
 
         // Calculate current token usage
-        let mut current_tokens: usize = protected.iter().map(|m| Self::count_tokens(&m.content)).sum();
+        let mut current_tokens: usize = protected
+            .iter()
+            .map(|m| Self::count_tokens(&m.content))
+            .sum();
 
         // Process unprotected messages, starting from the most recent
         // (we want to keep more recent messages, drop older ones)
@@ -326,7 +353,12 @@ impl SummarizeStrategy {
 }
 
 impl HistoryStrategy for SummarizeStrategy {
-    fn process(&self, history: Vec<SessionMessage>, _current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        _current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
         // For now, fall back to truncation
         // Full implementation would need async support
         let truncate = TruncateStrategy::default();
@@ -372,13 +404,21 @@ impl RelevanceFilterStrategy {
     fn calculate_relevance(&self, message: &str, current_input: &str) -> f32 {
         let msg_words: std::collections::HashSet<String> = message
             .split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| w.len() > 2)
             .collect();
 
         let input_words: std::collections::HashSet<String> = current_input
             .split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| w.len() > 2)
             .collect();
 
@@ -397,7 +437,11 @@ impl RelevanceFilterStrategy {
         };
 
         // Boost if any boost keywords are present
-        let boost = if self.boost_keywords.iter().any(|kw| message.to_lowercase().contains(&kw.to_lowercase())) {
+        let boost = if self
+            .boost_keywords
+            .iter()
+            .any(|kw| message.to_lowercase().contains(&kw.to_lowercase()))
+        {
             0.2
         } else {
             0.0
@@ -417,7 +461,12 @@ impl Default for RelevanceFilterStrategy {
 }
 
 impl HistoryStrategy for RelevanceFilterStrategy {
-    fn process(&self, history: Vec<SessionMessage>, current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
         let max = config.max_messages;
         let recent_keep = config.recent_keep;
 
@@ -482,7 +531,12 @@ impl CombinedStrategy {
 }
 
 impl HistoryStrategy for CombinedStrategy {
-    fn process(&self, history: Vec<SessionMessage>, current_input: &str, config: &HistoryConfig) -> ProcessedHistory {
+    fn process(
+        &self,
+        history: Vec<SessionMessage>,
+        current_input: &str,
+        config: &HistoryConfig,
+    ) -> ProcessedHistory {
         let mut current_history = history;
         let mut total_filtered = 0;
         let mut total_summarized = 0;
@@ -612,7 +666,10 @@ mod tests {
         let config = HistoryConfig::default();
 
         let history = vec![
-            make_message("user", "This is a very long message that should be truncated"),
+            make_message(
+                "user",
+                "This is a very long message that should be truncated",
+            ),
             make_message("assistant", "This should be kept in full"),
         ];
 
@@ -661,7 +718,7 @@ mod tests {
             make_message("user", "Do you like apples?"), // Recent, always included
         ];
 
-        let result = strategy.process(history,"apples", &config);
+        let result = strategy.process(history, "apples", &config);
         assert!(!result.messages.is_empty());
     }
 

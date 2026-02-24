@@ -313,7 +313,12 @@ impl AgentLoop {
             .append_message(&mut session, "user", content, None)
             .await;
         self.sessions
-            .append_message(&mut session, "assistant", &response, Some(tools_used.clone()))
+            .append_message(
+                &mut session,
+                "assistant",
+                &response,
+                Some(tools_used.clone()),
+            )
             .await;
 
         Ok(AgentResponse {

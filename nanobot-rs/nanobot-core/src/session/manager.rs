@@ -237,7 +237,11 @@ impl SessionManager {
             }
         } else {
             // Just update metadata
-            if let Err(e) = self.store.save_session_meta(&key, session.last_consolidated).await {
+            if let Err(e) = self
+                .store
+                .save_session_meta(&key, session.last_consolidated)
+                .await
+            {
                 warn!("Failed to save session meta {} to SQLite: {}", key, e);
             }
         }
@@ -249,7 +253,9 @@ impl SessionManager {
         self.store.clear_session_messages(&session.key).await?;
 
         // Save metadata
-        self.store.save_session_meta(&session.key, session.last_consolidated).await?;
+        self.store
+            .save_session_meta(&session.key, session.last_consolidated)
+            .await?;
 
         // Insert all messages
         for msg in &session.messages {
@@ -264,14 +270,24 @@ impl SessionManager {
                 .await?;
         }
 
-        debug!("Saved session full: {} ({} messages)", session.key, session.messages.len());
+        debug!(
+            "Saved session full: {} ({} messages)",
+            session.key,
+            session.messages.len()
+        );
         Ok(())
     }
 
     /// Append a single message to session (O(1) operation).
     /// This is the preferred way to add messages for better performance.
     #[instrument(name = "session.append_message", skip(self), fields(key = %session.key))]
-    pub async fn append_message(&self, session: &mut Session, role: &str, content: &str, tools_used: Option<Vec<String>>) {
+    pub async fn append_message(
+        &self,
+        session: &mut Session,
+        role: &str,
+        content: &str,
+        tools_used: Option<Vec<String>>,
+    ) {
         let timestamp = Utc::now();
 
         // Add to in-memory session
@@ -285,7 +301,13 @@ impl SessionManager {
         // Persist to SQLite (single INSERT)
         if let Err(e) = self
             .store
-            .append_session_message(&session.key, role, content, &timestamp, tools_used.as_deref())
+            .append_session_message(
+                &session.key,
+                role,
+                content,
+                &timestamp,
+                tools_used.as_deref(),
+            )
             .await
         {
             warn!("Failed to append message to SQLite: {}", e);

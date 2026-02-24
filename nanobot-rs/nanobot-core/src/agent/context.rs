@@ -171,7 +171,9 @@ impl ContextBuilder {
         messages.push(ChatMessage::system(system_content));
 
         // Process history using the configured strategy
-        let processed = self.history_strategy.process(history, current_message, &self.history_config);
+        let processed =
+            self.history_strategy
+                .process(history, current_message, &self.history_config);
 
         // Store stats before moving messages
         let history_count = processed.messages.len();
@@ -192,9 +194,7 @@ impl ContextBuilder {
 
         debug!(
             "Built messages: {} history ({} filtered, {} tokens est.)",
-            history_count,
-            filtered_count,
-            estimated_tokens
+            history_count, filtered_count, estimated_tokens
         );
 
         messages

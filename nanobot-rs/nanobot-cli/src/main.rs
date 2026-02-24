@@ -998,7 +998,7 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
 
         // Build metadata
         let metadata = ProviderMetadata {
-            name: to_string(),
+            name: name.to_string(),
             api_base: provider_config.api_base.clone(),
             default_model: default_model.to_string(),
             available,

@@ -251,13 +251,11 @@ impl SqliteStore {
     pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn.lock().await;
         // Check if this is legacy format (has 'data' column) or new format
-        let has_data_column: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
-                [],
-                |row| row.get::<_, i32>(0),
-            )?
-            > 0;
+        let has_data_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
+            [],
+            |row| row.get::<_, i32>(0),
+        )? > 0;
 
         if has_data_column {
             let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
@@ -297,7 +295,11 @@ impl SqliteStore {
     // ── Session API (New Per-Message Storage) ──
 
     /// Create or update session metadata.
-    pub async fn save_session_meta(&self, key: &str, last_consolidated: usize) -> anyhow::Result<()> {
+    pub async fn save_session_meta(
+        &self,
+        key: &str,
+        last_consolidated: usize,
+    ) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
         let updated_at = Utc::now().to_rfc3339();
         conn.execute(
@@ -311,7 +313,8 @@ impl SqliteStore {
     /// Load session metadata.
     pub async fn load_session_meta(&self, key: &str) -> anyhow::Result<Option<SessionMeta>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
         let mut rows = stmt.query(rusqlite::params![key])?;
 
         if let Some(row) = rows.next()? {
@@ -337,7 +340,8 @@ impl SqliteStore {
     ) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
         let timestamp_str = timestamp.to_rfc3339();
-        let tools_json = tools_used.map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string()));
+        let tools_json =
+            tools_used.map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string()));
 
         // Ensure session exists
         let updated_at = Utc::now().to_rfc3339();
@@ -363,7 +367,10 @@ impl SqliteStore {
     }
 
     /// Load all messages for a session.
-    pub async fn load_session_messages(&self, session_key: &str) -> anyhow::Result<Vec<MessageRow>> {
+    pub async fn load_session_messages(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<MessageRow>> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = ?1 ORDER BY id ASC",
@@ -409,11 +416,19 @@ impl SqliteStore {
     }
 
     /// Update last_consolidated for a session.
-    pub async fn update_session_consolidated(&self, session_key: &str, last_consolidated: usize) -> anyhow::Result<()> {
+    pub async fn update_session_consolidated(
+        &self,
+        session_key: &str,
+        last_consolidated: usize,
+    ) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "UPDATE sessions SET last_consolidated = ?1, updated_at = ?2 WHERE key = ?3",
-            rusqlite::params![last_consolidated as i64, Utc::now().to_rfc3339(), session_key],
+            rusqlite::params![
+                last_consolidated as i64,
+                Utc::now().to_rfc3339(),
+                session_key
+            ],
         )?;
         Ok(())
     }

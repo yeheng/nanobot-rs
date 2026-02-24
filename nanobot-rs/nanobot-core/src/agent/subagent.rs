@@ -404,7 +404,13 @@ impl SubagentManager {
                 ..Default::default()
             };
             let tools = tool_factory();
-            let agent = match AgentLoop::with_cached_context(provider, workspace, agent_config, tools, context) {
+            let agent = match AgentLoop::with_cached_context(
+                provider,
+                workspace,
+                agent_config,
+                tools,
+                context,
+            ) {
                 Ok(a) => a,
                 Err(e) => {
                     let snap = {
