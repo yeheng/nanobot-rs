@@ -2,6 +2,12 @@
 //!
 //! Provides a simple token-budget-aware history truncation function.
 //! Keeps recent messages verbatim, truncates older messages to fit budget.
+//! Uses tiktoken-rs for accurate BPE token counting.
+
+use std::sync::OnceLock;
+
+use tiktoken_rs::CoreBPE;
+use tracing::warn;
 
 use crate::session::SessionMessage;
 
@@ -44,7 +50,7 @@ pub struct ProcessedHistory {
 /// 2. Always keep the last `recent_keep` messages verbatim
 /// 3. For older messages, include them only if they fit within the token budget
 ///
-/// Token estimation: ~3 characters per token (rough middle ground for mixed content)
+/// Token counting uses tiktoken-rs (cl100k_base BPE encoding) for accuracy.
 pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> ProcessedHistory {
     if history.is_empty() {
         return ProcessedHistory {
@@ -94,10 +100,29 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
     }
 }
 
-/// Estimate token count for text.
-/// Uses ~3 characters per token as a rough estimate.
-fn count_tokens(text: &str) -> usize {
-    text.len() / 3
+/// Global cached BPE encoder (cl100k_base, covers GPT-4/GPT-3.5).
+static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
+
+fn get_encoder() -> Option<&'static CoreBPE> {
+    ENCODER
+        .get_or_init(|| match tiktoken_rs::cl100k_base() {
+            Ok(enc) => Some(enc),
+            Err(e) => {
+                warn!("Failed to init tiktoken cl100k_base encoder: {}. Falling back to len/4.", e);
+                None
+            }
+        })
+        .as_ref()
+}
+
+/// Count tokens using tiktoken-rs BPE encoding.
+///
+/// Falls back to `text.len() / 4` if the encoder fails to initialize.
+pub fn count_tokens(text: &str) -> usize {
+    match get_encoder() {
+        Some(enc) => enc.encode_with_special_tokens(text).len(),
+        None => text.len() / 4,
+    }
 }
 
 #[cfg(test)]
@@ -201,5 +226,20 @@ mod tests {
         assert!(contents.iter().any(|c| c.starts_with("Message 2")));
         assert!(contents.iter().any(|c| c.starts_with("Message 3")));
         assert!(contents.iter().any(|c| c.starts_with("Message 4")));
+    }
+
+    #[test]
+    fn test_count_tokens_accuracy() {
+        // "hello world" is 2 tokens in cl100k_base
+        let tokens = count_tokens("hello world");
+        assert!(tokens > 0, "count_tokens should return non-zero for non-empty text");
+        assert!(tokens < 10, "count_tokens should return reasonable count for short text");
+
+        // CJK text: each character is typically 1-2 tokens
+        let cjk_tokens = count_tokens("你好世界");
+        assert!(cjk_tokens > 0, "count_tokens should handle CJK text");
+
+        // Empty string should be 0
+        assert_eq!(count_tokens(""), 0);
     }
 }

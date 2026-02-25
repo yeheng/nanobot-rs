@@ -97,6 +97,9 @@ bytes = "1"
 # SQLite (async)
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 
+# Token counting
+tiktoken-rs = "0.9"
+
 [dev-dependencies]
 tokio-test = "0.4"
 dotenvy = "0.15"

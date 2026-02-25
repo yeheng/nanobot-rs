@@ -257,6 +257,17 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
 
+        // Session summaries table (one row per session)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_summaries (
+                session_key TEXT PRIMARY KEY,
+                content     TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -509,7 +520,7 @@ impl SqliteStore {
         Ok(messages)
     }
 
-    /// Clear all messages for a session (keep metadata).
+    /// Clear all messages for a session (keep metadata). Also clears summary.
     pub async fn clear_session_messages(&self, session_key: &str) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM session_messages WHERE session_key = $1")
             .bind(session_key)
@@ -520,6 +531,8 @@ impl SqliteStore {
             .bind(session_key)
             .execute(&self.pool)
             .await?;
+        // Also clear any associated summary
+        self.delete_session_summary(session_key).await?;
         debug!("Cleared session messages: {}", session_key);
         Ok(())
     }
@@ -537,6 +550,49 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // ── Session Summary API ──
+
+    /// Save or replace a session summary (upsert).
+    pub async fn save_session_summary(
+        &self,
+        session_key: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let created_at = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_summaries (session_key, content, created_at) VALUES ($1, $2, $3)",
+        )
+        .bind(session_key)
+        .bind(content)
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved session summary: {}", session_key);
+        Ok(())
+    }
+
+    /// Load a session summary.
+    pub async fn load_session_summary(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT content FROM session_summaries WHERE session_key = $1")
+                .bind(session_key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(c,)| c))
+    }
+
+    /// Delete a session summary.
+    pub async fn delete_session_summary(&self, session_key: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM session_summaries WHERE session_key = $1")
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     // ── Cron Jobs API ──
@@ -1271,5 +1327,87 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    // ── Session Summary tests ──
+
+    #[tokio::test]
+    async fn test_sqlite_session_summary_save_and_load() {
+        let store = temp_store().await;
+
+        // No summary initially
+        assert!(store
+            .load_session_summary("test:123")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Save summary
+        store
+            .save_session_summary("test:123", "This is a summary of the conversation.")
+            .await
+            .unwrap();
+
+        let summary = store.load_session_summary("test:123").await.unwrap();
+        assert_eq!(
+            summary,
+            Some("This is a summary of the conversation.".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_summary_upsert() {
+        let store = temp_store().await;
+
+        store
+            .save_session_summary("key1", "Summary v1")
+            .await
+            .unwrap();
+        store
+            .save_session_summary("key1", "Summary v2")
+            .await
+            .unwrap();
+
+        let summary = store.load_session_summary("key1").await.unwrap();
+        assert_eq!(summary, Some("Summary v2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_session_summary_delete() {
+        let store = temp_store().await;
+
+        store
+            .save_session_summary("key1", "Summary")
+            .await
+            .unwrap();
+        assert!(store.delete_session_summary("key1").await.unwrap());
+        assert!(!store.delete_session_summary("key1").await.unwrap());
+        assert!(store.load_session_summary("key1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_clear_session_messages_clears_summary() {
+        let store = temp_store().await;
+
+        // Create session with metadata, messages, and summary
+        store.save_session_meta("key1", 0).await.unwrap();
+        let ts = Utc::now();
+        store
+            .append_session_message("key1", "user", "test", &ts, None)
+            .await
+            .unwrap();
+        store
+            .save_session_summary("key1", "Old summary")
+            .await
+            .unwrap();
+
+        // Clear messages should also clear summary
+        store.clear_session_messages("key1").await.unwrap();
+        assert!(store
+            .load_session_messages("key1")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store.load_session_summary("key1").await.unwrap().is_none());
     }
 }

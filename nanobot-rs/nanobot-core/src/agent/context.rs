@@ -3,15 +3,22 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
-use crate::providers::ChatMessage;
+use crate::memory::SqliteStore;
+use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::session::SessionMessage;
 
-use super::history_processor::{process_history, HistoryConfig};
+use super::history_processor::{count_tokens, process_history, HistoryConfig};
 
 /// Bootstrap files loaded into the system prompt (same as Python version)
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
+
+/// Fixed prompt for LLM summarization
+const SUMMARIZATION_PROMPT: &str = "Summarize the following conversation briefly, keeping key facts.";
+
+/// Prefix for injected summary assistant messages
+const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
 
 /// Context builder for constructing prompts.
 ///
@@ -25,6 +32,12 @@ pub struct ContextBuilder {
     skills_context: Option<Arc<String>>,
     /// History processing configuration
     history_config: HistoryConfig,
+    /// LLM provider for summarization calls
+    provider: Option<Arc<dyn LlmProvider>>,
+    /// SQLite store for summary persistence
+    store: Option<Arc<SqliteStore>>,
+    /// Model name for summarization requests
+    model: Option<String>,
 }
 
 impl ContextBuilder {
@@ -52,6 +65,9 @@ impl ContextBuilder {
             system_prompt: Arc::new(system_prompt),
             skills_context: None,
             history_config,
+            provider: None,
+            store: None,
+            model: None,
         })
     }
 
@@ -65,6 +81,19 @@ impl ContextBuilder {
     /// (token budget management)
     pub fn with_smart_history(mut self, token_budget: usize) -> Self {
         self.history_config.token_budget = token_budget;
+        self
+    }
+
+    /// Set the LLM provider and SQLite store for summarization support.
+    pub fn with_summarization(
+        mut self,
+        provider: Arc<dyn LlmProvider>,
+        store: Arc<SqliteStore>,
+        model: String,
+    ) -> Self {
+        self.provider = Some(provider);
+        self.store = Some(store);
+        self.model = Some(model);
         self
     }
 
@@ -125,14 +154,20 @@ impl ContextBuilder {
 
     /// Build the message list for an LLM request.
     ///
-    /// Uses token-budget-aware history processing to keep context within limits.
-    pub fn build_messages(
+    /// If summarization is configured (provider + store), this method will:
+    /// 1. Load any existing summary from SQLite
+    /// 2. Check if history exceeds token/message budgets
+    /// 3. If so, call the LLM to summarize older messages
+    /// 4. Persist the summary and clean up old messages
+    /// 5. Inject the summary as an assistant message
+    pub async fn build_messages(
         &self,
         history: Vec<SessionMessage>,
         _current_message: &str,
         memory: Option<&str>,
         _channel: &str,
         _chat_id: &str,
+        session_key: &str,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
@@ -152,6 +187,19 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
+        // Load existing summary (if store is configured)
+        let existing_summary = if let Some(store) = &self.store {
+            match store.load_session_summary(session_key).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to load session summary: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Process history with token budget awareness
         let processed = process_history(history, &self.history_config);
 
@@ -159,6 +207,38 @@ impl ContextBuilder {
         let history_count = processed.messages.len();
         let filtered_count = processed.filtered_count;
         let estimated_tokens = processed.estimated_tokens;
+
+        // Check if summarization is needed and configured
+        let needs_summarization = filtered_count > 0
+            && self.provider.is_some()
+            && self.store.is_some()
+            && self.model.is_some();
+
+        let summary = if needs_summarization {
+            // We had messages that were filtered out — summarize them
+            // The filtered messages are the ones that process_history dropped.
+            // We need to summarize whatever we have so far (existing summary + what was dropped).
+            match self.run_summarization(session_key, &processed.messages, &existing_summary).await
+            {
+                Ok(new_summary) => Some(new_summary),
+                Err(e) => {
+                    warn!("Summarization failed, using existing summary as fallback: {}", e);
+                    existing_summary
+                }
+            }
+        } else {
+            existing_summary
+        };
+
+        // Inject summary as assistant message (if exists)
+        if let Some(ref summary_text) = summary {
+            if !summary_text.is_empty() {
+                messages.push(ChatMessage::assistant(format!(
+                    "{}{}",
+                    SUMMARY_PREFIX, summary_text
+                )));
+            }
+        }
 
         // Add processed history messages
         for msg in processed.messages {
@@ -173,11 +253,91 @@ impl ContextBuilder {
         messages.push(ChatMessage::user(_current_message));
 
         debug!(
-            "Built messages: {} history ({} filtered, {} tokens est.)",
-            history_count, filtered_count, estimated_tokens
+            "Built messages: {} history ({} filtered, {} tokens est.), summary: {}",
+            history_count,
+            filtered_count,
+            estimated_tokens,
+            summary.is_some()
         );
 
         messages
+    }
+
+    /// Run LLM summarization for older messages.
+    ///
+    /// Builds a summarization prompt from existing summary + recent messages,
+    /// calls the provider, and persists the result.
+    async fn run_summarization(
+        &self,
+        session_key: &str,
+        recent_messages: &[SessionMessage],
+        existing_summary: &Option<String>,
+    ) -> anyhow::Result<String> {
+        let provider = self.provider.as_ref().unwrap();
+        let store = self.store.as_ref().unwrap();
+        let model = self.model.as_ref().unwrap();
+
+        // Build context for summarization: existing summary + recent messages
+        let mut context_parts = Vec::new();
+        if let Some(existing) = existing_summary {
+            if !existing.is_empty() {
+                context_parts.push(format!("Previous summary:\n{}", existing));
+            }
+        }
+
+        // Include recent messages as context for summarization
+        for msg in recent_messages {
+            context_parts.push(format!("{}: {}", msg.role, msg.content));
+        }
+
+        let context_text = context_parts.join("\n");
+
+        // Count tokens of context to avoid sending too much
+        let context_tokens = count_tokens(&context_text);
+        debug!(
+            "Summarization context: {} tokens, {} messages",
+            context_tokens,
+            recent_messages.len()
+        );
+
+        // Build the summarization request
+        let summarization_messages = vec![
+            ChatMessage::system(SUMMARIZATION_PROMPT),
+            ChatMessage::user(context_text),
+        ];
+
+        let request = ChatRequest {
+            model: model.clone(),
+            messages: summarization_messages,
+            tools: None,
+            temperature: Some(0.3), // Low temperature for factual summarization
+            max_tokens: Some(1024),
+            thinking: None,
+        };
+
+        let response = provider.chat(request).await?;
+        let summary_text = response
+            .content
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        if summary_text.is_empty() {
+            anyhow::bail!("Summarization returned empty content");
+        }
+
+        // Persist the summary
+        store
+            .save_session_summary(session_key, &summary_text)
+            .await?;
+
+        debug!(
+            "Generated and saved session summary for {}: {} tokens",
+            session_key,
+            count_tokens(&summary_text)
+        );
+
+        Ok(summary_text)
     }
 
     /// Add an assistant message to the history

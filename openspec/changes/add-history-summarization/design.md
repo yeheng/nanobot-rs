@@ -14,7 +14,7 @@ The `sessions.last_consolidated` field already exists in both the SQLite schema 
 
 ### Goals
 - Use `tiktoken-rs` for accurate BPE token counting, replacing all `text.len() / 3` heuristics
-- When history exceeds `max_messages` or `token_budget`, call the existing `provider.chat()` to generate a summary with a fixed prompt: "请简要总结以下对话内容，保留关键事实"
+- When history exceeds `max_messages` or `token_budget`, call the existing `provider.chat()` to generate a summary with a fixed prompt: "Summarize the following conversation briefly, keeping key facts."
 - Persist the summary in a `session_summaries` SQLite table
 - Delete the summarized messages from `session_messages`, update `last_consolidated`
 - On subsequent turns, load the persisted summary and inject it as an **assistant message** at the beginning of history, before recent messages
@@ -45,7 +45,7 @@ The `sessions.last_consolidated` field already exists in both the SQLite schema 
 **Flow:**
 1. `build_messages()` calculates total history tokens via tiktoken
 2. If `token_count > token_budget` or `message_count > max_messages`, trigger summarization
-3. Build a `ChatRequest` with system prompt "请简要总结以下对话内容，保留关键事实" and the messages to summarize
+3. Build a `ChatRequest` with system prompt "Summarize the following conversation briefly, keeping key facts." and the messages to summarize
 4. Call `provider.chat(request).await` → get summary text
 5. Write summary to `session_summaries` table
 6. Delete the summarized `session_messages` rows
@@ -53,12 +53,12 @@ The `sessions.last_consolidated` field already exists in both the SQLite schema 
 
 ### Decision 3: Summary injected as assistant message
 
-**Why:** The summary represents conversation history context. Injecting it as an assistant message (prefixed with `[历史对话摘要]:`) at the start of the history keeps the system prompt clean and makes the summary visible as part of the conversation flow. This is more natural for the LLM to consume than embedding it in the system prompt.
+**Why:** The summary represents conversation history context. Injecting it as an assistant message (prefixed with `[Conversation Summary]:`) at the start of the history keeps the system prompt clean and makes the summary visible as part of the conversation flow. This is more natural for the LLM to consume than embedding it in the system prompt. Using English reduces token cost compared to CJK prefixes.
 
 **Injection in `build_messages()`:**
 ```
 [system prompt]
-[assistant: "[历史对话摘要]: {summary}"]   ← loaded from session_summaries
+[assistant: "[Conversation Summary]: {summary}"]   ← loaded from session_summaries
 [remaining recent messages]
 [current user message]
 ```
@@ -111,7 +111,7 @@ build_messages() [async]
     │
     ├─ 5. Build final message list:
     │     [system_prompt]
-    │     [assistant: "[历史对话摘要]: {summary}"]  ← if summary exists
+    │     [assistant: "[Conversation Summary]: {summary}"]  ← if summary exists
     │     [recent messages]                         ← post-consolidated
     │     [current user message]
     │

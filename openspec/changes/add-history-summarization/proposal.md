@@ -7,9 +7,9 @@ The `process_history()` function in `history_processor.rs` drops older messages 
 ## What Changes
 
 - **tiktoken-rs token counting**: Replace `count_tokens()` with accurate BPE counting via `tiktoken-rs` (`cl100k_base` encoding). Fallback to `len() / 4` if initialization fails.
-- **LLM summarization**: When history exceeds `max_messages` or `token_budget`, call the existing `provider.chat()` with a fixed prompt ("请简要总结以下对话内容，保留关键事实") to generate a summary of older messages.
+- **LLM summarization**: When history exceeds `max_messages` or `token_budget`, call the existing `provider.chat()` with a fixed prompt ("Summarize the following conversation briefly, keeping key facts.") to generate a summary of older messages.
 - **Summary persistence**: New `session_summaries` SQLite table (single row per session). After summarization, delete the summarized `session_messages` rows and update `last_consolidated`.
-- **Summary injection**: On subsequent turns, load the persisted summary and inject it as an **assistant message** prefixed with `[历史对话摘要]:` at the start of the history, before recent messages.
+- **Summary injection**: On subsequent turns, load the persisted summary and inject it as an **assistant message** prefixed with `[Conversation Summary]:` at the start of the history, before recent messages.
 - **Async `build_messages()`**: `ContextBuilder::build_messages()` becomes `async fn` to support provider calls and SQLite I/O. Single call site in `loop_.rs` adds `.await`.
 
 ## Impact

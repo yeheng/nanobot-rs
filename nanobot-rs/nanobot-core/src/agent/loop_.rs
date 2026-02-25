@@ -111,8 +111,11 @@ impl AgentLoop {
         // Load skills
         let skills_context = Self::load_skills(&workspace);
 
-        // Build context with skills
-        let context = ContextBuilder::new(workspace.clone())?.with_skills_context(skills_context);
+        // Build context with skills and summarization support
+        let store_arc = Arc::new(memory.sqlite_store().clone());
+        let context = ContextBuilder::new(workspace.clone())?
+            .with_skills_context(skills_context)
+            .with_summarization(provider.clone(), store_arc, config.model.clone());
 
         Ok(Self {
             provider,
@@ -318,7 +321,8 @@ impl AgentLoop {
             memory_content.as_deref(),
             "cli",
             "direct",
-        );
+            session_key,
+        ).await;
 
         // Run the agent loop (streaming or non-streaming)
         let (response, reasoning, tools_used) = match (self.config.streaming, callback) {

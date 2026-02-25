@@ -2,7 +2,7 @@
 
 ### Requirement: History Summarization via LLM
 
-The system SHALL summarize older conversation messages by calling the existing `provider.chat()` when history exceeds configured limits. When the total token count (via tiktoken-rs) exceeds `token_budget` or the message count exceeds `max_messages`, the system MUST build a `ChatRequest` with the fixed prompt "请简要总结以下对话内容，保留关键事实" and the messages to be summarized, then call `provider.chat()` to produce a summary.
+The system SHALL summarize older conversation messages by calling the existing `provider.chat()` when history exceeds configured limits. When the total token count (via tiktoken-rs) exceeds `token_budget` or the message count exceeds `max_messages`, the system MUST build a `ChatRequest` with the fixed prompt "Summarize the following conversation briefly, keeping key facts." and the messages to be summarized, then call `provider.chat()` to produce a summary.
 
 #### Scenario: Summarization triggered by token budget
 
@@ -45,12 +45,12 @@ The system SHALL persist generated summaries in the `session_summaries` SQLite t
 
 ### Requirement: Summary Injection as Assistant Message
 
-The system SHALL inject persisted summaries into the conversation history as an **assistant message** prefixed with `[历史对话摘要]:`. The summary message SHALL appear after the system prompt and before any remaining recent messages.
+The system SHALL inject persisted summaries into the conversation history as an **assistant message** prefixed with `[Conversation Summary]:`. The summary message SHALL appear after the system prompt and before any remaining recent messages.
 
 #### Scenario: History built with summary
 
 - **WHEN** `build_messages()` runs AND the session has a persisted summary
-- **THEN** the returned message list SHALL be: `[system prompt] + [assistant: "[历史对话摘要]: {summary}"] + [recent messages] + [current user message]`
+- **THEN** the returned message list SHALL be: `[system prompt] + [assistant: "[Conversation Summary]: {summary}"] + [recent messages] + [current user message]`
 
 #### Scenario: History built without summary
 
