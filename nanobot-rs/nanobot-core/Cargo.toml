@@ -94,8 +94,8 @@ tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 bytes = "1"
 
-# SQLite
-rusqlite = { version = "0.38", features = ["bundled"] }
+# SQLite (async)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

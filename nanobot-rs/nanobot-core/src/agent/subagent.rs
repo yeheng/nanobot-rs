@@ -241,7 +241,7 @@ pub struct SubagentManager {
 
 impl SubagentManager {
     /// Create a new subagent manager
-    pub fn new(
+    pub async fn new(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: SubagentConfig,
@@ -252,11 +252,11 @@ impl SubagentManager {
         let db_path = data_dir.join("tasks.db");
 
         // SQLite persistence backend
-        let store = match SqliteTaskStore::new(db_path) {
+        let store = match SqliteTaskStore::new(db_path).await {
             Ok(s) => {
                 // One-time migration from legacy JSON
                 if json_path.exists() {
-                    if let Err(e) = s.migrate_from_json(&json_path) {
+                    if let Err(e) = s.migrate_from_json(&json_path).await {
                         warn!("JSON→SQLite migration failed: {}", e);
                     }
                 }
@@ -267,11 +267,8 @@ impl SubagentManager {
             }
         };
 
-        // Load existing tasks from the store (sync at init is acceptable)
-        let tasks = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(store.load_all())
-        })
-        .unwrap_or_else(|e| {
+        // Load existing tasks from the store
+        let tasks = store.load_all().await.unwrap_or_else(|e| {
             warn!("Failed to load tasks: {}, starting fresh", e);
             HashMap::new()
         });
@@ -410,7 +407,9 @@ impl SubagentManager {
                 agent_config,
                 tools,
                 context,
-            ) {
+            )
+            .await
+            {
                 Ok(a) => a,
                 Err(e) => {
                     let snap = {

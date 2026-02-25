@@ -1,12 +1,11 @@
 //! SQLite-backed memory store with FTS5 full-text search.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
-use std::sync::Mutex;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
+use sqlx::{Row, SqlitePool};
 use tracing::debug;
 
 use super::store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
@@ -14,12 +13,11 @@ use super::store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
 /// SQLite-backed memory store with FTS5 full-text search.
 ///
 /// Persists memory entries, history, long-term memory, and sessions in a
-/// single SQLite database file. Uses a single `Connection` behind a
-/// `std::sync::Mutex`, with all blocking I/O dispatched to
-/// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
+/// single SQLite database file. Uses `sqlx::SqlitePool` for native async
+/// I/O without blocking the tokio runtime.
 #[derive(Clone)]
 pub struct SqliteStore {
-    conn: Arc<Mutex<Connection>>,
+    pool: SqlitePool,
 }
 
 /// Session metadata for per-message storage
@@ -41,119 +39,175 @@ pub struct MessageRow {
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
     /// (`~/.nanobot/memory.db`).
-    pub fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
         let path = crate::config::config_dir().join("memory.db");
-        Self::with_path(path)
+        Self::with_path(path).await
     }
 
     /// Create a new `SqliteStore` with a custom database path.
-    pub fn with_path(path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn with_path(path: PathBuf) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)?;
-        Self::init_db(&conn)?;
-        Self::health_check(&conn)?;
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
+            .await?;
+
+        let store = Self { pool };
+        store.init_db().await?;
+        store.health_check().await?;
         debug!("Opened SqliteStore at {:?}", path);
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(store)
     }
 
     /// Verify that the database is usable (integrity + read/write).
-    fn health_check(conn: &Connection) -> anyhow::Result<()> {
+    async fn health_check(&self) -> anyhow::Result<()> {
         // Integrity check
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await?;
         if integrity != "ok" {
             anyhow::bail!("SQLite integrity check failed: {}", integrity);
         }
 
         // Write check — try inserting and deleting a sentinel row in kv_store
-        conn.execute(
+        sqlx::query(
             "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('__health_check__', '1', datetime('now'))",
-            [],
-        )?;
-        conn.execute("DELETE FROM kv_store WHERE key = '__health_check__'", [])?;
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM kv_store WHERE key = '__health_check__'")
+            .execute(&self.pool)
+            .await?;
 
         debug!("SQLite health check passed");
         Ok(())
     }
 
-    fn init_db(conn: &Connection) -> anyhow::Result<()> {
-        // Enable WAL mode for better concurrent read/write performance
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    async fn init_db(&self) -> anyhow::Result<()> {
+        // sqlx doesn't have execute_batch, so we run each statement separately.
+        // FTS5 virtual table + triggers must also be individual statements.
 
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS memories (
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memories (
                 id          TEXT PRIMARY KEY,
                 content     TEXT NOT NULL,
                 metadata    TEXT NOT NULL DEFAULT '{}',
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE TABLE IF NOT EXISTS memory_tags (
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memory_tags (
                 memory_id   TEXT NOT NULL,
                 tag         TEXT NOT NULL,
                 PRIMARY KEY (memory_id, tag),
                 FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag)")
+            .execute(&self.pool)
+            .await?;
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        sqlx::query(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 id,
                 content,
                 content='memories',
                 content_rowid='rowid'
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            -- Triggers to keep FTS5 index in sync
-            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+        // Triggers to keep FTS5 index in sync
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
                 INSERT INTO memories_fts(rowid, id, content)
                 VALUES (new.rowid, new.id, new.content);
-            END;
+            END",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, id, content)
                 VALUES ('delete', old.rowid, old.id, old.content);
-            END;
+            END",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+        sqlx::query(
+            "CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
                 INSERT INTO memories_fts(memories_fts, rowid, id, content)
                 VALUES ('delete', old.rowid, old.id, old.content);
                 INSERT INTO memories_fts(rowid, id, content)
                 VALUES (new.rowid, new.id, new.content);
-            END;
+            END",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            -- History table for conversation history
-            CREATE TABLE IF NOT EXISTS history (
+        // History table for conversation history
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS history (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 content     TEXT NOT NULL,
                 created_at  TEXT NOT NULL
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at);
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at)")
+            .execute(&self.pool)
+            .await?;
 
-            -- Key-value store for long-term memory and other raw data
-            CREATE TABLE IF NOT EXISTS kv_store (
+        // Key-value store for long-term memory and other raw data
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS kv_store (
                 key         TEXT PRIMARY KEY,
                 value       TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            -- Sessions table (metadata only)
-            CREATE TABLE IF NOT EXISTS sessions (
+        // Sessions table (metadata only)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sessions (
                 key         TEXT PRIMARY KEY,
                 last_consolidated INTEGER NOT NULL DEFAULT 0,
                 updated_at  TEXT NOT NULL
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
+            .execute(&self.pool)
+            .await?;
 
-            -- Session messages table (one row per message)
-            CREATE TABLE IF NOT EXISTS session_messages (
+        // Session messages table (one row per message)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_messages (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_key TEXT NOT NULL,
                 role        TEXT NOT NULL,
@@ -161,13 +215,26 @@ impl SqliteStore {
                 timestamp   TEXT NOT NULL,
                 tools_used  TEXT,
                 FOREIGN KEY (session_key) REFERENCES sessions(key) ON DELETE CASCADE
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_session_messages_session_key ON session_messages(session_key);
-            CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp);
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_messages_session_key ON session_messages(session_key)",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            -- Cron jobs table
-            CREATE TABLE IF NOT EXISTS cron_jobs (
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Cron jobs table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS cron_jobs (
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 cron        TEXT NOT NULL,
@@ -177,14 +244,19 @@ impl SqliteStore {
                 last_run    TEXT,
                 next_run    TEXT,
                 enabled     INTEGER NOT NULL DEFAULT 1
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run);
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled);
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run)")
+            .execute(&self.pool)
+            .await?;
 
-            PRAGMA foreign_keys = ON;
-            ",
-        )?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled)")
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 
@@ -192,129 +264,87 @@ impl SqliteStore {
 
     /// Read all history entries, ordered by creation time (oldest first).
     pub async fn read_history(&self) -> anyhow::Result<String> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT content FROM history ORDER BY id ASC")?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT content FROM history ORDER BY id ASC")
+            .fetch_all(&self.pool)
+            .await?;
 
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-
-            let mut result = String::new();
-            for row in rows {
-                result.push_str(&row?);
-            }
-
-            Ok(result)
-        })
-        .await?
+        let mut result = String::new();
+        for (content,) in rows {
+            result.push_str(&content);
+        }
+        Ok(result)
     }
 
     /// Append a new history entry.
     pub async fn append_history(&self, content: &str) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let content = content.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let created_at = Utc::now().to_rfc3339();
-
-            conn.execute(
-                "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
-                rusqlite::params![content, created_at],
-            )?;
-
-            debug!("Appended history entry");
-            Ok(())
-        })
-        .await?
+        let created_at = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO history (content, created_at) VALUES ($1, $2)")
+            .bind(content)
+            .bind(&created_at)
+            .execute(&self.pool)
+            .await?;
+        debug!("Appended history entry");
+        Ok(())
     }
 
     /// Write (replace) the entire history with new content.
     pub async fn write_history(&self, content: &str) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let content = content.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+        // Clear existing history
+        sqlx::query("DELETE FROM history")
+            .execute(&self.pool)
+            .await?;
 
-            // Clear existing history
-            conn.execute("DELETE FROM history", [])?;
-
-            // Insert new content as a single entry
-            let created_at = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
-                rusqlite::params![content, created_at],
-            )?;
-
-            debug!("Wrote history");
-            Ok(())
-        })
-        .await?
+        // Insert new content as a single entry
+        let created_at = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO history (content, created_at) VALUES ($1, $2)")
+            .bind(content)
+            .bind(&created_at)
+            .execute(&self.pool)
+            .await?;
+        debug!("Wrote history");
+        Ok(())
     }
 
     /// Clear all history entries.
     pub async fn clear_history(&self) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM history", [])?;
-            debug!("Cleared history");
-            Ok(())
-        })
-        .await?
+        sqlx::query("DELETE FROM history")
+            .execute(&self.pool)
+            .await?;
+        debug!("Cleared history");
+        Ok(())
     }
 
     // ── Key-value store API (replaces file-based MEMORY.md etc.) ──
 
     /// Read a raw value by key.
     pub async fn read_raw(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
-            let mut rows = stmt.query(rusqlite::params![key])?;
-
-            if let Some(row) = rows.next()? {
-                let value: String = row.get(0)?;
-                Ok(Some(value))
-            } else {
-                Ok(None)
-            }
-        })
-        .await?
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v))
     }
 
     /// Write a raw value by key (upsert).
     pub async fn write_raw(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        let value = value.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let updated_at = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![key, value, updated_at],
-            )?;
-            debug!("Wrote kv_store key: {}", key);
-            Ok(())
-        })
-        .await?
+        let updated_at = Utc::now().to_rfc3339();
+        sqlx::query("INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ($1, $2, $3)")
+            .bind(key)
+            .bind(value)
+            .bind(&updated_at)
+            .execute(&self.pool)
+            .await?;
+        debug!("Wrote kv_store key: {}", key);
+        Ok(())
     }
 
     /// Delete a raw key. Returns `true` if the key existed.
     pub async fn delete_raw(&self, key: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let changed = conn.execute(
-                "DELETE FROM kv_store WHERE key = ?1",
-                rusqlite::params![key],
-            )?;
-            Ok(changed > 0)
-        })
-        .await?
+        let result = sqlx::query("DELETE FROM kv_store WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     // ── Session API (Legacy Blob - for migration only) ──
@@ -323,63 +353,46 @@ impl SqliteStore {
     /// Used for backward compatibility during migration.
     #[deprecated(note = "Use load_session_messages instead for per-message storage")]
     pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            // Check if this is legacy format (has 'data' column) or new format
-            let has_data_column: bool = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
-                [],
-                |row| row.get::<_, i32>(0),
-            )? > 0;
-
-            if has_data_column {
-                let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
-                let mut rows = stmt.query(rusqlite::params![key])?;
-                if let Some(row) = rows.next()? {
-                    let data: String = row.get(0)?;
-                    return Ok(Some(data));
-                }
-            }
-            Ok(None)
-        })
+        // Check if this is legacy format (has 'data' column) or new format
+        let has_data_column: bool = sqlx::query_scalar::<_, i32>(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
+        )
+        .fetch_one(&self.pool)
         .await?
+            > 0;
+
+        if has_data_column {
+            let row: Option<(String,)> = sqlx::query_as("SELECT data FROM sessions WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+            return Ok(row.map(|(d,)| d));
+        }
+        Ok(None)
     }
 
     /// Save a session (legacy JSON blob format).
     #[deprecated(note = "Use append_session_message instead for per-message storage")]
     pub async fn save_session(&self, key: &str, data: &str) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        let data = data.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let updated_at = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![key, data, updated_at],
-            )?;
-            debug!("Saved session (legacy): {}", key);
-            Ok(())
-        })
-        .await?
+        let updated_at = Utc::now().to_rfc3339();
+        sqlx::query("INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES ($1, $2, $3)")
+            .bind(key)
+            .bind(data)
+            .bind(&updated_at)
+            .execute(&self.pool)
+            .await?;
+        debug!("Saved session (legacy): {}", key);
+        Ok(())
     }
 
     /// Delete a session by key.
     pub async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            // CASCADE will delete messages automatically
-            let changed = conn.execute(
-                "DELETE FROM sessions WHERE key = ?1",
-                rusqlite::params![key],
-            )?;
-            Ok(changed > 0)
-        })
-        .await?
+        // CASCADE will delete messages automatically
+        let result = sqlx::query("DELETE FROM sessions WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     // ── Session API (New Per-Message Storage) ──
@@ -390,43 +403,31 @@ impl SqliteStore {
         key: &str,
         last_consolidated: usize,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let updated_at = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT OR REPLACE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![key, last_consolidated as i64, updated_at],
-            )?;
-            debug!("Saved session meta: {}", key);
-            Ok(())
-        })
-        .await?
+        let updated_at = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR REPLACE INTO sessions (key, last_consolidated, updated_at) VALUES ($1, $2, $3)",
+        )
+        .bind(key)
+        .bind(last_consolidated as i64)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved session meta: {}", key);
+        Ok(())
     }
 
     /// Load session metadata.
     pub async fn load_session_meta(&self, key: &str) -> anyhow::Result<Option<SessionMeta>> {
-        let conn = self.conn.clone();
-        let key = key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
-            let mut rows = stmt.query(rusqlite::params![key])?;
+        let row: Option<(String, i64)> =
+            sqlx::query_as("SELECT key, last_consolidated FROM sessions WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
 
-            if let Some(row) = rows.next()? {
-                let key: String = row.get(0)?;
-                let last_consolidated: i64 = row.get(1)?;
-                Ok(Some(SessionMeta {
-                    key,
-                    last_consolidated: last_consolidated as usize,
-                }))
-            } else {
-                Ok(None)
-            }
-        })
-        .await?
+        Ok(row.map(|(key, lc)| SessionMeta {
+            key,
+            last_consolidated: lc as usize,
+        }))
     }
 
     /// Append a single message to a session (O(1) operation).
@@ -438,40 +439,41 @@ impl SqliteStore {
         timestamp: &DateTime<Utc>,
         tools_used: Option<&[String]>,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let session_key = session_key.to_string();
-        let role = role.to_string();
-        let content = content.to_string();
-        let timestamp = *timestamp;
+        let timestamp_str = timestamp.to_rfc3339();
         let tools_json =
             tools_used.map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string()));
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let timestamp_str = timestamp.to_rfc3339();
+        let updated_at = Utc::now().to_rfc3339();
 
-            // Ensure session exists
-            let updated_at = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT OR IGNORE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, 0, ?2)",
-                rusqlite::params![session_key, updated_at],
-            )?;
+        // Ensure session exists
+        sqlx::query(
+            "INSERT OR IGNORE INTO sessions (key, last_consolidated, updated_at) VALUES ($1, 0, $2)",
+        )
+        .bind(session_key)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
 
-            // Insert message
-            conn.execute(
-                "INSERT INTO session_messages (session_key, role, content, timestamp, tools_used) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![session_key, role, content, timestamp_str, tools_json],
-            )?;
+        // Insert message
+        sqlx::query(
+            "INSERT INTO session_messages (session_key, role, content, timestamp, tools_used) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(session_key)
+        .bind(role)
+        .bind(content)
+        .bind(&timestamp_str)
+        .bind(&tools_json)
+        .execute(&self.pool)
+        .await?;
 
-            // Update session updated_at
-            conn.execute(
-                "UPDATE sessions SET updated_at = ?1 WHERE key = ?2",
-                rusqlite::params![updated_at, session_key],
-            )?;
+        // Update session updated_at
+        sqlx::query("UPDATE sessions SET updated_at = $1 WHERE key = $2")
+            .bind(&updated_at)
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
 
-            debug!("Appended message to session: {}", session_key);
-            Ok(())
-        })
-        .await?
+        debug!("Appended message to session: {}", session_key);
+        Ok(())
     }
 
     /// Load all messages for a session.
@@ -479,58 +481,47 @@ impl SqliteStore {
         &self,
         session_key: &str,
     ) -> anyhow::Result<Vec<MessageRow>> {
-        let conn = self.conn.clone();
-        let session_key = session_key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = ?1 ORDER BY id ASC",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![session_key], |row| {
-                let role: String = row.get(0)?;
-                let content: String = row.get(1)?;
-                let timestamp_str: String = row.get(2)?;
-                let tools_json: Option<String> = row.get(3)?;
+        let rows: Vec<SqliteRow> = sqlx::query(
+            "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = $1 ORDER BY id ASC",
+        )
+        .bind(session_key)
+        .fetch_all(&self.pool)
+        .await?;
 
-                let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let role: String = row.get("role");
+            let content: String = row.get("content");
+            let timestamp_str: String = row.get("timestamp");
+            let tools_json: Option<String> = row.get("tools_used");
 
-                Ok(MessageRow {
-                    role,
-                    content,
-                    timestamp,
-                    tools_used: tools_json,
-                })
-            })?;
+            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
 
-            let mut messages = Vec::new();
-            for row in rows {
-                messages.push(row?);
-            }
-            Ok(messages)
-        })
-        .await?
+            messages.push(MessageRow {
+                role,
+                content,
+                timestamp,
+                tools_used: tools_json,
+            });
+        }
+        Ok(messages)
     }
 
     /// Clear all messages for a session (keep metadata).
     pub async fn clear_session_messages(&self, session_key: &str) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let session_key = session_key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "DELETE FROM session_messages WHERE session_key = ?1",
-                rusqlite::params![session_key],
-            )?;
-            conn.execute(
-                "UPDATE sessions SET last_consolidated = 0, updated_at = ?1 WHERE key = ?2",
-                rusqlite::params![Utc::now().to_rfc3339(), session_key],
-            )?;
-            debug!("Cleared session messages: {}", session_key);
-            Ok(())
-        })
-        .await?
+        sqlx::query("DELETE FROM session_messages WHERE session_key = $1")
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE sessions SET last_consolidated = 0, updated_at = $1 WHERE key = $2")
+            .bind(Utc::now().to_rfc3339())
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        debug!("Cleared session messages: {}", session_key);
+        Ok(())
     }
 
     /// Update last_consolidated for a session.
@@ -539,120 +530,91 @@ impl SqliteStore {
         session_key: &str,
         last_consolidated: usize,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let session_key = session_key.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE sessions SET last_consolidated = ?1, updated_at = ?2 WHERE key = ?3",
-                rusqlite::params![
-                    last_consolidated as i64,
-                    Utc::now().to_rfc3339(),
-                    session_key
-                ],
-            )?;
-            Ok(())
-        })
-        .await?
+        sqlx::query("UPDATE sessions SET last_consolidated = $1, updated_at = $2 WHERE key = $3")
+            .bind(last_consolidated as i64)
+            .bind(Utc::now().to_rfc3339())
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     // ── Cron Jobs API ──
 
     /// Save or update a cron job (O(1) operation).
-    pub async fn save_cron_job(
-        &self,
-        id: &str,
-        name: &str,
-        cron: &str,
-        message: &str,
-        channel: Option<&str>,
-        chat_id: Option<&str>,
-        last_run: Option<&DateTime<Utc>>,
-        next_run: Option<&DateTime<Utc>>,
-        enabled: bool,
-    ) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let id = id.to_string();
-        let name = name.to_string();
-        let cron = cron.to_string();
-        let message = message.to_string();
-        let channel = channel.map(|s| s.to_string());
-        let chat_id = chat_id.map(|s| s.to_string());
-        let last_run = last_run.map(|dt| dt.to_rfc3339());
-        let next_run = next_run.map(|dt| dt.to_rfc3339());
-        let enabled_int = if enabled { 1i64 } else { 0i64 };
+    pub async fn save_cron_job(&self, job: &CronJobRow) -> anyhow::Result<()> {
+        let last_run = job.last_run.map(|dt| dt.to_rfc3339());
+        let next_run = job.next_run.map(|dt| dt.to_rfc3339());
+        let enabled_int: i64 = if job.enabled { 1 } else { 0 };
 
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT OR REPLACE INTO cron_jobs (id, name, cron, message, channel, chat_id, last_run, next_run, enabled)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                rusqlite::params![id, name, cron, message, channel, chat_id, last_run, next_run, enabled_int],
-            )?;
-            debug!("Saved cron job: {}", id);
-            Ok(())
-        })
-        .await?
+        sqlx::query(
+            "INSERT OR REPLACE INTO cron_jobs (id, name, cron, message, channel, chat_id, last_run, next_run, enabled)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&job.id)
+        .bind(&job.name)
+        .bind(&job.cron)
+        .bind(&job.message)
+        .bind(&job.channel)
+        .bind(&job.chat_id)
+        .bind(&last_run)
+        .bind(&next_run)
+        .bind(enabled_int)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved cron job: {}", job.id);
+        Ok(())
     }
 
     /// Load all cron jobs.
     pub async fn load_cron_jobs(&self) -> anyhow::Result<Vec<CronJobRow>> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT id, name, cron, message, channel, chat_id, last_run, next_run, enabled FROM cron_jobs",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let cron: String = row.get(2)?;
-                let message: String = row.get(3)?;
-                let channel: Option<String> = row.get(4)?;
-                let chat_id: Option<String> = row.get(5)?;
-                let last_run_str: Option<String> = row.get(6)?;
-                let next_run_str: Option<String> = row.get(7)?;
-                let enabled_int: i64 = row.get(8)?;
+        let rows: Vec<SqliteRow> = sqlx::query(
+            "SELECT id, name, cron, message, channel, chat_id, last_run, next_run, enabled FROM cron_jobs",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-                let last_run = last_run_str
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|dt| dt.with_timezone(&Utc));
-                let next_run = next_run_str
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|dt| dt.with_timezone(&Utc));
+        let mut jobs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            let cron: String = row.get("cron");
+            let message: String = row.get("message");
+            let channel: Option<String> = row.get("channel");
+            let chat_id: Option<String> = row.get("chat_id");
+            let last_run_str: Option<String> = row.get("last_run");
+            let next_run_str: Option<String> = row.get("next_run");
+            let enabled_int: i64 = row.get("enabled");
 
-                Ok(CronJobRow {
-                    id,
-                    name,
-                    cron,
-                    message,
-                    channel,
-                    chat_id,
-                    last_run,
-                    next_run,
-                    enabled: enabled_int != 0,
-                })
-            })?;
+            let last_run = last_run_str
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let next_run = next_run_str
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
 
-            let mut jobs = Vec::new();
-            for row in rows {
-                jobs.push(row?);
-            }
-            Ok(jobs)
-        })
-        .await?
+            jobs.push(CronJobRow {
+                id,
+                name,
+                cron,
+                message,
+                channel,
+                chat_id,
+                last_run,
+                next_run,
+                enabled: enabled_int != 0,
+            });
+        }
+        Ok(jobs)
     }
 
     /// Delete a cron job by ID. Returns true if the job existed.
     pub async fn delete_cron_job(&self, id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.clone();
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let changed = conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![id])?;
-            Ok(changed > 0)
-        })
-        .await?
+        let result = sqlx::query("DELETE FROM cron_jobs WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -673,87 +635,72 @@ pub struct CronJobRow {
 #[async_trait]
 impl MemoryStore for SqliteStore {
     async fn save(&self, entry: &MemoryEntry) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let entry = entry.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let metadata_json = serde_json::to_string(&entry.metadata)?;
-            let created = entry.created_at.to_rfc3339();
-            let updated = entry.updated_at.to_rfc3339();
+        let metadata_json = serde_json::to_string(&entry.metadata)?;
+        let created = entry.created_at.to_rfc3339();
+        let updated = entry.updated_at.to_rfc3339();
 
-            conn.execute(
-                "INSERT OR REPLACE INTO memories (id, content, metadata, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![entry.id, entry.content, metadata_json, created, updated],
-            )?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO memories (id, content, metadata, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&entry.id)
+        .bind(&entry.content)
+        .bind(&metadata_json)
+        .bind(&created)
+        .bind(&updated)
+        .execute(&self.pool)
+        .await?;
 
-            // Sync tags: delete old, insert new
-            conn.execute(
-                "DELETE FROM memory_tags WHERE memory_id = ?1",
-                rusqlite::params![entry.id],
-            )?;
-            for tag in &entry.metadata.tags {
-                conn.execute(
-                    "INSERT INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                    rusqlite::params![entry.id, tag],
-                )?;
-            }
+        // Sync tags: delete old, insert new
+        sqlx::query("DELETE FROM memory_tags WHERE memory_id = $1")
+            .bind(&entry.id)
+            .execute(&self.pool)
+            .await?;
+        for tag in &entry.metadata.tags {
+            sqlx::query("INSERT INTO memory_tags (memory_id, tag) VALUES ($1, $2)")
+                .bind(&entry.id)
+                .bind(tag)
+                .execute(&self.pool)
+                .await?;
+        }
 
-            debug!("Saved memory entry: {}", entry.id);
-            Ok(())
-        })
-        .await?
+        debug!("Saved memory entry: {}", entry.id);
+        Ok(())
     }
 
     async fn get(&self, id: &str) -> anyhow::Result<Option<MemoryEntry>> {
-        let conn = self.conn.clone();
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT id, content, metadata, created_at, updated_at FROM memories WHERE id = ?1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![id])?;
+        let row: Option<SqliteRow> = sqlx::query(
+            "SELECT id, content, metadata, created_at, updated_at FROM memories WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
 
-            if let Some(row) = rows.next()? {
-                let entry = row_to_entry(row)?;
-                Ok(Some(entry))
-            } else {
-                Ok(None)
-            }
-        })
-        .await?
+        match row {
+            Some(row) => Ok(Some(row_to_entry(&row)?)),
+            None => Ok(None),
+        }
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.clone();
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let changed =
-                conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![id])?;
-            Ok(changed > 0)
-        })
-        .await?
+        let result = sqlx::query("DELETE FROM memories WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn search(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-        let conn = self.conn.clone();
-        let query = query.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            search_impl(&conn, &query)
-        })
-        .await?
+        search_impl(&self.pool, query).await
     }
 }
 
-fn row_to_entry(row: &rusqlite::Row<'_>) -> anyhow::Result<MemoryEntry> {
-    let id: String = row.get(0)?;
-    let content: String = row.get(1)?;
-    let metadata_json: String = row.get(2)?;
-    let created_str: String = row.get(3)?;
-    let updated_str: String = row.get(4)?;
+fn row_to_entry(row: &SqliteRow) -> anyhow::Result<MemoryEntry> {
+    let id: String = row.get("id");
+    let content: String = row.get("content");
+    let metadata_json: String = row.get("metadata");
+    let created_str: String = row.get("created_at");
+    let updated_str: String = row.get("updated_at");
 
     let metadata: MemoryMetadata = serde_json::from_str(&metadata_json)?;
     let created_at = DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc);
@@ -769,20 +716,28 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> anyhow::Result<MemoryEntry> {
 }
 
 /// Build and execute the search query dynamically.
-fn search_impl(conn: &Connection, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+///
+/// sqlx doesn't support dynamic parameter indexing like rusqlite's `?N`,
+/// so we build the SQL with `$N` positional parameters and collect bind
+/// values into typed vectors, then use `query_with` + `SqliteArguments`.
+async fn search_impl(pool: &SqlitePool, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+    // We use sqlx::query and bind dynamically via a helper approach.
+    // Since sqlx's `Query::bind` is chained, we build SQL with $1..$N
+    // and collect bind values in order.
+
     let mut sql = String::new();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut bind_values: Vec<String> = Vec::new();
     let mut param_idx = 1u32;
 
-    if query.text.is_some() {
-        sql.push_str(
+    if let Some(text) = &query.text {
+        sql.push_str(&format!(
             "SELECT m.id, m.content, m.metadata, m.created_at, m.updated_at \
              FROM memories m \
              JOIN memories_fts f ON m.id = f.id \
-             WHERE f.content MATCH ?",
-        );
-        sql.push_str(&param_idx.to_string());
-        params.push(Box::new(query.text.clone().unwrap()));
+             WHERE f.content MATCH ${}",
+            param_idx
+        ));
+        bind_values.push(text.clone());
         param_idx += 1;
     } else {
         sql.push_str(
@@ -794,20 +749,20 @@ fn search_impl(conn: &Connection, query: &MemoryQuery) -> anyhow::Result<Vec<Mem
     // Filter by source
     if let Some(source) = &query.source {
         sql.push_str(&format!(
-            " AND json_extract(m.metadata, '$.source') = ?{}",
+            " AND json_extract(m.metadata, '$.source') = ${}",
             param_idx
         ));
-        params.push(Box::new(source.clone()));
+        bind_values.push(source.clone());
         param_idx += 1;
     }
 
     // Filter by tags (AND semantics: entry must have ALL tags)
     for tag in &query.tags {
         sql.push_str(&format!(
-            " AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ?{})",
+            " AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ${})",
             param_idx
         ));
-        params.push(Box::new(tag.clone()));
+        bind_values.push(tag.clone());
         param_idx += 1;
     }
 
@@ -816,25 +771,29 @@ fn search_impl(conn: &Connection, query: &MemoryQuery) -> anyhow::Result<Vec<Mem
 
     // Limit / offset
     if let Some(limit) = query.limit {
-        sql.push_str(&format!(" LIMIT ?{}", param_idx));
-        params.push(Box::new(limit as i64));
+        sql.push_str(&format!(" LIMIT ${}", param_idx));
+        bind_values.push(limit.to_string());
         param_idx += 1;
     }
     if let Some(offset) = query.offset {
         if query.limit.is_none() {
-            sql.push_str(&format!(" LIMIT -1 OFFSET ?{}", param_idx));
+            sql.push_str(&format!(" LIMIT -1 OFFSET ${}", param_idx));
         } else {
-            sql.push_str(&format!(" OFFSET ?{}", param_idx));
+            sql.push_str(&format!(" OFFSET ${}", param_idx));
         }
-        params.push(Box::new(offset as i64));
+        bind_values.push(offset.to_string());
     }
 
-    let mut stmt = conn.prepare(&sql)?;
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let mut rows = stmt.query(param_refs.as_slice())?;
+    // Build the query with dynamic binds
+    let mut q = sqlx::query(&sql);
+    for val in &bind_values {
+        q = q.bind(val);
+    }
 
-    let mut entries = Vec::new();
-    while let Some(row) = rows.next()? {
+    let rows = q.fetch_all(pool).await?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in &rows {
         entries.push(row_to_entry(row)?);
     }
 
@@ -844,11 +803,12 @@ fn search_impl(conn: &Connection, query: &MemoryQuery) -> anyhow::Result<Vec<Mem
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn temp_store() -> SqliteStore {
+    async fn temp_store() -> SqliteStore {
         let path =
             std::env::temp_dir().join(format!("nanobot_sqlite_test_{}.db", uuid::Uuid::new_v4()));
-        SqliteStore::with_path(path).unwrap()
+        SqliteStore::with_path(path).await.unwrap()
     }
 
     fn make_entry(id: &str, content: &str) -> MemoryEntry {
@@ -884,7 +844,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_save_and_get() {
-        let store = temp_store();
+        let store = temp_store().await;
         let entry = make_entry("e1", "hello world");
         store.save(&entry).await.unwrap();
 
@@ -895,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_save_overwrites() {
-        let store = temp_store();
+        let store = temp_store().await;
         store.save(&make_entry("e1", "v1")).await.unwrap();
         store.save(&make_entry("e1", "v2")).await.unwrap();
 
@@ -905,13 +865,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_get_nonexistent() {
-        let store = temp_store();
+        let store = temp_store().await;
         assert!(store.get("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_sqlite_delete() {
-        let store = temp_store();
+        let store = temp_store().await;
         store.save(&make_entry("e1", "data")).await.unwrap();
         assert!(store.delete("e1").await.unwrap());
         assert!(!store.delete("e1").await.unwrap());
@@ -920,7 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_fts5_search() {
-        let store = temp_store();
+        let store = temp_store().await;
         store
             .save(&make_entry("e1", "rust is a systems programming language"))
             .await
@@ -950,7 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_search_by_tags() {
-        let store = temp_store();
+        let store = temp_store().await;
         store
             .save(&make_entry_with_meta("e1", "a", None, &["rust", "lang"]))
             .await
@@ -987,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_search_by_source() {
-        let store = temp_store();
+        let store = temp_store().await;
         store
             .save(&make_entry_with_meta("e1", "a", Some("user"), &[]))
             .await
@@ -1010,7 +970,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_search_limit_offset() {
-        let store = temp_store();
+        let store = temp_store().await;
         for i in 0..5 {
             store
                 .save(&make_entry(&format!("e{}", i), &format!("content {}", i)))
@@ -1033,7 +993,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_search_empty_returns_all() {
-        let store = temp_store();
+        let store = temp_store().await;
         store.save(&make_entry("e1", "a")).await.unwrap();
         store.save(&make_entry("e2", "b")).await.unwrap();
 
@@ -1043,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_metadata_extra_preserved() {
-        let store = temp_store();
+        let store = temp_store().await;
         let now = Utc::now();
         let entry = MemoryEntry {
             id: "e1".to_string(),
@@ -1074,13 +1034,13 @@ mod tests {
 
         // Write with first store instance
         {
-            let store = SqliteStore::with_path(path.clone()).unwrap();
+            let store = SqliteStore::with_path(path.clone()).await.unwrap();
             store.save(&make_entry("e1", "persisted")).await.unwrap();
         }
 
         // Read with second store instance
         {
-            let store = SqliteStore::with_path(path.clone()).unwrap();
+            let store = SqliteStore::with_path(path.clone()).await.unwrap();
             let got = store.get("e1").await.unwrap().unwrap();
             assert_eq!(got.content, "persisted");
         }
@@ -1090,7 +1050,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_concurrent_access() {
-        let store = Arc::new(temp_store());
+        let store = Arc::new(temp_store().await);
 
         let mut handles = vec![];
         for i in 0..10 {
@@ -1116,7 +1076,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_history_append_and_read() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         store.append_history("First entry\n").await.unwrap();
         store.append_history("Second entry\n").await.unwrap();
@@ -1128,14 +1088,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_history_read_empty() {
-        let store = temp_store();
+        let store = temp_store().await;
         let history = store.read_history().await.unwrap();
         assert!(history.is_empty());
     }
 
     #[tokio::test]
     async fn test_sqlite_history_write() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         store.append_history("Old entry\n").await.unwrap();
         store.write_history("New content\n").await.unwrap();
@@ -1147,7 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_history_clear() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         store.append_history("Entry 1\n").await.unwrap();
         store.append_history("Entry 2\n").await.unwrap();
@@ -1167,13 +1127,13 @@ mod tests {
 
         // Write with first store instance
         {
-            let store = SqliteStore::with_path(path.clone()).unwrap();
+            let store = SqliteStore::with_path(path.clone()).await.unwrap();
             store.append_history("Persisted history\n").await.unwrap();
         }
 
         // Read with second store instance
         {
-            let store = SqliteStore::with_path(path.clone()).unwrap();
+            let store = SqliteStore::with_path(path.clone()).await.unwrap();
             let history = store.read_history().await.unwrap();
             assert!(history.contains("Persisted history"));
         }
@@ -1185,7 +1145,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_kv_read_write() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         store.write_raw("MEMORY.md", "# Memory").await.unwrap();
         assert_eq!(
@@ -1199,7 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_kv_upsert() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         store.write_raw("key1", "v1").await.unwrap();
         store.write_raw("key1", "v2").await.unwrap();
@@ -1212,7 +1172,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_kv_nonexistent() {
-        let store = temp_store();
+        let store = temp_store().await;
         assert_eq!(store.read_raw("nope").await.unwrap(), None);
     }
 
@@ -1220,7 +1180,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_session_meta_and_messages() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         // Test session metadata
         store.save_session_meta("test:123", 0).await.unwrap();
@@ -1257,7 +1217,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_session_upsert_meta() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         // First insert
         store.save_session_meta("key1", 5).await.unwrap();
@@ -1272,7 +1232,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_session_delete() {
-        let store = temp_store();
+        let store = temp_store().await;
 
         // Create session with metadata and messages
         store.save_session_meta("key1", 0).await.unwrap();
@@ -1304,7 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_session_nonexistent() {
-        let store = temp_store();
+        let store = temp_store().await;
         assert!(store.load_session_meta("nope").await.unwrap().is_none());
         assert!(store
             .load_session_messages("nope")

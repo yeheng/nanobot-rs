@@ -97,7 +97,7 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
 /// Estimate token count for text.
 /// Uses ~3 characters per token as a rough estimate.
 fn count_tokens(text: &str) -> usize {
-    text.len() / 3.max(1)
+    text.len() / 3
 }
 
 #[cfg(test)]

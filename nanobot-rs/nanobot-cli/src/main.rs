@@ -412,6 +412,7 @@ async fn cmd_agent(
     }
 
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
+        .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
     let use_streaming = !no_stream;
@@ -582,7 +583,7 @@ async fn cmd_gateway() -> Result<()> {
     let bus = Arc::new(bus);
 
     // Create cron service
-    let cron_service = Arc::new(nanobot_core::cron::CronService::new(workspace.clone()));
+    let cron_service = Arc::new(nanobot_core::cron::CronService::new(workspace.clone()).await);
 
     // Create agent with all dependencies
     let provider_info = find_provider(&config)?;
@@ -741,6 +742,7 @@ async fn cmd_gateway() -> Result<()> {
             agent_config,
             tools,
         )
+        .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?,
     );
 

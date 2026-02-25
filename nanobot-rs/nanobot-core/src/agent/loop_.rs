@@ -99,13 +99,13 @@ impl AgentLoop {
     /// # Errors
     ///
     /// Returns an error if workspace bootstrap files exist but cannot be read.
-    pub fn new(
+    pub async fn new(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: ToolRegistry,
     ) -> Result<Self> {
-        let memory = MemoryStore::new();
+        let memory = MemoryStore::new().await;
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         // Load skills
@@ -135,14 +135,14 @@ impl AgentLoop {
     ///
     /// This constructor performs **no synchronous file I/O** and is safe
     /// to call in async contexts.
-    pub fn with_cached_context(
+    pub async fn with_cached_context(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: ToolRegistry,
         context: ContextBuilder,
     ) -> Result<Self> {
-        let memory = MemoryStore::new();
+        let memory = MemoryStore::new().await;
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         Ok(Self {

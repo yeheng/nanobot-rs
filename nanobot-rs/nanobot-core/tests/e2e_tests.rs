@@ -53,6 +53,7 @@ async fn test_agent_initialization() {
     let tools = nanobot_core::tools::ToolRegistry::new();
     let agent =
         nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools)
+            .await
             .unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
@@ -149,7 +150,9 @@ async fn test_session_manager() {
     use nanobot_core::session::SessionManager;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db"))
+        .await
+        .unwrap();
     let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:session1").await;
@@ -168,7 +171,9 @@ async fn test_session_clear() {
     use nanobot_core::session::SessionManager;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db"))
+        .await
+        .unwrap();
     let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:clear").await;
@@ -185,7 +190,9 @@ async fn test_session_tools_used() {
     use nanobot_core::session::SessionManager;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db")).unwrap();
+    let store = SqliteStore::with_path(dir.path().join("test.db"))
+        .await
+        .unwrap();
     let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:tools").await;
@@ -379,7 +386,9 @@ async fn test_memory_store() {
     use nanobot_core::memory::SqliteStore;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("mem.db")).unwrap();
+    let store = SqliteStore::with_path(dir.path().join("mem.db"))
+        .await
+        .unwrap();
     let memory = MemoryStore::with_store(store);
 
     let _ = memory.write_long_term("User likes pizza.").await;
@@ -480,7 +489,7 @@ async fn test_cron_tool_schema() {
     use nanobot_core::tools::CronTool;
     use std::sync::Arc;
 
-    let service = Arc::new(CronService::new(PathBuf::from("/tmp/test-cron.json")));
+    let service = Arc::new(CronService::new(PathBuf::from("/tmp/test-cron.json")).await);
     let tool = CronTool::new(service);
 
     assert_eq!(tool.name(), "cron");

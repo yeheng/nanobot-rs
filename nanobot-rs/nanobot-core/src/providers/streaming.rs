@@ -89,7 +89,10 @@ pub fn sse_lines(
                             // Skip empty lines, continue looking
                         }
                         Err(e) => {
-                            return Some((Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)), (stream, buffer)));
+                            return Some((
+                                Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)),
+                                (stream, buffer),
+                            ));
                         }
                     }
                     continue;
@@ -112,11 +115,17 @@ pub fn sse_lines(
                             let remaining = std::mem::take(&mut buffer);
                             match String::from_utf8(remaining) {
                                 Ok(line) if !line.trim().is_empty() => {
-                                    return Some((Ok(line.trim_end().to_string()), (stream, buffer)));
+                                    return Some((
+                                        Ok(line.trim_end().to_string()),
+                                        (stream, buffer),
+                                    ));
                                 }
                                 Ok(_) => {}
                                 Err(e) => {
-                                    return Some((Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)), (stream, buffer)));
+                                    return Some((
+                                        Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)),
+                                        (stream, buffer),
+                                    ));
                                 }
                             }
                         }

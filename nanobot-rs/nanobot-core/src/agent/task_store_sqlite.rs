@@ -5,11 +5,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
-use std::sync::Mutex;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
+use sqlx::{Row, SqlitePool};
 use tracing::{debug, info};
 
 use super::subagent::{SubagentTask, TaskPriority, TaskStatus};
@@ -19,27 +18,36 @@ use super::task_store::load_from_json;
 ///
 /// Each task is stored as a single row, enabling O(1) upserts.
 pub struct SqliteTaskStore {
-    conn: Arc<Mutex<Connection>>,
+    pool: SqlitePool,
 }
 
 impl SqliteTaskStore {
     /// Open (or create) the SQLite database at `db_path` and initialise the schema.
-    pub fn new(db_path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn new(db_path: PathBuf) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&db_path)?;
-        Self::init_db(&conn)?;
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(3)
+            .connect_with(options)
+            .await?;
+
+        let store = Self { pool };
+        store.init_db().await?;
         debug!("Opened SqliteTaskStore at {:?}", db_path);
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(store)
     }
 
-    fn init_db(conn: &Connection) -> anyhow::Result<()> {
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS tasks (
+    async fn init_db(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tasks (
                 id            TEXT PRIMARY KEY,
                 prompt        TEXT NOT NULL,
                 channel       TEXT NOT NULL,
@@ -55,69 +63,84 @@ impl SqliteTaskStore {
                 timeout_secs  INTEGER NOT NULL DEFAULT 300,
                 progress      INTEGER NOT NULL DEFAULT 0,
                 metadata      TEXT NOT NULL DEFAULT '{}'
-            );
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
-            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-            ",
-        )?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 
     /// Load all tasks from SQLite.
     pub async fn load_all(&self) -> anyhow::Result<HashMap<String, SubagentTask>> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT id, prompt, channel, chat_id, session_key, status, priority,
-                        created_at, started_at, completed_at, result, error,
-                        timeout_secs, progress, metadata
-                 FROM tasks",
-            )?;
-            let mut rows = stmt.query([])?;
-            let mut map = HashMap::new();
-            while let Some(row) = rows.next()? {
-                let task = Self::row_to_task(row)?;
-                map.insert(task.id.clone(), task);
-            }
-            info!("Loaded {} tasks from SQLite", map.len());
-            Ok(map)
-        })
-        .await?
+        let rows: Vec<SqliteRow> = sqlx::query(
+            "SELECT id, prompt, channel, chat_id, session_key, status, priority,
+                    created_at, started_at, completed_at, result, error,
+                    timeout_secs, progress, metadata
+             FROM tasks",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map = HashMap::new();
+        for row in &rows {
+            let task = Self::row_to_task(row)?;
+            map.insert(task.id.clone(), task);
+        }
+        info!("Loaded {} tasks from SQLite", map.len());
+        Ok(map)
     }
 
     /// Persist a single task (insert or update).
     pub async fn save_task(&self, task: &SubagentTask) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let task = task.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            Self::upsert_task_sync(&conn, &task)?;
-            Ok(())
-        })
-        .await?
+        sqlx::query(
+            "INSERT OR REPLACE INTO tasks
+             (id, prompt, channel, chat_id, session_key, status, priority,
+              created_at, started_at, completed_at, result, error,
+              timeout_secs, progress, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+        )
+        .bind(&task.id)
+        .bind(&task.prompt)
+        .bind(&task.channel)
+        .bind(&task.chat_id)
+        .bind(&task.session_key)
+        .bind(status_to_int(&task.status))
+        .bind(priority_to_int(&task.priority))
+        .bind(task.created_at.to_rfc3339())
+        .bind(task.started_at.map(|t| t.to_rfc3339()))
+        .bind(task.completed_at.map(|t| t.to_rfc3339()))
+        .bind(&task.result)
+        .bind(&task.error)
+        .bind(task.timeout_secs as i64)
+        .bind(task.progress as i32)
+        .bind(serde_json::to_string(&task.metadata)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Remove tasks by IDs.
     pub async fn remove_tasks(&self, ids: &[String]) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let ids = ids.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            for id in &ids {
-                conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
-            }
-            debug!("Removed {} tasks from SQLite", ids.len());
-            Ok(())
-        })
-        .await?
+        for id in ids {
+            sqlx::query("DELETE FROM tasks WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        debug!("Removed {} tasks from SQLite", ids.len());
+        Ok(())
     }
 
     /// Migrate tasks from a legacy `tasks.json` file into SQLite.
     ///
     /// After a successful import the JSON file is renamed to `*.migrated`
     /// so migration only runs once.
-    pub fn migrate_from_json(&self, json_path: &PathBuf) -> anyhow::Result<()> {
+    pub async fn migrate_from_json(&self, json_path: &PathBuf) -> anyhow::Result<()> {
         if !json_path.exists() {
             return Ok(());
         }
@@ -131,19 +154,13 @@ impl SqliteTaskStore {
             return Ok(());
         }
 
-        // Use blocking approach since this runs at init
-        let task_list: Vec<&SubagentTask> = tasks.values().collect();
-        let conn = Connection::open(json_path.parent().unwrap().join("tasks.db"))?;
-        Self::init_db(&conn)?;
-        let tx = conn.unchecked_transaction()?;
-        for task in &task_list {
-            Self::upsert_task_sync(&tx, task)?;
+        for task in tasks.values() {
+            self.save_task(task).await?;
         }
-        tx.commit()?;
 
         info!(
             "Migrated {} tasks from {:?} to SQLite",
-            task_list.len(),
+            tasks.len(),
             json_path
         );
 
@@ -154,51 +171,22 @@ impl SqliteTaskStore {
         Ok(())
     }
 
-    /// Synchronous upsert for a single task (used in migration and save).
-    fn upsert_task_sync(conn: &Connection, task: &SubagentTask) -> anyhow::Result<()> {
-        conn.execute(
-            "INSERT OR REPLACE INTO tasks
-             (id, prompt, channel, chat_id, session_key, status, priority,
-              created_at, started_at, completed_at, result, error,
-              timeout_secs, progress, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            rusqlite::params![
-                task.id,
-                task.prompt,
-                task.channel,
-                task.chat_id,
-                task.session_key,
-                status_to_int(&task.status),
-                priority_to_int(&task.priority),
-                task.created_at.to_rfc3339(),
-                task.started_at.map(|t| t.to_rfc3339()),
-                task.completed_at.map(|t| t.to_rfc3339()),
-                task.result,
-                task.error,
-                task.timeout_secs as i64,
-                task.progress as i32,
-                serde_json::to_string(&task.metadata)?,
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn row_to_task(row: &rusqlite::Row<'_>) -> anyhow::Result<SubagentTask> {
-        let id: String = row.get(0)?;
-        let prompt: String = row.get(1)?;
-        let channel: String = row.get(2)?;
-        let chat_id: String = row.get(3)?;
-        let session_key: String = row.get(4)?;
-        let status = parse_status(row, 5)?;
-        let priority = parse_priority(row, 6)?;
-        let created_str: String = row.get(7)?;
-        let started_str: Option<String> = row.get(8)?;
-        let completed_str: Option<String> = row.get(9)?;
-        let result: Option<String> = row.get(10)?;
-        let error: Option<String> = row.get(11)?;
-        let timeout_secs: i64 = row.get(12)?;
-        let progress: i32 = row.get(13)?;
-        let metadata_json: String = row.get(14)?;
+    fn row_to_task(row: &SqliteRow) -> anyhow::Result<SubagentTask> {
+        let id: String = row.get("id");
+        let prompt: String = row.get("prompt");
+        let channel: String = row.get("channel");
+        let chat_id: String = row.get("chat_id");
+        let session_key: String = row.get("session_key");
+        let status = parse_status_from_row(row)?;
+        let priority = parse_priority_from_row(row)?;
+        let created_str: String = row.get("created_at");
+        let started_str: Option<String> = row.get("started_at");
+        let completed_str: Option<String> = row.get("completed_at");
+        let result: Option<String> = row.get("result");
+        let error: Option<String> = row.get("error");
+        let timeout_secs: i64 = row.get("timeout_secs");
+        let progress: i32 = row.get("progress");
+        let metadata_json: String = row.get("metadata");
 
         let created_at = DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc);
         let started_at = started_str
@@ -278,14 +266,14 @@ fn int_to_priority(v: i32) -> anyhow::Result<TaskPriority> {
     }
 }
 
-/// Parse a status column value that may be an integer, numeric string, or legacy name string.
-fn parse_status(row: &rusqlite::Row<'_>, idx: usize) -> anyhow::Result<TaskStatus> {
-    // Try integer first (if column has INTEGER affinity)
-    if let Ok(v) = row.get::<_, i32>(idx) {
+/// Parse a status column value that may be an integer or legacy name string.
+fn parse_status_from_row(row: &SqliteRow) -> anyhow::Result<TaskStatus> {
+    // Try integer first
+    if let Ok(v) = row.try_get::<i32, _>("status") {
         return int_to_status(v);
     }
     // Fall back to string
-    let s: String = row.get(idx)?;
+    let s: String = row.get("status");
     // Try numeric string (e.g. "0", "1")
     if let Ok(v) = s.parse::<i32>() {
         return int_to_status(v);
@@ -302,14 +290,14 @@ fn parse_status(row: &rusqlite::Row<'_>, idx: usize) -> anyhow::Result<TaskStatu
     }
 }
 
-/// Parse a priority column value that may be an integer, numeric string, or legacy name string.
-fn parse_priority(row: &rusqlite::Row<'_>, idx: usize) -> anyhow::Result<TaskPriority> {
-    // Try integer first (if column has INTEGER affinity)
-    if let Ok(v) = row.get::<_, i32>(idx) {
+/// Parse a priority column value that may be an integer or legacy name string.
+fn parse_priority_from_row(row: &SqliteRow) -> anyhow::Result<TaskPriority> {
+    // Try integer first
+    if let Ok(v) = row.try_get::<i32, _>("priority") {
         return int_to_priority(v);
     }
     // Fall back to string
-    let s: String = row.get(idx)?;
+    let s: String = row.get("priority");
     // Try numeric string (e.g. "0", "1")
     if let Ok(v) = s.parse::<i32>() {
         return int_to_priority(v);
@@ -335,7 +323,9 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_store_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteTaskStore::new(dir.path().join("tasks.db")).unwrap();
+        let store = SqliteTaskStore::new(dir.path().join("tasks.db"))
+            .await
+            .unwrap();
 
         let t = make_task("hello");
         store.save_task(&t).await.unwrap();
@@ -348,7 +338,9 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_store_upsert() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteTaskStore::new(dir.path().join("tasks.db")).unwrap();
+        let store = SqliteTaskStore::new(dir.path().join("tasks.db"))
+            .await
+            .unwrap();
 
         let mut t = make_task("v1");
         store.save_task(&t).await.unwrap();
@@ -368,7 +360,9 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_store_remove() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteTaskStore::new(dir.path().join("tasks.db")).unwrap();
+        let store = SqliteTaskStore::new(dir.path().join("tasks.db"))
+            .await
+            .unwrap();
 
         let t1 = make_task("a");
         let t2 = make_task("b");
@@ -390,7 +384,9 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_store_all_fields_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SqliteTaskStore::new(dir.path().join("tasks.db")).unwrap();
+        let store = SqliteTaskStore::new(dir.path().join("tasks.db"))
+            .await
+            .unwrap();
 
         let mut t = SubagentTask::new("full test", "telegram", "chat42", "session:x")
             .with_priority(TaskPriority::Urgent)
@@ -436,8 +432,10 @@ mod tests {
         std::fs::write(&json_path, &json).unwrap();
 
         // Create SQLite store and migrate
-        let store = SqliteTaskStore::new(dir.path().join("tasks.db")).unwrap();
-        store.migrate_from_json(&json_path).unwrap();
+        let store = SqliteTaskStore::new(dir.path().join("tasks.db"))
+            .await
+            .unwrap();
+        store.migrate_from_json(&json_path).await.unwrap();
 
         // JSON file should be renamed
         assert!(!json_path.exists());

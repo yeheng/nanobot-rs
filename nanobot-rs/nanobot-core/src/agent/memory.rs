@@ -19,18 +19,14 @@ pub struct MemoryStore {
     store: SqliteStore,
 }
 
-impl Default for MemoryStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MemoryStore {
     /// Create a new memory store.
     ///
     /// Opens the default `SqliteStore` at `~/.nanobot/memory.db`.
-    pub fn new() -> Self {
-        let store = SqliteStore::new().expect("Failed to open SqliteStore");
+    pub async fn new() -> Self {
+        let store = SqliteStore::new()
+            .await
+            .expect("Failed to open SqliteStore");
 
         Self { store }
     }
