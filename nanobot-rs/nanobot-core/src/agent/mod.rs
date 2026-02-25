@@ -11,11 +11,7 @@ pub mod task_store_sqlite;
 
 pub use context::ContextBuilder;
 pub use executor::ToolExecutor;
-pub use history_processor::{
-    CombinedStrategy, DirectInjectStrategy, HistoryConfig, HistoryStrategy, ProcessedHistory,
-    RelevanceFilterStrategy, StrategyFactory, SummarizeStrategy, TokenBudgetStrategy,
-    TruncateStrategy,
-};
+pub use history_processor::{process_history, HistoryConfig, ProcessedHistory};
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 pub use memory::MemoryStore;
 pub use subagent::{

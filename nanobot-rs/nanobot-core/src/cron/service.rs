@@ -1,12 +1,17 @@
 //! Cron service for scheduled tasks
+//!
+//! Jobs are persisted in SQLite for reliability and O(1) operations.
+//! Legacy JSON files are automatically migrated on startup.
 
-use std::collections::HashMap;
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, warn};
+
+use crate::memory::{CronJobRow, SqliteStore};
 
 /// A scheduled job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,102 +91,159 @@ impl CronJob {
     }
 }
 
+impl From<CronJobRow> for CronJob {
+    fn from(row: CronJobRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            cron: row.cron,
+            message: row.message,
+            channel: row.channel,
+            chat_id: row.chat_id,
+            last_run: row.last_run,
+            next_run: row.next_run,
+            enabled: row.enabled,
+        }
+    }
+}
+
 /// Cron service for scheduled tasks.
 ///
-/// Jobs are kept in memory and immediately flushed to disk on any changes.
+/// Jobs are persisted in SQLite for reliability. Legacy JSON files
+/// are automatically migrated on startup.
 pub struct CronService {
-    jobs: RwLock<HashMap<String, CronJob>>,
-    jobs_dir: std::path::PathBuf,
+    jobs: RwLock<Vec<CronJob>>,
+    store: SqliteStore,
 }
 
 impl CronService {
-    /// Create a new cron service
-    pub fn new(workspace: std::path::PathBuf) -> Self {
-        let jobs_dir = workspace.join("cron");
-        let _ = std::fs::create_dir_all(&jobs_dir);
+    /// Create a new cron service with SQLite persistence.
+    ///
+    /// Uses the default SqliteStore path (~/.nanobot/memory.db).
+    /// Automatically migrates legacy JSON files if they exist.
+    pub fn new(workspace: PathBuf) -> Self {
+        let store = SqliteStore::new().expect("Failed to create SqliteStore for cron service");
+        Self::with_store(store, workspace)
+    }
 
-        let jobs = RwLock::new(HashMap::new());
+    /// Create a new cron service with a provided SqliteStore.
+    ///
+    /// Automatically migrates legacy JSON files if they exist.
+    pub fn with_store(store: SqliteStore, workspace: PathBuf) -> Self {
+        // Try to load from SQLite first
+        let jobs = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Load from SQLite
+                match store.load_cron_jobs().await {
+                    Ok(jobs) if !jobs.is_empty() => {
+                        let jobs: Vec<CronJob> = jobs.into_iter().map(CronJob::from).collect();
+                        info!("Loaded {} cron jobs from SQLite", jobs.len());
+                        return jobs;
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("Failed to load cron jobs from SQLite: {}", e),
+                }
 
-        // Load existing jobs synchronously during init
-        {
-            let path = jobs_dir.join("jobs.json");
-            if path.exists() {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        if let Ok(loaded) =
-                            serde_json::from_str::<HashMap<String, CronJob>>(&content)
-                        {
-                            let loaded: HashMap<String, CronJob> = loaded
-                                .into_iter()
-                                .map(|(id, mut job)| {
-                                    job.next_run = CronJob::calculate_next_run(&job.cron);
-                                    (id, job)
-                                })
-                                .collect();
-                            info!("Loaded {} cron jobs", loaded.len());
-                            *jobs.blocking_write() = loaded;
+                // Try to migrate from legacy JSON
+                let json_path = workspace.join("cron").join("jobs.json");
+                if json_path.exists() {
+                    match Self::migrate_from_json(&store, &json_path).await {
+                        Ok(jobs) => {
+                            info!("Migrated {} cron jobs from JSON", jobs.len());
+                            // Rename old file to prevent re-migration
+                            let backup_path = json_path.with_extension("json.migrated");
+                            if let Err(e) = tokio::fs::rename(&json_path, &backup_path).await {
+                                warn!("Failed to rename migrated JSON file: {}", e);
+                            }
+                            return jobs;
                         }
-                    }
-                    Err(e) => {
-                        warn!("Failed to read cron jobs file: {}", e);
+                        Err(e) => warn!("Failed to migrate cron jobs from JSON: {}", e),
                     }
                 }
-            }
-        }
 
-        Self { jobs, jobs_dir }
-    }
+                Vec::new()
+            })
+        });
 
-    /// Force-flush jobs to disk immediately (async, atomic write via temp file)
-    async fn flush_async(&self, jobs: &HashMap<String, CronJob>) {
-        let path = self.jobs_dir.join("jobs.json");
-        match serde_json::to_string_pretty(jobs) {
-            Ok(content) => {
-                let tmp_path = path.with_extension("json.tmp");
-                if let Err(e) = tokio::fs::write(&tmp_path, &content).await {
-                    warn!("Failed to write cron jobs tmp file: {}", e);
-                    return;
-                }
-                if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
-                    warn!("Failed to rename cron jobs file: {}", e);
-                }
-            }
-            Err(e) => warn!("Failed to serialize cron jobs: {}", e),
+        Self {
+            jobs: RwLock::new(jobs),
+            store,
         }
     }
 
-    /// Add a job (immediately flushed since it's a user-facing mutation)
+    /// Migrate jobs from legacy JSON file to SQLite.
+    async fn migrate_from_json(store: &SqliteStore, json_path: &std::path::Path) -> anyhow::Result<Vec<CronJob>> {
+        let content = tokio::fs::read_to_string(json_path).await?;
+        let legacy_jobs: std::collections::HashMap<String, CronJob> = serde_json::from_str(&content)?;
+
+        let mut jobs = Vec::new();
+        for (_id, mut job) in legacy_jobs {
+            // Recalculate next_run in case it's stale
+            job.next_run = CronJob::calculate_next_run(&job.cron);
+
+            store.save_cron_job(
+                &job.id,
+                &job.name,
+                &job.cron,
+                &job.message,
+                job.channel.as_deref(),
+                job.chat_id.as_deref(),
+                job.last_run.as_ref(),
+                job.next_run.as_ref(),
+                job.enabled,
+            ).await?;
+
+            jobs.push(job);
+        }
+
+        Ok(jobs)
+    }
+
+    /// Add a job (immediately persisted to SQLite)
     #[instrument(name = "cron.add_job", skip_all, fields(job_id = %job.id))]
     pub async fn add_job(&self, job: CronJob) -> anyhow::Result<()> {
+        self.store.save_cron_job(
+            &job.id,
+            &job.name,
+            &job.cron,
+            &job.message,
+            job.channel.as_deref(),
+            job.chat_id.as_deref(),
+            job.last_run.as_ref(),
+            job.next_run.as_ref(),
+            job.enabled,
+        ).await?;
+
         let mut jobs = self.jobs.write().await;
-        jobs.insert(job.id.clone(), job.clone());
-        self.flush_async(&jobs).await;
+        jobs.push(job.clone());
         info!("Added cron job: {} ({})", job.name, job.id);
         Ok(())
     }
 
-    /// Remove a job (immediately flushed since it's a user-facing mutation)
+    /// Remove a job (immediately persisted to SQLite)
     #[instrument(name = "cron.remove_job", skip(self), fields(job_id = %id))]
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
-        let mut jobs = self.jobs.write().await;
-        let removed = jobs.remove(id).is_some();
+        let removed = self.store.delete_cron_job(id).await?;
+
         if removed {
-            self.flush_async(&jobs).await;
+            let mut jobs = self.jobs.write().await;
+            jobs.retain(|j| j.id != id);
             info!("Removed cron job: {}", id);
         }
+
         Ok(removed)
     }
 
     /// Get a job
     pub async fn get_job(&self, id: &str) -> Option<CronJob> {
         let jobs = self.jobs.read().await;
-        jobs.get(id).cloned()
+        jobs.iter().find(|j| j.id == id).cloned()
     }
 
     /// List all jobs
     pub async fn list_jobs(&self) -> Vec<CronJob> {
         let jobs = self.jobs.read().await;
-        jobs.values().cloned().collect()
+        jobs.clone()
     }
 
     /// Get jobs that are due to run
@@ -190,27 +252,34 @@ impl CronService {
         let jobs = self.jobs.read().await;
         let now = Utc::now();
 
-        jobs.values()
+        jobs.iter()
             .filter(|job| job.enabled && job.next_run.is_some_and(|next| next <= now))
             .cloned()
             .collect()
     }
 
-    /// Mark a job as run (immediately flushed)
+    /// Mark a job as run (immediately persisted to SQLite)
     #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
     pub async fn mark_job_run(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
-        let found = if let Some(job) = jobs.get_mut(id) {
-            job.update_next_run();
-            true
-        } else {
-            false
-        };
 
-        if found {
-            let jobs_snapshot = jobs.clone();
-            drop(jobs);
-            self.flush_async(&jobs_snapshot).await;
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            job.update_next_run();
+
+            if let Err(e) = self.store.save_cron_job(
+                &job.id,
+                &job.name,
+                &job.cron,
+                &job.message,
+                job.channel.as_deref(),
+                job.chat_id.as_deref(),
+                job.last_run.as_ref(),
+                job.next_run.as_ref(),
+                job.enabled,
+            ).await {
+                warn!("Failed to persist cron job {}: {}", id, e);
+            }
+
             debug!("Marked job {} as run", id);
         }
     }

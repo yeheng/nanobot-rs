@@ -5,5 +5,5 @@
 mod sqlite;
 mod store;
 
-pub use sqlite::SqliteStore;
+pub use sqlite::{CronJobRow, SqliteStore};
 pub use store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};

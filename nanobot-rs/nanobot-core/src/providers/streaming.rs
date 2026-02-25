@@ -65,19 +65,32 @@ pub fn parse_sse_stream(
 /// separated by `\n`. We yield each non-empty line.
 ///
 /// This is a shared utility for all SSE-based streaming providers.
+///
+/// Uses `Vec<u8>` buffering to correctly handle multi-byte UTF-8 characters
+/// that may be split across network chunks.
 pub fn sse_lines(
     byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
 ) -> impl Stream<Item = Result<String>> + Send + 'static {
     futures::stream::unfold(
-        (byte_stream.boxed(), String::new()),
+        (byte_stream.boxed(), Vec::<u8>::new()),
         |(mut stream, mut buffer)| async move {
             loop {
-                // Try to extract a complete line from the buffer
-                if let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer[..newline_pos].to_string();
-                    buffer = buffer[newline_pos + 1..].to_string();
-                    if !line.trim().is_empty() {
-                        return Some((Ok(line), (stream, buffer)));
+                // Try to find a newline in the byte buffer
+                if let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+                    // Extract the line bytes
+                    let line_bytes: Vec<u8> = buffer.drain(..=newline_pos).collect();
+                    // Convert to string (remove the newline)
+                    match String::from_utf8(line_bytes) {
+                        Ok(line) => {
+                            let line = line.trim_end().to_string();
+                            if !line.is_empty() {
+                                return Some((Ok(line), (stream, buffer)));
+                            }
+                            // Skip empty lines, continue looking
+                        }
+                        Err(e) => {
+                            return Some((Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)), (stream, buffer)));
+                        }
                     }
                     continue;
                 }
@@ -85,8 +98,7 @@ pub fn sse_lines(
                 // Need more data
                 match stream.next().await {
                     Some(Ok(bytes)) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        buffer.push_str(&text);
+                        buffer.extend_from_slice(&bytes);
                     }
                     Some(Err(e)) => {
                         return Some((
@@ -96,9 +108,17 @@ pub fn sse_lines(
                     }
                     None => {
                         // Stream ended; yield any remaining data
-                        if !buffer.trim().is_empty() {
+                        if !buffer.is_empty() {
                             let remaining = std::mem::take(&mut buffer);
-                            return Some((Ok(remaining), (stream, buffer)));
+                            match String::from_utf8(remaining) {
+                                Ok(line) if !line.trim().is_empty() => {
+                                    return Some((Ok(line.trim_end().to_string()), (stream, buffer)));
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    return Some((Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)), (stream, buffer)));
+                                }
+                            }
                         }
                         return None;
                     }

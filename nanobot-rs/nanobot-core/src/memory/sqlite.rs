@@ -166,6 +166,22 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_session_messages_session_key ON session_messages(session_key);
             CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp);
 
+            -- Cron jobs table
+            CREATE TABLE IF NOT EXISTS cron_jobs (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                cron        TEXT NOT NULL,
+                message     TEXT NOT NULL,
+                channel     TEXT,
+                chat_id     TEXT,
+                last_run    TEXT,
+                next_run    TEXT,
+                enabled     INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run);
+            CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled);
+
             PRAGMA foreign_keys = ON;
             ",
         )?;
@@ -539,6 +555,119 @@ impl SqliteStore {
         })
         .await?
     }
+
+    // ── Cron Jobs API ──
+
+    /// Save or update a cron job (O(1) operation).
+    pub async fn save_cron_job(
+        &self,
+        id: &str,
+        name: &str,
+        cron: &str,
+        message: &str,
+        channel: Option<&str>,
+        chat_id: Option<&str>,
+        last_run: Option<&DateTime<Utc>>,
+        next_run: Option<&DateTime<Utc>>,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        let name = name.to_string();
+        let cron = cron.to_string();
+        let message = message.to_string();
+        let channel = channel.map(|s| s.to_string());
+        let chat_id = chat_id.map(|s| s.to_string());
+        let last_run = last_run.map(|dt| dt.to_rfc3339());
+        let next_run = next_run.map(|dt| dt.to_rfc3339());
+        let enabled_int = if enabled { 1i64 } else { 0i64 };
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO cron_jobs (id, name, cron, message, channel, chat_id, last_run, next_run, enabled)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![id, name, cron, message, channel, chat_id, last_run, next_run, enabled_int],
+            )?;
+            debug!("Saved cron job: {}", id);
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Load all cron jobs.
+    pub async fn load_cron_jobs(&self) -> anyhow::Result<Vec<CronJobRow>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, name, cron, message, channel, chat_id, last_run, next_run, enabled FROM cron_jobs",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let cron: String = row.get(2)?;
+                let message: String = row.get(3)?;
+                let channel: Option<String> = row.get(4)?;
+                let chat_id: Option<String> = row.get(5)?;
+                let last_run_str: Option<String> = row.get(6)?;
+                let next_run_str: Option<String> = row.get(7)?;
+                let enabled_int: i64 = row.get(8)?;
+
+                let last_run = last_run_str
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
+                let next_run = next_run_str
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
+
+                Ok(CronJobRow {
+                    id,
+                    name,
+                    cron,
+                    message,
+                    channel,
+                    chat_id,
+                    last_run,
+                    next_run,
+                    enabled: enabled_int != 0,
+                })
+            })?;
+
+            let mut jobs = Vec::new();
+            for row in rows {
+                jobs.push(row?);
+            }
+            Ok(jobs)
+        })
+        .await?
+    }
+
+    /// Delete a cron job by ID. Returns true if the job existed.
+    pub async fn delete_cron_job(&self, id: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let changed = conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![id])?;
+            Ok(changed > 0)
+        })
+        .await?
+    }
+}
+
+/// Cron job row for database storage
+#[derive(Debug, Clone)]
+pub struct CronJobRow {
+    pub id: String,
+    pub name: String,
+    pub cron: String,
+    pub message: String,
+    pub channel: Option<String>,
+    pub chat_id: Option<String>,
+    pub last_run: Option<DateTime<Utc>>,
+    pub next_run: Option<DateTime<Utc>>,
+    pub enabled: bool,
 }
 
 #[async_trait]

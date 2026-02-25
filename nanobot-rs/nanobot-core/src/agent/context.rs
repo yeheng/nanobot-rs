@@ -8,7 +8,7 @@ use tracing::debug;
 use crate::providers::ChatMessage;
 use crate::session::SessionMessage;
 
-use super::history_processor::{HistoryConfig, HistoryStrategy, StrategyFactory};
+use super::history_processor::{process_history, HistoryConfig};
 
 /// Bootstrap files loaded into the system prompt (same as Python version)
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
@@ -25,8 +25,6 @@ pub struct ContextBuilder {
     skills_context: Option<Arc<String>>,
     /// History processing configuration
     history_config: HistoryConfig,
-    /// History processing strategy (boxed trait object)
-    history_strategy: Arc<dyn HistoryStrategy>,
 }
 
 impl ContextBuilder {
@@ -48,39 +46,25 @@ impl ContextBuilder {
     pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
         let system_prompt = Self::build_system_prompt(&workspace)?;
         let history_config = HistoryConfig::default();
-        let factory = StrategyFactory::new(history_config.clone());
 
         Ok(Self {
             _workspace: workspace,
             system_prompt: Arc::new(system_prompt),
             skills_context: None,
             history_config,
-            // Use smart strategy by default: relevance filtering + token budget
-            history_strategy: Arc::from(factory.create_smart()),
         })
     }
 
     /// Create a context builder with custom history configuration
     pub fn with_history_config(mut self, config: HistoryConfig) -> Self {
-        self.history_config = config.clone();
-        let factory = StrategyFactory::new(config);
-        // Use smart strategy by default for better context management
-        self.history_strategy = Arc::from(factory.create_smart());
-        self
-    }
-
-    /// Create a context builder with a custom history strategy
-    pub fn with_history_strategy(mut self, strategy: Arc<dyn HistoryStrategy>) -> Self {
-        self.history_strategy = strategy;
+        self.history_config = config;
         self
     }
 
     /// Create a context builder with "smart" history processing
-    /// (relevance filtering + token budget)
+    /// (token budget management)
     pub fn with_smart_history(mut self, token_budget: usize) -> Self {
         self.history_config.token_budget = token_budget;
-        let factory = StrategyFactory::new(self.history_config.clone());
-        self.history_strategy = Arc::from(factory.create_smart());
         self
     }
 
@@ -141,13 +125,11 @@ impl ContextBuilder {
 
     /// Build the message list for an LLM request.
     ///
-    /// Uses the configured history strategy to process conversation history.
-    /// The strategy may truncate, filter, summarize, or inject history based
-    /// on configuration and current input relevance.
+    /// Uses token-budget-aware history processing to keep context within limits.
     pub fn build_messages(
         &self,
         history: Vec<SessionMessage>,
-        current_message: &str,
+        _current_message: &str,
         memory: Option<&str>,
         _channel: &str,
         _chat_id: &str,
@@ -170,10 +152,8 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
-        // Process history using the configured strategy
-        let processed =
-            self.history_strategy
-                .process(history, current_message, &self.history_config);
+        // Process history with token budget awareness
+        let processed = process_history(history, &self.history_config);
 
         // Store stats before moving messages
         let history_count = processed.messages.len();
@@ -190,7 +170,7 @@ impl ContextBuilder {
         }
 
         // Current message
-        messages.push(ChatMessage::user(current_message));
+        messages.push(ChatMessage::user(_current_message));
 
         debug!(
             "Built messages: {} history ({} filtered, {} tokens est.)",

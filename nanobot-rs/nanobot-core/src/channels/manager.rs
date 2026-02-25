@@ -147,6 +147,8 @@ impl ChannelManager {
     /// Spawn the outbound routing loop.
     ///
     /// Consumes `outbound_rx` and routes each message to the matching channel.
+    /// Each message is sent in its own tokio task to avoid head-of-line blocking
+    /// across different channels (e.g., a slow Telegram API won't block Discord).
     /// Returns a `JoinHandle` so the caller can track the task.
     pub fn spawn_outbound_router(
         self: &Arc<Self>,
@@ -155,9 +157,12 @@ impl ChannelManager {
         let mgr = self.clone();
         tokio::spawn(async move {
             while let Some(msg) = outbound_rx.recv().await {
-                if let Err(e) = mgr.send(msg).await {
-                    warn!("Outbound routing error: {}", e);
-                }
+                let mgr_clone = mgr.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = mgr_clone.send(msg).await {
+                        warn!("Outbound routing error: {}", e);
+                    }
+                });
             }
             info!("Outbound router exited");
         })
