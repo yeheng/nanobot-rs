@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::memory::SqliteStore;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
@@ -11,8 +11,14 @@ use crate::session::SessionMessage;
 
 use super::history_processor::{count_tokens, process_history, HistoryConfig};
 
-/// Bootstrap files loaded into the system prompt (same as Python version)
-const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
+/// Bootstrap files loaded into the system prompt for the full (main agent) profile
+const BOOTSTRAP_FILES_FULL: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
+
+/// Bootstrap files loaded for the minimal (subagent) profile — only core identity
+const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["SOUL.md"];
+
+/// Maximum tokens allowed per single bootstrap file before emitting a warning
+const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
 
 /// Fixed prompt for LLM summarization
 const SUMMARIZATION_PROMPT: &str = "Summarize the following conversation briefly, keeping key facts.";
@@ -57,7 +63,7 @@ impl ContextBuilder {
     /// during startup, not in async contexts. For subagents, use the cached
     /// instance from the parent agent.
     pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
-        let system_prompt = Self::build_system_prompt(&workspace)?;
+        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_FULL)?;
         let history_config = HistoryConfig::default();
 
         Ok(Self {
@@ -68,6 +74,51 @@ impl ContextBuilder {
             provider: None,
             store: None,
             model: None,
+        })
+    }
+
+    /// Create a minimal context builder for subagents.
+    ///
+    /// Only loads SOUL.md (core identity) and skips skills context to save tokens.
+    /// Subagents execute focused background tasks and don't need the full prompt.
+    pub fn new_minimal(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_MINIMAL)?;
+        let history_config = HistoryConfig {
+            max_messages: 20,
+            token_budget: 4000,
+            recent_keep: 5,
+        };
+
+        Ok(Self {
+            _workspace: workspace,
+            system_prompt: Arc::new(system_prompt),
+            skills_context: None, // no skills for subagents
+            history_config,
+            provider: None,
+            store: None,
+            model: None,
+        })
+    }
+
+    /// Derive a minimal context builder from an existing (full) instance.
+    ///
+    /// Rebuilds the system prompt with only SOUL.md and drops skills context.
+    /// This is the recommended way to create subagent contexts after startup.
+    pub fn to_minimal(&self) -> Result<Self, std::io::Error> {
+        let system_prompt = Self::build_system_prompt(&self._workspace, BOOTSTRAP_FILES_MINIMAL)?;
+
+        Ok(Self {
+            _workspace: self._workspace.clone(),
+            system_prompt: Arc::new(system_prompt),
+            skills_context: None,
+            history_config: HistoryConfig {
+                max_messages: 20,
+                token_budget: 4000,
+                recent_keep: 5,
+            },
+            provider: self.provider.clone(),
+            store: self.store.clone(),
+            model: self.model.clone(),
         })
     }
 
@@ -99,10 +150,16 @@ impl ContextBuilder {
 
     /// Build system prompt from workspace bootstrap files.
     ///
+    /// `files` controls which bootstrap files are loaded — pass
+    /// `BOOTSTRAP_FILES_FULL` for the main agent or `BOOTSTRAP_FILES_MINIMAL`
+    /// for subagents.
+    ///
     /// Files that don't exist are silently skipped. Files that exist but fail
     /// to read cause an immediate error — silent degradation on core config is
     /// dangerous.
-    fn build_system_prompt(workspace: &Path) -> Result<String, std::io::Error> {
+    ///
+    /// A warning is logged for any file exceeding `BOOTSTRAP_TOKEN_WARN_THRESHOLD`.
+    fn build_system_prompt(workspace: &Path, files: &[&str]) -> Result<String, std::io::Error> {
         let mut parts = Vec::new();
 
         // Identity header
@@ -113,13 +170,22 @@ impl ContextBuilder {
 
         // Load bootstrap files
         let mut loaded_any = false;
-        for filename in BOOTSTRAP_FILES {
+        let mut total_tokens: usize = 0;
+        for filename in files {
             let file_path = workspace.join(filename);
             if file_path.exists() {
                 // File exists — a read failure here is a hard error.
                 let content = std::fs::read_to_string(&file_path)?;
                 if !content.trim().is_empty() {
-                    debug!("Loaded bootstrap file: {}", filename);
+                    let tokens = count_tokens(content.trim());
+                    if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
+                        warn!(
+                            "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
+                            filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
+                        );
+                    }
+                    total_tokens += tokens;
+                    debug!("Loaded bootstrap file: {} ({} tokens)", filename, tokens);
                     parts.push(format!("## {}\n\n{}", filename, content.trim()));
                     loaded_any = true;
                 }
@@ -130,6 +196,8 @@ impl ContextBuilder {
             // Fallback: use minimal default instructions
             parts.push(DEFAULT_INSTRUCTIONS.to_string());
         }
+
+        info!("System prompt: {} bootstrap files, ~{} tokens total", files.len(), total_tokens);
 
         Ok(parts.join("\n\n"))
     }

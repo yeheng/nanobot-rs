@@ -23,7 +23,12 @@ use tracing::{debug, warn};
 pub fn parse_skill_file(mut reader: impl BufRead, path: PathBuf) -> Result<Skill> {
     let (metadata, markdown_content) = parse_frontmatter(&mut reader)?;
 
-    Ok(Skill::new(metadata, markdown_content, path))
+    // Lazy-load: skip content for on-demand skills to save memory
+    if !metadata.always {
+        Ok(Skill::new_lazy(metadata, path))
+    } else {
+        Ok(Skill::new(metadata, markdown_content, path))
+    }
 }
 
 /// Parse YAML frontmatter and extract metadata + content
@@ -254,6 +259,27 @@ Use `gh` CLI for GitHub operations.
 
         assert_eq!(skill.name(), "github");
         assert_eq!(skill.description(), "GitHub operations");
-        assert!(skill.content().contains("GitHub Skill"));
+        // always: false (default) → lazy loaded, content is empty
+        assert!(skill.content().is_empty());
+    }
+
+    #[test]
+    fn test_parse_skill_file_always_load() {
+        let content = r#"---
+name: core-skill
+description: Always-loaded skill
+always: true
+---
+
+# Core Skill
+
+This content is eagerly loaded.
+"#;
+        let reader = Cursor::new(content);
+        let skill = parse_skill_file(reader, PathBuf::from("/test/core.md")).unwrap();
+
+        assert_eq!(skill.name(), "core-skill");
+        assert!(skill.always_load());
+        assert!(skill.content().contains("Core Skill"));
     }
 }

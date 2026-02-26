@@ -1,13 +1,18 @@
 use crate::skills::SkillMetadata;
 use std::path::PathBuf;
+use tracing::warn;
 
-/// Represents a loaded skill
+/// Represents a loaded skill.
+///
+/// Skills with `always: true` eagerly load their full content at startup.
+/// Skills with `always: false` only store metadata and path; the content
+/// field is empty and should be read from disk on demand via `read_file`.
 #[derive(Debug, Clone)]
 pub struct Skill {
     /// Skill metadata
     metadata: SkillMetadata,
 
-    /// Full skill content (Markdown)
+    /// Full skill content (Markdown). Empty for lazy-loaded (on-demand) skills.
     content: String,
 
     /// File path to the skill (for read_file access)
@@ -21,7 +26,7 @@ pub struct Skill {
 }
 
 impl Skill {
-    /// Create a new skill
+    /// Create a new skill with eagerly loaded content.
     pub fn new(metadata: SkillMetadata, content: String, path: PathBuf) -> Self {
         let missing_deps = metadata.missing_dependencies();
         let available = missing_deps.is_empty();
@@ -29,6 +34,22 @@ impl Skill {
         Self {
             metadata,
             content,
+            path,
+            available,
+            missing_deps,
+        }
+    }
+
+    /// Create a lazy skill — only metadata and path, content is empty.
+    ///
+    /// Used for on-demand skills (`always: false`) to save memory at startup.
+    pub fn new_lazy(metadata: SkillMetadata, path: PathBuf) -> Self {
+        let missing_deps = metadata.missing_dependencies();
+        let available = missing_deps.is_empty();
+
+        Self {
+            metadata,
+            content: String::new(),
             path,
             available,
             missing_deps,
@@ -50,9 +71,32 @@ impl Skill {
         &self.metadata.description
     }
 
-    /// Get full skill content
+    /// Get full skill content (may be empty for lazy-loaded skills).
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    /// Load and return content from disk. Falls back to cached content.
+    pub fn load_content(&self) -> String {
+        if !self.content.is_empty() {
+            return self.content.clone();
+        }
+        match std::fs::read_to_string(&self.path) {
+            Ok(raw) => {
+                // Strip frontmatter if present
+                if let Some(after_start) = raw.strip_prefix("---") {
+                    if let Some(end) = after_start.find("---") {
+                        let after = &after_start[end + 3..];
+                        return after.trim_start().to_string();
+                    }
+                }
+                raw
+            }
+            Err(e) => {
+                warn!("Failed to read skill content from {:?}: {}", self.path, e);
+                String::new()
+            }
+        }
     }
 
     /// Get skill file path
@@ -131,6 +175,20 @@ mod tests {
         assert_eq!(skill.path(), &path);
         assert!(skill.is_available());
         assert!(skill.always_load() == false);
+    }
+
+    #[test]
+    fn test_lazy_skill() {
+        let mut metadata = SkillMetadata::default();
+        metadata.name = "lazy-skill".to_string();
+        metadata.description = "A lazy skill".to_string();
+
+        let path = PathBuf::from("/test/lazy.md");
+        let skill = Skill::new_lazy(metadata, path);
+
+        assert_eq!(skill.name(), "lazy-skill");
+        assert!(skill.content().is_empty());
+        assert!(skill.is_available());
     }
 
     #[test]

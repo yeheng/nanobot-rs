@@ -275,14 +275,14 @@ impl SubagentManager {
 
         let tasks = Arc::new(RwLock::new(tasks));
 
-        // Build context once at startup (synchronous I/O is acceptable here)
-        let context = match ContextBuilder::new(workspace.clone()) {
+        // Build minimal context for subagents (only SOUL.md, no skills)
+        let context = match ContextBuilder::new_minimal(workspace.clone()) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to build context: {}, using default", e);
-                ContextBuilder::new(PathBuf::from(".")).unwrap_or_else(|_| {
+                warn!("Failed to build minimal context: {}, using default", e);
+                ContextBuilder::new_minimal(PathBuf::from(".")).unwrap_or_else(|_| {
                     // Absolute fallback with empty prompt
-                    ContextBuilder::new(PathBuf::from("/nonexistent")).unwrap()
+                    ContextBuilder::new_minimal(PathBuf::from("/nonexistent")).unwrap()
                 })
             }
         };

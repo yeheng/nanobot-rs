@@ -114,7 +114,8 @@ impl SkillsRegistry {
             summary.push_str("## Always-Loaded Skills\n\n");
             for skill in always_skills {
                 summary.push_str(&format!("### {}\n\n", skill.name()));
-                summary.push_str(skill.content());
+                // Use load_content() which returns eagerly cached content for always-load skills
+                summary.push_str(&skill.load_content());
                 summary.push_str("\n\n");
             }
         }
