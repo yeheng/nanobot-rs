@@ -226,6 +226,36 @@ async fn cmd_status() -> Result<()> {
     Ok(())
 }
 
+/// Resolve the exec workspace directory from config or default to $HOME/workspace.
+///
+/// Creates the directory if it doesn't exist.
+fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::path::PathBuf {
+    let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
+        std::path::PathBuf::from(ws)
+    } else {
+        // Default: $HOME/workspace
+        dirs::home_dir()
+            .map(|h| h.join("workspace"))
+            .unwrap_or_else(|| fallback.to_path_buf())
+    };
+
+    // Ensure the directory exists
+    if !workspace_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(&workspace_path) {
+            tracing::warn!(
+                "Failed to create exec workspace {:?}: {}. Falling back to {:?}",
+                workspace_path,
+                e,
+                fallback
+            );
+            return fallback.to_path_buf();
+        }
+        info!("Created exec workspace: {:?}", workspace_path);
+    }
+
+    workspace_path
+}
+
 /// Build AgentConfig from the config file, applying defaults for zero-valued fields.
 fn build_agent_config(config: &Config) -> AgentConfig {
     let defaults = AgentConfig::default();
@@ -316,6 +346,9 @@ async fn cmd_agent(
         None
     };
 
+    // Resolve exec workspace directory
+    let exec_workspace = resolve_exec_workspace(&config, &workspace);
+
     let mut tools = ToolRegistry::new();
 
     // Safe read-only tools (no approval required)
@@ -382,9 +415,9 @@ async fn cmd_agent(
         },
     );
     tools.register_with_metadata(
-        Box::new(ExecTool::new(
-            workspace.clone(),
-            std::time::Duration::from_secs(120),
+        Box::new(ExecTool::from_config(
+            exec_workspace,
+            &config.tools.exec,
             restrict,
         )),
         ToolMetadata {
@@ -618,6 +651,9 @@ async fn cmd_gateway() -> Result<()> {
         None
     };
 
+    // Resolve exec workspace directory
+    let exec_workspace = resolve_exec_workspace(&config, &workspace);
+
     let mut tools = ToolRegistry::new();
 
     // Safe read-only tools (no approval required)
@@ -684,9 +720,9 @@ async fn cmd_gateway() -> Result<()> {
         },
     );
     tools.register_with_metadata(
-        Box::new(ExecTool::new(
-            workspace.clone(),
-            std::time::Duration::from_secs(120),
+        Box::new(ExecTool::from_config(
+            exec_workspace,
+            &config.tools.exec,
             restrict,
         )),
         ToolMetadata {

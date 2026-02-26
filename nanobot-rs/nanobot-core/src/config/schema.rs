@@ -353,6 +353,103 @@ pub struct ExecToolConfig {
     /// Default timeout in seconds
     #[serde(default = "default_exec_timeout")]
     pub timeout: u64,
+
+    /// Workspace directory for agent file operations (default: $HOME/workspace)
+    #[serde(default)]
+    pub workspace: Option<String>,
+
+    /// Sandbox configuration
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+
+    /// Command policy (allowlist/denylist)
+    #[serde(default)]
+    pub policy: CommandPolicyConfig,
+
+    /// Resource limits
+    #[serde(default)]
+    pub limits: ResourceLimitsConfig,
+}
+
+/// Sandbox execution backend configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Enable sandbox (default: false, opt-in)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Sandbox backend (currently only "bwrap" supported)
+    #[serde(default = "default_sandbox_backend")]
+    pub backend: String,
+
+    /// Size of /tmp tmpfs inside sandbox in MB (default: 64)
+    #[serde(default = "default_tmp_size_mb")]
+    pub tmp_size_mb: u32,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_sandbox_backend(),
+            tmp_size_mb: default_tmp_size_mb(),
+        }
+    }
+}
+
+fn default_sandbox_backend() -> String {
+    "bwrap".to_string()
+}
+fn default_tmp_size_mb() -> u32 {
+    64
+}
+
+/// Command allowlist/denylist policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommandPolicyConfig {
+    /// Allowed command binaries (first token). Empty = allow all.
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+
+    /// Denied command patterns (substring match). Empty = deny none.
+    #[serde(default)]
+    pub denylist: Vec<String>,
+}
+
+/// Resource limits for shell execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimitsConfig {
+    /// Maximum memory in MB (default: 512)
+    #[serde(default = "default_max_memory_mb")]
+    pub max_memory_mb: u32,
+
+    /// Maximum CPU time in seconds (default: 60)
+    #[serde(default = "default_max_cpu_secs")]
+    pub max_cpu_secs: u32,
+
+    /// Maximum output size in bytes (default: 1MB)
+    #[serde(default = "default_max_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
+impl Default for ResourceLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_memory_mb: default_max_memory_mb(),
+            max_cpu_secs: default_max_cpu_secs(),
+            max_output_bytes: default_max_output_bytes(),
+        }
+    }
+}
+
+fn default_max_memory_mb() -> u32 {
+    512
+}
+fn default_max_cpu_secs() -> u32 {
+    60
+}
+fn default_max_output_bytes() -> usize {
+    1_048_576 // 1 MB
 }
 
 fn default_exec_timeout() -> u64 {
@@ -389,5 +486,56 @@ agents:
             config.agents.defaults.model,
             Some("anthropic/claude-opus-4-5".to_string())
         );
+    }
+
+    #[test]
+    fn test_exec_config_backward_compatible() {
+        // Old config with only timeout should still parse
+        let yaml = r#"
+tools:
+  exec:
+    timeout: 60
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.tools.exec.timeout, 60);
+        assert!(!config.tools.exec.sandbox.enabled);
+        assert!(config.tools.exec.policy.allowlist.is_empty());
+        assert_eq!(config.tools.exec.limits.max_memory_mb, 512);
+    }
+
+    #[test]
+    fn test_exec_config_with_sandbox() {
+        let yaml = r#"
+tools:
+  exec:
+    timeout: 120
+    workspace: /home/user/workspace
+    sandbox:
+      enabled: true
+      backend: bwrap
+      tmp_size_mb: 128
+    policy:
+      allowlist:
+        - ls
+        - cat
+        - git
+      denylist:
+        - "rm -rf /"
+        - mkfs
+    limits:
+      max_memory_mb: 1024
+      max_cpu_secs: 30
+      max_output_bytes: 2097152
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.tools.exec.sandbox.enabled);
+        assert_eq!(config.tools.exec.sandbox.backend, "bwrap");
+        assert_eq!(config.tools.exec.sandbox.tmp_size_mb, 128);
+        assert_eq!(config.tools.exec.workspace, Some("/home/user/workspace".to_string()));
+        assert_eq!(config.tools.exec.policy.allowlist, vec!["ls", "cat", "git"]);
+        assert_eq!(config.tools.exec.policy.denylist, vec!["rm -rf /", "mkfs"]);
+        assert_eq!(config.tools.exec.limits.max_memory_mb, 1024);
+        assert_eq!(config.tools.exec.limits.max_cpu_secs, 30);
+        assert_eq!(config.tools.exec.limits.max_output_bytes, 2097152);
     }
 }
