@@ -768,82 +768,57 @@ fn row_to_entry(row: &SqliteRow) -> anyhow::Result<MemoryEntry> {
     })
 }
 
-/// Build and execute the search query dynamically.
-///
-/// sqlx doesn't support dynamic parameter indexing like rusqlite's `?N`,
-/// so we build the SQL with `$N` positional parameters and collect bind
-/// values into typed vectors, then use `query_with` + `SqliteArguments`.
+/// Build and execute the search query dynamically using `sqlx::QueryBuilder`.
 async fn search_impl(pool: &SqlitePool, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-    // We use sqlx::query and bind dynamically via a helper approach.
-    // Since sqlx's `Query::bind` is chained, we build SQL with $1..$N
-    // and collect bind values in order.
+    use sqlx::QueryBuilder;
 
-    let mut sql = String::new();
-    let mut bind_values: Vec<String> = Vec::new();
-    let mut param_idx = 1u32;
-
-    if let Some(text) = &query.text {
-        sql.push_str(&format!(
+    let mut builder: QueryBuilder<'_, sqlx::Sqlite> = if let Some(text) = &query.text {
+        let mut b = QueryBuilder::new(
             "SELECT m.id, m.content, m.metadata, m.created_at, m.updated_at \
              FROM memories m \
              JOIN memories_fts f ON m.id = f.id \
-             WHERE f.content MATCH ${}",
-            param_idx
-        ));
-        bind_values.push(text.clone());
-        param_idx += 1;
+             WHERE f.content MATCH ",
+        );
+        b.push_bind(text.clone());
+        b
     } else {
-        sql.push_str(
+        QueryBuilder::new(
             "SELECT m.id, m.content, m.metadata, m.created_at, m.updated_at \
              FROM memories m WHERE 1=1",
-        );
-    }
+        )
+    };
 
     // Filter by source
     if let Some(source) = &query.source {
-        sql.push_str(&format!(
-            " AND json_extract(m.metadata, '$.source') = ${}",
-            param_idx
-        ));
-        bind_values.push(source.clone());
-        param_idx += 1;
+        builder.push(" AND json_extract(m.metadata, '$.source') = ");
+        builder.push_bind(source.clone());
     }
 
     // Filter by tags (AND semantics: entry must have ALL tags)
     for tag in &query.tags {
-        sql.push_str(&format!(
-            " AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ${})",
-            param_idx
-        ));
-        bind_values.push(tag.clone());
-        param_idx += 1;
+        builder
+            .push(" AND EXISTS (SELECT 1 FROM memory_tags t WHERE t.memory_id = m.id AND t.tag = ");
+        builder.push_bind(tag.clone());
+        builder.push(")");
     }
 
     // Order by updated_at descending for deterministic results
-    sql.push_str(" ORDER BY m.updated_at DESC");
+    builder.push(" ORDER BY m.updated_at DESC");
 
     // Limit / offset
     if let Some(limit) = query.limit {
-        sql.push_str(&format!(" LIMIT ${}", param_idx));
-        bind_values.push(limit.to_string());
-        param_idx += 1;
+        builder.push(" LIMIT ");
+        builder.push_bind(limit as i64);
     }
     if let Some(offset) = query.offset {
         if query.limit.is_none() {
-            sql.push_str(&format!(" LIMIT -1 OFFSET ${}", param_idx));
-        } else {
-            sql.push_str(&format!(" OFFSET ${}", param_idx));
+            builder.push(" LIMIT -1");
         }
-        bind_values.push(offset.to_string());
+        builder.push(" OFFSET ");
+        builder.push_bind(offset as i64);
     }
 
-    // Build the query with dynamic binds
-    let mut q = sqlx::query(&sql);
-    for val in &bind_values {
-        q = q.bind(val);
-    }
-
-    let rows = q.fetch_all(pool).await?;
+    let rows = builder.build().fetch_all(pool).await?;
 
     let mut entries = Vec::with_capacity(rows.len());
     for row in &rows {

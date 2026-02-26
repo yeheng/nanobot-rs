@@ -327,11 +327,14 @@ impl AgentLoop {
             )
             .await;
 
-        // Run the agent loop (streaming or non-streaming)
-        let (response, reasoning, tools_used) = match (self.config.streaming, callback) {
-            (true, Some(cb)) => self.run_agent_loop_streaming(messages, cb).await?,
-            _ => self.run_agent_loop(messages).await?,
+        // Run the agent loop — always uses streaming internally; when callback
+        // is absent, stream events are silently discarded.
+        let effective_cb = if self.config.streaming {
+            callback
+        } else {
+            None
         };
+        let (response, reasoning, tools_used) = self.run_agent_loop(messages, effective_cb).await?;
 
         // Save assistant response AFTER LLM call completes
         if let Err(e) = self
@@ -361,12 +364,21 @@ impl AgentLoop {
         })
     }
 
-    /// Run the agent iteration loop
+    /// Unified agent iteration loop.
+    ///
+    /// Always uses `chat_stream` — for non-streaming providers the default
+    /// trait impl wraps the response in a single-chunk stream, so both paths
+    /// converge here.  When `callback` is `None`, stream events are silently
+    /// discarded.
     #[instrument(name = "agent.run_loop", skip_all, fields(model = %self.config.model))]
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,
+        callback: Option<&StreamCallback>,
     ) -> Result<(String, Option<String>, Vec<String>)> {
+        let noop: StreamCallback = Box::new(|_| {});
+        let cb: &StreamCallback = callback.unwrap_or(&noop);
+
         let mut messages = initial_messages;
         let mut iteration = 0;
         let mut final_content = None;
@@ -393,14 +405,15 @@ impl AgentLoop {
                 },
             };
 
+            // Get the stream (with retries)
             let mut retries = 0;
             let max_retries = 3;
-            let response = loop {
-                match self.provider.chat(request.clone()).await {
-                    Ok(resp) => break resp,
+            let mut stream = loop {
+                match self.provider.chat_stream(request.clone()).await {
+                    Ok(s) => break s,
                     Err(e) => {
                         if retries >= max_retries {
-                            return Err(e.context("Provider API request failed after retries"));
+                            return Err(e.context("Provider request failed after retries"));
                         }
                         warn!(
                             "Provider error: {}. Retrying {}/{}",
@@ -415,173 +428,8 @@ impl AgentLoop {
                 }
             };
 
-            if response.has_tool_calls() {
-                // Log reasoning content if present
-                if let Some(ref reasoning) = response.reasoning_content {
-                    if !reasoning.is_empty() {
-                        info!("[Agent] Reasoning: {}", reasoning);
-                    }
-                }
-
-                // Log LLM response content if present
-                if let Some(ref content) = response.content {
-                    if !content.is_empty() {
-                        info!("[Agent] Response: {}", content);
-                    }
-                }
-
-                // Log tool calls being executed
-                info!(
-                    "[Agent] Executing {} tool call(s): {}",
-                    response.tool_calls.len(),
-                    response
-                        .tool_calls
-                        .iter()
-                        .map(|tc| tc.function.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-
-                // Add assistant message with tool calls (via ContextBuilder)
-                self.context.add_assistant_message(
-                    &mut messages,
-                    response.content.clone(),
-                    response
-                        .tool_calls
-                        .iter()
-                        .map(|tc| serde_json::to_value(tc).unwrap_or_default())
-                        .collect(),
-                    response.reasoning_content.clone(),
-                );
-                // Re-add the tool_calls on the last assistant message so the
-                // provider can see them in the next request
-                if let Some(last) = messages.last_mut() {
-                    last.tool_calls = Some(response.tool_calls.clone());
-                }
-
-                // Execute each tool call via ToolExecutor
-                let results = executor.execute_batch(&response.tool_calls).await;
-                for result in &results {
-                    tools_used.push(result.tool_name.clone());
-
-                    // Log tool execution result
-                    let output_preview = if result.output.len() > 500 {
-                        // Find a valid UTF-8 char boundary near byte 500
-                        let end = result
-                            .output
-                            .char_indices()
-                            .take_while(|(i, _)| *i < 500)
-                            .last()
-                            .map(|(i, c)| i + c.len_utf8())
-                            .unwrap_or(0);
-                        format!(
-                            "{}... (truncated, {} chars total)",
-                            &result.output[..end],
-                            result.output.len()
-                        )
-                    } else {
-                        result.output.clone()
-                    };
-                    info!("[Tool] {} -> {}", result.tool_name, output_preview);
-
-                    self.context.add_tool_result(
-                        &mut messages,
-                        result.tool_call_id.clone(),
-                        result.tool_name.clone(),
-                        result.output.clone(),
-                    );
-                }
-
-                // No reflection message — the LLM already has the tool results
-                // and will decide next steps on its own.
-            } else {
-                // Log final response
-                if let Some(ref reasoning) = response.reasoning_content {
-                    if !reasoning.is_empty() {
-                        info!("[Agent] Reasoning: {}", reasoning);
-                    }
-                }
-                if let Some(ref content) = response.content {
-                    if !content.is_empty() {
-                        info!("[Agent] Final response: {}", content);
-                    }
-                }
-                final_content = response.content;
-                final_reasoning = response.reasoning_content;
-                break;
-            }
-        }
-
-        let content = final_content.unwrap_or_else(|| {
-            "I've completed processing but have no response to give.".to_string()
-        });
-
-        Ok((content, final_reasoning, tools_used))
-    }
-
-    /// Streaming variant of `run_agent_loop`.
-    ///
-    /// Uses `chat_stream` and emits `StreamEvent`s via the callback. Accumulates
-    /// chunks into a complete `ChatResponse` for tool execution and history.
-    #[instrument(name = "agent.run_loop_streaming", skip_all, fields(model = %self.config.model))]
-    async fn run_agent_loop_streaming(
-        &self,
-        initial_messages: Vec<ChatMessage>,
-        callback: &StreamCallback,
-    ) -> Result<(String, Option<String>, Vec<String>)> {
-        let mut messages = initial_messages;
-        let mut iteration = 0;
-        let mut final_content = None;
-        let mut final_reasoning = None;
-        let mut tools_used = Vec::new();
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
-
-        let model_name = Arc::new(self.config.model.clone());
-
-        while iteration < self.config.max_iterations {
-            iteration += 1;
-            debug!("Agent loop streaming iteration {}", iteration);
-
-            let request = ChatRequest {
-                model: model_name.to_string(),
-                messages: messages.clone(),
-                tools: Some(self.tools.get_definitions()),
-                temperature: Some(self.config.temperature),
-                max_tokens: Some(self.config.max_tokens),
-                thinking: if self.config.thinking_enabled {
-                    Some(ThinkingConfig::enabled())
-                } else {
-                    None
-                },
-            };
-
-            // Get the stream
-            let mut retries = 0;
-            let max_retries = 3;
-            let mut stream = loop {
-                match self.provider.chat_stream(request.clone()).await {
-                    Ok(s) => break s,
-                    Err(e) => {
-                        if retries >= max_retries {
-                            return Err(
-                                e.context("Provider streaming request failed after retries")
-                            );
-                        }
-                        warn!(
-                            "Provider stream error: {}. Retrying {}/{}",
-                            e,
-                            retries + 1,
-                            max_retries
-                        );
-                        retries += 1;
-                        tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries)))
-                            .await;
-                    }
-                }
-            };
-
             // Accumulate chunks into a full response
-            let response = Self::accumulate_stream(&mut stream, callback).await?;
+            let response = Self::accumulate_stream(&mut stream, cb).await?;
 
             if response.has_tool_calls() {
                 // Log reasoning content if present
@@ -630,12 +478,11 @@ impl AgentLoop {
                 for result in &results {
                     tools_used.push(result.tool_name.clone());
 
-                    callback(&StreamEvent::ToolStart {
+                    cb(&StreamEvent::ToolStart {
                         name: result.tool_name.clone(),
                     });
 
                     let output_preview = if result.output.len() > 500 {
-                        // Find a valid UTF-8 char boundary near byte 500
                         let end = result
                             .output
                             .char_indices()
@@ -653,7 +500,7 @@ impl AgentLoop {
                     };
                     info!("[Tool] {} -> {}", result.tool_name, output_preview);
 
-                    callback(&StreamEvent::ToolEnd {
+                    cb(&StreamEvent::ToolEnd {
                         name: result.tool_name.clone(),
                         output: output_preview,
                     });
@@ -679,7 +526,7 @@ impl AgentLoop {
                 }
                 final_content = response.content;
                 final_reasoning = response.reasoning_content;
-                callback(&StreamEvent::Done);
+                cb(&StreamEvent::Done);
                 break;
             }
         }

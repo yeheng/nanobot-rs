@@ -156,61 +156,17 @@ fn strip_html(html: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         Err(_) => {
-            // Fallback: strip tags with a simple regex-like approach.
-            // The previous code just joined whitespace, preserving all <script>/<style> content.
-            // This at least removes tags and truncates to a reasonable length.
-            let stripped = strip_tags_naive(html);
-            let max = 2000.min(stripped.len());
-            let mut end = max;
-            while !stripped.is_char_boundary(end) && end > 0 {
-                end -= 1;
-            }
-            if end < stripped.len() {
+            // html2text failed — return a safely truncated raw snippet
+            // instead of attempting fragile hand-rolled tag stripping.
+            let truncated: String = html.chars().take(2000).collect();
+            if truncated.len() < html.len() {
                 format!(
                     "[HTML parsing failed. Showing raw snippet:]\n{}...",
-                    &stripped[..end]
+                    truncated
                 )
             } else {
-                format!("[HTML parsing failed. Showing raw snippet:]\n{}", stripped)
+                format!("[HTML parsing failed. Showing raw snippet:]\n{}", truncated)
             }
         }
     }
-}
-
-/// Naive tag stripping: remove <script>/<style> blocks entirely, then strip remaining tags.
-fn strip_tags_naive(html: &str) -> String {
-    // Remove <script>...</script> and <style>...</style> blocks (case-insensitive)
-    let mut result = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
-    let bytes = html.as_bytes();
-    let lower_bytes = lower.as_bytes();
-
-    let mut i = 0;
-    while i < bytes.len() {
-        if lower_bytes[i] == b'<' {
-            // Check for <script or <style
-            let rest = &lower[i..];
-            if rest.starts_with("<script") || rest.starts_with("<style") {
-                let tag = if rest.starts_with("<script") {
-                    "</script>"
-                } else {
-                    "</style>"
-                };
-                if let Some(end_pos) = lower[i..].find(tag) {
-                    i += end_pos + tag.len();
-                    continue;
-                }
-            }
-            // Strip any other tag
-            if let Some(end_pos) = html[i..].find('>') {
-                i += end_pos + 1;
-                continue;
-            }
-        }
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-
-    // Collapse whitespace
-    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
