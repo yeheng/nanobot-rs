@@ -574,10 +574,7 @@ impl SqliteStore {
     }
 
     /// Load a session summary.
-    pub async fn load_session_summary(
-        &self,
-        session_key: &str,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn load_session_summary(&self, session_key: &str) -> anyhow::Result<Option<String>> {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT content FROM session_summaries WHERE session_key = $1")
                 .bind(session_key)
@@ -1376,10 +1373,7 @@ mod tests {
     async fn test_sqlite_session_summary_delete() {
         let store = temp_store().await;
 
-        store
-            .save_session_summary("key1", "Summary")
-            .await
-            .unwrap();
+        store.save_session_summary("key1", "Summary").await.unwrap();
         assert!(store.delete_session_summary("key1").await.unwrap());
         assert!(!store.delete_session_summary("key1").await.unwrap());
         assert!(store.load_session_summary("key1").await.unwrap().is_none());

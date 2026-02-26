@@ -185,17 +185,17 @@ impl Tool for ExecTool {
         // Step 3: Build sandboxed command
         let command_str = args.command;
         let working_dir = self.working_dir.clone();
-        let mut cmd = self.sandbox.build_command(&command_str, &working_dir, &self.limits);
+        let mut cmd = self
+            .sandbox
+            .build_command(&command_str, &working_dir, &self.limits);
         let max_output = self.limits.max_output_bytes;
         let timeout = self.timeout;
 
         // Step 4: Execute with wall-clock timeout
         let result = tokio::task::spawn_blocking(move || {
-            let output = cmd
-                .output()
-                .map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to execute command: {}", e))
-                })?;
+            let output = cmd.output().map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to execute command: {}", e))
+            })?;
 
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -315,14 +315,17 @@ impl AgentLoop {
 
         // Build messages using the history snapshot (without the just-appended user message)
         let memory_content = self.memory.read_long_term().await.ok();
-        let messages = self.context.build_messages(
-            history_snapshot,
-            content,
-            memory_content.as_deref(),
-            "cli",
-            "direct",
-            session_key,
-        ).await;
+        let messages = self
+            .context
+            .build_messages(
+                history_snapshot,
+                content,
+                memory_content.as_deref(),
+                "cli",
+                "direct",
+                session_key,
+            )
+            .await;
 
         // Run the agent loop (streaming or non-streaming)
         let (response, reasoning, tools_used) = match (self.config.streaming, callback) {

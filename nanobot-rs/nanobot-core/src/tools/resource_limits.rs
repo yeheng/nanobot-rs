@@ -92,12 +92,7 @@ mod tests {
         let args = limits.to_bwrap_args();
         assert_eq!(
             args,
-            vec![
-                "--rlimit-as",
-                "536870912",
-                "--rlimit-cpu",
-                "60",
-            ]
+            vec!["--rlimit-as", "536870912", "--rlimit-cpu", "60",]
         );
     }
 

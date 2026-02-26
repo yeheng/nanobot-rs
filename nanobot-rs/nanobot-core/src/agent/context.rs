@@ -21,7 +21,8 @@ const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["SOUL.md"];
 const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
 
 /// Fixed prompt for LLM summarization
-const SUMMARIZATION_PROMPT: &str = "Summarize the following conversation briefly, keeping key facts.";
+const SUMMARIZATION_PROMPT: &str =
+    "Summarize the following conversation briefly, keeping key facts.";
 
 /// Prefix for injected summary assistant messages
 const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
@@ -197,7 +198,11 @@ impl ContextBuilder {
             parts.push(DEFAULT_INSTRUCTIONS.to_string());
         }
 
-        info!("System prompt: {} bootstrap files, ~{} tokens total", files.len(), total_tokens);
+        info!(
+            "System prompt: {} bootstrap files, ~{} tokens total",
+            files.len(),
+            total_tokens
+        );
 
         Ok(parts.join("\n\n"))
     }
@@ -286,11 +291,16 @@ impl ContextBuilder {
             // We had messages that were filtered out — summarize them
             // The filtered messages are the ones that process_history dropped.
             // We need to summarize whatever we have so far (existing summary + what was dropped).
-            match self.run_summarization(session_key, &processed.messages, &existing_summary).await
+            match self
+                .run_summarization(session_key, &processed.messages, &existing_summary)
+                .await
             {
                 Ok(new_summary) => Some(new_summary),
                 Err(e) => {
-                    warn!("Summarization failed, using existing summary as fallback: {}", e);
+                    warn!(
+                        "Summarization failed, using existing summary as fallback: {}",
+                        e
+                    );
                     existing_summary
                 }
             }
@@ -384,11 +394,7 @@ impl ContextBuilder {
         };
 
         let response = provider.chat(request).await?;
-        let summary_text = response
-            .content
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let summary_text = response.content.unwrap_or_default().trim().to_string();
 
         if summary_text.is_empty() {
             anyhow::bail!("Summarization returned empty content");

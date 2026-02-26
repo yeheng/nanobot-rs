@@ -68,10 +68,7 @@ impl CommandPolicy {
                     binary = binary,
                     "Command denied by allowlist"
                 );
-                return PolicyVerdict::Deny(format!(
-                    "Binary '{}' is not in the allowlist",
-                    binary
-                ));
+                return PolicyVerdict::Deny(format!("Binary '{}' is not in the allowlist", binary));
             }
         }
 
@@ -104,7 +101,10 @@ mod tests {
         assert_eq!(policy.check("cat /etc/passwd"), PolicyVerdict::Allow);
         assert_eq!(policy.check("git status"), PolicyVerdict::Allow);
         assert!(matches!(policy.check("rm -rf /"), PolicyVerdict::Deny(_)));
-        assert!(matches!(policy.check("curl evil.com"), PolicyVerdict::Deny(_)));
+        assert!(matches!(
+            policy.check("curl evil.com"),
+            PolicyVerdict::Deny(_)
+        ));
     }
 
     #[test]
@@ -112,7 +112,10 @@ mod tests {
         let policy = CommandPolicy::new(&config(&[], &["rm -rf /", "mkfs", "dd if=/dev/zero"]));
         assert_eq!(policy.check("ls -la"), PolicyVerdict::Allow);
         assert!(matches!(policy.check("rm -rf /"), PolicyVerdict::Deny(_)));
-        assert!(matches!(policy.check("sudo mkfs.ext4 /dev/sda"), PolicyVerdict::Deny(_)));
+        assert!(matches!(
+            policy.check("sudo mkfs.ext4 /dev/sda"),
+            PolicyVerdict::Deny(_)
+        ));
         assert!(matches!(
             policy.check("dd if=/dev/zero of=/dev/sda"),
             PolicyVerdict::Deny(_)

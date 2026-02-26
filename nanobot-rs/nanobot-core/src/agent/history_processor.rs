@@ -108,7 +108,10 @@ fn get_encoder() -> Option<&'static CoreBPE> {
         .get_or_init(|| match tiktoken_rs::cl100k_base() {
             Ok(enc) => Some(enc),
             Err(e) => {
-                warn!("Failed to init tiktoken cl100k_base encoder: {}. Falling back to len/4.", e);
+                warn!(
+                    "Failed to init tiktoken cl100k_base encoder: {}. Falling back to len/4.",
+                    e
+                );
                 None
             }
         })
@@ -232,8 +235,14 @@ mod tests {
     fn test_count_tokens_accuracy() {
         // "hello world" is 2 tokens in cl100k_base
         let tokens = count_tokens("hello world");
-        assert!(tokens > 0, "count_tokens should return non-zero for non-empty text");
-        assert!(tokens < 10, "count_tokens should return reasonable count for short text");
+        assert!(
+            tokens > 0,
+            "count_tokens should return non-zero for non-empty text"
+        );
+        assert!(
+            tokens < 10,
+            "count_tokens should return reasonable count for short text"
+        );
 
         // CJK text: each character is typically 1-2 tokens
         let cjk_tokens = count_tokens("你好世界");

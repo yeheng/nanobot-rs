@@ -531,7 +531,10 @@ tools:
         assert!(config.tools.exec.sandbox.enabled);
         assert_eq!(config.tools.exec.sandbox.backend, "bwrap");
         assert_eq!(config.tools.exec.sandbox.tmp_size_mb, 128);
-        assert_eq!(config.tools.exec.workspace, Some("/home/user/workspace".to_string()));
+        assert_eq!(
+            config.tools.exec.workspace,
+            Some("/home/user/workspace".to_string())
+        );
         assert_eq!(config.tools.exec.policy.allowlist, vec!["ls", "cat", "git"]);
         assert_eq!(config.tools.exec.policy.denylist, vec!["rm -rf /", "mkfs"]);
         assert_eq!(config.tools.exec.limits.max_memory_mb, 1024);

@@ -15,12 +15,7 @@ use crate::config::SandboxConfig;
 pub trait SandboxProvider: Send + Sync {
     /// Build a `Command` that will execute `cmd` in the given `working_dir`
     /// with the specified `limits`.
-    fn build_command(
-        &self,
-        cmd: &str,
-        working_dir: &Path,
-        limits: &ResourceLimits,
-    ) -> Command;
+    fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command;
 
     /// Human-readable name for logging.
     fn name(&self) -> &str;
@@ -55,31 +50,31 @@ impl BwrapSandbox {
 }
 
 impl SandboxProvider for BwrapSandbox {
-    fn build_command(
-        &self,
-        cmd: &str,
-        _working_dir: &Path,
-        limits: &ResourceLimits,
-    ) -> Command {
+    fn build_command(&self, cmd: &str, _working_dir: &Path, limits: &ResourceLimits) -> Command {
         let mut command = Command::new(&self.bwrap_path);
 
         // Namespace isolation
-        command
-            .arg("--unshare-pid")
-            .arg("--unshare-ipc");
+        command.arg("--unshare-pid").arg("--unshare-ipc");
 
         // Filesystem mounts
         command
             // Read-only root
-            .arg("--ro-bind").arg("/").arg("/")
+            .arg("--ro-bind")
+            .arg("/")
+            .arg("/")
             // Read-write workspace
-            .arg("--bind").arg(&self.workspace).arg(&self.workspace)
+            .arg("--bind")
+            .arg(&self.workspace)
+            .arg(&self.workspace)
             // Tmpfs for /tmp
-            .arg("--tmpfs").arg("/tmp")
+            .arg("--tmpfs")
+            .arg("/tmp")
             // Minimal /dev
-            .arg("--dev").arg("/dev")
+            .arg("--dev")
+            .arg("/dev")
             // New /proc
-            .arg("--proc").arg("/proc");
+            .arg("--proc")
+            .arg("/proc");
 
         // Tmpfs size limit
         command
@@ -112,19 +107,11 @@ impl SandboxProvider for BwrapSandbox {
 pub struct FallbackExecutor;
 
 impl SandboxProvider for FallbackExecutor {
-    fn build_command(
-        &self,
-        cmd: &str,
-        working_dir: &Path,
-        limits: &ResourceLimits,
-    ) -> Command {
+    fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command {
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
         let mut command = Command::new("bash");
-        command
-            .arg("-c")
-            .arg(prefixed_cmd)
-            .current_dir(working_dir);
+        command.arg("-c").arg(prefixed_cmd).current_dir(working_dir);
 
         command
     }
@@ -159,10 +146,7 @@ fn which_bwrap() -> Option<PathBuf> {
 }
 
 /// Create the appropriate sandbox provider based on configuration.
-pub fn create_provider(
-    workspace: &Path,
-    config: &SandboxConfig,
-) -> Box<dyn SandboxProvider> {
+pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> Box<dyn SandboxProvider> {
     if !config.enabled {
         debug!("Sandbox disabled by config");
         return Box::new(FallbackExecutor);
