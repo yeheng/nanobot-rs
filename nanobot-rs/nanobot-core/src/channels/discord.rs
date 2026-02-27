@@ -83,7 +83,11 @@ impl Channel for DiscordChannel {
 }
 
 /// Stateless send: send a message to Discord without needing a `DiscordChannel` instance.
-pub async fn send_message_stateless(token: &str, channel_id: &str, content: &str) -> anyhow::Result<()> {
+pub async fn send_message_stateless(
+    token: &str,
+    channel_id: &str,
+    content: &str,
+) -> anyhow::Result<()> {
     use serenity::http::Http;
     use serenity::model::id::ChannelId;
 

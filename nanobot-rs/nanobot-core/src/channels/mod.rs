@@ -71,12 +71,7 @@ pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> any
         #[cfg(feature = "email")]
         crate::bus::ChannelType::Email => {
             if let Some(ref email) = config.email {
-                if let (
-                    Some(ref host),
-                    Some(ref user),
-                    Some(ref pass),
-                    Some(ref from),
-                ) = (
+                if let (Some(ref host), Some(ref user), Some(ref pass), Some(ref from)) = (
                     &email.smtp_host,
                     &email.smtp_username,
                     &email.smtp_password,
