@@ -317,3 +317,42 @@ impl Channel for EmailChannel {
         self.send_email(to, "Re: Your message", &msg.content).await
     }
 }
+
+/// Stateless send: send an email without needing an `EmailChannel` instance.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_email_stateless(
+    smtp_host: &str,
+    smtp_port: u16,
+    smtp_username: &str,
+    smtp_password: &str,
+    from_address: &str,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> anyhow::Result<()> {
+    let from: Mailbox = from_address.parse()?;
+    let to_mailbox: Mailbox = to.parse()?;
+
+    let email = Message::builder()
+        .from(from)
+        .to(to_mailbox)
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body.to_string())?;
+
+    let creds = Credentials::new(smtp_username.to_string(), smtp_password.to_string());
+
+    let mailer: AsyncSmtpTransport<Tokio1Executor> = if smtp_port == 465 {
+        AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host)?
+            .credentials(creds)
+            .build()
+    } else {
+        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)?
+            .credentials(creds)
+            .port(smtp_port)
+            .build()
+    };
+
+    mailer.send(email).await?;
+    Ok(())
+}

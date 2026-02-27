@@ -268,3 +268,39 @@ impl Channel for SlackChannel {
             .await
     }
 }
+
+/// Stateless send: post a message to Slack without needing a `SlackChannel` instance.
+pub async fn send_message_stateless(
+    bot_token: &str,
+    channel: &str,
+    text: &str,
+    thread_ts: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let url = "https://slack.com/api/chat.postMessage";
+
+    let mut body = serde_json::json!({
+        "channel": channel,
+        "text": text,
+    });
+    if let Some(ts) = thread_ts {
+        body["thread_ts"] = serde_json::json!(ts);
+    }
+
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", bot_token))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    let result: serde_json::Value = response.json().await?;
+    if result["ok"].as_bool() != Some(true) {
+        anyhow::bail!(
+            "Failed to send Slack message: {}",
+            result["error"].as_str().unwrap_or("unknown")
+        );
+    }
+    Ok(())
+}

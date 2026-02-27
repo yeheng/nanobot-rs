@@ -282,17 +282,17 @@ impl ContextBuilder {
         let estimated_tokens = processed.estimated_tokens;
 
         // Check if summarization is needed and configured
-        let needs_summarization = filtered_count > 0
+        // Only summarize if we have evicted messages (old messages that exceeded budget)
+        let needs_summarization = !processed.evicted.is_empty()
             && self.provider.is_some()
             && self.store.is_some()
             && self.model.is_some();
 
         let summary = if needs_summarization {
-            // We had messages that were filtered out — summarize them
-            // The filtered messages are the ones that process_history dropped.
-            // We need to summarize whatever we have so far (existing summary + what was dropped).
+            // Summarize the EVICTED messages (old messages that were dropped from context)
+            // NOT the retained messages - those will be sent to the LLM anyway
             match self
-                .run_summarization(session_key, &processed.messages, &existing_summary)
+                .run_summarization(session_key, &processed.evicted, &existing_summary)
                 .await
             {
                 Ok(new_summary) => Some(new_summary),
@@ -341,21 +341,22 @@ impl ContextBuilder {
         messages
     }
 
-    /// Run LLM summarization for older messages.
+    /// Run LLM summarization for evicted (old) messages.
     ///
-    /// Builds a summarization prompt from existing summary + recent messages,
-    /// calls the provider, and persists the result.
+    /// Builds a summarization prompt from existing summary + evicted messages
+    /// (messages that were dropped from context due to token budget).
+    /// This preserves information from old messages that would otherwise be lost.
     async fn run_summarization(
         &self,
         session_key: &str,
-        recent_messages: &[SessionMessage],
+        evicted_messages: &[SessionMessage],
         existing_summary: &Option<String>,
     ) -> anyhow::Result<String> {
         let provider = self.provider.as_ref().unwrap();
         let store = self.store.as_ref().unwrap();
         let model = self.model.as_ref().unwrap();
 
-        // Build context for summarization: existing summary + recent messages
+        // Build context for summarization: existing summary + evicted (old) messages
         let mut context_parts = Vec::new();
         if let Some(existing) = existing_summary {
             if !existing.is_empty() {
@@ -363,8 +364,8 @@ impl ContextBuilder {
             }
         }
 
-        // Include recent messages as context for summarization
-        for msg in recent_messages {
+        // Include evicted messages (old messages that were dropped from context)
+        for msg in evicted_messages {
             context_parts.push(format!("{}: {}", msg.role, msg.content));
         }
 
@@ -373,9 +374,9 @@ impl ContextBuilder {
         // Count tokens of context to avoid sending too much
         let context_tokens = count_tokens(&context_text);
         debug!(
-            "Summarization context: {} tokens, {} messages",
+            "Summarization context: {} tokens, {} evicted messages",
             context_tokens,
-            recent_messages.len()
+            evicted_messages.len()
         );
 
         // Build the summarization request

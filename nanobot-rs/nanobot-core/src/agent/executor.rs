@@ -82,14 +82,12 @@ impl<'a> ToolExecutor<'a> {
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
-            // Find a valid UTF-8 character boundary to avoid panic
-            let truncate_at = result_str
-                .char_indices()
-                .take_while(|(idx, _)| *idx < self.max_result_chars)
-                .last()
-                .map(|(idx, c)| idx + c.len_utf8())
-                .unwrap_or(0);
-            result_str.truncate(truncate_at);
+            // O(1) UTF-8 boundary check: walk backwards to find a valid char boundary
+            let mut end = self.max_result_chars;
+            while !result_str.is_char_boundary(end) {
+                end -= 1;
+            }
+            result_str.truncate(end);
             result_str.push_str("\n\n[... truncated]");
         }
 
@@ -142,14 +140,12 @@ impl<'a> ToolExecutor<'a> {
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
-            // Find a valid UTF-8 character boundary to avoid panic
-            let truncate_at = result_str
-                .char_indices()
-                .take_while(|(idx, _)| *idx < self.max_result_chars)
-                .last()
-                .map(|(idx, c)| idx + c.len_utf8())
-                .unwrap_or(0);
-            result_str.truncate(truncate_at);
+            // O(1) UTF-8 boundary check: walk backwards to find a valid char boundary
+            let mut end = self.max_result_chars;
+            while !result_str.is_char_boundary(end) {
+                end -= 1;
+            }
+            result_str.truncate(end);
             result_str.push_str("\n\n[... truncated]");
         }
 

@@ -35,12 +35,14 @@ impl Default for HistoryConfig {
 /// Result of processing history
 #[derive(Debug, Clone)]
 pub struct ProcessedHistory {
-    /// The processed messages
+    /// The processed messages (retained for context)
     pub messages: Vec<SessionMessage>,
     /// Estimated token count
     pub estimated_tokens: usize,
     /// Number of messages that were filtered out
     pub filtered_count: usize,
+    /// Messages that were evicted (exceeded budget) - these should be summarized
+    pub evicted: Vec<SessionMessage>,
 }
 
 /// Process history with token budget awareness.
@@ -57,6 +59,7 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
             messages: Vec::new(),
             estimated_tokens: 0,
             filtered_count: 0,
+            evicted: Vec::new(),
         };
     }
 
@@ -74,6 +77,7 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
     let protected_tokens: usize = protected.iter().map(|m| count_tokens(&m.content)).sum();
     let mut current_tokens = protected_tokens;
     let mut included_older: Vec<SessionMessage> = Vec::new();
+    let mut evicted: Vec<SessionMessage> = Vec::new();
 
     // Add older messages from most recent to oldest, respecting budget
     for msg in older.into_iter().rev() {
@@ -82,12 +86,17 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
         if config.token_budget == 0 || current_tokens + msg_tokens <= config.token_budget {
             current_tokens += msg_tokens;
             included_older.push(msg);
+        } else {
+            // Budget exceeded - this message is evicted and should be summarized
+            evicted.push(msg);
         }
-        // Skip if budget exceeded
     }
 
     // Reorder: older messages first, then protected
     included_older.reverse();
+    // Evicted messages are in reverse order (newest first), reorder to chronological
+    evicted.reverse();
+
     let mut result = included_older;
     result.extend(protected);
 
@@ -97,6 +106,7 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
         messages: result,
         estimated_tokens: current_tokens,
         filtered_count,
+        evicted,
     }
 }
 

@@ -373,6 +373,88 @@ pub struct FeishuChallengeResponse {
     pub challenge: String,
 }
 
+/// Stateless send: obtain a tenant access token and send a text message in one shot.
+///
+/// This avoids the need to keep a `FeishuChannel` instance alive just for sending.
+pub async fn send_text_stateless(
+    app_id: &str,
+    app_secret: &str,
+    chat_id: &str,
+    text: &str,
+) -> anyhow::Result<()> {
+    let client = Client::new();
+
+    // 1. Get tenant access token
+    #[derive(Serialize)]
+    struct TokenRequest {
+        app_id: String,
+        app_secret: String,
+    }
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        code: i32,
+        msg: String,
+        tenant_access_token: Option<String>,
+    }
+    let resp = client
+        .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+        .json(&TokenRequest {
+            app_id: app_id.to_string(),
+            app_secret: app_secret.to_string(),
+        })
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to get Feishu access token: {}", resp.status());
+    }
+    let token_resp: TokenResponse = resp.json().await?;
+    if token_resp.code != 0 {
+        anyhow::bail!("Feishu token API error (code={}): {}", token_resp.code, token_resp.msg);
+    }
+    let token = token_resp.tenant_access_token
+        .ok_or_else(|| anyhow::anyhow!("No tenant_access_token returned"))?;
+
+    // 2. Send the message
+    #[derive(Serialize)]
+    struct SendReq {
+        receive_id: String,
+        msg_type: String,
+        content: String,
+    }
+    #[derive(Deserialize)]
+    struct ApiResp {
+        code: i32,
+        msg: String,
+    }
+
+    let receive_id_type = if chat_id.starts_with("ou") { "open_id" } else { "chat_id" };
+    let url = format!(
+        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}",
+        receive_id_type
+    );
+    let content = serde_json::to_string(&serde_json::json!({ "text": text }))?;
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&SendReq {
+            receive_id: chat_id.to_string(),
+            msg_type: "text".to_string(),
+            content,
+        })
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await?;
+        anyhow::bail!("Feishu send failed: {} - {}", status, body);
+    }
+    let api_resp: ApiResp = resp.json().await?;
+    if api_resp.code != 0 {
+        anyhow::bail!("Feishu send API error (code={}): {}", api_resp.code, api_resp.msg);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

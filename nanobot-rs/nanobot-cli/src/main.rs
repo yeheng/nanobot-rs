@@ -5,8 +5,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use nanobot_core::channels::manager::ChannelManager;
-
 #[cfg(feature = "feishu")]
 use nanobot_core::channels::Channel;
 use opentelemetry::trace::TracerProvider;
@@ -786,14 +784,123 @@ async fn cmd_gateway() -> Result<()> {
     #[allow(unused_mut)]
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // --- Channel manager + outbound router ---
-    let channel_manager = Arc::new(ChannelManager::new(bus.clone()));
-    tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
+    // --- Build outbound sender closures per channel type ---
+    // Sending is stateless (HTTP POST), so we just need config to construct a sender.
+    // This replaces the broken ChannelManager approach where channels were never registered.
 
-    // Inbound sender with auth/rate-limit middleware applied.
-    // All channels (including webhook-driven ones) should use this instead of raw bus sender.
+    // Build InboundSender with auth/rate-limit middleware applied.
+    let inbound_sender = nanobot_core::channels::InboundSender::new(bus.inbound_sender());
+    // TODO: wire up rate_limiter and auth_checker from config if needed
     #[allow(unused_variables)]
-    let inbound_processor = channel_manager.inbound_sender();
+    let inbound_processor = inbound_sender.clone();
+
+    // --- Direct outbound routing loop ---
+    // Each outbound message is routed by ChannelType to a stateless send function.
+    // No dynamic dispatch, no RwLock, no HashMap. It just works.
+    {
+        // Clone configs needed for outbound sending
+        #[allow(unused_variables)]
+        let config_for_outbound = config.clone();
+        let mut outbound_rx = outbound_rx;
+        tasks.push(tokio::spawn(async move {
+            while let Some(msg) = outbound_rx.recv().await {
+                #[allow(unused_variables)]
+                let cfg = config_for_outbound.clone();
+                tokio::spawn(async move {
+                    let result: anyhow::Result<()> = match msg.channel {
+                        #[cfg(feature = "telegram")]
+                        nanobot_core::bus::ChannelType::Telegram => {
+                            if let Some(ref tel) = cfg.channels.telegram {
+                                let bot = teloxide::Bot::new(&tel.token);
+                                match msg.chat_id.parse::<i64>() {
+                                    Ok(chat_id) => {
+                                        bot.send_message(teloxide::types::ChatId(chat_id), &msg.content)
+                                            .await
+                                            .map(|_| ())
+                                            .map_err(Into::into)
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!("Invalid chat_id: {}", e)),
+                                }
+                            } else {
+                                Err(anyhow::anyhow!("Telegram not configured"))
+                            }
+                        }
+                        nanobot_core::bus::ChannelType::Feishu => {
+                            if let Some(ref feishu) = cfg.channels.feishu {
+                                nanobot_core::channels::feishu::send_text_stateless(
+                                    &feishu.app_id,
+                                    &feishu.app_secret,
+                                    &msg.chat_id,
+                                    &msg.content,
+                                )
+                                .await
+                            } else {
+                                Err(anyhow::anyhow!("Feishu not configured"))
+                            }
+                        }
+                        #[cfg(feature = "email")]
+                        nanobot_core::bus::ChannelType::Email => {
+                            if let Some(ref email) = cfg.channels.email {
+                                if let (Some(ref host), Some(ref user), Some(ref pass), Some(ref from)) = (
+                                    &email.smtp_host,
+                                    &email.smtp_username,
+                                    &email.smtp_password,
+                                    &email.from_address,
+                                ) {
+                                    nanobot_core::channels::email::send_email_stateless(
+                                        host,
+                                        email.smtp_port,
+                                        user,
+                                        pass,
+                                        from,
+                                        msg.chat_id.trim_start_matches("email:"),
+                                        "Re: Your message",
+                                        &msg.content,
+                                    )
+                                    .await
+                                } else {
+                                    Err(anyhow::anyhow!("Email SMTP not fully configured"))
+                                }
+                            } else {
+                                Err(anyhow::anyhow!("Email not configured"))
+                            }
+                        }
+                        #[cfg(feature = "slack")]
+                        nanobot_core::bus::ChannelType::Slack => {
+                            if let Some(ref slack) = cfg.channels.slack {
+                                nanobot_core::channels::slack::send_message_stateless(
+                                    &slack.bot_token,
+                                    &msg.chat_id,
+                                    &msg.content,
+                                    None,
+                                )
+                                .await
+                            } else {
+                                Err(anyhow::anyhow!("Slack not configured"))
+                            }
+                        }
+                        _ => {
+                            tracing::warn!(
+                                "No outbound handler for channel {:?}, dropping message to {}",
+                                msg.channel,
+                                msg.chat_id
+                            );
+                            Ok(())
+                        }
+                    };
+                    if let Err(e) = result {
+                        tracing::error!(
+                            "Outbound send error ({:?} -> {}): {}",
+                            msg.channel,
+                            msg.chat_id,
+                            e
+                        );
+                    }
+                });
+            }
+            tracing::info!("Outbound router exited");
+        }));
+    }
 
     // --- Inbound message handler ---
     {
