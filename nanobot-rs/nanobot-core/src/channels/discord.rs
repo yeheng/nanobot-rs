@@ -77,10 +77,22 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    async fn send(&self, _msg: OutboundMessage) -> anyhow::Result<()> {
-        // Note: Sending requires the client instance, handled differently
-        Ok(())
+    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
+        send_message_stateless(&self.config.token, &msg.chat_id, &msg.content).await
     }
+}
+
+/// Stateless send: send a message to Discord without needing a `DiscordChannel` instance.
+pub async fn send_message_stateless(token: &str, channel_id: &str, content: &str) -> anyhow::Result<()> {
+    use serenity::http::Http;
+    use serenity::model::id::ChannelId;
+
+    let http = Http::new(token);
+    let channel_id: u64 = channel_id.parse()?;
+    let channel = ChannelId::new(channel_id);
+
+    channel.say(&http, content).await?;
+    Ok(())
 }
 
 /// Discord event handler

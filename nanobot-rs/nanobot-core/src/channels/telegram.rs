@@ -110,9 +110,14 @@ impl Channel for TelegramChannel {
 
     #[instrument(name = "channel.telegram.send", skip_all, fields(chat_id = %msg.chat_id))]
     async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        let bot = Bot::new(&self.config.token);
-        let chat_id: i64 = msg.chat_id.parse()?;
-        bot.send_message(ChatId(chat_id), &msg.content).await?;
-        Ok(())
+        send_text_stateless(&self.config.token, &msg.chat_id, &msg.content).await
     }
+}
+
+/// Stateless send: send a text message to Telegram without needing a `TelegramChannel` instance.
+pub async fn send_text_stateless(token: &str, chat_id: &str, text: &str) -> anyhow::Result<()> {
+    let bot = Bot::new(token);
+    let chat_id: i64 = chat_id.parse()?;
+    bot.send_message(ChatId(chat_id), text).await?;
+    Ok(())
 }

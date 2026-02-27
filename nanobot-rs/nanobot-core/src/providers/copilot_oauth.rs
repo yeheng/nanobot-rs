@@ -130,10 +130,7 @@ impl CopilotOAuth {
             .client
             .post(DEVICE_CODE_URL)
             .header("Accept", "application/json")
-            .form(&[
-                ("client_id", self.client_id.as_str()),
-                ("scope", "user"),
-            ])
+            .form(&[("client_id", self.client_id.as_str()), ("scope", "user")])
             .send()
             .await?;
 
@@ -204,10 +201,7 @@ impl CopilotOAuth {
         println!("  1. Open: {}", device_code.verification_uri.cyan());
         println!("  2. Enter code: {}", device_code.user_code.bold().yellow());
         println!();
-        println!(
-            "  (Code expires in {} seconds)",
-            device_code.expires_in
-        );
+        println!("  (Code expires in {} seconds)", device_code.expires_in);
         println!();
 
         // Step 3: Poll for completion

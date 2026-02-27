@@ -13,20 +13,17 @@
 //! let provider = CopilotProvider::new("gho_xxx", None, "gpt-4o");
 //! ```
 
-use std::time::{Duration, Instant};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
 
+use super::copilot_oauth::{CopilotOAuth, EDITOR_PLUGIN_VERSION, EDITOR_VERSION};
 use super::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall,
-    ToolDefinition,
-};
-use super::copilot_oauth::{
-    CopilotOAuth, EDITOR_VERSION, EDITOR_PLUGIN_VERSION,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
 };
 
 /// Default API base for Copilot
@@ -48,7 +45,8 @@ impl CachedToken {
     fn is_expired(&self) -> bool {
         Instant::now().duration_since(Instant::now())
             > self.expires_at.duration_since(Instant::now())
-            || self.expires_at.duration_since(Instant::now()) < Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS)
+            || self.expires_at.duration_since(Instant::now())
+                < Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS)
     }
 }
 
@@ -134,10 +132,7 @@ impl CopilotProvider {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", copilot_token).parse().unwrap(),
         );
-        headers.insert(
-            "Editor-Version",
-            EDITOR_VERSION.parse().unwrap(),
-        );
+        headers.insert("Editor-Version", EDITOR_VERSION.parse().unwrap());
         headers.insert(
             "Editor-Plugin-Version",
             EDITOR_PLUGIN_VERSION.parse().unwrap(),
@@ -211,7 +206,11 @@ impl LlmProvider for CopilotProvider {
             let body = response.text().await?;
 
             if !status.is_success() {
-                anyhow::bail!("Copilot API error after token refresh: {} - {}", status, body);
+                anyhow::bail!(
+                    "Copilot API error after token refresh: {} - {}",
+                    status,
+                    body
+                );
             }
 
             return parse_copilot_response(&body);
@@ -275,9 +274,8 @@ impl LlmProvider for CopilotProvider {
 
 /// Parse Copilot API response
 fn parse_copilot_response(body: &str) -> anyhow::Result<ChatResponse> {
-    let api_response: CopilotResponse = serde_json::from_str(body).map_err(|e| {
-        anyhow::anyhow!("Copilot API response parse error: {} | body: {}", e, body)
-    })?;
+    let api_response: CopilotResponse = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("Copilot API response parse error: {} | body: {}", e, body))?;
 
     let choice = api_response
         .choices

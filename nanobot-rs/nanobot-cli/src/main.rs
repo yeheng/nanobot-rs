@@ -134,9 +134,7 @@ async fn main() -> Result<()> {
             ChannelsCommands::Status => cmd_channels_status().await,
         },
         Some(Commands::Auth { command }) => match command {
-            AuthCommands::Copilot { pat, client_id } => {
-                cmd_auth_copilot(pat, client_id).await
-            }
+            AuthCommands::Copilot { pat, client_id } => cmd_auth_copilot(pat, client_id).await,
             AuthCommands::Status => cmd_auth_status().await,
         },
         None => {
@@ -837,94 +835,9 @@ async fn cmd_gateway() -> Result<()> {
                 #[allow(unused_variables)]
                 let cfg = config_for_outbound.clone();
                 tokio::spawn(async move {
-                    let result: anyhow::Result<()> = match msg.channel {
-                        #[cfg(feature = "telegram")]
-                        nanobot_core::bus::ChannelType::Telegram => {
-                            if let Some(ref tel) = cfg.channels.telegram {
-                                let bot = teloxide::Bot::new(&tel.token);
-                                match msg.chat_id.parse::<i64>() {
-                                    Ok(chat_id) => {
-                                        bot.send_message(teloxide::types::ChatId(chat_id), &msg.content)
-                                            .await
-                                            .map(|_| ())
-                                            .map_err(Into::into)
-                                    }
-                                    Err(e) => Err(anyhow::anyhow!("Invalid chat_id: {}", e)),
-                                }
-                            } else {
-                                Err(anyhow::anyhow!("Telegram not configured"))
-                            }
-                        }
-                        nanobot_core::bus::ChannelType::Feishu => {
-                            if let Some(ref feishu) = cfg.channels.feishu {
-                                nanobot_core::channels::feishu::send_text_stateless(
-                                    &feishu.app_id,
-                                    &feishu.app_secret,
-                                    &msg.chat_id,
-                                    &msg.content,
-                                )
-                                .await
-                            } else {
-                                Err(anyhow::anyhow!("Feishu not configured"))
-                            }
-                        }
-                        #[cfg(feature = "email")]
-                        nanobot_core::bus::ChannelType::Email => {
-                            if let Some(ref email) = cfg.channels.email {
-                                if let (Some(ref host), Some(ref user), Some(ref pass), Some(ref from)) = (
-                                    &email.smtp_host,
-                                    &email.smtp_username,
-                                    &email.smtp_password,
-                                    &email.from_address,
-                                ) {
-                                    nanobot_core::channels::email::send_email_stateless(
-                                        host,
-                                        email.smtp_port,
-                                        user,
-                                        pass,
-                                        from,
-                                        msg.chat_id.trim_start_matches("email:"),
-                                        "Re: Your message",
-                                        &msg.content,
-                                    )
-                                    .await
-                                } else {
-                                    Err(anyhow::anyhow!("Email SMTP not fully configured"))
-                                }
-                            } else {
-                                Err(anyhow::anyhow!("Email not configured"))
-                            }
-                        }
-                        #[cfg(feature = "slack")]
-                        nanobot_core::bus::ChannelType::Slack => {
-                            if let Some(ref slack) = cfg.channels.slack {
-                                nanobot_core::channels::slack::send_message_stateless(
-                                    &slack.bot_token,
-                                    &msg.chat_id,
-                                    &msg.content,
-                                    None,
-                                )
-                                .await
-                            } else {
-                                Err(anyhow::anyhow!("Slack not configured"))
-                            }
-                        }
-                        _ => {
-                            tracing::warn!(
-                                "No outbound handler for channel {:?}, dropping message to {}",
-                                msg.channel,
-                                msg.chat_id
-                            );
-                            Ok(())
-                        }
-                    };
+                    let result = nanobot_core::channels::send_outbound(&cfg.channels, msg).await;
                     if let Err(e) = result {
-                        tracing::error!(
-                            "Outbound send error ({:?} -> {}): {}",
-                            msg.channel,
-                            msg.chat_id,
-                            e
-                        );
+                        tracing::error!("Outbound send error: {}", e);
                     }
                 });
             }
@@ -1645,7 +1558,11 @@ async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Res
     );
 
     loader.save(&config)?;
-    println!("\n{} Token saved to {:?}", "✓".green(), loader.config_path());
+    println!(
+        "\n{} Token saved to {:?}",
+        "✓".green(),
+        loader.config_path()
+    );
     println!("\nYou can now use Copilot by setting your model to 'copilot/gpt-4o'");
 
     Ok(())

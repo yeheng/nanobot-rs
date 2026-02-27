@@ -409,9 +409,14 @@ pub async fn send_text_stateless(
     }
     let token_resp: TokenResponse = resp.json().await?;
     if token_resp.code != 0 {
-        anyhow::bail!("Feishu token API error (code={}): {}", token_resp.code, token_resp.msg);
+        anyhow::bail!(
+            "Feishu token API error (code={}): {}",
+            token_resp.code,
+            token_resp.msg
+        );
     }
-    let token = token_resp.tenant_access_token
+    let token = token_resp
+        .tenant_access_token
         .ok_or_else(|| anyhow::anyhow!("No tenant_access_token returned"))?;
 
     // 2. Send the message
@@ -427,7 +432,11 @@ pub async fn send_text_stateless(
         msg: String,
     }
 
-    let receive_id_type = if chat_id.starts_with("ou") { "open_id" } else { "chat_id" };
+    let receive_id_type = if chat_id.starts_with("ou") {
+        "open_id"
+    } else {
+        "chat_id"
+    };
     let url = format!(
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}",
         receive_id_type
@@ -450,7 +459,11 @@ pub async fn send_text_stateless(
     }
     let api_resp: ApiResp = resp.json().await?;
     if api_resp.code != 0 {
-        anyhow::bail!("Feishu send API error (code={}): {}", api_resp.code, api_resp.msg);
+        anyhow::bail!(
+            "Feishu send API error (code={}): {}",
+            api_resp.code,
+            api_resp.msg
+        );
     }
     Ok(())
 }
