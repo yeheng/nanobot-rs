@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
             .with_env_filter(env_filter)
             .with_level(true)
             .with_ansi(true)
+            .with_line_number(true)
             .init();
     }
 

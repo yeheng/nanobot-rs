@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
+use uuid::Uuid;
 
 use super::copilot_oauth::CopilotOAuth;
 use super::{
@@ -109,18 +110,18 @@ impl CopilotProvider {
         let response = oauth.get_copilot_token(&self.github_token).await?;
 
         let token = response.token.clone();
-        let expires_in = response.expires_in;
+        let refresh_in = response.refresh_in;
 
         // Cache the new token
         {
             let mut cached = self.cached_token.lock().unwrap();
             *cached = Some(CachedToken {
                 token: token.clone(),
-                expires_at: Instant::now() + Duration::from_secs(expires_in as u64),
+                expires_at: Instant::now() + Duration::from_secs(refresh_in as u64),
             });
         }
 
-        debug!("Copilot token refreshed, expires in {} seconds", expires_in);
+        debug!("Copilot token refreshed, refresh in {} seconds", refresh_in);
         Ok(token)
     }
 
@@ -131,10 +132,19 @@ impl CopilotProvider {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", copilot_token).parse().unwrap(),
         );
-        headers.insert("Editor-Version", "Neovim/0.6.1".parse().unwrap());
+        headers.insert("copilot-integration-id", "vscode-chat".parse().unwrap());
+        headers.insert("Editor-Version", "vscode/1.95.0".parse().unwrap());
         headers.insert(
             "Editor-Plugin-Version",
-            "copilot.vim/1.16.0".parse().unwrap(),
+            "copilot-chat/0.26.7".parse().unwrap(),
+        );
+        headers.insert("user-agent", "GitHubCopilotChat/0.26.7".parse().unwrap());
+        headers.insert("openai-intent", "conversation-panel".parse().unwrap());
+        headers.insert("x-github-api-version", "2025-04-01".parse().unwrap());
+        headers.insert("x-request-id", Uuid::new_v4().to_string().parse().unwrap());
+        headers.insert(
+            "x-vscode-user-agent-library-version",
+            "electron-fetch".parse().unwrap(),
         );
         headers.insert(
             reqwest::header::CONTENT_TYPE,

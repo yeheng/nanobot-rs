@@ -13,7 +13,7 @@ use tracing::{debug, info};
 pub const DEFAULT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 
 /// OAuth endpoints
-const DEVICE_CODE_URL: &str = "https://github.com/login/oauth/device/code";
+const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
 /// Copilot token exchange endpoint
@@ -54,13 +54,106 @@ pub struct AccessTokenResponse {
     pub error_description: Option<String>,
 }
 
+/// Copilot API endpoints
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopilotEndpoints {
+    /// API endpoint
+    pub api: String,
+    /// Origin tracker endpoint
+    #[serde(rename = "origin-tracker")]
+    pub origin_tracker: String,
+    /// Proxy endpoint
+    pub proxy: String,
+    /// Telemetry endpoint
+    pub telemetry: String,
+}
+
+/// Limited user quotas
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LimitedUserQuotas {
+    /// Chat quota
+    pub chat: u32,
+    /// Completions quota
+    pub completions: u32,
+}
+
 /// Copilot token response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopilotTokenResponse {
-    /// The Copilot JWT token
+    /// Agent mode auto approval enabled
+    #[serde(default)]
+    pub agent_mode_auto_approval: bool,
+    /// Annotations enabled
+    #[serde(default)]
+    pub annotations_enabled: bool,
+    /// Azure only restriction
+    #[serde(default)]
+    pub azure_only: bool,
+    /// Blackbird clientside indexing enabled
+    #[serde(default)]
+    pub blackbird_clientside_indexing: bool,
+    /// Chat enabled
+    #[serde(default)]
+    pub chat_enabled: bool,
+    /// Chat JetBrains enabled
+    #[serde(default)]
+    pub chat_jetbrains_enabled: bool,
+    /// Code quote enabled
+    #[serde(default)]
+    pub code_quote_enabled: bool,
+    /// Code review enabled
+    #[serde(default)]
+    pub code_review_enabled: bool,
+    /// Code search enabled
+    #[serde(default)]
+    pub codesearch: bool,
+    /// Copilot ignore enabled
+    #[serde(default)]
+    pub copilotignore_enabled: bool,
+    /// API endpoints
+    pub endpoints: CopilotEndpoints,
+    /// Token expiration timestamp (Unix timestamp)
+    pub expires_at: u64,
+    /// Is individual account
+    #[serde(default)]
+    pub individual: bool,
+    /// Limited user quotas (for free tier)
+    #[serde(default)]
+    pub limited_user_quotas: Option<LimitedUserQuotas>,
+    /// Limited user reset date (Unix timestamp)
+    #[serde(default)]
+    pub limited_user_reset_date: Option<u64>,
+    /// Prompt 8k enabled
+    #[serde(default)]
+    pub prompt_8k: bool,
+    /// Public suggestions setting
+    #[serde(default)]
+    pub public_suggestions: String,
+    /// Seconds until token refresh needed
+    pub refresh_in: u32,
+    /// SKU (e.g., "free_limited_copilot", "individual")
+    #[serde(default)]
+    pub sku: String,
+    /// Snippy load test enabled
+    #[serde(default)]
+    pub snippy_load_test_enabled: bool,
+    /// Telemetry setting
+    #[serde(default)]
+    pub telemetry: String,
+    /// The Copilot token
     pub token: String,
-    /// Seconds until token expires
-    pub expires_in: u32,
+    /// Tracking ID
+    #[serde(default)]
+    pub tracking_id: String,
+    /// VS Code electron fetcher v2 enabled
+    #[serde(default)]
+    pub vsc_electron_fetcher_v2: bool,
+    /// Xcode support enabled
+    #[serde(default)]
+    pub xcode: bool,
+    /// Xcode chat enabled
+    #[serde(default)]
+    pub xcode_chat: bool,
 }
 
 /// OAuth errors
@@ -118,23 +211,33 @@ impl CopilotOAuth {
     ///
     /// Returns a device code and user code for the user to enter on GitHub
     pub async fn request_device_code(&self) -> Result<DeviceCodeResponse, OAuthError> {
+        let payload = serde_json::json!({
+            "client_id": self.client_id,
+            "scope": "read:user"
+        });
+
         debug!(
             "Requesting device code from GitHub with client_id: {}",
             self.client_id
         );
+        debug!("Request URL: {}", DEVICE_CODE_URL);
+        debug!(
+            "Request payload: {}",
+            serde_json::to_string(&payload).unwrap_or_default()
+        );
 
-        let response = self
+        let request = self
             .client
             .post(DEVICE_CODE_URL)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .header("User-Agent", "GitHubCopilotChat/0.26.7")
-            .json(&serde_json::json!({
-                "client_id": self.client_id,
-                "scope": "read:user"
-            }))
-            .send()
-            .await?;
+            .json(&payload)
+            .build()?;
+
+        debug!("Request headers: {:?}", request.headers());
+
+        let response = self.client.execute(request).await?;
 
         let status = response.status();
         let text = response.text().await?;
@@ -175,21 +278,33 @@ impl CopilotOAuth {
         &self,
         device_code: &str,
     ) -> Result<AccessTokenResponse, OAuthError> {
-        let response = self
+        let payload = serde_json::json!({
+            "client_id": self.client_id.as_str(),
+            "device_code": device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        });
+
+        debug!("Polling for access token. URL: {}", ACCESS_TOKEN_URL);
+        debug!(
+            "Request payload: {}",
+            serde_json::to_string(&payload).unwrap_or_default()
+        );
+
+        let request = self
             .client
             .post(ACCESS_TOKEN_URL)
             .header("Accept", "application/json")
             .header("User-Agent", "GitHubCopilotChat/0.26.7")
-            .json(&serde_json::json!({
-                "client_id": self.client_id.as_str(),
-                "device_code": device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            }))
-            .send()
-            .await?;
+            .json(&payload)
+            .build()?;
 
+        debug!("Request headers: {:?}", request.headers());
+
+        let response = self.client.execute(request).await?;
+
+        let status = response.status();
         let text = response.text().await?;
-        debug!("Access token response: {}", text);
+        debug!("Access token response status: {}, body: {}", status, text);
 
         let token_response: AccessTokenResponse =
             serde_json::from_str(&text).map_err(|e| OAuthError::JsonError(e.to_string()))?;
@@ -269,7 +384,9 @@ impl CopilotOAuth {
         &self,
         github_token: &str,
     ) -> Result<CopilotTokenResponse, OAuthError> {
-        let response = self
+        debug!("Getting copilot token. URL: {}", COPILOT_TOKEN_URL);
+
+        let request = self
             .client
             .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("Bearer {}", github_token))
@@ -278,22 +395,24 @@ impl CopilotOAuth {
             .header("Editor-Plugin-Version", "copilot-chat/0.26.7")
             .header("Accept", "application/json")
             .header("Copilot-Integration-Id", "vscode-chat")
-            .send()
-            .await?;
+            .build()?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        debug!("Request headers: {:?}", request.headers());
+
+        let response = self.client.execute(request).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        debug!("------> Response status: {}", status);
+        debug!("------> Response body: {}", body);
+        if !status.is_success() {
             return Err(OAuthError::TokenError(format!(
                 "Failed to get Copilot token: {} - {}",
                 status, body
             )));
         }
 
-        let token_response: CopilotTokenResponse = response
-            .json()
-            .await
-            .map_err(|e| OAuthError::JsonError(e.to_string()))?;
+        let token_response: CopilotTokenResponse = serde_json::from_str(&body)
+            .map_err(|e| OAuthError::JsonError(format!("{}: {}", e, body)))?;
 
         Ok(token_response)
     }
@@ -406,12 +525,60 @@ mod tests {
     #[test]
     fn test_copilot_token_response_parsing() {
         let json = r#"{
-            "token": "eyJ...",
-            "expires_in": 1800
+            "agent_mode_auto_approval": true,
+            "annotations_enabled": true,
+            "azure_only": false,
+            "blackbird_clientside_indexing": false,
+            "chat_enabled": true,
+            "chat_jetbrains_enabled": true,
+            "code_quote_enabled": true,
+            "code_review_enabled": false,
+            "codesearch": true,
+            "copilotignore_enabled": false,
+            "endpoints": {
+                "api": "https://api.individual.githubcopilot.com",
+                "origin-tracker": "https://origin-tracker.individual.githubcopilot.com",
+                "proxy": "https://proxy.individual.githubcopilot.com",
+                "telemetry": "https://telemetry.individual.githubcopilot.com"
+            },
+            "expires_at": 1772293626,
+            "individual": true,
+            "limited_user_quotas": {
+                "chat": 490,
+                "completions": 4000
+            },
+            "limited_user_reset_date": 1773187200,
+            "prompt_8k": true,
+            "public_suggestions": "disabled",
+            "refresh_in": 1500,
+            "sku": "free_limited_copilot",
+            "snippy_load_test_enabled": false,
+            "telemetry": "enabled",
+            "token": "test_token_value",
+            "tracking_id": "76fcb479514ca6833209aad18684554c",
+            "vsc_electron_fetcher_v2": false,
+            "xcode": true,
+            "xcode_chat": false
         }"#;
 
         let response: CopilotTokenResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.token, "eyJ...");
-        assert_eq!(response.expires_in, 1800);
+        assert_eq!(response.token, "test_token_value");
+        assert_eq!(response.expires_at, 1772293626);
+        assert_eq!(response.refresh_in, 1500);
+        assert_eq!(
+            response.endpoints.api,
+            "https://api.individual.githubcopilot.com"
+        );
+        assert_eq!(
+            response.endpoints.proxy,
+            "https://proxy.individual.githubcopilot.com"
+        );
+        assert!(response.agent_mode_auto_approval);
+        assert!(response.chat_enabled);
+        assert_eq!(response.sku, "free_limited_copilot");
+        assert!(response.limited_user_quotas.is_some());
+        let quotas = response.limited_user_quotas.unwrap();
+        assert_eq!(quotas.chat, 490);
+        assert_eq!(quotas.completions, 4000);
     }
 }
