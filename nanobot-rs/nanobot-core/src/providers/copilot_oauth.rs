@@ -10,7 +10,7 @@ use tracing::{debug, info};
 
 /// Default GitHub App Client ID for Copilot
 /// This is the official GitHub Copilot extension's client ID
-pub const DEFAULT_CLIENT_ID: &str = "986c7645378f69de7552";
+pub const DEFAULT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 
 /// OAuth endpoints
 const DEVICE_CODE_URL: &str = "https://github.com/login/oauth/device/code";
@@ -18,12 +18,6 @@ const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
 /// Copilot token exchange endpoint
 pub const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
-
-/// Editor version header value
-pub const EDITOR_VERSION: &str = "nanobot/2.0.0";
-
-/// Editor plugin version header value
-pub const EDITOR_PLUGIN_VERSION: &str = "nanobot-copilot/1.0.0";
 
 /// Device code response from GitHub
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,13 +126,15 @@ impl CopilotOAuth {
         let response = self
             .client
             .post(DEVICE_CODE_URL)
+            .header("User-Agent", "GitHubCopilotChat/0.26.7")
+            .header("Editor-Version", "Neovim/0.6.1")
+            .header("Editor-Plugin-Version", "copilot.vim/1.16.0")
             .header("Accept", "application/json")
-            .header("editor-version", "Neovim/0.6.1")
-            .header("editor-plugin-version", "copilot.vim/1.16.0")
-            .header("content-type", "application/json")
-            .header("user-agent", "GithubCopilot/1.155.0")
-            .header("accept-encoding", "gzip,deflate,br")
-            .form(&[("client_id", self.client_id.as_str()), ("scope", "user")])
+            .header("Accept-Encoding", "gzip,deflate,br")
+            .form(&[
+                ("client_id", self.client_id.as_str()),
+                ("scope", "read:user"),
+            ])
             .send()
             .await?;
 
@@ -278,8 +274,11 @@ impl CopilotOAuth {
             .client
             .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("Bearer {}", github_token))
-            .header("Editor-Version", EDITOR_VERSION)
-            .header("Editor-Plugin-Version", EDITOR_PLUGIN_VERSION)
+            .header("User-Agent", "GithubCopilot/1.155.0")
+            .header("Editor-Version", "Neovim/0.6.1")
+            .header("Editor-Plugin-Version", "copilot.vim/1.16.0")
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "gzip,deflate,br")
             .send()
             .await?;
 

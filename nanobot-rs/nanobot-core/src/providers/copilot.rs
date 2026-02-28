@@ -21,7 +21,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
 
-use super::copilot_oauth::{CopilotOAuth, EDITOR_PLUGIN_VERSION, EDITOR_VERSION};
+use super::copilot_oauth::CopilotOAuth;
 use super::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
 };
@@ -131,10 +131,10 @@ impl CopilotProvider {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", copilot_token).parse().unwrap(),
         );
-        headers.insert("Editor-Version", EDITOR_VERSION.parse().unwrap());
+        headers.insert("Editor-Version", "Neovim/0.6.1".parse().unwrap());
         headers.insert(
             "Editor-Plugin-Version",
-            EDITOR_PLUGIN_VERSION.parse().unwrap(),
+            "copilot.vim/1.16.0".parse().unwrap(),
         );
         headers.insert(
             reqwest::header::CONTENT_TYPE,

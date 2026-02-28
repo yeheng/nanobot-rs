@@ -1,41 +1,20 @@
 //! Agent loop: the core processing engine
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures::StreamExt;
 use tracing::{debug, info, instrument, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::agent::executor::ToolExecutor;
 use crate::agent::memory::MemoryStore;
-use crate::providers::{
-    parse_json_args, ChatMessage, ChatRequest, ChatResponse, LlmProvider, ThinkingConfig, ToolCall,
-};
+use crate::agent::request::RequestHandler;
+use crate::agent::skill_loader;
+use crate::agent::stream::{self, StreamCallback, StreamEvent};
+use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::session::SessionManager;
-use crate::skills::{SkillsLoader, SkillsRegistry};
 use crate::tools::ToolRegistry;
-
-/// Callback type for streaming output.
-///
-/// Called for each chunk of text or reasoning content as it arrives.
-pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send + Sync>;
-
-/// Events emitted during streaming.
-#[derive(Debug)]
-pub enum StreamEvent {
-    /// Incremental text content
-    Content(String),
-    /// Incremental reasoning/thinking content
-    Reasoning(String),
-    /// A tool is being called
-    ToolStart { name: String },
-    /// Tool execution finished
-    ToolEnd { name: String, output: String },
-    /// Stream completed
-    Done,
-}
 
 /// Agent loop configuration
 pub struct AgentConfig {
@@ -78,6 +57,8 @@ pub struct AgentResponse {
     pub tools_used: Vec<String>,
 }
 
+// ── AgentLoop ───────────────────────────────────────────────
+
 /// The agent loop - core processing engine
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
@@ -109,7 +90,7 @@ impl AgentLoop {
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         // Load skills
-        let skills_context = Self::load_skills(&workspace).await;
+        let skills_context = skill_loader::load_skills(&workspace).await;
 
         // Build context with skills and summarization support
         let store_arc = Arc::new(memory.sqlite_store().clone());
@@ -162,85 +143,6 @@ impl AgentLoop {
     /// Get the cached context builder for sharing with subagents.
     pub fn context_builder(&self) -> &ContextBuilder {
         &self.context
-    }
-
-    /// Load skills from builtin and user directories
-    async fn load_skills(workspace: &Path) -> Option<String> {
-        let user_skills_dir = workspace.join("skills");
-
-        // Locate builtin skills: try relative to the executable, then a few common fallbacks
-        let builtin_skills_dir = Self::find_builtin_skills_dir();
-
-        let builtin_dir = match builtin_skills_dir {
-            Some(dir) => dir,
-            None => {
-                debug!("Built-in skills directory not found, loading user skills only");
-                // Still try loading user skills
-                if !user_skills_dir.exists() {
-                    debug!("No skills directories found");
-                    return None;
-                }
-                PathBuf::from("/nonexistent")
-            }
-        };
-
-        let loader = SkillsLoader::new(user_skills_dir, builtin_dir);
-        match SkillsRegistry::from_loader(loader).await {
-            Ok(registry) => {
-                let summary = registry.generate_context_summary().await;
-                if summary.is_empty() {
-                    info!("No skills loaded");
-                    None
-                } else {
-                    info!(
-                        "Loaded {} skills ({} available)",
-                        registry.len(),
-                        registry.list_available().len()
-                    );
-                    Some(summary)
-                }
-            }
-            Err(e) => {
-                warn!("Failed to load skills: {}", e);
-                None
-            }
-        }
-    }
-
-    /// Find the builtin skills directory
-    fn find_builtin_skills_dir() -> Option<PathBuf> {
-        // Try relative to the executable
-        if let Ok(exe) = std::env::current_exe() {
-            // dev build: target/debug/nanobot → nanobot-core/skills/
-            if let Some(project_root) = exe
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-            {
-                let candidate = project_root.join("nanobot-core").join("skills");
-                if candidate.exists() {
-                    debug!("Found builtin skills at {:?}", candidate);
-                    return Some(candidate);
-                }
-            }
-        }
-
-        // Try current working directory
-        if let Ok(cwd) = std::env::current_dir() {
-            let candidate = cwd.join("nanobot-core").join("skills");
-            if candidate.exists() {
-                debug!("Found builtin skills at {:?}", candidate);
-                return Some(candidate);
-            }
-            // Also try if we're inside nanobot-core
-            let candidate = cwd.join("skills");
-            if candidate.exists() {
-                debug!("Found builtin skills at {:?}", candidate);
-                return Some(candidate);
-            }
-        }
-
-        None
     }
 
     /// Get the model name
@@ -364,6 +266,8 @@ impl AgentLoop {
         })
     }
 
+    // ── Agent Loop Internals ────────────────────────────────
+
     /// Unified agent iteration loop.
     ///
     /// Always uses `chat_stream` — for non-streaming providers the default
@@ -380,239 +284,128 @@ impl AgentLoop {
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 
         let mut messages = initial_messages;
-        let mut iteration = 0;
-        let mut final_content = None;
-        let mut final_reasoning = None;
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
 
-        let model_name = Arc::new(self.config.model.clone());
-
-        while iteration < self.config.max_iterations {
-            iteration += 1;
+        for iteration in 1..=self.config.max_iterations {
             debug!("Agent loop iteration {}", iteration);
 
-            let request = ChatRequest {
-                model: model_name.to_string(),
-                messages: messages.clone(),
-                tools: Some(self.tools.get_definitions()),
-                temperature: Some(self.config.temperature),
-                max_tokens: Some(self.config.max_tokens),
-                thinking: if self.config.thinking_enabled {
-                    Some(ThinkingConfig::enabled())
-                } else {
-                    None
-                },
-            };
+            let request = request_handler.build_chat_request(&messages);
+            let mut stream = request_handler.send_with_retry(request).await?;
+            let response = stream::accumulate_stream(&mut stream, cb).await?;
 
-            // Get the stream (with retries)
-            let mut retries = 0;
-            let max_retries = 3;
-            let mut stream = loop {
-                match self.provider.chat_stream(request.clone()).await {
-                    Ok(s) => break s,
-                    Err(e) => {
-                        if retries >= max_retries {
-                            return Err(e.context("Provider request failed after retries"));
-                        }
-                        warn!(
-                            "Provider error: {}. Retrying {}/{}",
-                            e,
-                            retries + 1,
-                            max_retries
-                        );
-                        retries += 1;
-                        tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries)))
-                            .await;
-                    }
-                }
-            };
-
-            // Accumulate chunks into a full response
-            let response = Self::accumulate_stream(&mut stream, cb).await?;
-
-            if response.has_tool_calls() {
-                // Log reasoning content if present
-                if let Some(ref reasoning) = response.reasoning_content {
-                    if !reasoning.is_empty() {
-                        debug!("[Agent] Reasoning: {}", reasoning);
-                    }
-                }
-
-                // Log LLM response content if present
-                if let Some(ref content) = response.content {
-                    if !content.is_empty() {
-                        info!("[Agent] Response: {}", content);
-                    }
-                }
-
-                // Log tool calls being executed
-                info!(
-                    "[Agent] Executing {} tool call(s): {}",
-                    response.tool_calls.len(),
-                    response
-                        .tool_calls
-                        .iter()
-                        .map(|tc| tc.function.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-
-                // Add assistant message with tool calls
-                self.context.add_assistant_message(
-                    &mut messages,
-                    response.content.clone(),
-                    response
-                        .tool_calls
-                        .iter()
-                        .map(|tc| serde_json::to_value(tc).unwrap_or_default())
-                        .collect(),
-                    response.reasoning_content.clone(),
-                );
-                if let Some(last) = messages.last_mut() {
-                    last.tool_calls = Some(response.tool_calls.clone());
-                }
-
-                // Execute each tool call
-                let results = executor.execute_batch(&response.tool_calls).await;
-                for result in &results {
-                    tools_used.push(result.tool_name.clone());
-
-                    cb(&StreamEvent::ToolStart {
-                        name: result.tool_name.clone(),
-                    });
-
-                    let output_preview = if result.output.len() > 500 {
-                        let end = result
-                            .output
-                            .char_indices()
-                            .take_while(|(i, _)| *i < 500)
-                            .last()
-                            .map(|(i, c)| i + c.len_utf8())
-                            .unwrap_or(0);
-                        format!(
-                            "{}... (truncated, {} chars total)",
-                            &result.output[..end],
-                            result.output.len()
-                        )
-                    } else {
-                        result.output.clone()
-                    };
-                    debug!("[Tool] {} -> {}", result.tool_name, output_preview);
-
-                    cb(&StreamEvent::ToolEnd {
-                        name: result.tool_name.clone(),
-                        output: output_preview,
-                    });
-
-                    self.context.add_tool_result(
-                        &mut messages,
-                        result.tool_call_id.clone(),
-                        result.tool_name.clone(),
-                        result.output.clone(),
-                    );
-                }
-            } else {
-                // Final response
-                if let Some(ref reasoning) = response.reasoning_content {
-                    if !reasoning.is_empty() {
-                        debug!("[Agent] Reasoning: {}", reasoning);
-                    }
-                }
-                if let Some(ref content) = response.content {
-                    if !content.is_empty() {
-                        info!("[Agent] Final response: {}", content);
-                    }
-                }
-                final_content = response.content;
-                final_reasoning = response.reasoning_content;
+            if !response.has_tool_calls() {
+                Self::log_response(&response);
+                let content = response.content.unwrap_or_else(|| {
+                    "I've completed processing but have no response to give.".to_string()
+                });
                 cb(&StreamEvent::Done);
-                break;
+                return Ok((content, response.reasoning_content, tools_used));
             }
+
+            // Has tool calls — execute them and continue the loop
+            Self::log_response(&response);
+            self.handle_tool_calls(&response, &executor, &mut messages, &mut tools_used, cb)
+                .await;
         }
 
-        let content = final_content.unwrap_or_else(|| {
-            "I've completed processing but have no response to give.".to_string()
-        });
-
-        Ok((content, final_reasoning, tools_used))
+        // Exhausted max iterations without a final response
+        Ok((
+            "I've completed processing but have no response to give.".to_string(),
+            None,
+            tools_used,
+        ))
     }
 
-    /// Consume a stream, emitting events via callback, and return the
-    /// accumulated complete `ChatResponse`.
-    async fn accumulate_stream(
-        stream: &mut crate::providers::ChatStream,
-        callback: &StreamCallback,
-    ) -> Result<ChatResponse> {
-        use std::collections::HashMap;
+    /// Execute tool calls, append results to messages, and update tracking.
+    async fn handle_tool_calls(
+        &self,
+        response: &ChatResponse,
+        executor: &ToolExecutor<'_>,
+        messages: &mut Vec<ChatMessage>,
+        tools_used: &mut Vec<String>,
+        cb: &StreamCallback,
+    ) {
+        info!(
+            "[Agent] Executing {} tool call(s): {}",
+            response.tool_calls.len(),
+            response
+                .tool_calls
+                .iter()
+                .map(|tc| tc.function.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
 
-        let mut content = String::new();
-        let mut reasoning_content = String::new();
-
-        // Tool call accumulation: index -> (id, name, arguments)
-        let mut tool_calls_map: HashMap<usize, (String, String, String)> = HashMap::new();
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result?;
-
-            // Accumulate text content
-            if let Some(ref text) = chunk.delta.content {
-                if !text.is_empty() {
-                    content.push_str(text);
-                    callback(&StreamEvent::Content(text.clone()));
-                }
-            }
-
-            // Accumulate reasoning content
-            if let Some(ref reasoning) = chunk.delta.reasoning_content {
-                if !reasoning.is_empty() {
-                    reasoning_content.push_str(reasoning);
-                    callback(&StreamEvent::Reasoning(reasoning.clone()));
-                }
-            }
-
-            // Accumulate tool calls
-            for tc_delta in &chunk.delta.tool_calls {
-                let entry = tool_calls_map
-                    .entry(tc_delta.index)
-                    .or_insert_with(|| (String::new(), String::new(), String::new()));
-
-                if let Some(ref id) = tc_delta.id {
-                    entry.0 = id.clone();
-                }
-                if let Some(ref name) = tc_delta.function_name {
-                    entry.1 = name.clone();
-                }
-                if let Some(ref args) = tc_delta.function_arguments {
-                    entry.2.push_str(args);
-                }
-            }
+        // Add assistant message with tool calls to the conversation
+        self.context.add_assistant_message(
+            messages,
+            response.content.clone(),
+            response
+                .tool_calls
+                .iter()
+                .map(|tc| serde_json::to_value(tc).unwrap_or_default())
+                .collect(),
+            response.reasoning_content.clone(),
+        );
+        if let Some(last) = messages.last_mut() {
+            last.tool_calls = Some(response.tool_calls.clone());
         }
 
-        eprintln!();
+        // Execute and collect results
+        let results = executor.execute_batch(&response.tool_calls).await;
+        for result in &results {
+            tools_used.push(result.tool_name.clone());
 
-        // Convert accumulated tool calls into ToolCall objects
-        let mut tool_calls: Vec<ToolCall> = tool_calls_map
-            .into_iter()
-            .map(|(_, (id, name, args))| {
-                let arguments = parse_json_args(&args);
-                ToolCall::new(id, name, arguments)
-            })
-            .collect();
-        tool_calls.sort_by_key(|tc| tc.id.clone());
+            cb(&StreamEvent::ToolStart {
+                name: result.tool_name.clone(),
+            });
 
-        Ok(ChatResponse {
-            content: if content.is_empty() {
-                None
-            } else {
-                Some(content)
-            },
-            tool_calls,
-            reasoning_content: if reasoning_content.is_empty() {
-                None
-            } else {
-                Some(reasoning_content)
-            },
-        })
+            let output_preview = truncate_preview(&result.output, 500);
+            debug!("[Tool] {} -> {}", result.tool_name, output_preview);
+
+            cb(&StreamEvent::ToolEnd {
+                name: result.tool_name.clone(),
+                output: output_preview,
+            });
+
+            self.context.add_tool_result(
+                messages,
+                result.tool_call_id.clone(),
+                result.tool_name.clone(),
+                result.output.clone(),
+            );
+        }
     }
+
+    /// Log reasoning and content from a response (shared by tool-call and final branches).
+    fn log_response(response: &ChatResponse) {
+        if let Some(ref reasoning) = response.reasoning_content {
+            if !reasoning.is_empty() {
+                debug!("[Agent] Reasoning: {}", reasoning);
+            }
+        }
+        if let Some(ref content) = response.content {
+            if !content.is_empty() {
+                info!("[Agent] Response: {}", content);
+            }
+        }
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────
+
+/// Truncate a string for preview logging, respecting UTF-8 char boundaries.
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        return s.to_string();
+    }
+    let end = s
+        .char_indices()
+        .take_while(|(i, _)| *i < max_chars)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    format!("{}... (truncated, {} chars total)", &s[..end], s.len())
 }

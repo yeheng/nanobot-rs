@@ -1,6 +1,6 @@
 //! CLI 结构定义
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -21,27 +21,7 @@ pub enum Commands {
     Status,
 
     /// Chat with the agent
-    Agent {
-        /// Message to send (if not provided, enters interactive mode)
-        #[arg(short, long)]
-        message: Option<String>,
-
-        /// Show logs during chat
-        #[arg(long)]
-        logs: bool,
-
-        /// Disable Markdown rendering
-        #[arg(long)]
-        no_markdown: bool,
-
-        /// Enable thinking/reasoning mode for deep reasoning models
-        #[arg(long)]
-        thinking: bool,
-
-        /// Disable streaming output (stream is enabled by default)
-        #[arg(long)]
-        no_stream: bool,
-    },
+    Agent(AgentOptions),
 
     /// Start the gateway (for chat channels)
     Gateway,
@@ -63,6 +43,30 @@ pub enum Commands {
         #[command(subcommand)]
         command: CronCommands,
     },
+}
+
+/// Options for the `agent` command.
+#[derive(Args, Debug)]
+pub struct AgentOptions {
+    /// Message to send (if not provided, enters interactive mode)
+    #[arg(short, long)]
+    pub message: Option<String>,
+
+    /// Show logs during chat
+    #[arg(long)]
+    pub logs: bool,
+
+    /// Disable Markdown rendering
+    #[arg(long)]
+    pub no_markdown: bool,
+
+    /// Enable thinking/reasoning mode for deep reasoning models
+    #[arg(long)]
+    pub thinking: bool,
+
+    /// Disable streaming output (stream is enabled by default)
+    #[arg(long)]
+    pub no_stream: bool,
 }
 
 #[derive(Subcommand)]

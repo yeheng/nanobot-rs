@@ -19,7 +19,8 @@ use crate::tools::ToolRegistry;
 
 use super::context::ContextBuilder;
 use super::loop_::{AgentConfig, AgentLoop};
-use super::task_store_sqlite::SqliteTaskStore;
+use super::task_executor;
+use super::task_store::SqliteTaskStore;
 
 /// Status of a subagent task
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,18 +249,12 @@ impl SubagentManager {
         tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
     ) -> Self {
         let data_dir = workspace.join("data");
-        let json_path = data_dir.join("tasks.json");
         let db_path = data_dir.join("tasks.db");
 
         // SQLite persistence backend
         let store = match SqliteTaskStore::new(db_path).await {
             Ok(s) => {
                 // One-time migration from legacy JSON
-                if json_path.exists() {
-                    if let Err(e) = s.migrate_from_json(&json_path).await {
-                        warn!("JSON→SQLite migration failed: {}", e);
-                    }
-                }
                 Arc::new(s)
             }
             Err(e) => {
@@ -299,13 +294,6 @@ impl SubagentManager {
         }
     }
 
-    /// Persist a single task to SQLite.
-    async fn persist_task(store: &SqliteTaskStore, task: &SubagentTask) {
-        if let Err(e) = store.save_task(task).await {
-            warn!("Failed to persist task {}: {}", task.id, e);
-        }
-    }
-
     /// Force-flush all tasks to disk (for shutdown or batch operations).
     pub async fn flush(&self) {
         // SQLite saves tasks individually, so this is a no-op.
@@ -332,7 +320,7 @@ impl SubagentManager {
         if !recovered.is_empty() {
             info!("Recovered {} interrupted tasks", recovered.len());
             for task in &recovered {
-                Self::persist_task(&self.store, task).await;
+                task_executor::persist_task(&self.store, task).await;
             }
         }
     }
@@ -361,7 +349,7 @@ impl SubagentManager {
         let timeout = Duration::from_secs(task.timeout_secs);
 
         // Persist the newly inserted task
-        Self::persist_task(&self.store, &task).await;
+        task_executor::persist_task(&self.store, &task).await;
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
@@ -384,7 +372,7 @@ impl SubagentManager {
                 tasks.get(&tid).cloned()
             };
             if let Some(snap) = &task_snapshot {
-                Self::persist_task(&store, snap).await;
+                task_executor::persist_task(&store, snap).await;
             }
 
             info!(
@@ -421,7 +409,7 @@ impl SubagentManager {
                         tasks.get(&tid).cloned()
                     };
                     if let Some(snap) = &snap {
-                        Self::persist_task(&store, snap).await;
+                        task_executor::persist_task(&store, snap).await;
                     }
                     return;
                 }
@@ -461,7 +449,7 @@ impl SubagentManager {
                 tasks.get(&tid).cloned()
             };
             if let Some(snap) = &snap {
-                Self::persist_task(&store, snap).await;
+                task_executor::persist_task(&store, snap).await;
             }
         });
 
@@ -514,7 +502,7 @@ impl SubagentManager {
             }
         };
         if let Some(snap) = &snap {
-            Self::persist_task(&self.store, snap).await;
+            task_executor::persist_task(&self.store, snap).await;
             return true;
         }
         false

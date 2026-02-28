@@ -14,6 +14,8 @@ use nanobot_core::tools::{
     WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
+use crate::cli::AgentOptions;
+
 /// Resolve the exec workspace directory from config or default to $HOME/workspace.
 ///
 /// Creates the directory if it doesn't exist.
@@ -69,15 +71,9 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
 }
 
 /// Run the agent command
-pub async fn cmd_agent(
-    message: Option<String>,
-    logs: bool,
-    no_markdown: bool,
-    thinking: bool,
-    no_stream: bool,
-) -> Result<()> {
+pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // Enable debug logging if requested
-    if logs {
+    if opts.logs {
         tracing_subscriber::fmt()
             .with_env_filter(Level::DEBUG.to_string())
             .try_init()
@@ -97,7 +93,7 @@ pub async fn cmd_agent(
     agent_config.model = provider_info.model.clone();
 
     // Handle thinking mode
-    if thinking || agent_config.thinking_enabled {
+    if opts.thinking || agent_config.thinking_enabled {
         if provider_info.supports_thinking {
             agent_config.thinking_enabled = true;
         } else {
@@ -112,7 +108,7 @@ pub async fn cmd_agent(
     }
 
     // Handle streaming mode
-    if no_stream {
+    if opts.no_stream {
         agent_config.streaming = false;
     }
 
@@ -133,8 +129,8 @@ pub async fn cmd_agent(
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
-    let render_md = !no_markdown;
-    let use_streaming = !no_stream;
+    let render_md = !opts.no_markdown;
+    let use_streaming = !opts.no_stream;
 
     // Create streaming callback for progressive CLI output
     // Note: Use stdout for content (piping), stderr for status/logs
@@ -154,7 +150,7 @@ pub async fn cmd_agent(
         }
     });
 
-    match message {
+    match opts.message {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);

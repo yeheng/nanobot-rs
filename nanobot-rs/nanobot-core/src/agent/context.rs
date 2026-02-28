@@ -7,10 +7,11 @@ use tokio::fs;
 use tracing::{debug, info, warn};
 
 use crate::memory::SqliteStore;
-use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
+use crate::providers::{ChatMessage, LlmProvider};
 use crate::session::SessionMessage;
 
 use super::history_processor::{count_tokens, process_history, HistoryConfig};
+use super::summarization::{SummarizationService, SUMMARY_PREFIX};
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile
 const BOOTSTRAP_FILES_FULL: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
@@ -20,13 +21,6 @@ const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["SOUL.md"];
 
 /// Maximum tokens allowed per single bootstrap file before emitting a warning
 const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
-
-/// Fixed prompt for LLM summarization
-const SUMMARIZATION_PROMPT: &str =
-    "Summarize the following conversation briefly, keeping key facts.";
-
-/// Prefix for injected summary assistant messages
-const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
 
 /// Context builder for constructing prompts.
 ///
@@ -373,19 +367,6 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
-        // Load existing summary (if store is configured)
-        let existing_summary = if let Some(store) = &self.store {
-            match store.load_session_summary(session_key).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to load session summary: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         // Process history with token budget awareness
         let processed = process_history(history, &self.history_config);
 
@@ -396,16 +377,23 @@ impl ContextBuilder {
 
         // Check if summarization is needed and configured
         // Only summarize if we have evicted messages (old messages that exceeded budget)
-        let needs_summarization = !processed.evicted.is_empty()
+        let summary = if !processed.evicted.is_empty()
             && self.provider.is_some()
             && self.store.is_some()
-            && self.model.is_some();
+            && self.model.is_some()
+        {
+            // Create summarization service and run summarization
+            let service = SummarizationService::new(
+                self.provider.as_ref().unwrap().clone(),
+                self.store.as_ref().unwrap().clone(),
+                self.model.as_ref().unwrap().clone(),
+            );
 
-        let summary = if needs_summarization {
+            let existing_summary = service.load_summary(session_key).await;
+
             // Summarize the EVICTED messages (old messages that were dropped from context)
-            // NOT the retained messages - those will be sent to the LLM anyway
-            match self
-                .run_summarization(session_key, &processed.evicted, &existing_summary)
+            match service
+                .summarize(session_key, &processed.evicted, &existing_summary)
                 .await
             {
                 Ok(new_summary) => Some(new_summary),
@@ -417,8 +405,16 @@ impl ContextBuilder {
                     existing_summary
                 }
             }
+        } else if self.provider.is_some() && self.store.is_some() && self.model.is_some() {
+            // Load existing summary if store is configured but no summarization needed
+            let service = SummarizationService::new(
+                self.provider.as_ref().unwrap().clone(),
+                self.store.as_ref().unwrap().clone(),
+                self.model.as_ref().unwrap().clone(),
+            );
+            service.load_summary(session_key).await
         } else {
-            existing_summary
+            None
         };
 
         // Inject summary as assistant message (if exists)
@@ -452,80 +448,6 @@ impl ContextBuilder {
         );
 
         messages
-    }
-
-    /// Run LLM summarization for evicted (old) messages.
-    ///
-    /// Builds a summarization prompt from existing summary + evicted messages
-    /// (messages that were dropped from context due to token budget).
-    /// This preserves information from old messages that would otherwise be lost.
-    async fn run_summarization(
-        &self,
-        session_key: &str,
-        evicted_messages: &[SessionMessage],
-        existing_summary: &Option<String>,
-    ) -> anyhow::Result<String> {
-        let provider = self.provider.as_ref().unwrap();
-        let store = self.store.as_ref().unwrap();
-        let model = self.model.as_ref().unwrap();
-
-        // Build context for summarization: existing summary + evicted (old) messages
-        let mut context_parts = Vec::new();
-        if let Some(existing) = existing_summary {
-            if !existing.is_empty() {
-                context_parts.push(format!("Previous summary:\n{}", existing));
-            }
-        }
-
-        // Include evicted messages (old messages that were dropped from context)
-        for msg in evicted_messages {
-            context_parts.push(format!("{}: {}", msg.role, msg.content));
-        }
-
-        let context_text = context_parts.join("\n");
-
-        // Count tokens of context to avoid sending too much
-        let context_tokens = count_tokens(&context_text);
-        debug!(
-            "Summarization context: {} tokens, {} evicted messages",
-            context_tokens,
-            evicted_messages.len()
-        );
-
-        // Build the summarization request
-        let summarization_messages = vec![
-            ChatMessage::system(SUMMARIZATION_PROMPT),
-            ChatMessage::user(context_text),
-        ];
-
-        let request = ChatRequest {
-            model: model.clone(),
-            messages: summarization_messages,
-            tools: None,
-            temperature: Some(0.3), // Low temperature for factual summarization
-            max_tokens: Some(1024),
-            thinking: None,
-        };
-
-        let response = provider.chat(request).await?;
-        let summary_text = response.content.unwrap_or_default().trim().to_string();
-
-        if summary_text.is_empty() {
-            anyhow::bail!("Summarization returned empty content");
-        }
-
-        // Persist the summary
-        store
-            .save_session_summary(session_key, &summary_text)
-            .await?;
-
-        debug!(
-            "Generated and saved session summary for {}: {} tokens",
-            session_key,
-            count_tokens(&summary_text)
-        );
-
-        Ok(summary_text)
     }
 
     /// Add an assistant message to the history

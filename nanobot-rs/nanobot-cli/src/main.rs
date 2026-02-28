@@ -32,13 +32,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Onboard) => commands::cmd_onboard().await,
         Some(Commands::Status) => commands::cmd_status().await,
-        Some(Commands::Agent {
-            message,
-            logs,
-            no_markdown,
-            thinking,
-            no_stream,
-        }) => commands::cmd_agent(message, logs, no_markdown, thinking, no_stream).await,
+        Some(Commands::Agent(opts)) => commands::cmd_agent(opts).await,
         Some(Commands::Gateway) => commands::cmd_gateway().await,
         Some(Commands::Channels { command }) => match command {
             ChannelsCommands::Status => commands::cmd_channels_status().await,
