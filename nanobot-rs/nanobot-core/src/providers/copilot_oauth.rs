@@ -126,15 +126,12 @@ impl CopilotOAuth {
         let response = self
             .client
             .post(DEVICE_CODE_URL)
-            .header("User-Agent", "GitHubCopilotChat/0.26.7")
-            .header("Editor-Version", "Neovim/0.6.1")
-            .header("Editor-Plugin-Version", "copilot.vim/1.16.0")
             .header("Accept", "application/json")
-            .header("Accept-Encoding", "gzip,deflate,br")
-            .form(&[
-                ("client_id", self.client_id.as_str()),
-                ("scope", "read:user"),
-            ])
+            .header("User-Agent", "GitHubCopilotChat/0.26.7")
+            .json(&serde_json::json!({
+                "client_id": self.client_id,
+                "scope": "read:user"
+            }))
             .send()
             .await?;
 
@@ -181,11 +178,12 @@ impl CopilotOAuth {
             .client
             .post(ACCESS_TOKEN_URL)
             .header("Accept", "application/json")
-            .form(&[
-                ("client_id", self.client_id.as_str()),
-                ("device_code", device_code),
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ])
+            .header("User-Agent", "GitHubCopilotChat/0.26.7")
+            .json(&serde_json::json!({
+                "client_id": self.client_id.as_str(),
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }))
             .send()
             .await?;
 
@@ -274,11 +272,11 @@ impl CopilotOAuth {
             .client
             .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("Bearer {}", github_token))
-            .header("User-Agent", "GithubCopilot/1.155.0")
-            .header("Editor-Version", "Neovim/0.6.1")
-            .header("Editor-Plugin-Version", "copilot.vim/1.16.0")
+            .header("User-Agent", "GitHubCopilotChat/0.26.7")
+            .header("Editor-Version", "vscode/1.99.3")
+            .header("Editor-Plugin-Version", "copilot-chat/0.26.7")
             .header("Accept", "application/json")
-            .header("Accept-Encoding", "gzip,deflate,br")
+            .header("Copilot-Integration-Id", "vscode-chat")
             .send()
             .await?;
 
