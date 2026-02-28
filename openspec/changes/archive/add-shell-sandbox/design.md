@@ -14,7 +14,7 @@ The current `ExecTool` (`nanobot-core/src/tools/shell.rs`) executes arbitrary sh
 
 ### Goals
 - Provide OS-level process isolation for shell commands using bubblewrap (`bwrap`) on Linux
-- Allow a configurable workspace directory (default: `$HOME/workspace`) separate from the nanobot config directory (`~/.nanobot`)
+- Allow a configurable workspace directory (default: `$HOME/.nanobot`) separate from the nanobot config directory (`~/.nanobot`)
 - Support command allowlist/denylist as a policy layer (advisory, not a security boundary)
 - Enforce resource limits: CPU time, memory, wall-clock timeout
 - Restrict filesystem access: read-only root, read-write only in workspace
@@ -40,7 +40,7 @@ The current `ExecTool` (`nanobot-core/src/tools/shell.rs`) executes arbitrary sh
 
 **Fallback:** When `bwrap` is not available, fall back to unsandboxed execution with `ulimit`-based resource limits and a clear warning log.
 
-### Decision 2: Workspace directory is user-configurable, defaults to `$HOME/workspace`
+### Decision 2: Workspace directory is user-configurable, defaults to `$HOME/.nanobot`
 
 **Why:** The current working directory is `~/.nanobot` (the config directory), which mixes config files with agent work output. A dedicated workspace directory provides a cleaner separation and a natural mount point for sandboxed execution.
 
@@ -96,7 +96,7 @@ This ensures even if the sandboxed process forks or spawns children, the outer t
 
 ```
 /                    → bind-ro from host /
-/workspace           → bind-rw from $HOME/workspace (configurable)
+/workspace           → bind-rw from $HOME/.nanobot (configurable)
 /tmp                 → tmpfs (size-limited)
 /dev                 → minimal devtmpfs (null, zero, urandom)
 /proc                → new proc namespace
@@ -114,7 +114,7 @@ This ensures even if the sandboxed process forks or spawns children, the outer t
 
 ## Migration Plan
 
-1. Add new config fields to `ExecToolConfig` with backward-compatible defaults (sandbox disabled, workspace = `$HOME/workspace`)
+1. Add new config fields to `ExecToolConfig` with backward-compatible defaults (sandbox disabled, workspace = `$HOME/.nanobot`)
 2. Existing configurations continue to work without changes
 3. Users opt-in to sandbox via `tools.exec.sandbox.enabled: true`
 4. No breaking changes to the `Tool` trait or `ToolRegistry`

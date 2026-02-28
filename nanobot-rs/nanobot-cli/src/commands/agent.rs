@@ -16,16 +16,16 @@ use nanobot_core::tools::{
 
 use crate::cli::AgentOptions;
 
-/// Resolve the exec workspace directory from config or default to $HOME/workspace.
+/// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
 /// Creates the directory if it doesn't exist.
 pub fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
         std::path::PathBuf::from(ws)
     } else {
-        // Default: $HOME/workspace
+        // Default: $HOME/.nanobot
         dirs::home_dir()
-            .map(|h| h.join("workspace"))
+            .map(|h| h.join(".nanobot"))
             .unwrap_or_else(|| fallback.to_path_buf())
     };
 

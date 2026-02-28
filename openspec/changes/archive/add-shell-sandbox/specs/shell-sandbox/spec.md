@@ -16,11 +16,11 @@ The system SHALL support executing shell commands inside an OS-level sandbox usi
 - **THEN** the system SHALL execute commands directly via `bash -c` as it does today, preserving full backward compatibility
 
 ### Requirement: Workspace Directory Configuration
-The system SHALL support a configurable workspace directory that serves as the working directory and read-write mount point for shell command execution. The default workspace path MUST be `$HOME/workspace`.
+The system SHALL support a configurable workspace directory that serves as the working directory and read-write mount point for shell command execution. The default workspace path MUST be `$HOME/.nanobot`.
 
 #### Scenario: Default workspace path
 - **WHEN** no workspace path is specified in configuration
-- **THEN** the system SHALL use `$HOME/workspace` as the workspace directory and create it if it does not exist
+- **THEN** the system SHALL use `$HOME/.nanobot` as the workspace directory and create it if it does not exist
 
 #### Scenario: Custom workspace path
 - **WHEN** a workspace path is specified via `tools.exec.workspace` in `config.yaml`

@@ -348,7 +348,7 @@ pub struct ExecToolConfig {
     #[serde(default = "default_exec_timeout")]
     pub timeout: u64,
 
-    /// Workspace directory for agent file operations (default: $HOME/workspace)
+    /// Workspace directory for agent file operations (default: $HOME/.nanobot)
     #[serde(default)]
     pub workspace: Option<String>,
 

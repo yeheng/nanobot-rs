@@ -39,16 +39,27 @@ impl ExecTool {
         restrict_to_workspace: bool,
     ) -> Self {
         let working_dir = working_dir.into();
-        let timeout = Duration::from_secs(config.timeout);
+        // Ensure timeout is at least 1 second to avoid immediate timeout
+        let timeout_secs = if config.timeout == 0 {
+            120
+        } else {
+            config.timeout
+        };
+        let timeout = Duration::from_secs(timeout_secs);
         let policy = CommandPolicy::new(&config.policy);
         let limits = ResourceLimits::from_config(&config.limits);
         let sandbox_provider = sandbox::create_provider(&working_dir, &config.sandbox);
 
         info!(
-            "ExecTool initialized: sandbox={}, working_dir={:?}, timeout={}s",
+            "ExecTool initialized: sandbox={}, working_dir={:?}, timeout={}s{}",
             sandbox_provider.name(),
             working_dir,
-            config.timeout
+            timeout_secs,
+            if config.timeout == 0 {
+                " (default, was 0)"
+            } else {
+                ""
+            }
         );
 
         Self {

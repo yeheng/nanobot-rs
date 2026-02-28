@@ -343,16 +343,8 @@ impl AgentLoop {
         self.context.add_assistant_message(
             messages,
             response.content.clone(),
-            response
-                .tool_calls
-                .iter()
-                .map(|tc| serde_json::to_value(tc).unwrap_or_default())
-                .collect(),
-            response.reasoning_content.clone(),
+            response.tool_calls.clone(),
         );
-        if let Some(last) = messages.last_mut() {
-            last.tool_calls = Some(response.tool_calls.clone());
-        }
 
         // Execute and collect results
         let results = executor.execute_batch(&response.tool_calls).await;

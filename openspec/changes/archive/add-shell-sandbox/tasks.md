@@ -31,7 +31,7 @@
 - [x] 5.1 Update `ExecTool` struct to hold `CommandPolicy`, `SandboxProvider`, and `ResourceLimits`
 - [x] 5.2 Update `ExecTool::new()` to accept new config and initialize components (via `from_config`)
 - [x] 5.3 Refactor `execute()` flow: policy check → sandbox dispatch → timeout → output truncation
-- [x] 5.4 Update workspace directory resolution: use configured path or default `$HOME/workspace`, create if missing
+- [x] 5.4 Update workspace directory resolution: use configured path or default `$HOME/.nanobot`, create if missing
 - [x] 5.5 Update tool description string to reflect sandbox capability
 - [x] 5.6 Preserve all existing tests, add new tests for sandboxed path
 

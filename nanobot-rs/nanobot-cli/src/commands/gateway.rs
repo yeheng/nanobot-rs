@@ -516,7 +516,7 @@ fn build_tool_registry(
     tools
 }
 
-/// Resolve the exec workspace directory from config or default to $HOME/workspace.
+/// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
 /// Creates the directory if it doesn't exist.
 fn resolve_exec_workspace(
@@ -526,9 +526,9 @@ fn resolve_exec_workspace(
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
         std::path::PathBuf::from(ws)
     } else {
-        // Default: $HOME/workspace
+        // Default: $HOME/.nanobot
         dirs::home_dir()
-            .map(|h| h.join("workspace"))
+            .map(|h| h.join(".nanobot"))
             .unwrap_or_else(|| fallback.to_path_buf())
     };
 

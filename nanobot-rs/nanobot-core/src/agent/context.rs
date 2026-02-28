@@ -341,11 +341,16 @@ impl ContextBuilder {
         &self,
         messages: &mut Vec<ChatMessage>,
         content: Option<String>,
-        _tool_calls: Vec<serde_json::Value>,
-        _reasoning_content: Option<String>,
+        tool_calls: Vec<crate::providers::ToolCall>,
     ) {
-        if let Some(c) = content {
-            messages.push(ChatMessage::assistant(c));
+        if tool_calls.is_empty() {
+            // No tool calls - simple assistant message
+            if let Some(c) = content {
+                messages.push(ChatMessage::assistant(c));
+            }
+        } else {
+            // Has tool calls - must include them in the message
+            messages.push(ChatMessage::assistant_with_tools(content, tool_calls));
         }
     }
 
