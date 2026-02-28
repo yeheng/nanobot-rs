@@ -103,48 +103,6 @@ impl From<String> for ChannelType {
     }
 }
 
-// Convenience constructor functions for backward compatibility
-
-/// Telegram channel
-pub fn telegram() -> ChannelType {
-    ChannelType::Telegram
-}
-
-/// Discord channel
-pub fn discord() -> ChannelType {
-    ChannelType::Discord
-}
-
-/// Slack channel
-pub fn slack() -> ChannelType {
-    ChannelType::Slack
-}
-
-/// Email channel
-pub fn email() -> ChannelType {
-    ChannelType::Email
-}
-
-/// DingTalk (钉钉) channel
-pub fn dingtalk() -> ChannelType {
-    ChannelType::Dingtalk
-}
-
-/// Feishu (飞书) channel
-pub fn feishu() -> ChannelType {
-    ChannelType::Feishu
-}
-
-/// WeCom (企业微信) channel
-pub fn wecom() -> ChannelType {
-    ChannelType::Wecom
-}
-
-/// CLI (command-line interface) channel
-pub fn cli() -> ChannelType {
-    ChannelType::Cli
-}
-
 /// Inbound message from a channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
@@ -225,14 +183,14 @@ mod tests {
 
     #[test]
     fn test_channel_type_constructors() {
-        assert_eq!(telegram().as_str(), "telegram");
-        assert_eq!(discord().as_str(), "discord");
-        assert_eq!(slack().as_str(), "slack");
-        assert_eq!(email().as_str(), "email");
-        assert_eq!(dingtalk().as_str(), "dingtalk");
-        assert_eq!(feishu().as_str(), "feishu");
-        assert_eq!(wecom().as_str(), "wecom");
-        assert_eq!(cli().as_str(), "cli");
+        assert_eq!(ChannelType::Telegram.as_str(), "telegram");
+        assert_eq!(ChannelType::Discord.as_str(), "discord");
+        assert_eq!(ChannelType::Slack.as_str(), "slack");
+        assert_eq!(ChannelType::Email.as_str(), "email");
+        assert_eq!(ChannelType::Dingtalk.as_str(), "dingtalk");
+        assert_eq!(ChannelType::Feishu.as_str(), "feishu");
+        assert_eq!(ChannelType::Wecom.as_str(), "wecom");
+        assert_eq!(ChannelType::Cli.as_str(), "cli");
     }
 
     #[test]
@@ -250,19 +208,19 @@ mod tests {
 
     #[test]
     fn test_channel_type_equality() {
-        assert_eq!(telegram(), ChannelType::new("telegram"));
-        assert_ne!(telegram(), discord());
+        assert_eq!(ChannelType::Telegram, ChannelType::new("telegram"));
+        assert_ne!(ChannelType::Telegram, ChannelType::Discord);
     }
 
     #[test]
     fn test_channel_type_serialization() {
-        let channel = telegram();
+        let channel = ChannelType::Telegram;
         let json = serde_json::to_string(&channel).unwrap();
         // Enum variants serialize to lowercase strings for backward compatibility
         assert_eq!(json, "\"telegram\"");
 
         let deserialized: ChannelType = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, telegram());
+        assert_eq!(deserialized, ChannelType::Telegram);
     }
 
     #[test]
@@ -277,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_display() {
-        assert_eq!(format!("{}", telegram()), "telegram");
+        assert_eq!(format!("{}", ChannelType::Telegram), "telegram");
         assert_eq!(format!("{}", ChannelType::new("custom")), "custom");
     }
 
@@ -297,7 +255,7 @@ mod tests {
                 ChannelType::Custom(_) => "custom",
             }
         }
-        assert_eq!(check_exhaustive(telegram()), "telegram");
+        assert_eq!(check_exhaustive(ChannelType::Telegram), "telegram");
         assert_eq!(check_exhaustive(ChannelType::new("foo")), "custom");
     }
 }

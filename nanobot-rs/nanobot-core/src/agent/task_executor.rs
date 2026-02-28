@@ -58,27 +58,21 @@ pub async fn execute_task(
     let tools = tool_factory();
 
     // Create the agent loop
-    let agent = match AgentLoop::with_cached_context(
-        provider,
-        workspace,
-        agent_config,
-        tools,
-        context,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => {
-            return TaskResult::Failed {
-                error: format!("Failed to initialise subagent: {}", e),
-            };
-        }
-    };
+    let agent =
+        match AgentLoop::with_cached_context(provider, workspace, agent_config, tools, context)
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                return TaskResult::Failed {
+                    error: format!("Failed to initialise subagent: {}", e),
+                };
+            }
+        };
 
     // Execute with timeout
     let session_key = format!("subagent:{}", tid);
-    let result =
-        tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
+    let result = tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
 
     match result {
         Ok(Ok(response)) => {
@@ -103,10 +97,7 @@ pub async fn execute_task(
 /// Update task state based on execution result.
 ///
 /// Returns the updated task snapshot for persistence.
-pub fn update_task_from_result(
-    task: &mut SubagentTask,
-    result: TaskResult,
-) {
+pub fn update_task_from_result(task: &mut SubagentTask, result: TaskResult) {
     let now = Utc::now();
 
     match result {
@@ -114,7 +105,6 @@ pub fn update_task_from_result(
             task.status = TaskStatus::Completed;
             task.result = Some(content);
             task.completed_at = Some(now);
-            task.progress = 100;
         }
         TaskResult::Failed { error } => {
             task.status = TaskStatus::Failed;
@@ -162,7 +152,6 @@ mod tests {
 
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.result, Some("done".to_string()));
-        assert_eq!(task.progress, 100);
         assert!(task.completed_at.is_some());
     }
 

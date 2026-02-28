@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,7 +31,7 @@ pub struct McpServerConfig {
 }
 
 /// Pending requests awaiting responses
-type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
+type PendingRequests = Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
 /// MCP client for communicating with a server via JSON-RPC over stdio
 pub struct McpClient {
@@ -54,7 +54,7 @@ impl McpClient {
             stdin: None,
             tools: Vec::new(),
             request_id: 0,
-            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -105,8 +105,7 @@ impl McpClient {
                     Ok(msg) => {
                         if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
                             // This is a response — find the pending request
-                            // Use std::sync::Mutex for short-held locks on in-memory HashMap
-                            let mut pending = pending.lock().unwrap();
+                            let mut pending = pending.lock().await;
                             if let Some(tx) = pending.remove(&id) {
                                 let _ = tx.send(msg);
                             }
@@ -164,7 +163,7 @@ impl McpClient {
 
         // Register pending request
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock().await.insert(id, tx);
 
         // Write to stdin
         if let Some(ref mut stdin) = self.stdin {

@@ -47,23 +47,13 @@ pub struct ProviderConfig {
     pub client_id: Option<String>,
 }
 
-/// Known providers that support thinking/reasoning mode
-pub const THINKING_CAPABLE_PROVIDERS: &[&str] = &[
-    "zhipu",        // GLM-5
-    "zhipu_coding", // GLM-5 Coding
-    "deepseek",     // DeepSeek R1
-    "moonshot",     // Kimi K2.5 (partial support)
-];
-
 impl ProviderConfig {
-    /// Check if this provider supports thinking mode
-    pub fn supports_thinking(&self, provider_name: &str) -> bool {
-        // Explicit configuration takes precedence
-        if let Some(supported) = self.supports_thinking {
-            return supported;
-        }
-        // Fall back to known providers list
-        THINKING_CAPABLE_PROVIDERS.contains(&provider_name)
+    /// Check if this provider supports thinking mode.
+    ///
+    /// Returns the explicit `supports_thinking` config value, defaulting to `false`.
+    /// Providers must declare this capability in config rather than relying on a hardcoded list.
+    pub fn supports_thinking(&self) -> bool {
+        self.supports_thinking.unwrap_or(false)
     }
 }
 

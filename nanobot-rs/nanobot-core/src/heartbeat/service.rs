@@ -68,9 +68,10 @@ impl HeartbeatService {
     }
 
     /// Run the heartbeat loop
-    pub async fn run<F>(&self, mut callback: F)
+    pub async fn run<F, Fut>(&self, mut callback: F)
     where
-        F: FnMut(String) + Send,
+        F: FnMut(String) -> Fut + Send,
+        Fut: std::future::Future<Output = ()> + Send,
     {
         let mut ticker = interval(Duration::from_secs(self.interval_secs));
 
@@ -87,7 +88,7 @@ impl HeartbeatService {
 
             for task in tasks {
                 info!("Heartbeat task: {}", task);
-                callback(task);
+                callback(task).await;
             }
         }
     }

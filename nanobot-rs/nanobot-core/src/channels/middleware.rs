@@ -254,12 +254,12 @@ impl InboundSender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::cli;
+    use crate::bus::ChannelType;
     use chrono::Utc;
 
     fn make_inbound(sender: &str) -> InboundMessage {
         InboundMessage {
-            channel: cli(),
+            channel: ChannelType::Cli,
             sender_id: sender.to_string(),
             chat_id: "chat1".to_string(),
             content: "hello".to_string(),

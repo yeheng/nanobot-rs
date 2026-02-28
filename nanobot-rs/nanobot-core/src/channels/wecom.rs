@@ -14,7 +14,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::wecom;
+use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
 use crate::crypto::wecom::{compute_signature, decode_aes_key, decrypt_message};
 
@@ -392,7 +392,7 @@ impl WeComChannel {
                 let ctx_trace_id = None;
 
                 let inbound = InboundMessage {
-                    channel: wecom(),
+                    channel: ChannelType::Wecom,
                     sender_id: message.from_user_name.clone(),
                     chat_id: message.from_user_name.clone(),
                     content: content.to_string(),

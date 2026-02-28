@@ -52,34 +52,8 @@ impl ContextBuilder {
     ///
     /// Returns an error if a bootstrap file **exists** but cannot be read
     /// (permission denied, I/O error, etc.). A missing file is not an error.
-    ///
-    /// # Note
-    ///
-    /// This constructor performs synchronous file I/O. It should be called
-    /// during startup, not in async contexts. For subagents, use the cached
-    /// instance from the parent agent.
-    pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
-        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_FULL)?;
-        let history_config = HistoryConfig::default();
-
-        Ok(Self {
-            _workspace: workspace,
-            system_prompt: Arc::new(system_prompt),
-            skills_context: None,
-            history_config,
-            provider: None,
-            store: None,
-            model: None,
-        })
-    }
-
-    /// Create a new context builder (async version).
-    ///
-    /// This is the async counterpart of `new()` that uses `tokio::fs` for
-    /// non-blocking file I/O. Preferred for use in async contexts.
-    pub async fn new_async(workspace: PathBuf) -> Result<Self, std::io::Error> {
-        let system_prompt =
-            Self::build_system_prompt_async(&workspace, BOOTSTRAP_FILES_FULL).await?;
+    pub async fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_FULL).await?;
         let history_config = HistoryConfig::default();
 
         Ok(Self {
@@ -97,29 +71,8 @@ impl ContextBuilder {
     ///
     /// Only loads SOUL.md (core identity) and skips skills context to save tokens.
     /// Subagents execute focused background tasks and don't need the full prompt.
-    pub fn new_minimal(workspace: PathBuf) -> Result<Self, std::io::Error> {
-        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_MINIMAL)?;
-        let history_config = HistoryConfig {
-            max_messages: 20,
-            token_budget: 4000,
-            recent_keep: 5,
-        };
-
-        Ok(Self {
-            _workspace: workspace,
-            system_prompt: Arc::new(system_prompt),
-            skills_context: None, // no skills for subagents
-            history_config,
-            provider: None,
-            store: None,
-            model: None,
-        })
-    }
-
-    /// Create a minimal context builder for subagents (async version).
-    pub async fn new_minimal_async(workspace: PathBuf) -> Result<Self, std::io::Error> {
-        let system_prompt =
-            Self::build_system_prompt_async(&workspace, BOOTSTRAP_FILES_MINIMAL).await?;
+    pub async fn new_minimal(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt = Self::build_system_prompt(&workspace, BOOTSTRAP_FILES_MINIMAL).await?;
         let history_config = HistoryConfig {
             max_messages: 20,
             token_budget: 4000,
@@ -141,28 +94,9 @@ impl ContextBuilder {
     ///
     /// Rebuilds the system prompt with only SOUL.md and drops skills context.
     /// This is the recommended way to create subagent contexts after startup.
-    pub fn to_minimal(&self) -> Result<Self, std::io::Error> {
-        let system_prompt = Self::build_system_prompt(&self._workspace, BOOTSTRAP_FILES_MINIMAL)?;
-
-        Ok(Self {
-            _workspace: self._workspace.clone(),
-            system_prompt: Arc::new(system_prompt),
-            skills_context: None,
-            history_config: HistoryConfig {
-                max_messages: 20,
-                token_budget: 4000,
-                recent_keep: 5,
-            },
-            provider: self.provider.clone(),
-            store: self.store.clone(),
-            model: self.model.clone(),
-        })
-    }
-
-    /// Derive a minimal context builder from an existing (full) instance (async version).
-    pub async fn to_minimal_async(&self) -> Result<Self, std::io::Error> {
+    pub async fn to_minimal(&self) -> Result<Self, std::io::Error> {
         let system_prompt =
-            Self::build_system_prompt_async(&self._workspace, BOOTSTRAP_FILES_MINIMAL).await?;
+            Self::build_system_prompt(&self._workspace, BOOTSTRAP_FILES_MINIMAL).await?;
 
         Ok(Self {
             _workspace: self._workspace.clone(),
@@ -216,55 +150,7 @@ impl ContextBuilder {
     /// dangerous.
     ///
     /// A warning is logged for any file exceeding `BOOTSTRAP_TOKEN_WARN_THRESHOLD`.
-    fn build_system_prompt(workspace: &Path, files: &[&str]) -> Result<String, std::io::Error> {
-        let mut parts = Vec::new();
-
-        // Identity header
-        parts.push(format!(
-            "You are nanobot 🐈, a personal AI assistant.\n\nWorking directory: {}",
-            workspace.display()
-        ));
-
-        // Load bootstrap files
-        let mut loaded_any = false;
-        let mut total_tokens: usize = 0;
-        for filename in files {
-            let file_path = workspace.join(filename);
-            if file_path.exists() {
-                // File exists — a read failure here is a hard error.
-                let content = std::fs::read_to_string(&file_path)?;
-                if !content.trim().is_empty() {
-                    let tokens = count_tokens(content.trim());
-                    if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
-                        warn!(
-                            "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
-                            filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
-                        );
-                    }
-                    total_tokens += tokens;
-                    debug!("Loaded bootstrap file: {} ({} tokens)", filename, tokens);
-                    parts.push(format!("## {}\n\n{}", filename, content.trim()));
-                    loaded_any = true;
-                }
-            }
-        }
-
-        if !loaded_any {
-            // Fallback: use minimal default instructions
-            parts.push(DEFAULT_INSTRUCTIONS.to_string());
-        }
-
-        info!(
-            "System prompt: {} bootstrap files, ~{} tokens total",
-            files.len(),
-            total_tokens
-        );
-
-        Ok(parts.join("\n\n"))
-    }
-
-    /// Build system prompt from workspace bootstrap files (async version).
-    async fn build_system_prompt_async(
+    async fn build_system_prompt(
         workspace: &Path,
         files: &[&str],
     ) -> Result<String, std::io::Error> {

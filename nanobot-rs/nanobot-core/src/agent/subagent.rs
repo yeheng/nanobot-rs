@@ -39,16 +39,6 @@ pub enum TaskStatus {
     Timeout,
 }
 
-/// Priority level for tasks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TaskPriority {
-    Low,
-    #[default]
-    Normal,
-    High,
-    Urgent,
-}
-
 /// A subagent task
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentTask {
@@ -70,9 +60,6 @@ pub struct SubagentTask {
     /// Task status
     pub status: TaskStatus,
 
-    /// Task priority
-    pub priority: TaskPriority,
-
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
 
@@ -90,9 +77,6 @@ pub struct SubagentTask {
 
     /// Timeout in seconds
     pub timeout_secs: u64,
-
-    /// Progress percentage (0-100)
-    pub progress: u8,
 
     /// Additional metadata
     pub metadata: HashMap<String, String>,
@@ -113,22 +97,14 @@ impl SubagentTask {
             chat_id: chat_id.into(),
             session_key: session_key.into(),
             status: TaskStatus::Pending,
-            priority: TaskPriority::Normal,
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
             result: None,
             error: None,
             timeout_secs: 300, // 5 minutes default
-            progress: 0,
             metadata: HashMap::new(),
         }
-    }
-
-    /// Set the task priority
-    pub fn with_priority(mut self, priority: TaskPriority) -> Self {
-        self.priority = priority;
-        self
     }
 
     /// Set the timeout
@@ -161,28 +137,6 @@ impl SubagentTask {
             (end - start).to_std().unwrap_or(Duration::ZERO)
         })
     }
-}
-
-/// Notification for task completion
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskNotification {
-    /// Task ID
-    pub task_id: String,
-
-    /// Task status
-    pub status: TaskStatus,
-
-    /// Result (if completed)
-    pub result: Option<String>,
-
-    /// Error (if failed)
-    pub error: Option<String>,
-
-    /// Channel to notify
-    pub channel: String,
-
-    /// Chat ID to notify
-    pub chat_id: String,
 }
 
 /// Configuration for the subagent manager
@@ -271,16 +225,19 @@ impl SubagentManager {
         let tasks = Arc::new(RwLock::new(tasks));
 
         // Build minimal context for subagents (only SOUL.md, no skills)
-        let context = match ContextBuilder::new_minimal(workspace.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Failed to build minimal context: {}, using default", e);
-                ContextBuilder::new_minimal(PathBuf::from(".")).unwrap_or_else(|_| {
-                    // Absolute fallback with empty prompt
-                    ContextBuilder::new_minimal(PathBuf::from("/nonexistent")).unwrap()
+        let context =
+            match ContextBuilder::new_minimal(workspace.clone()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to build minimal context: {}, using default", e);
+                    ContextBuilder::new_minimal(PathBuf::from(".")).await.unwrap_or_else(|_| {
+                    // Absolute fallback with empty prompt — this branch should never fail
+                    // since PathBuf::from(".") is always valid. If it does fail, we panic
+                    // because there's no reasonable recovery.
+                    panic!("Failed to create minimal ContextBuilder even from '.' — this is a bug");
                 })
-            }
-        };
+                }
+            };
 
         Self {
             tasks,
@@ -429,7 +386,6 @@ impl SubagentManager {
                             t.status = TaskStatus::Completed;
                             t.result = Some(response.content);
                             t.completed_at = Some(Utc::now());
-                            t.progress = 100;
                             info!("Subagent task {} completed", tid);
                         }
                         Ok(Err(e)) => {
@@ -595,13 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn test_task_priority() {
-        let task =
-            SubagentTask::new("test", "test", "test", "test").with_priority(TaskPriority::High);
-        assert_eq!(task.priority, TaskPriority::High);
-    }
-
-    #[test]
     fn test_task_timeout() {
         let task = SubagentTask::new("test", "test", "test", "test").with_timeout(600);
         assert_eq!(task.timeout_secs, 600);
@@ -634,22 +583,6 @@ mod tests {
 
         task.status = TaskStatus::Cancelled;
         assert!(task.is_finished());
-    }
-
-    #[test]
-    fn test_task_notification_serialization() {
-        let notification = TaskNotification {
-            task_id: "task123".to_string(),
-            status: TaskStatus::Completed,
-            result: Some("Task completed successfully".to_string()),
-            error: None,
-            channel: "telegram".to_string(),
-            chat_id: "chat123".to_string(),
-        };
-
-        let json = serde_json::to_string(&notification).unwrap();
-        assert!(json.contains("task123"));
-        assert!(json.contains("Completed"));
     }
 
     #[test]

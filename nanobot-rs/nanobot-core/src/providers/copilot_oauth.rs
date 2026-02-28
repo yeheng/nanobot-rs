@@ -127,6 +127,7 @@ impl CopilotOAuth {
             .client
             .post(DEVICE_CODE_URL)
             .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
             .header("User-Agent", "GitHubCopilotChat/0.26.7")
             .json(&serde_json::json!({
                 "client_id": self.client_id,

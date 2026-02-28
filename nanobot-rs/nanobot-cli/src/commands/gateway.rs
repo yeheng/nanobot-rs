@@ -168,9 +168,9 @@ pub async fn cmd_gateway() -> Result<()> {
             heartbeat
                 .run(|task_text| {
                     let bus_inner = bus_for_heartbeat.clone();
-                    tokio::spawn(async move {
+                    async move {
                         let inbound = nanobot_core::bus::events::InboundMessage {
-                            channel: nanobot_core::bus::cli(),
+                            channel: nanobot_core::bus::ChannelType::Cli,
                             sender_id: "heartbeat".to_string(),
                             chat_id: "heartbeat".to_string(),
                             content: task_text,
@@ -180,7 +180,7 @@ pub async fn cmd_gateway() -> Result<()> {
                             trace_id: None,
                         };
                         bus_inner.publish_inbound(inbound).await;
-                    });
+                    }
                 })
                 .await;
         }));
@@ -201,7 +201,7 @@ pub async fn cmd_gateway() -> Result<()> {
                         .channel
                         .as_deref()
                         .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                        .unwrap_or_else(nanobot_core::bus::cli);
+                        .unwrap_or(nanobot_core::bus::ChannelType::Cli);
                     let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
                     let inbound = nanobot_core::bus::events::InboundMessage {
                         channel,

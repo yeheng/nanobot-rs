@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::slack;
+use crate::bus::ChannelType;
 
 /// Slack channel configuration
 #[derive(Debug, Clone)]
@@ -180,7 +180,7 @@ impl SlackChannel {
                             debug!("Received Slack message from {}: {}", user, text);
 
                             let inbound = InboundMessage {
-                                channel: slack(),
+                                channel: ChannelType::Slack,
                                 sender_id: user.to_string(),
                                 chat_id: channel.to_string(),
                                 content: text.to_string(),

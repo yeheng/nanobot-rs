@@ -73,54 +73,26 @@ impl ConfigLoader {
 
     /// Apply environment variable overrides
     fn apply_env_overrides(&self, config: &mut Config) {
-        // Override API keys from environment variables
-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-            config
-                .providers
-                .entry("openai".to_string())
-                .or_default()
-                .api_key = Some(key);
-        }
+        // Data-driven env overrides: (ENV_VAR, provider_name, field)
+        const ENV_OVERRIDES: &[(&str, &str, bool)] = &[
+            // (env_var, provider, is_api_key)
+            ("OPENAI_API_KEY", "openai", true),
+            ("ANTHROPIC_API_KEY", "anthropic", true),
+            ("OPENROUTER_API_KEY", "openrouter", true),
+            ("OLLAMA_API_BASE", "ollama", false),
+            ("LITELLM_API_BASE", "litellm", false),
+            ("LITELLM_API_KEY", "litellm", true),
+        ];
 
-        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-            config
-                .providers
-                .entry("anthropic".to_string())
-                .or_default()
-                .api_key = Some(key);
-        }
-
-        if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
-            config
-                .providers
-                .entry("openrouter".to_string())
-                .or_default()
-                .api_key = Some(key);
-        }
-
-        // Ollama is a local service - only check for custom API base
-        if let Ok(api_base) = std::env::var("OLLAMA_API_BASE") {
-            config
-                .providers
-                .entry("ollama".to_string())
-                .or_default()
-                .api_base = Some(api_base);
-        }
-
-        // LiteLLM - local proxy service with optional API key
-        if let Ok(api_base) = std::env::var("LITELLM_API_BASE") {
-            config
-                .providers
-                .entry("litellm".to_string())
-                .or_default()
-                .api_base = Some(api_base);
-        }
-        if let Ok(key) = std::env::var("LITELLM_API_KEY") {
-            config
-                .providers
-                .entry("litellm".to_string())
-                .or_default()
-                .api_key = Some(key);
+        for &(env_var, provider, is_api_key) in ENV_OVERRIDES {
+            if let Ok(value) = std::env::var(env_var) {
+                let entry = config.providers.entry(provider.to_string()).or_default();
+                if is_api_key {
+                    entry.api_key = Some(value);
+                } else {
+                    entry.api_base = Some(value);
+                }
+            }
         }
     }
 

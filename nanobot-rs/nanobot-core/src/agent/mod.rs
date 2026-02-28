@@ -19,6 +19,4 @@ pub use history_processor::{count_tokens, process_history, HistoryConfig, Proces
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
 pub use stream::{StreamCallback, StreamEvent};
-pub use subagent::{
-    SubagentConfig, SubagentManager, SubagentTask, TaskNotification, TaskPriority, TaskStatus,
-};
+pub use subagent::{SubagentConfig, SubagentManager, SubagentTask, TaskStatus};

@@ -176,7 +176,7 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
     let supports_thinking = config
         .providers
         .get(&provider_name)
-        .map(|p| p.supports_thinking(&provider_name))
+        .map(|p| p.supports_thinking())
         .unwrap_or(false);
 
     Ok(ProviderInfo {

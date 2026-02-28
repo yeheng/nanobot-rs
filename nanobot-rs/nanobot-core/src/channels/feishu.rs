@@ -9,7 +9,7 @@ use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::feishu;
+use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
 
 /// Feishu channel configuration
@@ -172,7 +172,7 @@ impl FeishuChannel {
             let metadata = serde_json::to_value(&message).ok();
 
             let inbound = InboundMessage {
-                channel: feishu(),
+                channel: ChannelType::Feishu,
                 sender_id: sender_info.sender_id.user_id.clone(),
                 chat_id: message.chat_id.clone(),
                 content,

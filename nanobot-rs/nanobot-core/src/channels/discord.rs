@@ -7,8 +7,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::discord;
 use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::ChannelType;
 
 /// Discord channel configuration
 #[derive(Debug, Clone)]
@@ -124,7 +124,7 @@ impl EventHandler for DiscordHandler {
         debug!("Received message from {}: {}", user_id, msg.content);
 
         let inbound = InboundMessage {
-            channel: discord(),
+            channel: ChannelType::Discord,
             sender_id: user_id,
             chat_id: msg.channel_id.to_string(),
             content: msg.content.clone(),

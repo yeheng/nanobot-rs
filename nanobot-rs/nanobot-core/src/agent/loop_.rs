@@ -94,7 +94,8 @@ impl AgentLoop {
 
         // Build context with skills and summarization support
         let store_arc = Arc::new(memory.sqlite_store().clone());
-        let context = ContextBuilder::new(workspace.clone())?
+        let context = ContextBuilder::new(workspace.clone())
+            .await?
             .with_skills_context(skills_context)
             .with_summarization(provider.clone(), store_arc, config.model.clone());
 

@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::dingtalk;
 use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
 
 /// DingTalk channel configuration
@@ -200,7 +200,7 @@ impl DingTalkChannel {
         let metadata = serde_json::to_value(&message).ok();
 
         let inbound = InboundMessage {
-            channel: dingtalk(),
+            channel: ChannelType::Dingtalk,
             sender_id: message.sender_id.clone(),
             chat_id: message.conversation_id.clone(),
             content,

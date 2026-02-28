@@ -12,7 +12,7 @@ use sqlx::{Row, SqlitePool};
 use tokio::fs;
 use tracing::{debug, info};
 
-use super::subagent::{SubagentTask, TaskPriority, TaskStatus};
+use super::subagent::{SubagentTask, TaskStatus};
 
 /// SQLite-backed task persistence.
 ///
@@ -54,14 +54,12 @@ impl SqliteTaskStore {
                 chat_id       TEXT NOT NULL,
                 session_key   TEXT NOT NULL,
                 status        TEXT NOT NULL DEFAULT 'Pending',
-                priority      TEXT NOT NULL DEFAULT 'Normal',
                 created_at    TEXT NOT NULL,
                 started_at    TEXT,
                 completed_at  TEXT,
                 result        TEXT,
                 error         TEXT,
                 timeout_secs  INTEGER NOT NULL DEFAULT 300,
-                progress      INTEGER NOT NULL DEFAULT 0,
                 metadata      TEXT NOT NULL DEFAULT '{}'
             )",
         )
@@ -78,9 +76,9 @@ impl SqliteTaskStore {
     /// Load all tasks from SQLite.
     pub async fn load_all(&self) -> anyhow::Result<HashMap<String, SubagentTask>> {
         let rows: Vec<SqliteRow> = sqlx::query(
-            "SELECT id, prompt, channel, chat_id, session_key, status, priority,
+            "SELECT id, prompt, channel, chat_id, session_key, status,
                     created_at, started_at, completed_at, result, error,
-                    timeout_secs, progress, metadata
+                    timeout_secs, metadata
              FROM tasks",
         )
         .fetch_all(&self.pool)
@@ -99,10 +97,10 @@ impl SqliteTaskStore {
     pub async fn save_task(&self, task: &SubagentTask) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO tasks
-             (id, prompt, channel, chat_id, session_key, status, priority,
+             (id, prompt, channel, chat_id, session_key, status,
               created_at, started_at, completed_at, result, error,
-              timeout_secs, progress, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+              timeout_secs, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(&task.id)
         .bind(&task.prompt)
@@ -110,14 +108,12 @@ impl SqliteTaskStore {
         .bind(&task.chat_id)
         .bind(&task.session_key)
         .bind(status_to_int(&task.status))
-        .bind(priority_to_int(&task.priority))
         .bind(task.created_at.to_rfc3339())
         .bind(task.started_at.map(|t| t.to_rfc3339()))
         .bind(task.completed_at.map(|t| t.to_rfc3339()))
         .bind(&task.result)
         .bind(&task.error)
         .bind(task.timeout_secs as i64)
-        .bind(task.progress as i32)
         .bind(serde_json::to_string(&task.metadata)?)
         .execute(&self.pool)
         .await?;
@@ -143,14 +139,12 @@ impl SqliteTaskStore {
         let chat_id: String = row.get("chat_id");
         let session_key: String = row.get("session_key");
         let status = parse_status_from_row(row)?;
-        let priority = parse_priority_from_row(row)?;
         let created_str: String = row.get("created_at");
         let started_str: Option<String> = row.get("started_at");
         let completed_str: Option<String> = row.get("completed_at");
         let result: Option<String> = row.get("result");
         let error: Option<String> = row.get("error");
         let timeout_secs: i64 = row.get("timeout_secs");
-        let progress: i32 = row.get("progress");
         let metadata_json: String = row.get("metadata");
 
         let created_at = DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc);
@@ -171,14 +165,12 @@ impl SqliteTaskStore {
             chat_id,
             session_key,
             status,
-            priority,
             created_at,
             started_at,
             completed_at,
             result,
             error,
             timeout_secs: timeout_secs as u64,
-            progress: progress as u8,
             metadata,
         })
     }
@@ -212,25 +204,6 @@ fn int_to_status(v: i32) -> anyhow::Result<TaskStatus> {
     }
 }
 
-fn priority_to_int(p: &TaskPriority) -> i32 {
-    match p {
-        TaskPriority::Low => 0,
-        TaskPriority::Normal => 1,
-        TaskPriority::High => 2,
-        TaskPriority::Urgent => 3,
-    }
-}
-
-fn int_to_priority(v: i32) -> anyhow::Result<TaskPriority> {
-    match v {
-        0 => Ok(TaskPriority::Low),
-        1 => Ok(TaskPriority::Normal),
-        2 => Ok(TaskPriority::High),
-        3 => Ok(TaskPriority::Urgent),
-        _ => anyhow::bail!("Unknown TaskPriority int: {}", v),
-    }
-}
-
 /// Parse a status column value that may be an integer or legacy name string.
 fn parse_status_from_row(row: &SqliteRow) -> anyhow::Result<TaskStatus> {
     // Try integer first
@@ -252,28 +225,6 @@ fn parse_status_from_row(row: &SqliteRow) -> anyhow::Result<TaskStatus> {
         "Cancelled" => Ok(TaskStatus::Cancelled),
         "Timeout" => Ok(TaskStatus::Timeout),
         _ => anyhow::bail!("Unknown TaskStatus: {}", s),
-    }
-}
-
-/// Parse a priority column value that may be an integer or legacy name string.
-fn parse_priority_from_row(row: &SqliteRow) -> anyhow::Result<TaskPriority> {
-    // Try integer first
-    if let Ok(v) = row.try_get::<i32, _>("priority") {
-        return int_to_priority(v);
-    }
-    // Fall back to string
-    let s: String = row.get("priority");
-    // Try numeric string (e.g. "0", "1")
-    if let Ok(v) = s.parse::<i32>() {
-        return int_to_priority(v);
-    }
-    // Legacy named string
-    match s.as_str() {
-        "Low" => Ok(TaskPriority::Low),
-        "Normal" => Ok(TaskPriority::Normal),
-        "High" => Ok(TaskPriority::High),
-        "Urgent" => Ok(TaskPriority::Urgent),
-        _ => anyhow::bail!("Unknown TaskPriority: {}", s),
     }
 }
 
@@ -354,7 +305,6 @@ mod tests {
             .unwrap();
 
         let mut t = SubagentTask::new("full test", "telegram", "chat42", "session:x")
-            .with_priority(TaskPriority::Urgent)
             .with_timeout(999)
             .with_metadata("env", "prod")
             .with_metadata("region", "us-east");
@@ -363,7 +313,6 @@ mod tests {
         t.completed_at = Some(Utc::now());
         t.result = Some("42".to_string());
         t.error = None;
-        t.progress = 100;
 
         store.save_task(&t).await.unwrap();
         let loaded = store.load_all().await.unwrap();
@@ -374,9 +323,7 @@ mod tests {
         assert_eq!(lt.chat_id, "chat42");
         assert_eq!(lt.session_key, "session:x");
         assert_eq!(lt.status, TaskStatus::Completed);
-        assert_eq!(lt.priority, TaskPriority::Urgent);
         assert_eq!(lt.timeout_secs, 999);
-        assert_eq!(lt.progress, 100);
         assert_eq!(lt.result, Some("42".to_string()));
         assert!(lt.error.is_none());
         assert!(lt.started_at.is_some());
@@ -384,5 +331,4 @@ mod tests {
         assert_eq!(lt.metadata.get("env").unwrap(), "prod");
         assert_eq!(lt.metadata.get("region").unwrap(), "us-east");
     }
-
 }
