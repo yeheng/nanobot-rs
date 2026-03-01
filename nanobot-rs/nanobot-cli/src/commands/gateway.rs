@@ -123,15 +123,36 @@ pub async fn cmd_gateway() -> Result<()> {
     // (Removed: MessageTool now directly invokes send_outbound)
 
     // --- Inbound message handler ---
+    // Per-session serialization: ensures that requests for the same session_key
+    // are processed sequentially, while different sessions remain fully concurrent.
     {
         let agent_for_handler = agent.clone();
         let channels_config = std::sync::Arc::new(config.channels.clone());
+        let session_locks: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
         tasks.push(tokio::spawn(async move {
             while let Some(msg) = inbound_rx.recv().await {
                 let agent_clone = agent_for_handler.clone();
                 let channels_cfg_clone = channels_config.clone();
-                // Process each message concurrently
+                let session_key = msg.session_key();
+
+                // Obtain or create a per-session semaphore (permits = 1 for serialization)
+                let semaphore = {
+                    let mut locks = session_locks.lock().unwrap();
+                    locks
+                        .entry(session_key.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+                        .clone()
+                };
+
+                // Spawn task — acquires semaphore before processing
                 tokio::spawn(async move {
+                    // Acquire permit: blocks until the previous request for this
+                    // session completes.  The permit is held for the entire
+                    // process_direct call and released via RAII on drop.
+                    let _permit = semaphore.acquire().await.expect("semaphore closed");
+
                     match agent_clone
                         .process_direct(&msg.content, &msg.session_key())
                         .await
@@ -155,6 +176,7 @@ pub async fn cmd_gateway() -> Result<()> {
                             tracing::error!("Error processing message: {}", e);
                         }
                     }
+                    // _permit drops here → next queued request for this session can proceed
                 });
             }
         }));

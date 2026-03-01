@@ -2,10 +2,12 @@
 //!
 //! Wraps [`SessionManager`] and [`MemoryStore`] so the agent loop itself
 //! no longer needs to hold those dependencies.
+//!
+//! **Stateless by design**: this hook holds no per-request mutable state.
+//! All session I/O goes directly through SQLite via `SessionManager`.
+//! Per-session request serialization in the gateway guarantees that
+//! concurrent callers never race on the same session.
 
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::agent::memory::MemoryStore;
@@ -17,21 +19,23 @@ use super::{AgentHook, ContextPrepareContext, SessionLoadContext, SessionSaveCon
 ///
 /// Registered automatically by [`AgentLoop::new()`] to maintain backward
 /// compatibility.
+///
+/// # Stateless Contract
+///
+/// This hook does **not** maintain any in-memory session cache.  Every
+/// read goes directly to SQLite (via `SessionManager::get_or_create`) and
+/// every write uses the stateless `SessionManager::append_by_key`.  This
+/// eliminates the clone-modify-overwrite race condition that existed when
+/// an `active_sessions` HashMap was used as a cache.
 pub struct PersistenceHook {
     sessions: SessionManager,
     memory: MemoryStore,
-    /// Track active sessions so we can save across on_session_load / on_session_save.
-    active_sessions: Arc<Mutex<std::collections::HashMap<String, crate::session::Session>>>,
 }
 
 impl PersistenceHook {
     /// Create a new persistence hook.
     pub fn new(sessions: SessionManager, memory: MemoryStore) -> Self {
-        Self {
-            sessions,
-            memory,
-            active_sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        }
+        Self { sessions, memory }
     }
 
     /// Get a reference to the underlying `SessionManager` (for clear_session, etc.).
@@ -50,36 +54,20 @@ impl AgentHook for PersistenceHook {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
     async fn on_session_load(&self, ctx: &mut SessionLoadContext) {
         // Only populate if no other hook has already filled history
         if ctx.history.is_empty() {
             let session = self.sessions.get_or_create(&ctx.session_key).await;
-            let history = session.get_history(ctx.memory_window);
-            ctx.history = history;
-
-            // Cache the session for later save operations
-            self.active_sessions
-                .lock()
-                .await
-                .insert(ctx.session_key.clone(), session);
+            ctx.history = session.get_history(ctx.memory_window);
         }
     }
 
     async fn on_session_save(&self, ctx: &mut SessionSaveContext) {
-        let mut sessions = self.active_sessions.lock().await;
-        let session = match sessions.get_mut(&ctx.session_key) {
-            Some(s) => s,
-            None => {
-                // Session not in cache — load it
-                let s = self.sessions.get_or_create(&ctx.session_key).await;
-                sessions.insert(ctx.session_key.clone(), s);
-                sessions.get_mut(&ctx.session_key).unwrap()
-            }
-        };
-
+        // Stateless write: directly append to SQLite without any in-memory cache
         if let Err(e) = self
             .sessions
-            .append_message(session, &ctx.role, &ctx.content, ctx.tools_used.clone())
+            .append_by_key(&ctx.session_key, &ctx.role, &ctx.content, ctx.tools_used.clone())
             .await
         {
             warn!("Failed to persist {} message to SQLite: {}", ctx.role, e);

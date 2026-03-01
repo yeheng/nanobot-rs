@@ -299,6 +299,38 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Append a single message to a session by key (O(1), stateless).
+    ///
+    /// Persists directly to SQLite without requiring a pre-loaded `Session`
+    /// object.  This is the preferred method for hooks that must remain
+    /// stateless — no in-memory session cache is consulted or modified.
+    #[instrument(name = "session.append_by_key", skip(self, content), fields(key = %session_key))]
+    pub async fn append_by_key(
+        &self,
+        session_key: &str,
+        role: &str,
+        content: &str,
+        tools_used: Option<Vec<String>>,
+    ) -> anyhow::Result<()> {
+        let timestamp = Utc::now();
+
+        // Ensure session metadata exists (idempotent upsert)
+        self.store.save_session_meta(session_key, 0).await?;
+
+        // Persist to SQLite (single INSERT)
+        self.store
+            .append_session_message(
+                session_key,
+                role,
+                content,
+                &timestamp,
+                tools_used.as_deref(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Invalidate a session (removes from SQLite).
     pub async fn invalidate(&self, key: &str) {
         if let Err(e) = self.store.delete_session(key).await {

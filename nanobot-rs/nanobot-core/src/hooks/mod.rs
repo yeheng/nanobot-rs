@@ -24,6 +24,8 @@ use crate::session::SessionMessage;
 /// begins.  Setting `skip = true` short-circuits the entire pipeline and
 /// returns an empty response.
 pub struct RequestContext {
+    /// Unique identifier for this request (UUID v4), stable across all hook stages.
+    pub request_id: String,
     /// Session key for this conversation.
     pub session_key: String,
     /// The raw user message.
@@ -39,6 +41,8 @@ pub struct RequestContext {
 /// Passed once per agent-loop iteration, **before** the LLM call is made.
 /// Hooks may inspect or mutate the message list.
 pub struct LlmRequestContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Messages that will be sent to the LLM (mutable).
     pub messages: Vec<ChatMessage>,
     /// Current iteration number (1-based).
@@ -52,6 +56,8 @@ pub struct LlmRequestContext {
 /// Passed once per agent-loop iteration, **after** the LLM response is
 /// accumulated from the stream.
 pub struct LlmResponseContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// The complete LLM response.
     pub response: ChatResponse,
     /// Current iteration number (1-based).
@@ -66,6 +72,8 @@ pub struct LlmResponseContext {
 /// prevents execution and injects `skip_result` (or a default message) into
 /// the conversation instead.
 pub struct ToolExecuteContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Name of the tool about to be called.
     pub tool_name: String,
     /// Tool call arguments.
@@ -83,6 +91,8 @@ pub struct ToolExecuteContext {
 ///
 /// Passed **after** a tool call completes (or is skipped).
 pub struct ToolResultContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Name of the tool that was called.
     pub tool_name: String,
     /// The tool output.
@@ -98,6 +108,8 @@ pub struct ToolResultContext {
 /// Passed **after** the agent loop finishes but **before** the response is
 /// returned to the caller.
 pub struct ResponseContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Final response text.
     pub content: String,
     /// Reasoning / thinking content (if present).
@@ -115,6 +127,8 @@ pub struct ResponseContext {
 /// Passed when the agent needs to load conversation history.
 /// Hooks can provide history from any source (DB, file, in-memory).
 pub struct SessionLoadContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Session key.
     pub session_key: String,
     /// Maximum number of history messages to return.
@@ -129,6 +143,8 @@ pub struct SessionLoadContext {
 ///
 /// Passed when the agent needs to persist a message (user or assistant).
 pub struct SessionSaveContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Session key.
     pub session_key: String,
     /// Message role: "user" or "assistant".
@@ -146,6 +162,8 @@ pub struct SessionSaveContext {
 /// Passed after history truncation but before prompt assembly.
 /// Hooks can inject summaries, long-term memory, or extra context.
 pub struct ContextPrepareContext {
+    /// Unique identifier for this request (UUID v4).
+    pub request_id: String,
     /// Session key.
     pub session_key: String,
     /// Messages that were evicted from history due to token budget.
@@ -167,6 +185,32 @@ pub struct ContextPrepareContext {
 /// Each method corresponds to a stage in the agent loop.  All methods have
 /// default no-op implementations so implementors only need to override what
 /// they care about.
+///
+/// # Stateless Contract
+///
+/// Implementations **must be stateless** with respect to cross-request mutable
+/// state.  The `&self` receiver is shared across all concurrent requests via
+/// `Arc<dyn AgentHook>`, and hooks must not maintain mutable data structures
+/// keyed by session or request.
+///
+/// ## Allowed state
+///
+/// - **Read-only configuration** loaded at construction time (e.g., a system
+///   prompt string, skills context).
+/// - **Service references** to external stores (`SessionManager`, `SqliteStore`)
+///   that manage their own concurrency via connection pools.
+/// - **Metrics counters** using lock-free atomics (`AtomicU32`, etc.).
+///
+/// ## Prohibited state
+///
+/// - **Mutable collections** keyed by session or request
+///   (e.g., `Mutex<HashMap<String, Session>>`).
+/// - **Any in-memory cache** that acts as a source of truth for
+///   request-scoped data.
+///
+/// All request-scoped information is passed through the `*Context` structs,
+/// which include a stable `request_id` (UUID v4) for correlation and a
+/// `metadata` HashMap for cross-hook communication within a single request.
 #[async_trait::async_trait]
 pub trait AgentHook: Send + Sync + Any {
     /// Downcast support for [`HookRegistry::get_hook`].
@@ -220,6 +264,12 @@ impl HookRegistry {
     }
 
     /// Register a hook.  Hooks are called in registration order.
+    ///
+    /// # Contract
+    ///
+    /// The hook must satisfy the [Stateless Contract](AgentHook) — it must not
+    /// hold mutable state keyed by session or request.  Violations will lead to
+    /// data races in the gateway's concurrent processing model.
     pub fn register(&mut self, hook: Arc<dyn AgentHook>) {
         self.hooks.push(hook);
     }
@@ -414,6 +464,7 @@ mod tests {
 
     fn make_request_ctx() -> RequestContext {
         RequestContext {
+            request_id: "test-request-id".to_string(),
             session_key: "test:session".to_string(),
             user_message: "hello".to_string(),
             skip: false,
@@ -423,6 +474,7 @@ mod tests {
 
     fn make_tool_execute_ctx() -> ToolExecuteContext {
         ToolExecuteContext {
+            request_id: "test-request-id".to_string(),
             tool_name: "read_file".to_string(),
             tool_args: serde_json::json!({"path": "/tmp/test"}),
             skip: false,
@@ -433,6 +485,7 @@ mod tests {
 
     fn make_response_ctx() -> ResponseContext {
         ResponseContext {
+            request_id: "test-request-id".to_string(),
             content: "hello back".to_string(),
             reasoning_content: None,
             tools_used: vec![],

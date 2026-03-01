@@ -208,8 +208,12 @@ impl AgentLoop {
         session_key: &str,
         callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse> {
+        // Generate a unique request ID for this entire pipeline
+        let request_id = uuid::Uuid::new_v4().to_string();
+
         // ── Hook: on_request ───────────────────────────────────
         let mut req_ctx = RequestContext {
+            request_id: request_id.clone(),
             session_key: session_key.to_string(),
             user_message: content.to_string(),
             skip: false,
@@ -226,6 +230,7 @@ impl AgentLoop {
 
         // ── Hook: on_session_load ──────────────────────────────
         let mut load_ctx = SessionLoadContext {
+            request_id: request_id.clone(),
             session_key: session_key.to_string(),
             memory_window: self.config.memory_window,
             history: Vec::new(),
@@ -236,6 +241,7 @@ impl AgentLoop {
 
         // ── Hook: on_session_save (user message) ───────────────
         let mut save_ctx = SessionSaveContext {
+            request_id: request_id.clone(),
             session_key: session_key.to_string(),
             role: "user".to_string(),
             content: content.to_string(),
@@ -249,6 +255,7 @@ impl AgentLoop {
         let processed = process_history(history_snapshot, &self.history_config);
 
         let mut ctx_prepare = ContextPrepareContext {
+            request_id: request_id.clone(),
             session_key: session_key.to_string(),
             evicted_messages: processed.evicted,
             system_prompts: Vec::new(),
@@ -273,22 +280,26 @@ impl AgentLoop {
         } else {
             None
         };
-        let (response, reasoning, tools_used) = self
-            .run_agent_loop(messages, effective_cb, ctx_prepare.metadata)
+        let (response, reasoning, tools_used, loop_metadata) = self
+            .run_agent_loop(messages, effective_cb, ctx_prepare.metadata, &request_id)
             .await?;
 
         // ── Hook: on_response ─────────────────────────────────
+        // Propagate metadata from the agent loop into the response context
         let mut resp_ctx = ResponseContext {
+            request_id: request_id.clone(),
             content: response.clone(),
             reasoning_content: reasoning.clone(),
             tools_used: tools_used.clone(),
             session_key: session_key.to_string(),
-            metadata: HashMap::new(),
+            metadata: loop_metadata,
         };
         self.hooks.run_on_response(&mut resp_ctx).await;
 
         // ── Hook: on_session_save (assistant response) ─────────
+        // Propagate metadata from response context into the save context
         let mut save_ctx = SessionSaveContext {
+            request_id: request_id.clone(),
             session_key: session_key.to_string(),
             role: "assistant".to_string(),
             content: resp_ctx.content.clone(),
@@ -318,7 +329,8 @@ impl AgentLoop {
         initial_messages: Vec<ChatMessage>,
         callback: Option<&StreamCallback>,
         mut hook_metadata: HashMap<String, serde_json::Value>,
-    ) -> Result<(String, Option<String>, Vec<String>)> {
+        request_id: &str,
+    ) -> Result<(String, Option<String>, Vec<String>, HashMap<String, serde_json::Value>)> {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 
@@ -332,6 +344,7 @@ impl AgentLoop {
 
             // ── Hook: on_llm_request ──────────────────────────
             let mut llm_req_ctx = LlmRequestContext {
+                request_id: request_id.to_string(),
                 messages: messages.clone(),
                 iteration,
                 metadata: hook_metadata.clone(),
@@ -346,6 +359,7 @@ impl AgentLoop {
 
             // ── Hook: on_llm_response ─────────────────────────
             let mut llm_resp_ctx = LlmResponseContext {
+                request_id: request_id.to_string(),
                 response: response.clone(),
                 iteration,
                 metadata: hook_metadata.clone(),
@@ -359,7 +373,7 @@ impl AgentLoop {
                     "I've completed processing but have no response to give.".to_string()
                 });
                 cb(&StreamEvent::Done);
-                return Ok((content, response.reasoning_content, tools_used));
+                return Ok((content, response.reasoning_content, tools_used, hook_metadata));
             }
 
             // Has tool calls — execute them and continue the loop
@@ -370,6 +384,7 @@ impl AgentLoop {
                 &mut tools_used,
                 cb,
                 &mut hook_metadata,
+                request_id,
             )
             .await;
         }
@@ -379,6 +394,7 @@ impl AgentLoop {
             "I've completed processing but have no response to give.".to_string(),
             None,
             tools_used,
+            hook_metadata,
         ))
     }
 
@@ -391,6 +407,7 @@ impl AgentLoop {
         tools_used: &mut Vec<String>,
         cb: &StreamCallback,
         hook_metadata: &mut HashMap<String, serde_json::Value>,
+        request_id: &str,
     ) {
         info!(
             "[Agent] Executing {} tool call(s): {}",
@@ -422,6 +439,7 @@ impl AgentLoop {
 
             // ── Hook: on_tool_execute ──────────────────────────
             let mut tool_ctx = ToolExecuteContext {
+                request_id: request_id.to_string(),
                 tool_name: tool_name.clone(),
                 tool_args: tool_args.clone(),
                 skip: false,
@@ -446,6 +464,7 @@ impl AgentLoop {
 
             // ── Hook: on_tool_result ───────────────────────────
             let mut result_ctx = ToolResultContext {
+                request_id: request_id.to_string(),
                 tool_name: tool_name.clone(),
                 tool_result: output.clone(),
                 duration_ms,
