@@ -19,6 +19,7 @@ pub mod config;
 pub mod cron;
 pub mod crypto;
 pub mod heartbeat;
+pub mod hooks;
 pub mod mcp;
 pub mod memory;
 pub mod providers;

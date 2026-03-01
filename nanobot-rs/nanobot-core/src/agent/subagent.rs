@@ -5,10 +5,10 @@ use std::sync::Arc;
 use tracing::{info, instrument, warn};
 
 use crate::config::ChannelsConfig;
+use crate::hooks::prompt::BootstrapHook;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
-use super::context::ContextBuilder;
 use super::loop_::{AgentConfig, AgentLoop};
 
 pub struct SubagentManager {
@@ -16,7 +16,6 @@ pub struct SubagentManager {
     workspace: PathBuf,
     tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
     channels_config: Arc<ChannelsConfig>,
-    context: ContextBuilder,
 }
 
 impl SubagentManager {
@@ -26,22 +25,11 @@ impl SubagentManager {
         tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
         channels_config: Arc<ChannelsConfig>,
     ) -> Self {
-        let context = match ContextBuilder::new_minimal(workspace.clone()).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Failed to build minimal context: {}, using default", e);
-                ContextBuilder::new_minimal(PathBuf::from("."))
-                    .await
-                    .unwrap()
-            }
-        };
-
         Self {
             provider,
             workspace,
             tool_factory,
             channels_config,
-            context,
         }
     }
 
@@ -50,7 +38,6 @@ impl SubagentManager {
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tool_factory = self.tool_factory.clone();
-        let context = self.context.clone();
         let channels_config = self.channels_config.clone();
         let prompt = prompt.to_string();
 
@@ -75,21 +62,24 @@ impl SubagentManager {
             };
             let tools = tool_factory();
 
-            let agent = match AgentLoop::with_cached_context(
-                provider,
-                workspace,
-                agent_config,
-                tools,
-                context,
-            )
-            .await
-            {
-                Ok(a) => a,
+            let mut agent =
+                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("Failed to initialise subagent: {}", e);
+                        return;
+                    }
+                };
+
+            // Register minimal bootstrap hook for subagents
+            let hook = match BootstrapHook::new_minimal(&workspace).await {
+                Ok(h) => h,
                 Err(e) => {
-                    warn!("Failed to initialise subagent: {}", e);
+                    warn!("Failed to load minimal bootstrap hook: {}", e);
                     return;
                 }
             };
+            agent.register_hook(Arc::new(hook));
 
             let result = agent.process_direct(&prompt, &session_key).await;
 
