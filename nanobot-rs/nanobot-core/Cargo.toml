@@ -89,7 +89,7 @@ tokio-rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
 
 # Webhook HTTP server (optional)
-axum = { workspace = true, optional = true }
+axum = { workspace = true, optional = true, features = ["ws"] }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 bytes = "1"

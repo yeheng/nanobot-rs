@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nanobot Chat</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        #chat { border: 1px solid #ccc; height: 400px; overflow-y: scroll; padding: 10px; margin-bottom: 10px; }
+        .message { margin-bottom: 5px; }
+        .user { color: blue; }
+        .bot { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Nanobot Chat</h1>
+    <div id="status">Disconnected</div>
+    <div id="chat"></div>
+    <input type="text" id="input" placeholder="Type a message..." style="width: 80%; padding: 5px;">
+    <button onclick="sendMessage()" style="padding: 5px;">Send</button>
+
+    <script>
+        const chat = document.getElementById('chat');
+        const status = document.getElementById('status');
+        const input = document.getElementById('input');
+        let ws;
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:3000/ws');
+
+            ws.onopen = () => {
+                status.innerText = 'Connected';
+                status.style.color = 'green';
+                appendMessage('System', 'Connected to Nanobot Gateway', 'bot');
+            };
+
+            ws.onmessage = (event) => {
+                appendMessage('Nanobot', event.data, 'bot');
+            };
+
+            ws.onclose = () => {
+                status.innerText = 'Disconnected';
+                status.style.color = 'red';
+                appendMessage('System', 'Connection closed', 'error');
+                // Reconnect after 3 seconds
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                status.innerText = 'Error';
+                status.style.color = 'red';
+            };
+        }
+
+        function sendMessage() {
+            const text = input.value.trim();
+            if (text && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(text);
+                appendMessage('You', text, 'user');
+                input.value = '';
+            }
+        }
+
+        function appendMessage(sender, text, type) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.innerHTML = `<strong>${sender}:</strong> ${text}`;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        connect();
+    </script>
+</body>
+</html>

@@ -25,6 +25,8 @@ pub enum ChannelType {
     Feishu,
     /// WeCom (企业微信) channel
     Wecom,
+    /// WebSocket channel
+    WebSocket,
     /// CLI (command-line interface) channel
     #[default]
     Cli,
@@ -63,6 +65,7 @@ impl ChannelType {
             ChannelType::Dingtalk => "dingtalk",
             ChannelType::Feishu => "feishu",
             ChannelType::Wecom => "wecom",
+            ChannelType::WebSocket => "websocket",
             ChannelType::Cli => "cli",
             ChannelType::Custom(name) => name,
         }
@@ -79,6 +82,7 @@ impl ChannelType {
             "dingtalk" => ChannelType::Dingtalk,
             "feishu" => ChannelType::Feishu,
             "wecom" => ChannelType::Wecom,
+            "websocket" => ChannelType::WebSocket,
             "cli" => ChannelType::Cli,
             _ => ChannelType::Custom(s),
         }

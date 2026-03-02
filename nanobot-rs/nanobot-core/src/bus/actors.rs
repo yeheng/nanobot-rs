@@ -36,9 +36,20 @@ use crate::config::ChannelsConfig;
 pub async fn run_outbound_actor(
     mut rx: mpsc::Receiver<OutboundMessage>,
     config: Arc<ChannelsConfig>,
+    #[cfg(feature = "webhook")] websocket_manager: Option<
+        Arc<crate::channels::websocket::WebSocketManager>,
+    >,
 ) {
     tracing::info!("Outbound Actor started");
     while let Some(msg) = rx.recv().await {
+        #[cfg(feature = "webhook")]
+        if let crate::bus::events::ChannelType::WebSocket = msg.channel {
+            if let Some(ref manager) = websocket_manager {
+                manager.send(msg).await;
+            }
+            continue;
+        }
+
         let cfg = config.clone();
         // Fire-and-forget: each send runs in its own task,
         // eliminating Head-of-Line Blocking across messages.

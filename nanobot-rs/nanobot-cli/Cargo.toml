@@ -71,3 +71,6 @@ teloxide = { workspace = true, optional = true }
 
 # TLS
 rustls = { version = "0.23", features = ["ring"] }
+
+# HTTP server
+axum = { workspace = true, features = ["ws"] }

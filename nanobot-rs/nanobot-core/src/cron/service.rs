@@ -3,7 +3,8 @@
 //! Jobs are persisted in SQLite for reliability — **Single Source of Truth**.
 //! No memory cache, no dual-state synchronization issues.
 //!
-//! Legacy JSON files are automatically migrated on startup.
+//! YAML job definition files (cron/*.yaml) are loaded on startup and synced to SQLite.
+//! Legacy JSON files are also migrated if they exist.
 
 use std::path::PathBuf;
 
@@ -54,6 +55,32 @@ fn default_true() -> bool {
     true
 }
 
+/// YAML file format for cron job definitions
+/// Used for user-defined cron jobs in cron/*.yaml files
+#[derive(Debug, Clone, Deserialize)]
+struct CronYamlFile {
+    /// Job name (also used as ID)
+    name: String,
+    /// Cron expression
+    cron: String,
+    /// Message to send when triggered
+    message: String,
+    /// Target channel (e.g., "telegram", "discord")
+    #[serde(default)]
+    channel: Option<String>,
+    /// Target chat/user ID
+    #[serde(default)]
+    to: Option<String>,
+    /// Whether the job is enabled
+    #[serde(default = "default_true")]
+    enabled: bool,
+    /// Delivery flag (same as enabled for compatibility)
+    #[serde(default)]
+    deliver: Option<bool>,
+    /// Creation timestamp (ignored, for file metadata)
+    #[serde(default)]
+    created_at: Option<String>,
+}
 impl CronJob {
     /// Create a new cron job
     pub fn new(
@@ -130,8 +157,15 @@ impl CronService {
 
     /// Create a new cron service with a provided SqliteStore.
     ///
-    /// Automatically migrates legacy JSON files if they exist.
+    /// Loads cron jobs from YAML files (cron/*.yaml) and syncs to SQLite.
+    /// Also migrates legacy JSON files if they exist.
     pub async fn with_store(store: SqliteStore, workspace: PathBuf) -> Self {
+        // Load YAML job definitions first
+        let yaml_count = Self::load_yaml_jobs(&store, &workspace).await;
+        if yaml_count > 0 {
+            info!("Loaded {} cron jobs from YAML files", yaml_count);
+        }
+
         // Try to migrate from legacy JSON if no jobs exist in SQLite
         let existing = store.load_cron_jobs().await.unwrap_or_default();
         if existing.is_empty() {
@@ -152,12 +186,85 @@ impl CronService {
                 }
             }
         } else {
-            info!("Loaded {} cron jobs from SQLite", existing.len());
+            debug!("SQLite has {} existing cron jobs", existing.len());
         }
 
         Self { store }
     }
 
+    /// Load cron jobs from YAML files in cron/ directory.
+    /// Each .yaml file defines one job with the filename (sans .yaml) as the job ID.
+    async fn load_yaml_jobs(store: &SqliteStore, workspace: &std::path::Path) -> usize {
+        let cron_dir = workspace.join("cron");
+        if !cron_dir.exists() {
+            return 0;
+        }
+
+        let mut count = 0;
+        match tokio::fs::read_dir(&cron_dir).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path
+                        .extension()
+                        .is_some_and(|ext| ext == "yaml" || ext == "yml")
+                    {
+                        match Self::load_yaml_job(store, &path).await {
+                            Ok(job_id) => {
+                                debug!("Loaded cron job from YAML: {}", job_id);
+                                count += 1;
+                            }
+                            Err(e) => {
+                                warn!("Failed to load cron job from {:?}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to read cron directory {:?}: {}", cron_dir, e);
+            }
+        }
+        count
+    }
+
+    /// Load a single YAML job file and save to SQLite.
+    /// Returns the job ID on success.
+    async fn load_yaml_job(
+        store: &SqliteStore,
+        yaml_path: &std::path::Path,
+    ) -> anyhow::Result<String> {
+        let content = tokio::fs::read_to_string(yaml_path).await?;
+        let yaml_job: CronYamlFile = serde_yaml::from_str(&content)?;
+
+        // Use filename (without extension) as job ID
+        let job_id = yaml_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Determine enabled status (deliver field takes precedence if set)
+        let enabled = yaml_job.deliver.unwrap_or(yaml_job.enabled);
+
+        // Calculate next_run time
+        let next_run = CronJob::calculate_next_run(&yaml_job.cron);
+
+        let row = CronJobRow {
+            id: job_id.clone(),
+            name: yaml_job.name,
+            cron: yaml_job.cron,
+            message: yaml_job.message,
+            channel: yaml_job.channel,
+            chat_id: yaml_job.to,
+            last_run: None,
+            next_run,
+            enabled,
+        };
+
+        store.save_cron_job(&row).await?;
+        Ok(job_id)
+    }
     /// Migrate jobs from legacy JSON file to SQLite.
     async fn migrate_from_json(
         store: &SqliteStore,

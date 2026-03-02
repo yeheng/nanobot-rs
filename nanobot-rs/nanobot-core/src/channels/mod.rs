@@ -24,6 +24,9 @@ pub mod feishu;
 #[cfg(feature = "wecom")]
 pub mod wecom;
 
+#[cfg(feature = "webhook")]
+pub mod websocket;
+
 pub use base::Channel;
 pub use middleware::{
     log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
@@ -107,6 +110,13 @@ pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> any
             } else {
                 anyhow::bail!("Feishu not configured")
             }
+        }
+
+        crate::bus::ChannelType::WebSocket => {
+            // WebSocket outbound is handled by the WebSocket connection itself.
+            // This is a placeholder or can be used for logging.
+            tracing::debug!("WebSocket outbound message: {}", msg.content);
+            Ok(())
         }
 
         // Unsupported channels

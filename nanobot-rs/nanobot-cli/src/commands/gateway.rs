@@ -28,7 +28,10 @@ pub async fn cmd_gateway() -> Result<()> {
     let has_slack = config.channels.slack.as_ref().is_some_and(|c| c.enabled);
     let has_feishu = config.channels.feishu.as_ref().is_some_and(|c| c.enabled);
 
-    if !has_telegram && !has_discord && !has_slack && !has_feishu {
+    // WebSocket is enabled by feature flag
+    let has_websocket = cfg!(feature = "all-channels");
+
+    if !has_telegram && !has_discord && !has_slack && !has_feishu && !has_websocket {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
         println!("\n  channels:");
@@ -129,9 +132,48 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
     let channels_config = Arc::new(config.channels.clone());
+
+    #[cfg(feature = "all-channels")]
+    let websocket_manager = {
+        let inbound_tx = bus.inbound_sender();
+        Arc::new(nanobot_core::channels::websocket::WebSocketManager::new(
+            inbound_tx,
+        ))
+    };
+
+    #[cfg(feature = "all-channels")]
+    {
+        let manager = websocket_manager.clone();
+        tasks.push(tokio::spawn(async move {
+            let app = axum::Router::new()
+                .route(
+                    "/ws",
+                    axum::routing::get(
+                        nanobot_core::channels::websocket::WebSocketManager::handle_connection,
+                    ),
+                )
+                .with_state(manager);
+
+            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
+            tracing::info!("WebSocket server listening on {}", addr);
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, app).await {
+                        tracing::error!("WebSocket server error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bind WebSocket server port 3000: {}", e);
+                }
+            }
+        }));
+    }
+
     tasks.push(tokio::spawn(nanobot_core::bus::run_outbound_actor(
         outbound_rx,
         channels_config,
+        #[cfg(feature = "all-channels")]
+        Some(websocket_manager),
     )));
 
     // 2. Start Router Actor (dispatches inbound to per-session channels)
