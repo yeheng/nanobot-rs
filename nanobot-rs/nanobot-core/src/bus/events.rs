@@ -256,6 +256,7 @@ mod tests {
                 ChannelType::Feishu => "feishu",
                 ChannelType::Wecom => "wecom",
                 ChannelType::Cli => "cli",
+                ChannelType::WebSocket => "websocket",
                 ChannelType::Custom(_) => "custom",
             }
         }

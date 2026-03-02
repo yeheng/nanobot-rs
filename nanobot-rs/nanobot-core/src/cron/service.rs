@@ -79,7 +79,7 @@ struct CronYamlFile {
     deliver: Option<bool>,
     /// Creation timestamp (ignored, for file metadata)
     #[serde(default)]
-    created_at: Option<String>,
+    _created_at: Option<String>,
 }
 impl CronJob {
     /// Create a new cron job

@@ -66,12 +66,12 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
     // Take up to max_messages from the end
     let total = history.len().min(config.max_messages);
     let start_idx = history.len().saturating_sub(total);
-    let messages: Vec<SessionMessage> = history.into_iter().skip(start_idx).collect();
+    let mut messages: Vec<SessionMessage> = history.into_iter().skip(start_idx).collect();
 
-    // Split into protected (recent) and older messages
+    // Split into protected (recent) and older messages using zero-copy split_off
     let protected_start = messages.len().saturating_sub(config.recent_keep);
-    let older: Vec<SessionMessage> = messages.iter().take(protected_start).cloned().collect();
-    let protected: Vec<SessionMessage> = messages.iter().skip(protected_start).cloned().collect();
+    let protected = messages.split_off(protected_start);
+    let older = messages; // Remaining messages are the older ones
 
     // Calculate tokens for protected messages (always included)
     let protected_tokens: usize = protected.iter().map(|m| count_tokens(&m.content)).sum();
@@ -80,6 +80,7 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
     let mut evicted: Vec<SessionMessage> = Vec::new();
 
     // Add older messages from most recent to oldest, respecting budget
+    // Use into_iter() to take ownership instead of cloning
     for msg in older.into_iter().rev() {
         let msg_tokens = count_tokens(&msg.content);
 

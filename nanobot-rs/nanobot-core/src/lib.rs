@@ -18,6 +18,7 @@ pub mod channels;
 pub mod config;
 pub mod cron;
 pub mod crypto;
+pub mod error;
 pub mod heartbeat;
 pub mod hooks;
 pub mod mcp;
@@ -30,6 +31,7 @@ pub mod tools;
 pub mod webhook;
 
 pub use config::Config;
+pub use error::{AgentError, ChannelError, McpError, ProviderError};
 pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};

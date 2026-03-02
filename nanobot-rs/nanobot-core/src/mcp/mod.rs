@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -38,9 +39,11 @@ pub struct McpClient {
     name: String,
     config: McpServerConfig,
     process: Option<Child>,
-    stdin: Option<ChildStdin>,
+    /// Stdin wrapped in Arc<Mutex> for concurrent write access
+    stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     tools: Vec<McpTool>,
-    request_id: u64,
+    /// Atomic request ID counter for lock-free ID generation
+    request_id: Arc<AtomicU64>,
     pending: PendingRequests,
 }
 
@@ -51,9 +54,9 @@ impl McpClient {
             name,
             config,
             process: None,
-            stdin: None,
+            stdin: Arc::new(tokio::sync::Mutex::new(None)),
             tools: Vec::new(),
-            request_id: 0,
+            request_id: Arc::new(AtomicU64::new(0)),
             pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -80,7 +83,8 @@ impl McpClient {
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
 
-        self.stdin = Some(stdin);
+        // Store stdin in Arc<Mutex> for concurrent access
+        *self.stdin.lock().await = Some(stdin);
 
         // Spawn a task to read stdout and dispatch responses
         let pending = self.pending.clone();
@@ -143,9 +147,12 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request and wait for the response
-    async fn send_request(&mut self, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
-        let id = self.request_id;
-        self.request_id += 1;
+    ///
+    /// This method only holds the stdin lock during the write operation,
+    /// allowing concurrent requests to be multiplexed over the same connection.
+    async fn send_request(&self, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
+        // Generate ID atomically (lock-free)
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -161,20 +168,24 @@ impl McpClient {
             &request_str[..request_str.len().min(200)]
         );
 
-        // Register pending request
+        // Register pending request BEFORE sending
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        // Write to stdin
-        if let Some(ref mut stdin) = self.stdin {
-            stdin.write_all(request_str.as_bytes()).await?;
-            stdin.write_all(b"\n").await?;
-            stdin.flush().await?;
-        } else {
-            anyhow::bail!("MCP server {} stdin not available", self.name);
+        // Write to stdin - only hold lock during write operation
+        {
+            let mut stdin_lock = self.stdin.lock().await;
+            if let Some(ref mut stdin) = *stdin_lock {
+                stdin.write_all(request_str.as_bytes()).await?;
+                stdin.write_all(b"\n").await?;
+                stdin.flush().await?;
+            } else {
+                anyhow::bail!("MCP server {} stdin not available", self.name);
+            }
         }
+        // Lock released here - response will arrive asynchronously
 
-        // Wait for response with timeout
+        // Wait for response with timeout (no lock held during wait!)
         let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| {
@@ -196,11 +207,7 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC notification (no response expected)
-    async fn send_notification(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-    ) -> anyhow::Result<()> {
+    async fn send_notification(&self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
         let notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -210,7 +217,8 @@ impl McpClient {
         let notification_str = serde_json::to_string(&notification)?;
         debug!("[MCP:{}] notification → {}", self.name, method);
 
-        if let Some(ref mut stdin) = self.stdin {
+        let mut stdin_lock = self.stdin.lock().await;
+        if let Some(ref mut stdin) = *stdin_lock {
             stdin.write_all(notification_str.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
             stdin.flush().await?;
@@ -270,7 +278,10 @@ impl McpClient {
     }
 
     /// Call a tool on this server
-    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<String> {
+    ///
+    /// This method is fully concurrent-safe and can be called from multiple
+    /// tasks simultaneously. Only the stdin write is locked, not the wait.
+    pub async fn call_tool(&self, name: &str, arguments: Value) -> anyhow::Result<String> {
         let params = serde_json::json!({
             "name": name,
             "arguments": arguments
@@ -303,14 +314,15 @@ impl McpClient {
             info!("MCP server {} stopped", self.name);
         }
         self.process = None;
-        self.stdin = None;
+        *self.stdin.lock().await = None;
         Ok(())
     }
 }
 
 /// MCP manager for multiple servers
 pub struct McpManager {
-    clients: HashMap<String, Arc<tokio::sync::Mutex<McpClient>>>,
+    /// Clients stored directly, wrapped in Arc when accessed for concurrent use
+    clients: HashMap<String, McpClient>,
 }
 
 impl McpManager {
@@ -324,14 +336,12 @@ impl McpManager {
     /// Add a server
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {
         let client = McpClient::new(name.clone(), config);
-        self.clients
-            .insert(name, Arc::new(tokio::sync::Mutex::new(client)));
+        self.clients.insert(name, client);
     }
 
     /// Start all servers
     pub async fn start_all(&mut self) -> anyhow::Result<()> {
-        for (name, client) in &self.clients {
-            let mut client = client.lock().await;
+        for (name, client) in &mut self.clients {
             if let Err(e) = client.start().await {
                 warn!("Failed to start MCP server {}: {}", name, e);
             }
@@ -344,7 +354,6 @@ impl McpManager {
     pub async fn get_all_tools(&self) -> Vec<(String, McpTool)> {
         let mut tools = Vec::new();
         for (server_name, client) in &self.clients {
-            let client = client.lock().await;
             for tool in client.tools() {
                 tools.push((server_name.clone(), tool.clone()));
             }
@@ -354,8 +363,8 @@ impl McpManager {
 
     /// Call a tool on a specific server.
     ///
-    /// Only locks the target server's client, allowing other servers to
-    /// handle requests concurrently.
+    /// This method is fully concurrent - multiple tool calls to the same server
+    /// will be multiplexed over the same connection without blocking each other.
     pub async fn call_tool(
         &self,
         server: &str,
@@ -363,7 +372,7 @@ impl McpManager {
         arguments: Value,
     ) -> anyhow::Result<String> {
         if let Some(client) = self.clients.get(server) {
-            let mut client = client.lock().await;
+            // No lock needed! McpClient is fully concurrent-safe
             client.call_tool(name, arguments).await
         } else {
             anyhow::bail!("MCP server '{}' not found", server);
@@ -372,8 +381,7 @@ impl McpManager {
 
     /// Stop all servers
     pub async fn stop_all(&mut self) -> anyhow::Result<()> {
-        for client in self.clients.values() {
-            let mut client = client.lock().await;
+        for client in self.clients.values_mut() {
             let _ = client.stop().await;
         }
         Ok(())

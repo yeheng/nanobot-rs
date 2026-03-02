@@ -253,125 +253,8 @@ pub async fn cmd_gateway() -> Result<()> {
         }));
     }
 
-    // Start Telegram if configured
-    #[cfg(feature = "telegram")]
-    if let Some(telegram_config) = &config.channels.telegram {
-        if telegram_config.enabled {
-            println!("{} Telegram channel", "✓".green());
-
-            let telegram_cfg = nanobot_core::channels::telegram::TelegramConfig {
-                token: telegram_config.token.clone(),
-                allow_from: telegram_config.allow_from.clone(),
-            };
-
-            let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
-                telegram_cfg,
-                inbound_processor.raw_sender(),
-            );
-
-            let task = tokio::spawn(async move {
-                let _ = telegram_channel.start().await;
-            });
-
-            tasks.push(task);
-        }
-    }
-
-    // Start Discord if configured
-    #[cfg(feature = "discord")]
-    if let Some(discord_config) = &config.channels.discord {
-        if discord_config.enabled {
-            println!("{} Discord channel", "✓".green());
-
-            let discord_cfg = nanobot_core::channels::discord::DiscordConfig {
-                token: discord_config.token.clone(),
-                allow_from: discord_config.allow_from.clone(),
-            };
-
-            let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
-                discord_cfg,
-                inbound_processor.raw_sender(),
-            );
-
-            let task = tokio::spawn(async move {
-                let _ = discord_channel.start_bot().await;
-            });
-
-            tasks.push(task);
-        }
-    }
-
-    // Start Feishu if configured
-    #[cfg(feature = "feishu")]
-    if let Some(feishu_config) = &config.channels.feishu {
-        if feishu_config.enabled {
-            use nanobot_core::channels::Channel;
-            println!("{} Feishu channel", "✓".green());
-
-            let feishu_cfg = nanobot_core::channels::feishu::FeishuConfig {
-                app_id: feishu_config.app_id.clone(),
-                app_secret: feishu_config.app_secret.clone(),
-                verification_token: feishu_config.verification_token.clone(),
-                encrypt_key: feishu_config.encrypt_key.clone(),
-                allow_from: feishu_config.allow_from.clone(),
-            };
-
-            let mut feishu_channel = nanobot_core::channels::feishu::FeishuChannel::new(
-                feishu_cfg,
-                inbound_processor.clone(),
-            );
-
-            let task = tokio::spawn(async move {
-                let _ = feishu_channel.start().await;
-            });
-
-            tasks.push(task);
-        }
-    }
-
-    // Start Email if configured
-    #[cfg(feature = "email")]
-    if let Some(email_config) = &config.channels.email {
-        if email_config.enabled {
-            println!("{} Email channel", "✓".green());
-
-            // Check if required fields are present
-            let has_imap = email_config.imap_host.is_some()
-                && email_config.imap_username.is_some()
-                && email_config.imap_password.is_some();
-            let has_smtp = email_config.smtp_host.is_some()
-                && email_config.smtp_username.is_some()
-                && email_config.smtp_password.is_some()
-                && email_config.from_address.is_some();
-
-            if has_imap || has_smtp {
-                let email_cfg = nanobot_core::channels::email::EmailConfig {
-                    imap_host: email_config.imap_host.clone().unwrap_or_default(),
-                    imap_port: email_config.imap_port,
-                    imap_username: email_config.imap_username.clone().unwrap_or_default(),
-                    imap_password: email_config.imap_password.clone().unwrap_or_default(),
-                    smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
-                    smtp_port: email_config.smtp_port,
-                    smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
-                    smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
-                    from_address: email_config.from_address.clone().unwrap_or_default(),
-                    allow_from: email_config.allow_from.clone(),
-                    consent_granted: email_config.consent_granted,
-                };
-
-                let email_channel = nanobot_core::channels::email::EmailChannel::new(
-                    email_cfg,
-                    inbound_processor.raw_sender(),
-                );
-
-                let task = tokio::spawn(async move {
-                    let _ = email_channel.start_polling().await;
-                });
-
-                tasks.push(task);
-            }
-        }
-    }
+    // --- Start all configured channels using unified initializer ---
+    start_channels(&config, &inbound_processor, &mut tasks);
 
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
 
@@ -582,4 +465,132 @@ fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::p
     }
 
     workspace_path
+}
+
+/// Unified channel initializer - eliminates repetitive channel startup code
+///
+/// This function encapsulates the pattern of:
+/// 1. Checking if a channel is enabled in config
+/// 2. Creating the channel instance
+/// 3. Spawning a task to run it
+/// 4. Adding the task to the tasks list
+///
+/// This follows the "Good programmers worry about data structures" principle -
+/// we've converted control flow into data-driven initialization.
+fn start_channels(
+    config: &Config,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    // Start Telegram if configured
+    #[cfg(feature = "telegram")]
+    if let Some(telegram_config) = &config.channels.telegram {
+        if telegram_config.enabled {
+            println!("{} Telegram channel", "✓".green());
+
+            let telegram_cfg = nanobot_core::channels::telegram::TelegramConfig {
+                token: telegram_config.token.clone(),
+                allow_from: telegram_config.allow_from.clone(),
+            };
+
+            let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
+                telegram_cfg,
+                inbound_processor.raw_sender(),
+            );
+
+            tasks.push(tokio::spawn(async move {
+                let _ = telegram_channel.start().await;
+            }));
+        }
+    }
+
+    // Start Discord if configured
+    #[cfg(feature = "discord")]
+    if let Some(discord_config) = &config.channels.discord {
+        if discord_config.enabled {
+            println!("{} Discord channel", "✓".green());
+
+            let discord_cfg = nanobot_core::channels::discord::DiscordConfig {
+                token: discord_config.token.clone(),
+                allow_from: discord_config.allow_from.clone(),
+            };
+
+            let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
+                discord_cfg,
+                inbound_processor.raw_sender(),
+            );
+
+            tasks.push(tokio::spawn(async move {
+                let _ = discord_channel.start_bot().await;
+            }));
+        }
+    }
+
+    // Start Feishu if configured
+    #[cfg(feature = "feishu")]
+    if let Some(feishu_config) = &config.channels.feishu {
+        if feishu_config.enabled {
+            use nanobot_core::channels::Channel;
+            println!("{} Feishu channel", "✓".green());
+
+            let feishu_cfg = nanobot_core::channels::feishu::FeishuConfig {
+                app_id: feishu_config.app_id.clone(),
+                app_secret: feishu_config.app_secret.clone(),
+                verification_token: feishu_config.verification_token.clone(),
+                encrypt_key: feishu_config.encrypt_key.clone(),
+                allow_from: feishu_config.allow_from.clone(),
+            };
+
+            let mut feishu_channel = nanobot_core::channels::feishu::FeishuChannel::new(
+                feishu_cfg,
+                inbound_processor.clone(),
+            );
+
+            tasks.push(tokio::spawn(async move {
+                let _ = feishu_channel.start().await;
+            }));
+        }
+    }
+
+    // Start Email if configured
+    #[cfg(feature = "email")]
+    if let Some(email_config) = &config.channels.email {
+        if email_config.enabled {
+            // Check if required fields are present
+            let has_imap = email_config.imap_host.is_some()
+                && email_config.imap_username.is_some()
+                && email_config.imap_password.is_some();
+            let has_smtp = email_config.smtp_host.is_some()
+                && email_config.smtp_username.is_some()
+                && email_config.smtp_password.is_some()
+                && email_config.from_address.is_some();
+
+            if has_imap || has_smtp {
+                println!("{} Email channel", "✓".green());
+
+                let email_cfg = nanobot_core::channels::email::EmailConfig {
+                    imap_host: email_config.imap_host.clone().unwrap_or_default(),
+                    imap_port: email_config.imap_port,
+                    imap_username: email_config.imap_username.clone().unwrap_or_default(),
+                    imap_password: email_config.imap_password.clone().unwrap_or_default(),
+                    smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
+                    smtp_port: email_config.smtp_port,
+                    smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
+                    smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
+                    from_address: email_config.from_address.clone().unwrap_or_default(),
+                    allow_from: email_config.allow_from.clone(),
+                    consent_granted: email_config.consent_granted,
+                };
+
+                let email_channel = nanobot_core::channels::email::EmailChannel::new(
+                    email_cfg,
+                    inbound_processor.raw_sender(),
+                );
+
+                tasks.push(tokio::spawn(async move {
+                    let _ = email_channel.start_polling().await;
+                }));
+            }
+        }
+    }
 }
