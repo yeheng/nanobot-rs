@@ -63,9 +63,6 @@ cron.workspace = true
 # UUID
 uuid.workspace = true
 
-# LRU Cache for session semaphore management
-moka.workspace = true
-
 # Markdown rendering (optional)
 termimad = { workspace = true, optional = true }
 

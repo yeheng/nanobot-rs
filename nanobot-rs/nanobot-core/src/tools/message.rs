@@ -3,21 +3,27 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tracing::instrument;
 
 use super::{Tool, ToolError, ToolResult};
 use crate::bus::events::ChannelType;
 use crate::bus::events::OutboundMessage;
 
-/// Message tool for sending messages to specific channels
+/// Message tool for sending messages to specific channels.
+///
+/// Routes through the Outbound Actor via `mpsc::Sender<OutboundMessage>`
+/// instead of calling `send_outbound()` directly. This decouples the tool
+/// from blocking network I/O — the message is enqueued instantly and
+/// the Outbound Actor handles delivery concurrently.
 pub struct MessageTool {
-    config: std::sync::Arc<crate::config::ChannelsConfig>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
 }
 
 impl MessageTool {
-    /// Create a new message tool
-    pub fn new(config: std::sync::Arc<crate::config::ChannelsConfig>) -> Self {
-        Self { config }
+    /// Create a new message tool that routes through the outbound channel.
+    pub fn new(outbound_tx: mpsc::Sender<OutboundMessage>) -> Self {
+        Self { outbound_tx }
     }
 }
 
@@ -80,9 +86,11 @@ impl Tool for MessageTool {
             trace_id: None,
         };
 
-        crate::channels::send_outbound(&self.config, message)
+        // Route through Outbound Actor — enqueue instantly, no network wait.
+        self.outbound_tx
+            .send(message)
             .await
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Outbound channel closed: {}", e)))?;
 
         Ok(format!(
             "Message sent successfully to {}:{}",
@@ -95,20 +103,21 @@ impl Tool for MessageTool {
 mod tests {
     use super::*;
 
+    fn make_test_tool() -> (MessageTool, mpsc::Receiver<OutboundMessage>) {
+        let (tx, rx) = mpsc::channel(16);
+        (MessageTool::new(tx), rx)
+    }
+
     #[tokio::test]
     async fn test_message_tool_creation() {
-        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
-        let tool = MessageTool::new(config);
-
+        let (tool, _rx) = make_test_tool();
         assert_eq!(tool.name(), "send_message");
         assert!(tool.description().contains("Send a message"));
     }
 
     #[tokio::test]
     async fn test_message_tool_parameters() {
-        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
-        let tool = MessageTool::new(config);
-
+        let (tool, _rx) = make_test_tool();
         let params = tool.parameters();
         assert!(params["properties"]["channel"].is_object());
         assert!(params["properties"]["chat_id"].is_object());
@@ -117,15 +126,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_parameters() {
-        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
-        let tool = MessageTool::new(config);
-
+        let (tool, _rx) = make_test_tool();
         let params = serde_json::json!({
             "channel": "telegram"
             // Missing chat_id and content
         });
-
         let result = tool.execute(params).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_routes_to_outbound_channel() {
+        let (tool, mut rx) = make_test_tool();
+        let params = serde_json::json!({
+            "channel": "telegram",
+            "chat_id": "12345",
+            "content": "Hello!"
+        });
+        let result = tool.execute(params).await;
+        assert!(result.is_ok());
+
+        // Verify the message was routed to the outbound channel
+        let msg = rx.try_recv().expect("should have received outbound message");
+        assert_eq!(msg.chat_id, "12345");
+        assert_eq!(msg.content, "Hello!");
     }
 }

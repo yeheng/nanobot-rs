@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use moka::future::Cache;
-use std::time::Duration;
 
-use nanobot_core::agent::{AgentConfig, AgentLoop};
+use nanobot_core::{Config, Tool};
+use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
 use nanobot_core::config::load_config;
+use nanobot_core::cron::CronService;
 use nanobot_core::tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
     ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
+use tokio::sync::mpsc::Sender;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -41,11 +42,11 @@ pub async fn cmd_gateway() -> Result<()> {
     println!("🐈 Starting gateway...\n");
 
     // Create message bus — receivers are split out at creation time, no Mutex needed
-    let (bus, mut inbound_rx) = nanobot_core::bus::MessageBus::new(100);
+    let (bus, inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
     let bus = Arc::new(bus);
 
     // Create cron service
-    let cron_service = Arc::new(nanobot_core::cron::CronService::new(workspace.clone()).await);
+    let cron_service = Arc::new(CronService::new(workspace.clone()).await);
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config)?;
@@ -73,14 +74,15 @@ pub async fn cmd_gateway() -> Result<()> {
     };
 
     let subagent_manager = Arc::new(
-        nanobot_core::agent::SubagentManager::new(
+        SubagentManager::new(
             provider_info.provider.clone(),
             workspace.clone(),
             Arc::new({
                 let cfg = config.clone();
                 let ws = workspace.clone();
                 let cron_svc = cron_service.clone();
-                move || build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None)
+                let ob_tx = bus.outbound_sender();
+                move || build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
             }),
             Arc::new(config.channels.clone()),
         )
@@ -94,6 +96,7 @@ pub async fn cmd_gateway() -> Result<()> {
         cron_service.clone(),
         mcp_tools,
         Some(subagent_manager),
+        bus.outbound_sender(),
     );
 
     let agent = Arc::new(
@@ -121,74 +124,27 @@ pub async fn cmd_gateway() -> Result<()> {
     #[allow(unused_variables)]
     let inbound_processor = inbound_sender.clone();
 
-    // --- Direct outbound routing loop ---
-    // (Removed: MessageTool now directly invokes send_outbound)
+    // --- Actor Pipeline: Outbound → Router → Session Actors ---
+    // Replaces the moka cache + semaphore approach with a clean Actor topology.
+    // Zero locks: Router Actor owns the session table (plain HashMap),
+    // Session Actors serialize per-session processing, and
+    // Outbound Actor decouples network I/O from the agent loop.
 
-    // --- Inbound message handler ---
-    // Per-session serialization: ensures that requests for the same session_key
-    // are processed sequentially, while different sessions remain fully concurrent.
-    //
-    // We use moka::future::Cache with TTL to automatically evict idle semaphores,
-    // preventing unbounded memory growth from malicious/accidental session_key flooding.
-    // Cache capacity: 10,000 sessions, TTL: 1 hour idle timeout.
+    // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
+    let channels_config = Arc::new(config.channels.clone());
+    tasks.push(tokio::spawn(
+        nanobot_core::bus::run_outbound_actor(outbound_rx, channels_config),
+    ));
+
+    // 2. Start Router Actor (dispatches inbound to per-session channels)
     {
-        let agent_for_handler = agent.clone();
-        let channels_config = Arc::new(config.channels.clone());
-
-        // LRU cache with TTL to prevent memory leak from unbounded session growth.
-        // This fixes the DoS vulnerability where session_keys would accumulate forever.
-        let session_locks: Cache<String, Arc<tokio::sync::Semaphore>> = Cache::builder()
-            .max_capacity(10_000)
-            .time_to_idle(Duration::from_secs(3600)) // 1 hour idle TTL
-            .build();
-
-        tasks.push(tokio::spawn(async move {
-            while let Some(msg) = inbound_rx.recv().await {
-                let agent_clone = agent_for_handler.clone();
-                let channels_cfg_clone = channels_config.clone();
-                let session_key = msg.session_key();
-
-                // Get or create semaphore via LRU cache with automatic eviction
-                let semaphore = session_locks
-                    .get_with(session_key.clone(), async {
-                        Arc::new(tokio::sync::Semaphore::new(1))
-                    })
-                    .await;
-
-                // Spawn task — acquires semaphore before processing
-                let task_session_key = session_key.clone();
-                tokio::spawn(async move {
-                    // Acquire permit: blocks until the previous request for this
-                    // session completes.  The permit is held for the entire
-                    // process_direct call and released via RAII on drop.
-                    let _permit = semaphore.acquire().await.expect("semaphore closed");
-
-                    match agent_clone
-                        .process_direct(&msg.content, &task_session_key)
-                        .await
-                    {
-                        Ok(response) => {
-                            let outbound = nanobot_core::bus::events::OutboundMessage {
-                                channel: msg.channel,
-                                chat_id: msg.chat_id,
-                                content: response.content,
-                                metadata: None,
-                                trace_id: None,
-                            };
-                            if let Err(e) =
-                                nanobot_core::channels::send_outbound(&channels_cfg_clone, outbound)
-                                    .await
-                            {
-                                tracing::error!("Outbound send error: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Error processing message: {}", e);
-                        }
-                    }
-                });
-            }
-        }));
+        let outbound_tx = bus.outbound_sender();
+        let agent_for_router = agent.clone();
+        tasks.push(tokio::spawn(nanobot_core::bus::run_router_actor(
+            inbound_rx,
+            outbound_tx,
+            agent_for_router,
+        )));
     }
 
     // --- Heartbeat service ---
@@ -386,7 +342,7 @@ pub async fn cmd_gateway() -> Result<()> {
 }
 
 /// Build AgentConfig from the config file, applying defaults for zero-valued fields.
-fn build_agent_config(config: &nanobot_core::config::Config) -> AgentConfig {
+fn build_agent_config(config: &Config) -> AgentConfig {
     let defaults = AgentConfig::default();
     AgentConfig {
         model: String::new(), // caller overrides with resolved model
@@ -411,11 +367,12 @@ fn build_agent_config(config: &nanobot_core::config::Config) -> AgentConfig {
 
 /// Build tool registry for gateway mode
 fn build_tool_registry(
-    config: &nanobot_core::config::Config,
+    config: &Config,
     workspace: &std::path::Path,
-    cron_service: Arc<nanobot_core::cron::CronService>,
-    mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
-    subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
+    cron_service: Arc<CronService>,
+    mcp_tools: Vec<Box<dyn Tool>>,
+    subagent_manager: Option<Arc<SubagentManager>>,
+    outbound_tx: Sender<nanobot_core::bus::OutboundMessage>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -523,7 +480,7 @@ fn build_tool_registry(
 
     // Communication tools (gateway-specific)
     tools.register_with_metadata(
-        Box::new(MessageTool::new(Arc::new(config.channels.clone()))),
+        Box::new(MessageTool::new(outbound_tx)),
         ToolMetadata {
             display_name: "Send Message".to_string(),
             category: "communication".to_string(),
@@ -555,7 +512,7 @@ fn build_tool_registry(
 ///
 /// Creates the directory if it doesn't exist.
 fn resolve_exec_workspace(
-    config: &nanobot_core::config::Config,
+    config: &Config,
     fallback: &std::path::Path,
 ) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {

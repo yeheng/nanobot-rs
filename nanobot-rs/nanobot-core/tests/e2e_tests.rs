@@ -81,7 +81,7 @@ async fn test_message_bus() {
     use nanobot_core::bus::events::InboundMessage;
     use nanobot_core::bus::{ChannelType, MessageBus};
 
-    let (bus, mut rx) = MessageBus::new(10);
+    let (bus, mut rx, _ox) = MessageBus::new(10);
 
     let inbound = InboundMessage {
         channel: ChannelType::Cli,
@@ -1191,7 +1191,7 @@ async fn test_channel_manager_creation() {
     use nanobot_core::channels::manager::ChannelManager;
     use std::sync::Arc;
 
-    let (bus, _) = MessageBus::new(10);
+    let (bus, _, _) = MessageBus::new(10);
     let manager = ChannelManager::new(Arc::new(bus));
 
     // Manager should be created successfully
@@ -1205,7 +1205,7 @@ async fn test_channel_manager_bus_access() {
     use nanobot_core::channels::manager::ChannelManager;
     use std::sync::Arc;
 
-    let (bus, _) = MessageBus::new(10);
+    let (bus, _, _) = MessageBus::new(10);
     let manager = ChannelManager::new(Arc::new(bus));
 
     // Should be able to get bus reference
