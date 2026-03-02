@@ -34,28 +34,36 @@ pub use middleware::{
 
 use crate::bus::events::OutboundMessage;
 use crate::config::ChannelsConfig;
+use crate::error::ChannelError as CoreChannelError;
 
 /// Send an outbound message using the appropriate channel based on message.channel.
 ///
 /// This is the single entry point for all outbound message sending.
 /// Routes to the appropriate channel's stateless send function.
-pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> anyhow::Result<()> {
+pub async fn send_outbound(
+    config: &ChannelsConfig,
+    msg: OutboundMessage,
+) -> Result<(), CoreChannelError> {
     match msg.channel {
         #[cfg(feature = "telegram")]
         crate::bus::ChannelType::Telegram => {
             if let Some(ref tel) = config.telegram {
-                telegram::send_text_stateless(&tel.token, &msg.chat_id, &msg.content).await
+                telegram::send_text_stateless(&tel.token, &msg.chat_id, &msg.content)
+                    .await
+                    .map_err(|e| CoreChannelError::SendError(e.to_string()))
             } else {
-                anyhow::bail!("Telegram not configured")
+                Err(CoreChannelError::NotConfigured("telegram".to_string()))
             }
         }
 
         #[cfg(feature = "discord")]
         crate::bus::ChannelType::Discord => {
             if let Some(ref discord) = config.discord {
-                discord::send_message_stateless(&discord.token, &msg.chat_id, &msg.content).await
+                discord::send_message_stateless(&discord.token, &msg.chat_id, &msg.content)
+                    .await
+                    .map_err(|e| CoreChannelError::SendError(e.to_string()))
             } else {
-                anyhow::bail!("Discord not configured")
+                Err(CoreChannelError::NotConfigured("discord".to_string()))
             }
         }
 
@@ -64,8 +72,9 @@ pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> any
             if let Some(ref slack) = config.slack {
                 slack::send_message_stateless(&slack.bot_token, &msg.chat_id, &msg.content, None)
                     .await
+                    .map_err(|e| CoreChannelError::SendError(e.to_string()))
             } else {
-                anyhow::bail!("Slack not configured")
+                Err(CoreChannelError::NotConfigured("slack".to_string()))
             }
         }
 
@@ -89,11 +98,14 @@ pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> any
                         &msg.content,
                     )
                     .await
+                    .map_err(|e| CoreChannelError::SendError(e.to_string()))
                 } else {
-                    anyhow::bail!("Email SMTP not fully configured")
+                    Err(CoreChannelError::NotConfigured(
+                        "email SMTP not fully configured".to_string(),
+                    ))
                 }
             } else {
-                anyhow::bail!("Email not configured")
+                Err(CoreChannelError::NotConfigured("email".to_string()))
             }
         }
 
@@ -107,8 +119,9 @@ pub async fn send_outbound(config: &ChannelsConfig, msg: OutboundMessage) -> any
                     &msg.content,
                 )
                 .await
+                .map_err(|e| CoreChannelError::SendError(e.to_string()))
             } else {
-                anyhow::bail!("Feishu not configured")
+                Err(CoreChannelError::NotConfigured("feishu".to_string()))
             }
         }
 

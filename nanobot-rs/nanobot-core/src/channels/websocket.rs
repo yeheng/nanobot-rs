@@ -16,6 +16,9 @@ use crate::bus::ChannelType::WebSocket as WebSocketChannel;
 type ConnectionId = String;
 type UserId = String;
 
+/// Authentication validator function type
+type AuthValidator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Maximum number of concurrent WebSocket connections
 const MAX_CONNECTIONS: usize = 1000;
 
@@ -63,7 +66,7 @@ pub struct WebSocketManager {
     inbound_tx: mpsc::Sender<InboundMessage>,
 
     /// Optional authentication token validator (can be set via set_auth_validator)
-    auth_validator: RwLock<Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>>,
+    auth_validator: RwLock<Option<AuthValidator>>,
 }
 
 impl WebSocketManager {

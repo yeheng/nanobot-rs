@@ -274,7 +274,11 @@ impl AgentLoop {
 
     /// Process a message directly (for CLI or testing)
     #[instrument(skip(self, content))]
-    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<AgentResponse, AgentError> {
+    pub async fn process_direct(
+        &self,
+        content: &str,
+        session_key: &str,
+    ) -> Result<AgentResponse, AgentError> {
         self.process_direct_with_callback(content, session_key, None)
             .await
     }
