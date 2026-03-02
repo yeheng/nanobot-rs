@@ -25,7 +25,14 @@ impl MessageBus {
         let (inbound_tx, inbound_rx) = channel(buffer_size);
         let (outbound_tx, outbound_rx) = channel(buffer_size);
 
-        (Self { inbound_tx, outbound_tx }, inbound_rx, outbound_rx)
+        (
+            Self {
+                inbound_tx,
+                outbound_tx,
+            },
+            inbound_rx,
+            outbound_rx,
+        )
     }
 
     /// Publish an inbound message
@@ -63,4 +70,8 @@ impl Default for MessageBus {
 }
 
 /// Convenience type alias for the tuple returned by `MessageBus::new()`.
-pub type MessageBusComponents = (MessageBus, Receiver<InboundMessage>, Receiver<OutboundMessage>);
+pub type MessageBusComponents = (
+    MessageBus,
+    Receiver<InboundMessage>,
+    Receiver<OutboundMessage>,
+);

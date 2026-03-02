@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use nanobot_core::{Config, Tool};
 use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
@@ -13,6 +12,7 @@ use nanobot_core::tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
     ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
+use nanobot_core::{Config, Tool};
 use tokio::sync::mpsc::Sender;
 
 /// Run the gateway command
@@ -82,7 +82,9 @@ pub async fn cmd_gateway() -> Result<()> {
                 let ws = workspace.clone();
                 let cron_svc = cron_service.clone();
                 let ob_tx = bus.outbound_sender();
-                move || build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
+                move || {
+                    build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
+                }
             }),
             Arc::new(config.channels.clone()),
         )
@@ -132,9 +134,10 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
     let channels_config = Arc::new(config.channels.clone());
-    tasks.push(tokio::spawn(
-        nanobot_core::bus::run_outbound_actor(outbound_rx, channels_config),
-    ));
+    tasks.push(tokio::spawn(nanobot_core::bus::run_outbound_actor(
+        outbound_rx,
+        channels_config,
+    )));
 
     // 2. Start Router Actor (dispatches inbound to per-session channels)
     {
@@ -511,10 +514,7 @@ fn build_tool_registry(
 /// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
 /// Creates the directory if it doesn't exist.
-fn resolve_exec_workspace(
-    config: &Config,
-    fallback: &std::path::Path,
-) -> std::path::PathBuf {
+fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
         std::path::PathBuf::from(ws)
     } else {

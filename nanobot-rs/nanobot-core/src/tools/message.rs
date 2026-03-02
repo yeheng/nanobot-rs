@@ -147,7 +147,9 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify the message was routed to the outbound channel
-        let msg = rx.try_recv().expect("should have received outbound message");
+        let msg = rx
+            .try_recv()
+            .expect("should have received outbound message");
         assert_eq!(msg.chat_id, "12345");
         assert_eq!(msg.content, "Hello!");
     }
