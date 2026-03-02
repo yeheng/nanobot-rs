@@ -1,6 +1,8 @@
 //! Cron service for scheduled tasks
 //!
-//! Jobs are persisted in SQLite for reliability and O(1) operations.
+//! Jobs are persisted in SQLite for reliability — **Single Source of Truth**.
+//! No memory cache, no dual-state synchronization issues.
+//!
 //! Legacy JSON files are automatically migrated on startup.
 
 use std::path::PathBuf;
@@ -8,7 +10,6 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, warn};
 
 use crate::memory::{CronJobRow, SqliteStore};
@@ -109,10 +110,9 @@ impl From<CronJobRow> for CronJob {
 
 /// Cron service for scheduled tasks.
 ///
-/// Jobs are persisted in SQLite for reliability. Legacy JSON files
-/// are automatically migrated on startup.
+/// **Single Source of Truth**: All job data lives in SQLite.
+/// No memory cache, no synchronization issues.
 pub struct CronService {
-    jobs: RwLock<Vec<CronJob>>,
     store: SqliteStore,
 }
 
@@ -132,56 +132,42 @@ impl CronService {
     ///
     /// Automatically migrates legacy JSON files if they exist.
     pub async fn with_store(store: SqliteStore, workspace: PathBuf) -> Self {
-        // Try to load from SQLite first
-        let jobs = async {
-            // Load from SQLite
-            match store.load_cron_jobs().await {
-                Ok(jobs) if !jobs.is_empty() => {
-                    let jobs: Vec<CronJob> = jobs.into_iter().map(CronJob::from).collect();
-                    info!("Loaded {} cron jobs from SQLite", jobs.len());
-                    return jobs;
-                }
-                Ok(_) => {}
-                Err(e) => warn!("Failed to load cron jobs from SQLite: {}", e),
-            }
-
-            // Try to migrate from legacy JSON
+        // Try to migrate from legacy JSON if no jobs exist in SQLite
+        let existing = store.load_cron_jobs().await.unwrap_or_default();
+        if existing.is_empty() {
             let json_path = workspace.join("cron").join("jobs.json");
             if json_path.exists() {
                 match Self::migrate_from_json(&store, &json_path).await {
-                    Ok(jobs) => {
-                        info!("Migrated {} cron jobs from JSON", jobs.len());
-                        // Rename old file to prevent re-migration
-                        let backup_path = json_path.with_extension("json.migrated");
-                        if let Err(e) = tokio::fs::rename(&json_path, &backup_path).await {
-                            warn!("Failed to rename migrated JSON file: {}", e);
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("Migrated {} cron jobs from JSON", count);
+                            // Rename old file to prevent re-migration
+                            let backup_path = json_path.with_extension("json.migrated");
+                            if let Err(e) = tokio::fs::rename(&json_path, &backup_path).await {
+                                warn!("Failed to rename migrated JSON file: {}", e);
+                            }
                         }
-                        return jobs;
                     }
                     Err(e) => warn!("Failed to migrate cron jobs from JSON: {}", e),
                 }
             }
-
-            Vec::new()
+        } else {
+            info!("Loaded {} cron jobs from SQLite", existing.len());
         }
-        .await;
 
-        Self {
-            jobs: RwLock::new(jobs),
-            store,
-        }
+        Self { store }
     }
 
     /// Migrate jobs from legacy JSON file to SQLite.
     async fn migrate_from_json(
         store: &SqliteStore,
         json_path: &std::path::Path,
-    ) -> anyhow::Result<Vec<CronJob>> {
+    ) -> anyhow::Result<usize> {
         let content = tokio::fs::read_to_string(json_path).await?;
         let legacy_jobs: std::collections::HashMap<String, CronJob> =
             serde_json::from_str(&content)?;
 
-        let mut jobs = Vec::new();
+        let mut count = 0;
         for (_id, mut job) in legacy_jobs {
             // Recalculate next_run in case it's stale
             job.next_run = CronJob::calculate_next_run(&job.cron);
@@ -199,11 +185,10 @@ impl CronService {
                     enabled: job.enabled,
                 })
                 .await?;
-
-            jobs.push(job);
+            count += 1;
         }
 
-        Ok(jobs)
+        Ok(count)
     }
 
     /// Add a job (immediately persisted to SQLite)
@@ -222,9 +207,6 @@ impl CronService {
                 enabled: job.enabled,
             })
             .await?;
-
-        let mut jobs = self.jobs.write().await;
-        jobs.push(job.clone());
         info!("Added cron job: {} ({})", job.name, job.id);
         Ok(())
     }
@@ -233,67 +215,58 @@ impl CronService {
     #[instrument(name = "cron.remove_job", skip(self), fields(job_id = %id))]
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
         let removed = self.store.delete_cron_job(id).await?;
-
         if removed {
-            let mut jobs = self.jobs.write().await;
-            jobs.retain(|j| j.id != id);
             info!("Removed cron job: {}", id);
         }
-
         Ok(removed)
     }
 
-    /// Get a job
-    pub async fn get_job(&self, id: &str) -> Option<CronJob> {
-        let jobs = self.jobs.read().await;
-        jobs.iter().find(|j| j.id == id).cloned()
+    /// Get a job by ID (reads directly from SQLite)
+    pub async fn get_job(&self, id: &str) -> anyhow::Result<Option<CronJob>> {
+        let jobs = self.store.load_cron_jobs().await?;
+        Ok(jobs.into_iter().find(|j| j.id == id).map(CronJob::from))
     }
 
-    /// List all jobs
-    pub async fn list_jobs(&self) -> Vec<CronJob> {
-        let jobs = self.jobs.read().await;
-        jobs.clone()
+    /// List all jobs (reads directly from SQLite)
+    pub async fn list_jobs(&self) -> anyhow::Result<Vec<CronJob>> {
+        let jobs = self.store.load_cron_jobs().await?;
+        Ok(jobs.into_iter().map(CronJob::from).collect())
     }
 
-    /// Get jobs that are due to run
+    /// Get jobs that are due to run (query directly from SQLite)
     #[instrument(name = "cron.get_due_jobs", skip_all)]
-    pub async fn get_due_jobs(&self) -> Vec<CronJob> {
-        let jobs = self.jobs.read().await;
+    pub async fn get_due_jobs(&self) -> anyhow::Result<Vec<CronJob>> {
         let now = Utc::now();
-
-        jobs.iter()
-            .filter(|job| job.enabled && job.next_run.is_some_and(|next| next <= now))
-            .cloned()
-            .collect()
+        let jobs = self.store.load_due_cron_jobs(now).await?;
+        Ok(jobs.into_iter().map(CronJob::from).collect())
     }
 
     /// Mark a job as run (immediately persisted to SQLite)
     #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
     pub async fn mark_job_run(&self, id: &str) {
-        let mut jobs = self.jobs.write().await;
+        let now = Utc::now();
 
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
-            job.update_next_run();
+        // Load the job to calculate next_run
+        match self.get_job(id).await {
+            Ok(Some(mut job)) => {
+                job.update_next_run();
 
-            if let Err(e) = self
-                .store
-                .save_cron_job(&CronJobRow {
-                    id: job.id.clone(),
-                    name: job.name.clone(),
-                    cron: job.cron.clone(),
-                    message: job.message.clone(),
-                    channel: job.channel.clone(),
-                    chat_id: job.chat_id.clone(),
-                    last_run: job.last_run,
-                    next_run: job.next_run,
-                    enabled: job.enabled,
-                })
-                .await
-            {
-                warn!("Failed to persist cron job {}: {}", id, e);
+                if let Err(e) = self
+                    .store
+                    .update_cron_job_run_times(id, now, job.next_run)
+                    .await
+                {
+                    warn!("Failed to persist cron job {}: {}", id, e);
+                }
+
+                debug!("Marked job {} as run", id);
             }
-
-            debug!("Marked job {} as run", id);
+            Ok(None) => {
+                warn!("Job {} not found when marking as run", id);
+            }
+            Err(e) => {
+                warn!("Failed to load job {} for marking as run: {}", id, e);
+            }
         }
     }
 }

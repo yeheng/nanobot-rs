@@ -1,7 +1,6 @@
 //! Channel integrations
 
 pub mod base;
-pub mod manager;
 pub mod middleware;
 
 #[cfg(feature = "telegram")]
@@ -26,7 +25,6 @@ pub mod feishu;
 pub mod wecom;
 
 pub use base::Channel;
-pub use manager::ChannelManager;
 pub use middleware::{
     log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
 };

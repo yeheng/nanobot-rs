@@ -66,7 +66,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             api_key: Some(access_token),
             api_base: None,
             supports_thinking: None,
-            client_id: client_id,
+            client_id,
         },
     );
 

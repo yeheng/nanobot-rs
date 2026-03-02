@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
-use crate::config::ChannelsConfig;
 use crate::hooks::prompt;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
@@ -15,7 +15,7 @@ pub struct SubagentManager {
     provider: Arc<dyn LlmProvider>,
     workspace: PathBuf,
     tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
-    channels_config: Arc<ChannelsConfig>,
+    outbound_tx: mpsc::Sender<crate::bus::events::OutboundMessage>,
 }
 
 impl SubagentManager {
@@ -23,13 +23,13 @@ impl SubagentManager {
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
-        channels_config: Arc<ChannelsConfig>,
+        outbound_tx: mpsc::Sender<crate::bus::events::OutboundMessage>,
     ) -> Self {
         Self {
             provider,
             workspace,
             tool_factory,
-            channels_config,
+            outbound_tx,
         }
     }
 
@@ -38,7 +38,7 @@ impl SubagentManager {
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tool_factory = self.tool_factory.clone();
-        let channels_config = self.channels_config.clone();
+        let outbound_tx = self.outbound_tx.clone();
         let prompt = prompt.to_string();
 
         let channel_enum = match channel {
@@ -98,8 +98,9 @@ impl SubagentManager {
                 trace_id: None,
             };
 
-            if let Err(e) = crate::channels::send_outbound(&channels_config, msg).await {
-                warn!("Failed to send subagent result: {}", e);
+            // Route through the Outbound Actor — no direct HTTP call
+            if let Err(e) = outbound_tx.send(msg).await {
+                warn!("Failed to send subagent result to outbound channel: {}", e);
             }
         });
 

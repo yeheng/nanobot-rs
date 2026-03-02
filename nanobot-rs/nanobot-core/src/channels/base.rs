@@ -5,8 +5,8 @@ use async_trait::async_trait;
 /// Channel trait for implementing chat channel integrations.
 ///
 /// Channels are **inbound-only**: they receive messages and push them to the
-/// internal bus.  All **outbound** sending is handled by the stateless
-/// [`super::send_outbound`] function, which routes based on channel type.
+/// internal bus. All **outbound** sending is handled by the Outbound Actor,
+/// which calls [`super::send_outbound`] to route based on channel type.
 ///
 /// Provides a unified lifecycle: `start` → `stop` → `graceful_shutdown`.
 #[async_trait]

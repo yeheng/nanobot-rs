@@ -61,17 +61,3 @@ impl MessageBus {
         self.outbound_tx.clone()
     }
 }
-
-impl Default for MessageBus {
-    fn default() -> Self {
-        let (bus, _, _) = Self::new(100);
-        bus
-    }
-}
-
-/// Convenience type alias for the tuple returned by `MessageBus::new()`.
-pub type MessageBusComponents = (
-    MessageBus,
-    Receiver<InboundMessage>,
-    Receiver<OutboundMessage>,
-);

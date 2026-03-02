@@ -123,7 +123,9 @@ impl Tool for CronTool {
                 Ok(format!("Scheduled job '{}' with ID: {}", name, id))
             }
             "list" => {
-                let jobs = self.service.list_jobs().await;
+                let jobs = self.service.list_jobs().await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to list cron jobs: {}", e))
+                })?;
                 if jobs.is_empty() {
                     return Ok("No scheduled jobs.".to_string());
                 }

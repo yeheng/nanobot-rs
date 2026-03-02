@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{interval, timeout, Duration};
 
 use crate::agent::AgentLoop;
 use crate::bus::events::{InboundMessage, OutboundMessage};
@@ -121,6 +121,10 @@ pub async fn run_session_actor(
 ///
 /// On dead channels (session actor timed out and dropped its receiver),
 /// automatically respawns a fresh session actor.
+///
+/// **GC mechanism**: Every 10 minutes, scans the routing table and removes
+/// closed channels (zombie entries from sessions that self-destructed but
+/// were never re-contacted by their users).
 pub async fn run_router_actor(
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
@@ -129,34 +133,58 @@ pub async fn run_router_actor(
     tracing::info!("Router Actor started");
     // Plain HashMap — only this task touches it. No locks, no DashMap.
     let mut sessions: HashMap<String, mpsc::Sender<InboundMessage>> = HashMap::new();
+    // GC interval: clean up zombie channels every 10 minutes
+    let mut cleanup_interval = interval(Duration::from_secs(600));
 
-    while let Some(msg) = inbound_rx.recv().await {
-        let key = msg.session_key();
+    loop {
+        tokio::select! {
+            // Primary path: receive and route inbound messages
+            Some(msg) = inbound_rx.recv() => {
+                let key = msg.session_key();
 
-        let mut needs_respawn = true;
-        if let Some(tx) = sessions.get(&key) {
-            // Try to send. If Err, the session actor has already self-destructed.
-            if tx.send(msg.clone()).await.is_ok() {
-                needs_respawn = false;
-            } else {
-                tracing::debug!("Session [{}] channel dead, respawning...", key);
+                let mut needs_respawn = true;
+                if let Some(tx) = sessions.get(&key) {
+                    // Try to send. If Err, the session actor has already self-destructed.
+                    if tx.send(msg.clone()).await.is_ok() {
+                        needs_respawn = false;
+                    } else {
+                        tracing::debug!("Session [{}] channel dead, respawning...", key);
+                    }
+                }
+
+                if needs_respawn {
+                    let (tx, rx) = mpsc::channel(32);
+                    let ob_tx = outbound_tx.clone();
+                    let agent_clone = agent.clone();
+                    let session_key = key.clone();
+
+                    // Spawn a new session actor
+                    tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));
+
+                    // Send to the freshly created channel (guaranteed to succeed)
+                    if let Err(e) = tx.send(msg).await {
+                        tracing::error!("Failed to send to fresh session [{}]: {}", key, e);
+                    }
+                    sessions.insert(key, tx);
+                }
             }
-        }
-
-        if needs_respawn {
-            let (tx, rx) = mpsc::channel(32);
-            let ob_tx = outbound_tx.clone();
-            let agent_clone = agent.clone();
-            let session_key = key.clone();
-
-            // Spawn a new session actor
-            tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));
-
-            // Send to the freshly created channel (guaranteed to succeed)
-            if let Err(e) = tx.send(msg).await {
-                tracing::error!("Failed to send to fresh session [{}]: {}", key, e);
+            // GC path: periodically remove dead channels
+            _ = cleanup_interval.tick() => {
+                let before = sessions.len();
+                // tx.is_closed() is O(1) — cheap check for dead channels
+                sessions.retain(|_, tx| !tx.is_closed());
+                let after = sessions.len();
+                if before != after {
+                    tracing::debug!(
+                        "Router GC: removed {} zombie session channels ({} → {})",
+                        before - after,
+                        before,
+                        after
+                    );
+                }
             }
-            sessions.insert(key, tx);
+            // Shutdown path: inbound channel closed
+            else => break,
         }
     }
     tracing::info!("Router Actor shutting down");

@@ -6,6 +6,7 @@ pub mod loop_;
 pub mod memory;
 pub mod request;
 pub mod skill_loader;
+pub mod storage;
 pub mod stream;
 pub mod subagent;
 pub mod summarization;
@@ -14,5 +15,10 @@ pub use executor::ToolExecutor;
 pub use history_processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
+pub use storage::{
+    LongTermMemory, NoopContextCompression, NoopLongTermMemory, NoopSessionStorage,
+    RealLongTermMemory, RealSessionStorage, SessionStorage,
+};
 pub use stream::{StreamCallback, StreamEvent};
 pub use subagent::SubagentManager;
+pub use summarization::ContextCompressionHook;

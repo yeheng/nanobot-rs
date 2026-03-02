@@ -96,4 +96,71 @@ impl SqliteStore {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// Load cron jobs that are due to run (enabled and next_run <= now).
+    /// Single Source of Truth: query directly from SQLite, no memory cache.
+    pub async fn load_due_cron_jobs(&self, now: DateTime<Utc>) -> anyhow::Result<Vec<CronJobRow>> {
+        let now_str = now.to_rfc3339();
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            "SELECT id, name, cron, message, channel, chat_id, last_run, next_run, enabled
+             FROM cron_jobs
+             WHERE enabled = 1 AND next_run <= $1",
+        )
+        .bind(&now_str)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut jobs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            let cron: String = row.get("cron");
+            let message: String = row.get("message");
+            let channel: Option<String> = row.get("channel");
+            let chat_id: Option<String> = row.get("chat_id");
+            let last_run_str: Option<String> = row.get("last_run");
+            let next_run_str: Option<String> = row.get("next_run");
+
+            let last_run = last_run_str
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let next_run = next_run_str
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+
+            jobs.push(CronJobRow {
+                id,
+                name,
+                cron,
+                message,
+                channel,
+                chat_id,
+                last_run,
+                next_run,
+                enabled: true,
+            });
+        }
+        Ok(jobs)
+    }
+
+    /// Update a cron job's last_run and next_run timestamps.
+    /// Called after a job executes to schedule its next run.
+    pub async fn update_cron_job_run_times(
+        &self,
+        id: &str,
+        last_run: DateTime<Utc>,
+        next_run: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<()> {
+        let last_run_str = last_run.to_rfc3339();
+        let next_run_str = next_run.map(|dt| dt.to_rfc3339());
+
+        sqlx::query("UPDATE cron_jobs SET last_run = $1, next_run = $2 WHERE id = $3")
+            .bind(&last_run_str)
+            .bind(&next_run_str)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        debug!("Updated cron job run times: {}", id);
+        Ok(())
+    }
 }

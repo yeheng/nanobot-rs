@@ -190,7 +190,8 @@ use tokio::sync::mpsc::Sender;
 /// checks before forwarding messages to the bus.
 ///
 /// This ensures that **all** channels — including webhook-driven ones — go
-/// through the same middleware pipeline as `ChannelManager::process_inbound`.
+/// through the same middleware pipeline (auth + rate-limit) before reaching
+/// the Router Actor.
 #[derive(Clone)]
 pub struct InboundSender {
     inner: Sender<InboundMessage>,

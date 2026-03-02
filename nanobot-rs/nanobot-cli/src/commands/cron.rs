@@ -14,7 +14,10 @@ pub async fn cmd_cron_list() -> Result<()> {
 
     let workspace = config_dir();
     let service = CronService::new(workspace).await;
-    let jobs = service.list_jobs().await;
+    let jobs = service
+        .list_jobs()
+        .await
+        .context("Failed to list cron jobs")?;
 
     if jobs.is_empty() {
         println!("No scheduled jobs found.");
@@ -96,7 +99,10 @@ pub async fn cmd_cron_remove(id: String) -> Result<()> {
     let service = CronService::new(workspace).await;
 
     // Try to get job info first for better feedback
-    let job = service.get_job(&id).await;
+    let job = service
+        .get_job(&id)
+        .await
+        .context("Failed to get job info")?;
 
     let removed = service
         .remove_job(&id)
@@ -126,7 +132,11 @@ pub async fn cmd_cron_enable(id: String) -> Result<()> {
     let workspace = config_dir();
     let service = CronService::new(workspace).await;
 
-    let job = service.get_job(&id).await.context("Job not found")?;
+    let job = service
+        .get_job(&id)
+        .await
+        .context("Job not found")?
+        .context("Job not found")?;
 
     if job.enabled {
         println!("Job '{}' is already enabled.", job.name);
@@ -153,7 +163,11 @@ pub async fn cmd_cron_disable(id: String) -> Result<()> {
     let workspace = config_dir();
     let service = CronService::new(workspace).await;
 
-    let job = service.get_job(&id).await.context("Job not found")?;
+    let job = service
+        .get_job(&id)
+        .await
+        .context("Job not found")?
+        .context("Job not found")?;
 
     if !job.enabled {
         println!("Job '{}' is already disabled.", job.name);
@@ -180,7 +194,11 @@ pub async fn cmd_cron_show(id: String) -> Result<()> {
     let workspace = config_dir();
     let service = CronService::new(workspace).await;
 
-    let job = service.get_job(&id).await.context("Job not found")?;
+    let job = service
+        .get_job(&id)
+        .await
+        .context("Failed to get job")?
+        .context("Job not found")?;
 
     let status = if job.enabled {
         "enabled".green()

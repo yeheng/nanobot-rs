@@ -6,20 +6,26 @@
 //!
 //! ```text
 //! 1. on_request         → hooks can skip the request
-//! 2. load_session       → inline: SessionManager loads history
-//! 3. save_user_message  → inline: SessionManager persists user msg
+//! 2. load_session       → inline: SessionStorage loads history
+//! 3. save_user_message  → inline: SessionStorage persists user msg
 //! 4. process_history    → pure: truncate history, compute evictions
-//! 5. summarize          → inline: SummarizationService compresses evicted msgs
+//! 5. summarize          → inline: ContextCompressionHook compresses evicted msgs
 //! 6. on_context_prepare → hooks inject system_prompts (bootstrap, skills)
-//! 7. read_long_term     → inline: MemoryStore reads MEMORY.md
+//! 7. read_long_term     → inline: LongTermMemory reads MEMORY.md
 //! 8. assemble_prompt    → pure: build Vec<ChatMessage>
 //! 9. run_agent_loop     → LLM iteration (with on_llm_request/response, tool hooks)
 //! 10. on_response       → hooks post-process
-//! 11. save_assistant_msg → inline: SessionManager persists assistant msg
+//! 11. save_assistant_msg → inline: SessionStorage persists assistant msg
 //! ```
 //!
-//! Steps 2, 3, 5, 7, 11 are **direct method calls** on owned services
+//! Steps 2, 3, 5, 7, 11 are **direct method calls** on trait objects
 //! (not hidden behind hooks), making the data flow explicit and debuggable.
+//!
+//! ## Null Object Pattern
+//!
+//! The agent uses trait objects (`Arc<dyn SessionStorage>`, etc.) instead of
+//! `Option<T>`. Subagents get no-op implementations, eliminating `if let Some`
+//! checks throughout the code. This is cleaner than special-case control flow.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,8 +37,9 @@ use tracing::{debug, info, instrument, warn};
 use crate::agent::executor::ToolExecutor;
 use crate::agent::history_processor::{process_history, HistoryConfig};
 use crate::agent::request::RequestHandler;
+use crate::agent::storage::{LongTermMemory, SessionStorage};
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
-use crate::agent::summarization::SummarizationService;
+use crate::agent::summarization::ContextCompressionHook;
 use crate::hooks::logging::LoggingHook;
 use crate::hooks::prompt;
 use crate::hooks::{
@@ -113,10 +120,13 @@ struct ToolCallState<'a> {
 
 /// The agent loop - core processing engine.
 ///
-/// Directly owns the core services needed for conversation management:
-/// - **SessionManager** — session persistence (load/save messages)
-/// - **MemoryStore** — long-term memory (MEMORY.md)
-/// - **SummarizationService** — LLM-based context compression
+/// Uses **trait objects** for storage dependencies (Null Object pattern):
+/// - **SessionStorage** — session persistence (load/save messages)
+/// - **LongTermMemory** — long-term memory (MEMORY.md)
+/// - **ContextCompressionHook** — LLM-based context compression
+///
+/// Main agents get real implementations; subagents get no-op implementations.
+/// This eliminates `Option<T>` checks throughout the code.
 ///
 /// System prompt and skills context are loaded **once** at initialization
 /// and stored as plain `String` fields — no dynamic hook dispatch.
@@ -133,12 +143,12 @@ pub struct AgentLoop {
     hooks: HookRegistry,
     /// History truncator configuration.
     history_config: HistoryConfig,
-    /// Session persistence — owned directly for explicit control flow.
-    sessions: Option<SessionManager>,
-    /// Long-term memory store — owned directly for explicit control flow.
-    memory: Option<MemoryStore>,
-    /// Context compression — owned directly for explicit control flow.
-    summarization: Option<SummarizationService>,
+    /// Session persistence — trait object for Null Object pattern.
+    sessions: Arc<dyn SessionStorage>,
+    /// Long-term memory store — trait object for Null Object pattern.
+    memory: Arc<dyn LongTermMemory>,
+    /// Context compression — trait object for Null Object pattern.
+    compression: Arc<dyn ContextCompressionHook>,
     /// Pre-loaded system prompt (from workspace bootstrap files).
     /// Injected directly in step 6 — no hook dispatch.
     system_prompt: String,
@@ -150,10 +160,10 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new agent loop with a pre-built tool registry.
     ///
-    /// Owns core services directly:
-    /// - **SessionManager** — session load/save
-    /// - **MemoryStore** — long-term memory
-    /// - **SummarizationService** — context compression
+    /// Owns core services via trait objects (Null Object pattern):
+    /// - **SessionStorage** — session load/save
+    /// - **LongTermMemory** — long-term memory
+    /// - **ContextCompressionHook** — context compression
     ///
     /// Loads system prompt and skills context **once** at initialization
     /// and injects them directly into the prompt — no hook dispatch.
@@ -174,8 +184,11 @@ impl AgentLoop {
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         let store_arc = Arc::new(memory.sqlite_store().clone());
-        let summarization =
-            SummarizationService::new(provider.clone(), store_arc, config.model.clone());
+        let compression = Arc::new(crate::agent::summarization::SummarizationService::new(
+            provider.clone(),
+            store_arc,
+            config.model.clone(),
+        ));
 
         // Load system prompt and skills directly — no hook indirection
         let system_prompt =
@@ -193,9 +206,9 @@ impl AgentLoop {
             workspace,
             hooks,
             history_config: HistoryConfig::default(),
-            sessions: Some(sessions),
-            memory: Some(memory),
-            summarization: Some(summarization),
+            sessions: Arc::new(crate::agent::storage::RealSessionStorage(sessions)),
+            memory: Arc::new(crate::agent::storage::RealLongTermMemory(memory)),
+            compression,
             system_prompt,
             skills_context,
         })
@@ -204,7 +217,7 @@ impl AgentLoop {
     /// Create a new agent loop for subagents without default hooks or services.
     ///
     /// System prompt is empty by default; use `set_system_prompt()` to configure.
-    /// Subagents typically don't need session persistence or summarization.
+    /// Subagents get no-op storage implementations (Null Object pattern).
     pub async fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
@@ -222,9 +235,9 @@ impl AgentLoop {
                 token_budget: 4000,
                 recent_keep: 5,
             },
-            sessions: None,
-            memory: None,
-            summarization: None,
+            sessions: Arc::new(crate::agent::storage::NoopSessionStorage),
+            memory: Arc::new(crate::agent::storage::NoopLongTermMemory),
+            compression: Arc::new(crate::agent::storage::NoopContextCompression),
             system_prompt: String::new(),
             skills_context: None,
         })
@@ -256,13 +269,7 @@ impl AgentLoop {
     ///
     /// This resets the conversation history so the next message starts fresh.
     pub async fn clear_session(&self, session_key: &str) {
-        if let Some(ref sessions) = self.sessions {
-            let mut session = sessions.get_or_create(session_key).await;
-            session.clear();
-            sessions.save(&session).await;
-        } else {
-            warn!("clear_session called but no SessionManager is configured");
-        }
+        self.sessions.clear_session(session_key).await;
     }
 
     /// Process a message directly (for CLI or testing)
@@ -303,46 +310,41 @@ impl AgentLoop {
         }
         let mut metadata = req_ctx.metadata;
 
-        // ── 2. Load session history (direct) ──────────────────────
-        let history_snapshot = if let Some(ref sessions) = self.sessions {
-            let session = sessions.get_or_create(session_key).await;
-            session.get_history(self.config.memory_window)
-        } else {
-            Vec::new()
-        };
+        // ── 2. Load session history (direct via trait) ─────────────
+        let session = self.sessions.get_or_create(session_key).await;
+        let history_snapshot = session.get_history(self.config.memory_window);
 
-        // ── 3. Save user message (direct) ─────────────────────────
-        if let Some(ref sessions) = self.sessions {
-            if let Err(e) = sessions
-                .append_by_key(session_key, "user", content, None)
-                .await
-            {
-                warn!("Failed to persist user message: {}", e);
-            }
+        // ── 3. Save user message (direct via trait) ────────────────
+        if let Err(e) = self
+            .sessions
+            .append_by_key(session_key, "user", content, None)
+            .await
+        {
+            warn!("Failed to persist user message: {}", e);
         }
 
-        // ── 4. Truncate history (pure computation) ────────────────
+        // ── 4. Truncate history (pure computation) ─────────────────
         let processed = process_history(history_snapshot, &self.history_config);
 
-        // ── 5. Summarize evicted messages (direct) ────────────────
-        let summary = if let Some(ref summarization) = self.summarization {
-            if !processed.evicted.is_empty() {
-                let existing = summarization.load_summary(session_key).await;
-                match summarization
-                    .summarize(session_key, &processed.evicted, &existing)
-                    .await
-                {
-                    Ok(new_summary) => Some(new_summary),
-                    Err(e) => {
-                        warn!("Summarization failed, using fallback: {}", e);
-                        existing
-                    }
+        // ── 5. Summarize evicted messages (direct via trait) ───────
+        let summary = if !processed.evicted.is_empty() {
+            match self
+                .compression
+                .compress(session_key, &processed.evicted)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Summarization failed: {}", e);
+                    None
                 }
-            } else {
-                summarization.load_summary(session_key).await
             }
         } else {
-            None
+            // No evictions — still try to load existing summary
+            match self.compression.compress(session_key, &[]).await {
+                Ok(s) => s,
+                Err(_) => None,
+            }
         };
 
         // ── 6. Inject system prompts (direct) ──────────────────────
@@ -369,14 +371,20 @@ impl AgentLoop {
         // Run remaining hooks (logging, custom extensions)
         self.hooks.run_on_context_prepare(&mut ctx_prepare).await;
 
-        // ── 7. Read long-term memory (direct) ─────────────────────
+        // ── 7. Read long-term memory (direct via trait) ────────────
         if ctx_prepare.memory.is_none() {
-            if let Some(ref memory) = self.memory {
-                ctx_prepare.memory = memory.read_long_term().await.ok();
+            match self.memory.read_long_term().await {
+                Ok(mem) if !mem.is_empty() => {
+                    ctx_prepare.memory = Some(mem);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("Failed to read long-term memory: {}", e);
+                }
             }
         }
 
-        // ── 8. Assemble prompt (pure, synchronous) ────────────────
+        // ── 8. Assemble prompt (pure, synchronous) ─────────────────
         let messages = Self::assemble_prompt(
             processed.messages,
             content,
@@ -413,19 +421,18 @@ impl AgentLoop {
         };
         self.hooks.run_on_response(&mut resp_ctx).await;
 
-        // ── 11. Save assistant message (direct) ───────────────────
-        if let Some(ref sessions) = self.sessions {
-            if let Err(e) = sessions
-                .append_by_key(
-                    session_key,
-                    "assistant",
-                    &resp_ctx.content,
-                    Some(resp_ctx.tools_used.clone()),
-                )
-                .await
-            {
-                warn!("Failed to persist assistant message: {}", e);
-            }
+        // ── 11. Save assistant message (direct via trait) ──────────
+        if let Err(e) = self
+            .sessions
+            .append_by_key(
+                session_key,
+                "assistant",
+                &resp_ctx.content,
+                Some(resp_ctx.tools_used.clone()),
+            )
+            .await
+        {
+            warn!("Failed to persist assistant message: {}", e);
         }
 
         Ok(AgentResponse {

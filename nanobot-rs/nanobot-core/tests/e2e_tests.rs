@@ -1182,37 +1182,6 @@ async fn test_feishu_challenge_response() {
 }
 
 // =============================================================================
-// Channel Manager Tests
-// =============================================================================
-
-#[tokio::test]
-async fn test_channel_manager_creation() {
-    use nanobot_core::bus::MessageBus;
-    use nanobot_core::channels::manager::ChannelManager;
-    use std::sync::Arc;
-
-    let (bus, _, _) = MessageBus::new(10);
-    let manager = ChannelManager::new(Arc::new(bus));
-
-    // Manager should be created successfully
-    // (no public method to check if channels are empty)
-    let _ = manager;
-}
-
-#[tokio::test]
-async fn test_channel_manager_bus_access() {
-    use nanobot_core::bus::MessageBus;
-    use nanobot_core::channels::manager::ChannelManager;
-    use std::sync::Arc;
-
-    let (bus, _, _) = MessageBus::new(10);
-    let manager = ChannelManager::new(Arc::new(bus));
-
-    // Should be able to get bus reference
-    let _bus_ref = manager.bus();
-}
-
-// =============================================================================
 // Inbound/Outbound Message Tests for Channels
 // =============================================================================
 

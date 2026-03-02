@@ -86,7 +86,7 @@ pub async fn cmd_gateway() -> Result<()> {
                     build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
                 }
             }),
-            Arc::new(config.channels.clone()),
+            bus.outbound_sender(),
         )
         .await,
     );
@@ -116,20 +116,15 @@ pub async fn cmd_gateway() -> Result<()> {
     #[allow(unused_mut)]
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // --- Build outbound sender closures per channel type ---
-    // Sending is stateless (HTTP POST), so we just need config to construct a sender.
-    // This replaces the broken ChannelManager approach where channels were never registered.
-
     // Build InboundSender with auth/rate-limit middleware applied.
     let inbound_sender = nanobot_core::channels::InboundSender::new(bus.inbound_sender());
     // TODO: wire up rate_limiter and auth_checker from config if needed
     #[allow(unused_variables)]
     let inbound_processor = inbound_sender.clone();
 
-    // --- Actor Pipeline: Outbound → Router → Session Actors ---
-    // Replaces the moka cache + semaphore approach with a clean Actor topology.
-    // Zero locks: Router Actor owns the session table (plain HashMap),
-    // Session Actors serialize per-session processing, and
+    // --- Actor Pipeline ---
+    // Router Actor owns the session table (plain HashMap, zero locks).
+    // Session Actors serialize per-session processing via dedicated mpsc channels.
     // Outbound Actor decouples network I/O from the agent loop.
 
     // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
@@ -184,27 +179,33 @@ pub async fn cmd_gateway() -> Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let due = cron_svc.get_due_jobs().await;
-                for job in due {
-                    tracing::info!("Cron job due: {} ({})", job.name, job.id);
-                    let channel = job
-                        .channel
-                        .as_deref()
-                        .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                        .unwrap_or(nanobot_core::bus::ChannelType::Cli);
-                    let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
-                    let inbound = nanobot_core::bus::events::InboundMessage {
-                        channel,
-                        sender_id: "cron".to_string(),
-                        chat_id,
-                        content: job.message.clone(),
-                        media: None,
-                        metadata: None,
-                        timestamp: chrono::Utc::now(),
-                        trace_id: None,
-                    };
-                    bus_for_cron.publish_inbound(inbound).await;
-                    cron_svc.mark_job_run(&job.id).await;
+                match cron_svc.get_due_jobs().await {
+                    Ok(due) => {
+                        for job in due {
+                            tracing::info!("Cron job due: {} ({})", job.name, job.id);
+                            let channel = job
+                                .channel
+                                .as_deref()
+                                .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
+                                .unwrap_or(nanobot_core::bus::ChannelType::Cli);
+                            let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
+                            let inbound = nanobot_core::bus::events::InboundMessage {
+                                channel,
+                                sender_id: "cron".to_string(),
+                                chat_id,
+                                content: job.message.clone(),
+                                media: None,
+                                metadata: None,
+                                timestamp: chrono::Utc::now(),
+                                trace_id: None,
+                            };
+                            bus_for_cron.publish_inbound(inbound).await;
+                            cron_svc.mark_job_run(&job.id).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get due cron jobs: {}", e);
+                    }
                 }
             }
         }));
