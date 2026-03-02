@@ -63,10 +63,7 @@ pub enum ProviderError {
 
     /// API error with status code
     #[error("API error (status {status_code}): {message}")]
-    ApiError {
-        status_code: u16,
-        message: String,
-    },
+    ApiError { status_code: u16, message: String },
 
     /// Response parsing error
     #[error("Failed to parse response: {0}")]

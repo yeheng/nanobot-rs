@@ -124,16 +124,15 @@ impl WebSocketManager {
                 );
             }
         } else {
-            warn!("Connection {} not found for outbound message", connection_id);
+            warn!(
+                "Connection {} not found for outbound message",
+                connection_id
+            );
         }
     }
 }
 
-async fn handle_socket(
-    socket: WebSocket,
-    manager: Arc<WebSocketManager>,
-    query: WebSocketQuery,
-) {
+async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query: WebSocketQuery) {
     let (mut sender, mut receiver) = socket.split();
 
     // Create a unique ID for this connection
@@ -147,13 +146,19 @@ async fn handle_socket(
         let validator = manager.auth_validator.read().await;
         if let Some(ref validator_fn) = *validator {
             if !validator_fn(token) {
-                warn!("Authentication failed for connection {}: invalid token", connection_id);
+                warn!(
+                    "Authentication failed for connection {}: invalid token",
+                    connection_id
+                );
                 return;
             }
         }
     }
 
-    debug!("New WebSocket connection: {} (user: {})", connection_id, user_id);
+    debug!(
+        "New WebSocket connection: {} (user: {})",
+        connection_id, user_id
+    );
 
     // Check connection limit
     let current_connections = manager.connection_count().await;
@@ -176,7 +181,10 @@ async fn handle_socket(
         // If user already has a connection, remove the old one (single connection per user)
         if let Some(old_conn_id) = user_connections.get(&user_id) {
             connections.remove(old_conn_id);
-            info!("Replaced old connection {} for user {}", old_conn_id, user_id);
+            info!(
+                "Replaced old connection {} for user {}",
+                old_conn_id, user_id
+            );
         }
 
         connections.insert(connection_id.clone(), tx);
