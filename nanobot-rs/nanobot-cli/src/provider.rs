@@ -152,10 +152,7 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         .expect("provider should exist after validation");
 
     // Resolve API key (empty string for local providers)
-    let api_key = provider_config
-        .api_key
-        .as_deref()
-        .unwrap_or("");
+    let api_key = provider_config.api_key.as_deref().unwrap_or("");
 
     // Resolve model name
     let default_model = get_default_model_for_provider(&provider_name);

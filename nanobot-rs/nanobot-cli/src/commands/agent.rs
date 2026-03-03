@@ -156,7 +156,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let session_key = SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "direct");
+            let session_key =
+                SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
                 let _response = agent
                     .process_direct_with_callback(&msg, &session_key, Some(&stream_callback))
@@ -174,7 +175,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             let prompt =
                 DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
 
-            let interactive_session = SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "interactive");
+            let interactive_session =
+                SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "interactive");
 
             loop {
                 match line_editor.read_line(&prompt) {

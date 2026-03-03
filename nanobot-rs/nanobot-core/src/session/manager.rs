@@ -344,13 +344,7 @@ impl SessionManager {
 
         // Persist to SQLite (single INSERT)
         self.store
-            .append_session_message(
-                &key_str,
-                role,
-                content,
-                &timestamp,
-                tools_used.as_deref(),
-            )
+            .append_session_message(&key_str, role, content, &timestamp, tools_used.as_deref())
             .await?;
 
         Ok(())
