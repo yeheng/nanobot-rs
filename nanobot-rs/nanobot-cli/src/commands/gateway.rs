@@ -477,6 +477,7 @@ fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::p
 ///
 /// This follows the "Good programmers worry about data structures" principle -
 /// we've converted control flow into data-driven initialization.
+#[allow(unused_variables)]
 fn start_channels(
     config: &Config,
     inbound_processor: &nanobot_core::channels::InboundSender,

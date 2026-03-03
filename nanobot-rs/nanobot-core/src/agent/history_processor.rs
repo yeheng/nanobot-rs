@@ -142,11 +142,12 @@ pub fn count_tokens(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::MessageRole;
     use chrono::Utc;
 
-    fn make_message(role: &str, content: &str) -> SessionMessage {
+    fn make_message(role: MessageRole, content: &str) -> SessionMessage {
         SessionMessage {
-            role: role.to_string(),
+            role,
             content: content.to_string(),
             timestamp: Utc::now(),
             tools_used: None,
@@ -170,8 +171,8 @@ mod tests {
         };
 
         let history = vec![
-            make_message("user", "Hello"),
-            make_message("assistant", "Hi there!"),
+            make_message(MessageRole::User, "Hello"),
+            make_message(MessageRole::Assistant, "Hi there!"),
         ];
 
         let result = process_history(history, &config);
@@ -188,9 +189,12 @@ mod tests {
         };
 
         let history = vec![
-            make_message("user", "First message that is quite long"),
-            make_message("assistant", "Second message that is also quite long"),
-            make_message("user", "Short"), // This one should be protected
+            make_message(MessageRole::User, "First message that is quite long"),
+            make_message(
+                MessageRole::Assistant,
+                "Second message that is also quite long",
+            ),
+            make_message(MessageRole::User, "Short"), // This one should be protected
         ];
 
         let result = process_history(history, &config);
@@ -210,7 +214,7 @@ mod tests {
         };
 
         let history: Vec<SessionMessage> = (0..10)
-            .map(|i| make_message("user", &format!("Message {}", i)))
+            .map(|i| make_message(MessageRole::User, &format!("Message {}", i)))
             .collect();
 
         let result = process_history(history, &config);
@@ -229,7 +233,12 @@ mod tests {
         };
 
         let history: Vec<SessionMessage> = (0..5)
-            .map(|i| make_message("user", &format!("Message {} with some extra content", i)))
+            .map(|i| {
+                make_message(
+                    MessageRole::User,
+                    &format!("Message {} with some extra content", i),
+                )
+            })
             .collect();
 
         let result = process_history(history, &config);

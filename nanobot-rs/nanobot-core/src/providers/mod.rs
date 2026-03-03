@@ -16,7 +16,8 @@ pub mod streaming;
 
 pub use base::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta,
-    FinishReason, LlmProvider, ThinkingConfig, ToolCall, ToolCallDelta, ToolDefinition,
+    FinishReason, LlmProvider, MessageRole, ThinkingConfig, ToolCall, ToolCallDelta,
+    ToolDefinition,
 };
 pub use common::{parse_json_args, OpenAICompatibleProvider, ProviderConfig};
 pub use copilot::CopilotProvider;

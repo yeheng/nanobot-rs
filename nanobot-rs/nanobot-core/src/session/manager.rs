@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
 
 use crate::memory::SqliteStore;
+use crate::providers::MessageRole;
 
 /// A conversation session
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,9 +40,14 @@ impl Session {
     }
 
     /// Add a message to the session (in-memory only; caller must persist separately)
-    pub fn add_message(&mut self, role: &str, content: &str, tools_used: Option<Vec<String>>) {
+    pub fn add_message(
+        &mut self,
+        role: MessageRole,
+        content: &str,
+        tools_used: Option<Vec<String>>,
+    ) {
         self.messages.push(SessionMessage {
-            role: role.to_string(),
+            role,
             content: content.to_string(),
             timestamp: Utc::now(),
             tools_used,
@@ -64,7 +70,7 @@ impl Session {
 /// A message in a session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
     pub timestamp: DateTime<Utc>,
     #[serde(default)]
@@ -132,8 +138,9 @@ impl SessionManager {
                     Some(ref json) => serde_json::from_str(json).ok(),
                     None => None,
                 };
+                let role: MessageRole = row.role.parse().unwrap_or(MessageRole::User);
                 SessionMessage {
-                    role: row.role,
+                    role,
                     content: row.content,
                     timestamp: row.timestamp,
                     tools_used,
@@ -228,7 +235,7 @@ impl SessionManager {
             self.store
                 .append_session_message(
                     &session.key,
-                    &msg.role,
+                    msg.role.as_str(),
                     &msg.content,
                     &msg.timestamp,
                     msg.tools_used.as_deref(),
@@ -265,7 +272,7 @@ impl SessionManager {
     pub async fn append_message(
         &self,
         session: &mut Session,
-        role: &str,
+        role: MessageRole,
         content: &str,
         tools_used: Option<Vec<String>>,
     ) -> anyhow::Result<()> {
@@ -274,7 +281,7 @@ impl SessionManager {
         // Add to the caller's in-memory session so the current conversation
         // can continue building on it.
         session.messages.push(SessionMessage {
-            role: role.to_string(),
+            role: role.clone(),
             content: content.to_string(),
             timestamp,
             tools_used: tools_used.clone(),
@@ -289,7 +296,7 @@ impl SessionManager {
         self.store
             .append_session_message(
                 &session.key,
-                role,
+                role.as_str(),
                 content,
                 &timestamp,
                 tools_used.as_deref(),

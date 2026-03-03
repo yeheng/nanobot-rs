@@ -4,6 +4,7 @@ pub mod executor;
 pub mod history_processor;
 pub mod loop_;
 pub mod memory;
+pub mod prompt;
 pub mod request;
 pub mod skill_loader;
 pub mod storage;

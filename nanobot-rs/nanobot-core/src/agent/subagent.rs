@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
-use crate::hooks::prompt;
+use crate::agent::prompt;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
@@ -63,7 +63,7 @@ impl SubagentManager {
             let tools = tool_factory();
 
             let mut agent =
-                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools).await {
+                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
                     Ok(a) => a,
                     Err(e) => {
                         warn!("Failed to initialise subagent: {}", e);

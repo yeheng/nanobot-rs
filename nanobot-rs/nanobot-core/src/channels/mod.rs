@@ -40,6 +40,7 @@ use crate::error::ChannelError as CoreChannelError;
 ///
 /// This is the single entry point for all outbound message sending.
 /// Routes to the appropriate channel's stateless send function.
+#[allow(unused_variables)]
 pub async fn send_outbound(
     config: &ChannelsConfig,
     msg: OutboundMessage,

@@ -5,21 +5,21 @@
 //! The main pipeline in `process_direct_with_callback` is a straight-line sequence:
 //!
 //! ```text
-//! 1. on_request         → hooks can skip the request
-//! 2. load_session       → inline: SessionStorage loads history
-//! 3. save_user_message  → inline: SessionStorage persists user msg
-//! 4. process_history    → pure: truncate history, compute evictions
-//! 5. summarize          → inline: ContextCompressionHook compresses evicted msgs
-//! 6. on_context_prepare → hooks inject system_prompts (bootstrap, skills)
-//! 7. read_long_term     → inline: LongTermMemory reads MEMORY.md
-//! 8. assemble_prompt    → pure: build Vec<ChatMessage>
-//! 9. run_agent_loop     → LLM iteration (with on_llm_request/response, tool hooks)
-//! 10. on_response       → hooks post-process
-//! 11. save_assistant_msg → inline: SessionStorage persists assistant msg
+//! 1. external_hook(pre_request)  → shell script can abort or modify input
+//! 2. load_session                → inline: SessionStorage loads history
+//! 3. save_user_message           → inline: SessionStorage persists user msg
+//! 4. process_history             → pure: truncate history, compute evictions
+//! 5. summarize                   → inline: ContextCompressionHook compresses evicted msgs
+//! 6. inject_system_prompts       → direct: bootstrap + skills
+//! 7. read_long_term              → inline: LongTermMemory reads MEMORY.md
+//! 8. assemble_prompt             → pure: build Vec<ChatMessage>
+//! 9. run_agent_loop              → LLM iteration (with inline logging)
+//! 10. external_hook(post_response) → shell script for audit/alerting
+//! 11. save_assistant_msg          → inline: SessionStorage persists assistant msg
 //! ```
 //!
-//! Steps 2, 3, 5, 7, 11 are **direct method calls** on trait objects
-//! (not hidden behind hooks), making the data flow explicit and debuggable.
+//! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
+//! External shell hooks (if present) are called via subprocess at steps 1 and 10.
 //!
 //! ## Null Object Pattern
 //!
@@ -27,25 +27,20 @@
 //! `Option<T>`. Subagents get no-op implementations, eliminating `if let Some`
 //! checks throughout the code. This is cleaner than special-case control flow.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, warn};
 
 use crate::agent::executor::ToolExecutor;
 use crate::agent::history_processor::{process_history, HistoryConfig};
+use crate::agent::prompt;
 use crate::agent::request::RequestHandler;
 use crate::agent::storage::{LongTermMemory, SessionStorage};
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
 use crate::agent::summarization::ContextCompressionHook;
 use crate::error::AgentError;
-use crate::hooks::logging::LoggingHook;
-use crate::hooks::prompt;
-use crate::hooks::{
-    AgentHook, ContextPrepareContext, HookRegistry, LlmRequestContext, LlmResponseContext,
-    RequestContext, ResponseContext, ToolExecuteContext, ToolResultContext,
-};
+use crate::hooks::ExternalHookRunner;
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::tools::ToolRegistry;
 
@@ -102,8 +97,6 @@ struct AgentLoopResult {
     reasoning_content: Option<String>,
     /// Tools used during processing
     tools_used: Vec<String>,
-    /// Metadata collected from hooks
-    metadata: HashMap<String, serde_json::Value>,
 }
 
 /// Mutable state for tool call handling.
@@ -112,8 +105,32 @@ struct ToolCallState<'a> {
     messages: &'a mut Vec<ChatMessage>,
     /// List of tools used so far
     tools_used: &'a mut Vec<String>,
-    /// Metadata collected from hooks
-    hook_metadata: &'a mut HashMap<String, serde_json::Value>,
+}
+
+// ── Inline logging functions (replaces LoggingHook) ─────────
+
+/// Log an LLM response — reasoning and content.
+fn log_llm_response(response: &ChatResponse, iteration: u32) {
+    if let Some(ref reasoning) = response.reasoning_content {
+        if !reasoning.is_empty() {
+            debug!("[Agent] Reasoning (iter {}): {}", iteration, reasoning);
+        }
+    }
+    if let Some(ref content) = response.content {
+        if !content.is_empty() {
+            info!("[Agent] Response (iter {}): {}", iteration, content);
+        }
+    }
+}
+
+/// Log a tool result — name, preview, and duration.
+fn log_tool_result(tool_name: &str, tool_result: &str, duration_ms: u64) {
+    let preview = if tool_result.len() > 500 {
+        format!("{}... (truncated)", &tool_result[..500])
+    } else {
+        tool_result.to_string()
+    };
+    debug!("[Tool] {} -> {} ({}ms)", tool_name, preview, duration_ms);
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -129,18 +146,15 @@ struct ToolCallState<'a> {
 /// This eliminates `Option<T>` checks throughout the code.
 ///
 /// System prompt and skills context are loaded **once** at initialization
-/// and stored as plain `String` fields — no dynamic hook dispatch.
+/// and stored as plain `String` fields — no dynamic dispatch.
 ///
-/// Uses **HookRegistry** only for truly extensible concerns:
-/// - Logging (LLM response + tool result logging)
-/// - Custom extensions via `register_hook()`
+/// External shell hooks (`~/.nanobot/hooks/`) are invoked at request
+/// boundaries (pre_request / post_response) via subprocess — UNIX philosophy.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
     config: AgentConfig,
     workspace: PathBuf,
-    /// Lifecycle hooks for extensible (non-core) behavior.
-    hooks: HookRegistry,
     /// History truncator configuration.
     history_config: HistoryConfig,
     /// Session persistence — trait object for Null Object pattern.
@@ -150,11 +164,11 @@ pub struct AgentLoop {
     /// Context compression — trait object for Null Object pattern.
     compression: Arc<dyn ContextCompressionHook>,
     /// Pre-loaded system prompt (from workspace bootstrap files).
-    /// Injected directly in step 6 — no hook dispatch.
     system_prompt: String,
     /// Pre-loaded skills context (from workspace skills).
-    /// Injected directly in step 6 — no hook dispatch.
     skills_context: Option<String>,
+    /// External shell hook runner (pre_request / post_response).
+    external_hooks: ExternalHookRunner,
 }
 
 impl AgentLoop {
@@ -165,11 +179,9 @@ impl AgentLoop {
     /// - **LongTermMemory** — long-term memory
     /// - **ContextCompressionHook** — context compression
     ///
-    /// Loads system prompt and skills context **once** at initialization
-    /// and injects them directly into the prompt — no hook dispatch.
-    ///
-    /// Registers hooks only for truly extensible concerns:
-    /// - **LoggingHook** — LLM + tool logging
+    /// Loads system prompt and skills context **once** at initialization.
+    /// Logging is inlined directly — no hook indirection.
+    /// External shell hooks are loaded from `~/.nanobot/hooks/`.
     ///
     /// # Errors
     ///
@@ -195,22 +207,27 @@ impl AgentLoop {
             prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
         let skills_context = prompt::load_skills_context(&workspace).await;
 
-        // Only register hooks for truly extensible concerns
-        let mut hooks = HookRegistry::new();
-        hooks.register(Arc::new(LoggingHook::new()));
+        // External shell hooks: look for scripts in ~/.nanobot/hooks/
+        let hooks_dir = dirs::home_dir()
+            .map(|p| p.join(".nanobot").join("hooks"))
+            .unwrap_or_else(|| {
+                tracing::warn!("Could not resolve home directory, disabling external hooks.");
+                PathBuf::from("/dev/null")
+            });
+        let external_hooks = ExternalHookRunner::new(hooks_dir);
 
         Ok(Self {
             provider,
             tools,
             config,
             workspace,
-            hooks,
             history_config: HistoryConfig::default(),
             sessions: Arc::new(crate::agent::storage::RealSessionStorage(sessions)),
             memory: Arc::new(crate::agent::storage::RealLongTermMemory(memory)),
             compression,
             system_prompt,
             skills_context,
+            external_hooks,
         })
     }
 
@@ -218,7 +235,8 @@ impl AgentLoop {
     ///
     /// System prompt is empty by default; use `set_system_prompt()` to configure.
     /// Subagents get no-op storage implementations (Null Object pattern).
-    pub async fn builder(
+    /// No external hooks for subagents.
+    pub fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
@@ -229,30 +247,19 @@ impl AgentLoop {
             tools,
             config,
             workspace,
-            hooks: HookRegistry::new(),
-            history_config: HistoryConfig {
-                max_messages: 20,
-                token_budget: 4000,
-                recent_keep: 5,
-            },
+            history_config: HistoryConfig::default(),
             sessions: Arc::new(crate::agent::storage::NoopSessionStorage),
             memory: Arc::new(crate::agent::storage::NoopLongTermMemory),
             compression: Arc::new(crate::agent::storage::NoopContextCompression),
             system_prompt: String::new(),
             skills_context: None,
+            external_hooks: ExternalHookRunner::noop(),
         })
     }
 
     /// Set the system prompt (used by subagents to configure identity).
     pub fn set_system_prompt(&mut self, prompt: String) {
         self.system_prompt = prompt;
-    }
-
-    /// Register a lifecycle hook.
-    ///
-    /// Hooks are invoked in registration order at each lifecycle stage.
-    pub fn register_hook(&mut self, hook: Arc<dyn AgentHook>) {
-        self.hooks.register(hook);
     }
 
     /// Get the model name
@@ -273,7 +280,6 @@ impl AgentLoop {
     }
 
     /// Process a message directly (for CLI or testing)
-    #[instrument(skip(self, content))]
     pub async fn process_direct(
         &self,
         content: &str,
@@ -287,32 +293,39 @@ impl AgentLoop {
     ///
     /// The pipeline is a straight-line sequence with no hidden control flow.
     /// See module-level docs for the full execution flow diagram.
-    #[instrument(skip(self, content, callback))]
     pub async fn process_direct_with_callback(
         &self,
         content: &str,
         session_key: &str,
         callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse, AgentError> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-
-        // ── 1. Hook: on_request (can skip) ────────────────────────
-        let mut req_ctx = RequestContext {
-            request_id: request_id.clone(),
-            session_key: session_key.to_string(),
-            user_message: content.to_string(),
-            skip: false,
-            metadata: HashMap::new(),
+        // ── 1. External hook: pre_request (can abort or modify) ───
+        let content = match self
+            .external_hooks
+            .run_pre_request(session_key, content)
+            .await
+        {
+            Ok(Some(output)) => {
+                if output.is_abort() {
+                    let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
+                    return Ok(AgentResponse {
+                        content: error_msg,
+                        reasoning_content: None,
+                        tools_used: vec![],
+                    });
+                }
+                // Use modified message if provided, otherwise keep original
+                output
+                    .modified_message
+                    .unwrap_or_else(|| content.to_string())
+            }
+            Ok(None) => content.to_string(), // No hook or empty output — continue
+            Err(e) => {
+                warn!("pre_request hook failed (continuing): {}", e);
+                content.to_string()
+            }
         };
-        self.hooks.run_on_request(&mut req_ctx).await;
-        if req_ctx.skip {
-            return Ok(AgentResponse {
-                content: String::new(),
-                reasoning_content: None,
-                tools_used: vec![],
-            });
-        }
-        let mut metadata = req_ctx.metadata;
+        let content = content.as_str();
 
         // ── 2. Load session history (direct via trait) ─────────────
         let session = self.sessions.get_or_create(session_key).await;
@@ -352,49 +365,31 @@ impl AgentLoop {
         };
 
         // ── 6. Inject system prompts (direct) ──────────────────────
-        //    Previously done via BootstrapHook/SkillsHook dynamic dispatch;
-        //    now inlined for clarity and zero overhead.
-        let mut ctx_prepare = ContextPrepareContext {
-            request_id: request_id.clone(),
-            session_key: session_key.to_string(),
-            evicted_messages: processed.evicted,
-            system_prompts: Vec::new(),
-            summary,
-            memory: None,
-            metadata: std::mem::take(&mut metadata),
-        };
-
-        // Inject pre-loaded system prompt directly
+        let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
-            ctx_prepare.system_prompts.push(self.system_prompt.clone());
+            system_prompts.push(self.system_prompt.clone());
         }
-        // Inject pre-loaded skills context directly
         if let Some(ref skills) = self.skills_context {
-            ctx_prepare.system_prompts.push(skills.clone());
+            system_prompts.push(skills.clone());
         }
-        // Run remaining hooks (logging, custom extensions)
-        self.hooks.run_on_context_prepare(&mut ctx_prepare).await;
 
         // ── 7. Read long-term memory (direct via trait) ────────────
-        if ctx_prepare.memory.is_none() {
-            match self.memory.read_long_term().await {
-                Ok(mem) if !mem.is_empty() => {
-                    ctx_prepare.memory = Some(mem);
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("Failed to read long-term memory: {}", e);
-                }
+        let memory_content = match self.memory.read_long_term().await {
+            Ok(mem) if !mem.is_empty() => Some(mem),
+            Ok(_) => None,
+            Err(e) => {
+                warn!("Failed to read long-term memory: {}", e);
+                None
             }
-        }
+        };
 
         // ── 8. Assemble prompt (pure, synchronous) ─────────────────
         let messages = Self::assemble_prompt(
             processed.messages,
             content,
-            &ctx_prepare.system_prompts,
-            ctx_prepare.memory.as_deref(),
-            ctx_prepare.summary.as_deref(),
+            &system_prompts,
+            memory_content.as_deref(),
+            summary.as_deref(),
         );
 
         // ── 9. Run agent loop ─────────────────────────────────────
@@ -403,27 +398,17 @@ impl AgentLoop {
         } else {
             None
         };
-        let result = self
-            .run_agent_loop(messages, effective_cb, ctx_prepare.metadata, &request_id)
-            .await?;
+        let result = self.run_agent_loop(messages, effective_cb).await?;
 
-        // ── 10. Hook: on_response ─────────────────────────────────
-        let AgentLoopResult {
-            content: loop_content,
-            reasoning_content: loop_reasoning,
-            tools_used: loop_tools,
-            metadata: loop_metadata,
-        } = result;
-
-        let mut resp_ctx = ResponseContext {
-            request_id: request_id.clone(),
-            content: loop_content,
-            reasoning_content: loop_reasoning,
-            tools_used: loop_tools,
-            session_key: session_key.to_string(),
-            metadata: loop_metadata,
-        };
-        self.hooks.run_on_response(&mut resp_ctx).await;
+        // ── 10. External hook: post_response (audit / alerting) ────
+        let tools_used_str = result.tools_used.join(", ");
+        if let Err(e) = self
+            .external_hooks
+            .run_post_response(session_key, &result.content, &tools_used_str)
+            .await
+        {
+            warn!("post_response hook failed (ignored): {}", e);
+        }
 
         // ── 11. Save assistant message (direct via trait) ──────────
         if let Err(e) = self
@@ -431,8 +416,8 @@ impl AgentLoop {
             .append_by_key(
                 session_key,
                 "assistant",
-                &resp_ctx.content,
-                Some(resp_ctx.tools_used.clone()),
+                &result.content,
+                Some(result.tools_used.clone()),
             )
             .await
         {
@@ -440,9 +425,9 @@ impl AgentLoop {
         }
 
         Ok(AgentResponse {
-            content: resp_ctx.content,
-            reasoning_content: resp_ctx.reasoning_content,
-            tools_used: resp_ctx.tools_used,
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
         })
     }
 
@@ -454,13 +439,10 @@ impl AgentLoop {
     /// trait impl wraps the response in a single-chunk stream, so both paths
     /// converge here.  When `callback` is `None`, stream events are silently
     /// discarded.
-    #[instrument(name = "agent.run_loop", skip_all, fields(model = %self.config.model))]
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,
         callback: Option<&StreamCallback>,
-        mut hook_metadata: HashMap<String, serde_json::Value>,
-        request_id: &str,
     ) -> Result<AgentLoopResult, AgentError> {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
@@ -473,31 +455,12 @@ impl AgentLoop {
         for iteration in 1..=self.config.max_iterations {
             debug!("Agent loop iteration {}", iteration);
 
-            // ── Hook: on_llm_request ──────────────────────────
-            let mut llm_req_ctx = LlmRequestContext {
-                request_id: request_id.to_string(),
-                messages: messages.clone(),
-                iteration,
-                metadata: hook_metadata.clone(),
-            };
-            self.hooks.run_on_llm_request(&mut llm_req_ctx).await;
-            messages = llm_req_ctx.messages;
-            hook_metadata = llm_req_ctx.metadata;
-
             let request = request_handler.build_chat_request(&messages);
-            let mut stream = request_handler.send_with_retry(request).await?;
-            let response = stream::accumulate_stream(&mut stream, cb).await?;
+            let mut stream_result = request_handler.send_with_retry(request).await?;
+            let response = stream::accumulate_stream(&mut stream_result, cb).await?;
 
-            // ── Hook: on_llm_response ─────────────────────────
-            let mut llm_resp_ctx = LlmResponseContext {
-                request_id: request_id.to_string(),
-                response: response.clone(),
-                iteration,
-                metadata: hook_metadata.clone(),
-            };
-            self.hooks.run_on_llm_response(&mut llm_resp_ctx).await;
-            let response = llm_resp_ctx.response;
-            hook_metadata = llm_resp_ctx.metadata;
+            // Inline logging (replaces LoggingHook::on_llm_response)
+            log_llm_response(&response, iteration);
 
             if !response.has_tool_calls() {
                 let content = response.content.unwrap_or_else(|| {
@@ -508,7 +471,6 @@ impl AgentLoop {
                     content,
                     reasoning_content: response.reasoning_content,
                     tools_used,
-                    metadata: hook_metadata,
                 });
             }
 
@@ -516,9 +478,8 @@ impl AgentLoop {
             let mut state = ToolCallState {
                 messages: &mut messages,
                 tools_used: &mut tools_used,
-                hook_metadata: &mut hook_metadata,
             };
-            self.handle_tool_calls(&response, &executor, &mut state, cb, request_id)
+            self.handle_tool_calls(&response, &executor, &mut state, cb)
                 .await;
         }
 
@@ -527,7 +488,6 @@ impl AgentLoop {
             content: "I've completed processing but have no response to give.".to_string(),
             reasoning_content: None,
             tools_used,
-            metadata: hook_metadata,
         })
     }
 
@@ -538,7 +498,6 @@ impl AgentLoop {
         executor: &ToolExecutor<'_>,
         state: &mut ToolCallState<'_>,
         cb: &StreamCallback,
-        request_id: &str,
     ) {
         info!(
             "[Agent] Executing {} tool call(s): {}",
@@ -563,54 +522,33 @@ impl AgentLoop {
             ));
         }
 
-        // Execute tool calls one by one, honoring hooks
+        // Emit ToolStart events before execution
         for tool_call in &response.tool_calls {
-            let tool_name = tool_call.function.name.clone();
-            let tool_args = tool_call.function.arguments.clone();
+            cb(&StreamEvent::ToolStart {
+                name: tool_call.function.name.clone(),
+            });
+        }
 
-            // ── Hook: on_tool_execute ──────────────────────────
-            let mut tool_ctx = ToolExecuteContext {
-                request_id: request_id.to_string(),
-                tool_name: tool_name.clone(),
-                tool_args: tool_args.clone(),
-                skip: false,
-                skip_result: None,
-                metadata: state.hook_metadata.clone(),
-            };
-            self.hooks.run_on_tool_execute(&mut tool_ctx).await;
-            *state.hook_metadata = tool_ctx.metadata;
-
+        // Execute tool calls concurrently using join_all
+        let futures = response.tool_calls.iter().map(|tool_call| async move {
             let start = std::time::Instant::now();
+            let result = executor.execute_one(tool_call).await;
+            let duration = start.elapsed().as_millis() as u64;
+            (tool_call, result, duration)
+        });
 
-            let output = if tool_ctx.skip {
-                tool_ctx
-                    .skip_result
-                    .unwrap_or_else(|| "[skipped by hook]".to_string())
-            } else {
-                let result = executor.execute_one(tool_call).await;
-                result.output
-            };
+        let results = futures::future::join_all(futures).await;
 
-            let duration_ms = start.elapsed().as_millis() as u64;
+        // Process results sequentially to maintain deterministic ordering in messages
+        for (tool_call, result, duration_ms) in results {
+            let tool_name = tool_call.function.name.clone();
 
-            // ── Hook: on_tool_result ───────────────────────────
-            let mut result_ctx = ToolResultContext {
-                request_id: request_id.to_string(),
-                tool_name: tool_name.clone(),
-                tool_result: output.clone(),
-                duration_ms,
-                metadata: state.hook_metadata.clone(),
-            };
-            self.hooks.run_on_tool_result(&mut result_ctx).await;
-            *state.hook_metadata = result_ctx.metadata;
+            // Inline logging (replaces LoggingHook::on_tool_result)
+            log_tool_result(&tool_name, &result.output, duration_ms);
 
             state.tools_used.push(tool_name.clone());
 
-            cb(&StreamEvent::ToolStart {
-                name: tool_name.clone(),
-            });
-
-            let output_preview = truncate_preview(&result_ctx.tool_result, 500);
+            let output_preview = truncate_preview(&result.output, 500);
 
             cb(&StreamEvent::ToolEnd {
                 name: tool_name.clone(),
@@ -620,7 +558,7 @@ impl AgentLoop {
             state.messages.push(ChatMessage::tool_result(
                 tool_call.id.clone(),
                 tool_name.clone(),
-                result_ctx.tool_result.clone(),
+                result.output,
             ));
         }
     }
@@ -665,9 +603,13 @@ impl AgentLoop {
         // 3. Add processed history messages
         let history_count = processed_history.len();
         for msg in processed_history {
-            match msg.role.as_str() {
-                "user" => messages.push(ChatMessage::user(&msg.content)),
-                "assistant" => messages.push(ChatMessage::assistant(&msg.content)),
+            match msg.role {
+                crate::providers::MessageRole::User => {
+                    messages.push(ChatMessage::user(&msg.content))
+                }
+                crate::providers::MessageRole::Assistant => {
+                    messages.push(ChatMessage::assistant(&msg.content))
+                }
                 _ => {}
             }
         }

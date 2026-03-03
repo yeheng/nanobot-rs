@@ -135,7 +135,7 @@ jobs:
       - name: Package binary
         run: |
           cd nanobot-rs/target/release
-          Compress-Archive -Path nanobot.exe -DestinationPath nanobot-windows.zip
+          Compress-Archive -Update -Path nanobot.exe -DestinationPath nanobot-windows.zip 
       
       - name: Upload binary
         uses: actions/upload-artifact@v4

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nanobot_core::providers::MessageRole;
 use nanobot_core::LlmProvider;
 use nanobot_core::Tool;
 
@@ -158,8 +159,8 @@ async fn test_session_manager() {
     let mut session = manager.get_or_create("test:session1").await;
     assert_eq!(session.key, "test:session1");
 
-    session.add_message("user", "Hello", None);
-    session.add_message("assistant", "Hi there!", None);
+    session.add_message(MessageRole::User, "Hello", None);
+    session.add_message(MessageRole::Assistant, "Hi there!", None);
 
     let history = session.get_history(10);
     assert_eq!(history.len(), 2);
@@ -177,7 +178,7 @@ async fn test_session_clear() {
     let manager = SessionManager::new(store);
 
     let mut session = manager.get_or_create("test:clear").await;
-    session.add_message("user", "Hello", None);
+    session.add_message(MessageRole::User, "Hello", None);
     assert!(!session.messages.is_empty());
 
     session.clear();
@@ -197,7 +198,7 @@ async fn test_session_tools_used() {
 
     let mut session = manager.get_or_create("test:tools").await;
     session.add_message(
-        "assistant",
+        MessageRole::Assistant,
         "Done",
         Some(vec!["read_file".to_string(), "edit_file".to_string()]),
     );
@@ -512,7 +513,7 @@ async fn test_chat_message_user() {
     use nanobot_core::providers::ChatMessage;
 
     let msg = ChatMessage::user("Hello");
-    assert_eq!(msg.role, "user");
+    assert_eq!(msg.role, MessageRole::User);
     assert_eq!(msg.content, Some("Hello".to_string()));
 }
 
@@ -521,7 +522,7 @@ async fn test_chat_message_assistant() {
     use nanobot_core::providers::ChatMessage;
 
     let msg = ChatMessage::assistant("Hi there!");
-    assert_eq!(msg.role, "assistant");
+    assert_eq!(msg.role, MessageRole::Assistant);
     assert_eq!(msg.content, Some("Hi there!".to_string()));
 }
 
@@ -530,7 +531,7 @@ async fn test_chat_message_system() {
     use nanobot_core::providers::ChatMessage;
 
     let msg = ChatMessage::system("You are a helpful assistant.");
-    assert_eq!(msg.role, "system");
+    assert_eq!(msg.role, MessageRole::System);
     assert_eq!(
         msg.content,
         Some("You are a helpful assistant.".to_string())

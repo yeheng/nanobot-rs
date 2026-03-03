@@ -62,11 +62,52 @@ pub struct ChatRequest {
     pub thinking: Option<ThinkingConfig>,
 }
 
+/// Role of the message sender
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl MessageRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+        }
+    }
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for MessageRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(Self::System),
+            "user" => Ok(Self::User),
+            "assistant" => Ok(Self::Assistant),
+            "tool" => Ok(Self::Tool),
+            _ => Err(format!("Unknown role: {}", s)),
+        }
+    }
+}
+
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// Role: system, user, assistant, or tool
-    pub role: String,
+    pub role: MessageRole,
 
     /// Message content
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,7 +130,7 @@ impl ChatMessage {
     /// Create a system message
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            role: "system".to_string(),
+            role: MessageRole::System,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -100,7 +141,7 @@ impl ChatMessage {
     /// Create a user message
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: "user".to_string(),
+            role: MessageRole::User,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -111,7 +152,7 @@ impl ChatMessage {
     /// Create an assistant message
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
-            role: "assistant".to_string(),
+            role: MessageRole::Assistant,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -122,7 +163,7 @@ impl ChatMessage {
     /// Create an assistant message with tool calls
     pub fn assistant_with_tools(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
-            role: "assistant".to_string(),
+            role: MessageRole::Assistant,
             content,
             tool_calls: Some(tool_calls),
             tool_call_id: None,
@@ -137,7 +178,7 @@ impl ChatMessage {
         content: impl Into<String>,
     ) -> Self {
         Self {
-            role: "tool".to_string(),
+            role: MessageRole::Tool,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: Some(id.into()),
