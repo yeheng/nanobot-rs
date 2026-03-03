@@ -107,7 +107,65 @@ impl From<String> for ChannelType {
     }
 }
 
-/// Inbound message from a channel
+// ── SessionKey ───────────────────────────────────────────────
+
+/// Strongly-typed session identifier.
+///
+/// Replaces stringly-typed `session_key: &str` parameters with a structured
+/// type that preserves the channel and chat_id components, eliminating
+/// unnecessary heap allocations from `format!("{}:{}", channel, chat_id)`.
+///
+/// # Example
+///
+/// ```
+/// use nanobot_core::bus::events::{SessionKey, ChannelType};
+///
+/// let key = SessionKey::new(ChannelType::Telegram, "chat-123");
+/// assert_eq!(key.channel, ChannelType::Telegram);
+/// assert_eq!(key.chat_id, "chat-123");
+/// assert_eq!(key.to_string(), "telegram:chat-123");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionKey {
+    /// The channel type for this session.
+    pub channel: ChannelType,
+    /// The chat/user identifier within the channel.
+    pub chat_id: String,
+}
+
+impl SessionKey {
+    /// Create a new session key from a channel and chat ID.
+    pub fn new(channel: ChannelType, chat_id: impl Into<String>) -> Self {
+        Self {
+            channel,
+            chat_id: chat_id.into(),
+        }
+    }
+}
+
+impl fmt::Display for SessionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.channel, self.chat_id)
+    }
+}
+
+impl From<&str> for SessionKey {
+    fn from(s: &str) -> Self {
+        let parts: Vec<&str> = s.splitn(2, ':').collect();
+        match parts.as_slice() {
+            [channel, chat_id] => Self::new(ChannelType::new(*channel), *chat_id),
+            _ => panic!("Invalid session key format: {}", s),
+        }
+    }
+}
+
+impl From<String> for SessionKey {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+// ── InboundMessage ───────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
     /// Source channel
@@ -141,8 +199,8 @@ pub struct InboundMessage {
 
 impl InboundMessage {
     /// Get the session key for this message
-    pub fn session_key(&self) -> String {
-        format!("{}:{}", self.channel, self.chat_id)
+    pub fn session_key(&self) -> SessionKey {
+        SessionKey::new(self.channel.clone(), &self.chat_id)
     }
 }
 

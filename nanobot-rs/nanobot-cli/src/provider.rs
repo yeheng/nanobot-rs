@@ -18,9 +18,6 @@ pub struct ProviderInfo {
     pub supports_thinking: bool,
 }
 
-/// Local providers that don't require an API key
-const LOCAL_PROVIDERS: &[&str] = &["ollama", "litellm"];
-
 /// Build a provider instance from its name and config.
 pub fn build_provider(
     name: &str,
@@ -69,6 +66,38 @@ pub fn get_default_model_for_provider(name: &str) -> &'static str {
     }
 }
 
+/// Default provider search order when no explicit provider is specified.
+const DEFAULT_PROVIDER_ORDER: &[&str] = &[
+    "openrouter",
+    "deepseek",
+    "openai",
+    "anthropic",
+    "litellm",
+    "ollama",
+];
+
+/// Find an available provider from the configuration.
+///
+/// Searches in order of preference defined by `DEFAULT_PROVIDER_ORDER`,
+/// then falls back to any other configured provider.
+fn find_default_provider(config: &Config) -> Option<String> {
+    // First, try providers in the preferred order
+    for &name in DEFAULT_PROVIDER_ORDER {
+        if let Some(cfg) = config.providers.get(name) {
+            if cfg.is_available(name) {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    // Fallback: scan all providers for any available one
+    config
+        .providers
+        .iter()
+        .find(|(_, cfg)| cfg.is_available(""))
+        .map(|(name, _)| name.clone())
+}
+
 /// Find a configured provider.
 ///
 /// The model field supports `provider_id/model_id` format (parsed via
@@ -89,70 +118,46 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         .parse()
         .expect("ModelSpec::from_str is infallible");
 
-    let provider_name = if let Some(name) = spec.provider() {
-        if !config.providers.contains_key(name) {
-            anyhow::bail!(
-                "Provider '{}' specified in model '{}' is not configured",
-                name,
-                spec
-            );
-        }
-        let provider_config = &config.providers[name];
-        let available = LOCAL_PROVIDERS.contains(&name) || provider_config.api_key.is_some();
-        if !available {
-            anyhow::bail!("Provider '{}' is configured but missing API key", name);
-        }
-        name.to_string()
-    } else {
-        let default_order = [
-            "openrouter",
-            "deepseek",
-            "openai",
-            "anthropic",
-            "litellm",
-            "ollama",
-        ];
+    // Determine provider name: explicit in spec, or find default
+    let provider_name = match spec.provider() {
+        Some(name) => {
+            // Explicit provider in model spec — validate it exists and is available
+            let cfg = config.providers.get(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Provider '{}' specified in model '{}' is not configured",
+                    name,
+                    spec
+                )
+            })?;
 
-        let mut found = None;
-        for &name in &default_order {
-            if let Some(provider_config) = config.providers.get(name) {
-                let available =
-                    LOCAL_PROVIDERS.contains(&name) || provider_config.api_key.is_some();
-                if available {
-                    found = Some(name.to_string());
-                    break;
-                }
+            if !cfg.is_available(name) {
+                anyhow::bail!("Provider '{}' is configured but missing API key", name);
             }
+            name.to_string()
         }
-
-        if found.is_none() {
-            for (name, provider_config) in &config.providers {
-                let available =
-                    LOCAL_PROVIDERS.contains(&name.as_str()) || provider_config.api_key.is_some();
-                if available {
-                    found = Some(name.to_string());
-                    break;
-                }
-            }
+        None => {
+            // No explicit provider — find an available default
+            find_default_provider(config).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No available provider configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.yaml"
+                )
+            })?
         }
-
-        found.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No available provider configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.yaml"
-            )
-        })?
     };
 
-    let provider_config = config.providers.get(&provider_name).unwrap();
+    // Get provider config (guaranteed to exist at this point)
+    let provider_config = config
+        .providers
+        .get(&provider_name)
+        .expect("provider should exist after validation");
 
-    let api_key = if LOCAL_PROVIDERS.contains(&provider_name.as_str()) {
-        provider_config.api_key.as_deref().unwrap_or("")
-    } else if let Some(key) = &provider_config.api_key {
-        key.as_str()
-    } else {
-        anyhow::bail!("API key not configured for provider '{}'", provider_name);
-    };
+    // Resolve API key (empty string for local providers)
+    let api_key = provider_config
+        .api_key
+        .as_deref()
+        .unwrap_or("");
 
+    // Resolve model name
     let default_model = get_default_model_for_provider(&provider_name);
     let model = if spec.model().is_empty() {
         default_model.to_string()
@@ -161,7 +166,6 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
     };
 
     let provider = build_provider(&provider_name, api_key, provider_config, &model);
-
     let supports_thinking = provider_config.supports_thinking();
 
     Ok(ProviderInfo {

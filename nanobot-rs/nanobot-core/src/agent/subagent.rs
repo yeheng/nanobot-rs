@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
 use crate::agent::prompt;
+use crate::bus::events::SessionKey;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
@@ -51,7 +52,7 @@ impl SubagentManager {
             _ => crate::bus::ChannelType::Cli,
         };
         let chat_id = chat_id.to_string();
-        let session_key = format!("subagent:{}:{}", channel, chat_id);
+        let session_key = SessionKey::new(channel_enum.clone(), &chat_id);
 
         tokio::spawn(async move {
             info!("Subagent task started: {}", &prompt[..prompt.len().min(80)]);

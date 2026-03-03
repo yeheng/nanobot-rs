@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nanobot_core::bus::events::SessionKey;
+use nanobot_core::bus::ChannelType;
 use nanobot_core::providers::MessageRole;
 use nanobot_core::LlmProvider;
 use nanobot_core::Tool;
@@ -120,7 +122,10 @@ async fn test_message_bus_session_key() {
         trace_id: None,
     };
 
-    assert_eq!(msg.session_key(), "telegram:chat456");
+    assert_eq!(
+        msg.session_key(),
+        SessionKey::new(nanobot_core::bus::ChannelType::Telegram, "chat456")
+    );
 }
 
 #[tokio::test]
@@ -156,7 +161,9 @@ async fn test_session_manager() {
         .unwrap();
     let manager = SessionManager::new(store);
 
-    let mut session = manager.get_or_create("test:session1").await;
+    let mut session = manager
+        .get_or_create(&SessionKey::from("test:session1"))
+        .await;
     assert_eq!(session.key, "test:session1");
 
     session.add_message(MessageRole::User, "Hello", None);
@@ -177,7 +184,12 @@ async fn test_session_clear() {
         .unwrap();
     let manager = SessionManager::new(store);
 
-    let mut session = manager.get_or_create("test:clear").await;
+    let key = SessionKey {
+        channel: ChannelType::Cli,
+        chat_id: "clear".to_string(),
+    };
+
+    let mut session = manager.get_or_create(&key).await;
     session.add_message(MessageRole::User, "Hello", None);
     assert!(!session.messages.is_empty());
 
@@ -196,7 +208,12 @@ async fn test_session_tools_used() {
         .unwrap();
     let manager = SessionManager::new(store);
 
-    let mut session = manager.get_or_create("test:tools").await;
+    let key = SessionKey {
+        channel: ChannelType::Cli,
+        chat_id: "tools".to_string(),
+    };
+
+    let mut session = manager.get_or_create(&key).await;
     session.add_message(
         MessageRole::Assistant,
         "Done",

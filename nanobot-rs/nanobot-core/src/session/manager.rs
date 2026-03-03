@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
 
+use crate::bus::events::SessionKey;
 use crate::memory::SqliteStore;
 use crate::providers::MessageRole;
 
@@ -30,6 +31,15 @@ pub struct Session {
 }
 
 impl Session {
+    /// Create a new session from a SessionKey.
+    pub fn from_key(key: SessionKey) -> Self {
+        Self {
+            key: key.to_string(),
+            messages: Vec::new(),
+            last_consolidated: 0,
+        }
+    }
+
     /// Create a new session
     pub fn new(key: impl Into<String>) -> Self {
         Self {
@@ -37,6 +47,11 @@ impl Session {
             messages: Vec::new(),
             last_consolidated: 0,
         }
+    }
+
+    /// Get the session key as a typed SessionKey.
+    pub fn session_key(&self) -> SessionKey {
+        SessionKey::from(self.key.as_str())
     }
 
     /// Add a message to the session (in-memory only; caller must persist separately)
@@ -97,26 +112,27 @@ impl SessionManager {
     /// Reads directly from SQLite; creates new if nothing exists.
     /// Automatically migrates legacy JSON blob sessions.
     #[instrument(name = "session.get_or_create", skip(self), fields(key = %key))]
-    pub async fn get_or_create(&self, key: &str) -> Session {
+    pub async fn get_or_create(&self, key: &SessionKey) -> Session {
+        let key_str = key.to_string();
         // Try to load from SQLite (new per-message format)
-        match self.load_session_from_db(key).await {
+        match self.load_session_from_db(&key_str).await {
             Ok(Some(s)) => {
-                debug!("Loaded session {} from SQLite (per-message)", key);
+                debug!("Loaded session {} from SQLite (per-message)", key_str);
                 s
             }
             Ok(None) => {
                 // Try legacy format migration
-                match self.try_migrate_legacy_session(key).await {
+                match self.try_migrate_legacy_session(&key_str).await {
                     Ok(Some(s)) => {
-                        debug!("Migrated session {} from legacy format", key);
+                        debug!("Migrated session {} from legacy format", key_str);
                         s
                     }
-                    _ => Session::new(key),
+                    _ => Session::from_key(key.clone()),
                 }
             }
             Err(e) => {
-                warn!("Failed to load session {}: {}, creating new", key, e);
-                Session::new(key)
+                warn!("Failed to load session {}: {}, creating new", key_str, e);
+                Session::from_key(key.clone())
             }
         }
     }
@@ -256,9 +272,10 @@ impl SessionManager {
     /// Preferred method for `/new`-style reset: directly issues a DELETE
     /// against the DB without loading the full session first.
     #[instrument(name = "session.clear", skip(self), fields(key = %key))]
-    pub async fn clear_session(&self, key: &str) {
-        if let Err(e) = self.clear_and_save_meta(key, 0).await {
-            warn!("Failed to clear session {} in SQLite: {}", key, e);
+    pub async fn clear_session(&self, key: &SessionKey) {
+        let key_str = key.to_string();
+        if let Err(e) = self.clear_and_save_meta(&key_str, 0).await {
+            warn!("Failed to clear session {} in SQLite: {}", key_str, e);
         }
     }
 
@@ -314,20 +331,21 @@ impl SessionManager {
     #[instrument(name = "session.append_by_key", skip(self, content), fields(key = %session_key))]
     pub async fn append_by_key(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         role: &str,
         content: &str,
         tools_used: Option<Vec<String>>,
     ) -> anyhow::Result<()> {
+        let key_str = session_key.to_string();
         let timestamp = Utc::now();
 
         // Ensure session metadata exists (idempotent upsert)
-        self.store.save_session_meta(session_key, 0).await?;
+        self.store.save_session_meta(&key_str, 0).await?;
 
         // Persist to SQLite (single INSERT)
         self.store
             .append_session_message(
-                session_key,
+                &key_str,
                 role,
                 content,
                 &timestamp,
@@ -339,9 +357,10 @@ impl SessionManager {
     }
 
     /// Invalidate a session (removes from SQLite).
-    pub async fn invalidate(&self, key: &str) {
-        if let Err(e) = self.store.delete_session(key).await {
-            warn!("Failed to delete session {} from SQLite: {}", key, e);
+    pub async fn invalidate(&self, key: &SessionKey) {
+        let key_str = key.to_string();
+        if let Err(e) = self.store.delete_session(&key_str).await {
+            warn!("Failed to delete session {} from SQLite: {}", key_str, e);
         }
     }
 }

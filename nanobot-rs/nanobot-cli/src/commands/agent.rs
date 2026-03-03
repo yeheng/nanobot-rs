@@ -9,6 +9,7 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
 use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
+use nanobot_core::bus::events::SessionKey;
 use nanobot_core::config::{load_config, Config};
 use nanobot_core::tools::{
     EditFileTool, ExecTool, ListDirTool, ReadFileTool, SpawnTool, ToolMetadata, ToolRegistry,
@@ -155,12 +156,13 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
+            let session_key = SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
                 let _response = agent
-                    .process_direct_with_callback(&msg, "cli:direct", Some(&stream_callback))
+                    .process_direct_with_callback(&msg, &session_key, Some(&stream_callback))
                     .await?;
             } else {
-                let response = agent.process_direct(&msg, "cli:direct").await?;
+                let response = agent.process_direct(&msg, &session_key).await?;
                 print_response_with_reasoning(&response, render_md);
             }
         }
@@ -171,6 +173,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             let mut line_editor = Reedline::create();
             let prompt =
                 DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
+
+            let interactive_session = SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "interactive");
 
             loop {
                 match line_editor.read_line(&prompt) {
@@ -192,7 +196,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         //  like Telegram should treat "/new" as normal LLM input)
                         let cmd = line.to_lowercase();
                         if cmd == "/new" {
-                            agent.clear_session("cli:interactive").await;
+                            agent.clear_session(&interactive_session).await;
                             println!("New session started.");
                             continue;
                         }
@@ -212,7 +216,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             match agent
                                 .process_direct_with_callback(
                                     line,
-                                    "cli:interactive",
+                                    &interactive_session,
                                     Some(&stream_callback),
                                 )
                                 .await
@@ -223,7 +227,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 Err(e) => println!("\n{} {}\n", "Error:".red(), e),
                             }
                         } else {
-                            match agent.process_direct(line, "cli:interactive").await {
+                            match agent.process_direct(line, &interactive_session).await {
                                 Ok(response) => {
                                     println!();
                                     print_response_with_reasoning(&response, render_md);

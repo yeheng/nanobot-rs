@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, timeout, Duration};
 
 use crate::agent::AgentLoop;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey};
 use crate::config::ChannelsConfig;
 
 // ── Outbound Actor ──────────────────────────────────────────
@@ -74,12 +74,13 @@ pub async fn run_outbound_actor(
 ///
 /// Self-destructs after `idle_timeout` of inactivity, freeing memory.
 pub async fn run_session_actor(
-    session_key: String,
+    session_key: SessionKey,
     mut rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
 ) {
-    tracing::debug!("Session Actor [{}] spawned", session_key);
+    let session_key_str = session_key.to_string();
+    tracing::debug!("Session Actor [{}] spawned", session_key_str);
     let idle_timeout = Duration::from_secs(3600); // 1 hour idle → self-destruct
 
     loop {
@@ -99,24 +100,24 @@ pub async fn run_session_actor(
                         if let Err(e) = outbound_tx.send(outbound_msg).await {
                             tracing::error!(
                                 "Session [{}] failed to send to outbound: {}",
-                                session_key,
+                                session_key_str,
                                 e
                             );
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Agent error in session [{}]: {}", session_key, e);
+                        tracing::error!("Agent error in session [{}]: {}", session_key_str, e);
                     }
                 }
             }
             Ok(None) => {
                 // Channel closed (gateway shutting down)
-                tracing::debug!("Session [{}] channel closed", session_key);
+                tracing::debug!("Session [{}] channel closed", session_key_str);
                 break;
             }
             Err(_) => {
                 // Idle timeout — GC this actor to prevent memory leaks.
-                tracing::info!("Session [{}] idle timeout, GC-ing actor", session_key);
+                tracing::info!("Session [{}] idle timeout, GC-ing actor", session_key_str);
                 break;
             }
         }
@@ -151,7 +152,7 @@ pub async fn run_router_actor(
         tokio::select! {
             // Primary path: receive and route inbound messages
             Some(msg) = inbound_rx.recv() => {
-                let key = msg.session_key();
+                let key = msg.session_key().to_string();
 
                 let mut needs_respawn = true;
                 if let Some(tx) = sessions.get(&key) {
@@ -167,7 +168,7 @@ pub async fn run_router_actor(
                     let (tx, rx) = mpsc::channel(32);
                     let ob_tx = outbound_tx.clone();
                     let agent_clone = agent.clone();
-                    let session_key = key.clone();
+                    let session_key = SessionKey::from(key.clone());
 
                     // Spawn a new session actor
                     tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));

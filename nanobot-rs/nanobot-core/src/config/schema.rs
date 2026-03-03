@@ -55,6 +55,15 @@ impl ProviderConfig {
     pub fn supports_thinking(&self) -> bool {
         self.supports_thinking.unwrap_or(false)
     }
+
+    /// Check if this provider is available (configured and has required credentials).
+    ///
+    /// Local providers (ollama, litellm) don't require an API key.
+    /// Remote providers require an API key to be configured.
+    pub fn is_available(&self, provider_name: &str) -> bool {
+        let is_local = matches!(provider_name, "ollama" | "litellm");
+        is_local || self.api_key.is_some()
+    }
 }
 
 /// Agents configuration
