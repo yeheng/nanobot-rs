@@ -1,17 +1,19 @@
-//! Memory store for long-term context
+//! Memory store for session management
 //!
-//! This module wraps `SqliteStore` to provide the high-level
-//! `read_long_term` and `write_long_term` API used by the agent loop.
+//! This module wraps `SqliteStore` to provide access to the underlying
+//! database for session persistence, summaries, and cron jobs.
+//!
+//! **Note:** Explicit long-term memory (facts, preferences, decisions)
+//! lives exclusively in `~/.nanobot/memory/*.md` files (SSOT).
+//! SQLite is only used for machine-state.
 
-use anyhow::Result;
-use tracing::instrument;
+use crate::memory::SqliteStore;
 
-use crate::memory::{MemoryEntry, MemoryQuery, MemoryStore as MemoryStoreTrait, SqliteStore};
-
-/// Memory store for long-term context.
+/// Memory store — thin wrapper over `SqliteStore` for machine-state.
 ///
-/// Backed by `SqliteStore` for all operations:
-/// - Structured memories (save/get/delete/search)
+/// Provides access to the underlying `SqliteStore` for session management,
+/// summaries, and cron job persistence. Does **not** store explicit
+/// long-term memories (those live in Markdown files).
 pub struct MemoryStore {
     store: SqliteStore,
 }
@@ -36,31 +38,5 @@ impl MemoryStore {
     /// Get a reference to the underlying `SqliteStore`.
     pub fn sqlite_store(&self) -> &SqliteStore {
         &self.store
-    }
-
-    // ── Structured memory API ──
-
-    /// Save a structured memory entry.
-    #[instrument(name = "memory.save", skip_all, fields(id = %entry.id))]
-    pub async fn save(&self, entry: &MemoryEntry) -> Result<()> {
-        self.store.save(entry).await
-    }
-
-    /// Retrieve a structured memory entry by id.
-    #[instrument(name = "memory.get", skip_all)]
-    pub async fn get(&self, id: &str) -> Result<Option<MemoryEntry>> {
-        self.store.get(id).await
-    }
-
-    /// Delete a structured memory entry by id.
-    #[instrument(name = "memory.delete", skip_all)]
-    pub async fn delete(&self, id: &str) -> Result<bool> {
-        self.store.delete(id).await
-    }
-
-    /// Search structured memories.
-    #[instrument(name = "memory.search", skip_all)]
-    pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<MemoryEntry>> {
-        self.store.search(query).await
     }
 }

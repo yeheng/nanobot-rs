@@ -1,9 +1,9 @@
-//! Memory storage abstraction
+//! Memory storage
 //!
-//! Provides a trait-based `MemoryStore` interface backed by `SqliteStore`.
+//! SQLite is used exclusively for machine-state (sessions, summaries, cron, kv).
+//! Explicit long-term memory lives in `~/.nanobot/memory/*.md` files (SSOT).
 
 mod sqlite;
 mod store;
 
 pub use sqlite::{CronJobRow, SqliteStore};
-pub use store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};

@@ -2,27 +2,27 @@
 //!
 //! ## Execution Flow
 //!
-//! The main pipeline in `process_direct_with_callback` is a straight-line sequence:
+//! The main pipeline in 'process_direct_with_callback' is a straight-line sequence:
 //!
 //! 1. external_hook(pre_request)  → shell script can abort or modify input
 //! 2. load_session                → inline: Option<SessionManager> loads history
 //! 3. save_user_message           → inline: Option<SessionManager> persists user msg
 //! 4. process_history             → pure: truncate history, compute evictions
-//! 5. summarize                   → inline: Option<SummarizationService> compresses evicted msgs
+//! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if messages were evicted (non-blocking)
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
 //! 10. save_assistant_msg          → inline: Option<SessionManager> persists assistant msg
-//! ```
 //!
 //! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
 //! External shell hooks (if present) are called via subprocess at steps 1 and 10.
+//! Step 5's background compression uses `tokio::spawn` — zero user-facing latency.
 //!
 //! ## Option<T> vs Trait Objects
 //!
-//! The agent uses `Option<T>` for storage dependencies instead of trait objects.
-//! Main agents get `Some(real_implementation)`; subagents get `None`.
+//! The agent uses 'Option<T>' for storage dependencies instead of trait objects.
+//! Main agents get 'Some(real_implementation)'; subagents get 'None'.
 //! This is more explicit and avoids virtual dispatch overhead in hot paths.
 
 use std::path::PathBuf;
@@ -137,16 +137,19 @@ fn log_tool_result(tool_name: &str, tool_result: &str, duration_ms: u64) {
 ///
 /// Uses **Option<T>** for storage dependencies (explicit null handling):
 /// - **SessionManager** — session persistence (load/save messages)
-/// - **MemoryStore** — structured memory
+/// - **MemoryStore** — provides SqliteStore for session/summary management
 /// - **SummarizationService** — LLM-based context compression
 ///
-/// Main agents get `Some(real_implementation)`; subagents get `None`.
+/// Main agents get 'Some(real_implementation)'; subagents get 'None'.
 /// This is more explicit than trait objects and avoids virtual dispatch.
 ///
-/// System prompt and skills context are loaded **once** at initialization
-/// and stored as plain `String` fields — no dynamic dispatch.
+/// Explicit long-term memory lives in `~/.nanobot/memory/*.md` files (SSOT).
+/// SQLite only stores machine-state (sessions, summaries, cron, kv).
 ///
-/// External shell hooks (`~/.nanobot/hooks/`) are invoked at request
+/// System prompt and skills context are loaded **once** at initialization
+/// and stored as plain 'String' fields — no dynamic dispatch.
+///
+/// External shell hooks ('~/.nanobot/hooks/') are invoked at request
 /// boundaries (pre_request / post_response) via subprocess — UNIX philosophy.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
@@ -155,9 +158,9 @@ pub struct AgentLoop {
     workspace: PathBuf,
     /// History truncator configuration.
     history_config: HistoryConfig,
-    /// Session persistence — `None` for subagents.
+    /// Session persistence — 'None' for subagents.
     session_manager: Option<Arc<SessionManager>>,
-    /// Context compression service — `None` for subagents.
+    /// Context compression service — 'None' for subagents.
     summarization: Option<Arc<SummarizationService>>,
     /// Pre-loaded system prompt (from workspace bootstrap files).
     system_prompt: String,
@@ -170,14 +173,14 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new agent loop with a pre-built tool registry.
     ///
-    /// Owns core services via `Option<T>` (explicit null handling):
+    /// Owns core services via 'Option<T>' (explicit null handling):
     /// - **SessionManager** — session load/save
-    /// - **MemoryStore** — structured memories
+    /// - **MemoryStore** — provides SqliteStore for sessions/summaries
     /// - **SummarizationService** — context compression
     ///
     /// Loads system prompt and skills context **once** at initialization.
     /// Logging is inlined directly — no hook indirection.
-    /// External shell hooks are loaded from `~/.nanobot/hooks/`.
+    /// External shell hooks are loaded from '~/.nanobot/hooks/'.
     ///
     /// # Errors
     ///
@@ -226,10 +229,10 @@ impl AgentLoop {
         })
     }
 
-    /// Create a new agent loop with an **externally created** `MemoryStore`.
+    /// Create a new agent loop with an **externally created** 'MemoryStore'.
     ///
-    /// Use this when the `MemoryStore` must be shared with tools (e.g. `MemorySearchTool`)
-    /// that are registered before the agent loop is constructed.
+    /// Use this when the 'MemoryStore' must be shared with the session manager
+    /// and summarization service.
     ///
     /// # Errors
     ///
@@ -280,8 +283,8 @@ impl AgentLoop {
 
     /// Create a new agent loop for subagents without default hooks or services.
     ///
-    /// System prompt is empty by default; use `set_system_prompt()` to configure.
-    /// Subagents get `None` for all storage services (no persistence).
+    /// System prompt is empty by default; use 'set_system_prompt()' to configure.
+    /// Subagents get 'None' for all storage services (no persistence).
     /// No external hooks for subagents.
     pub fn builder(
         provider: Arc<dyn LlmProvider>,
@@ -318,7 +321,7 @@ impl AgentLoop {
         &self.workspace
     }
 
-    /// Clear the session for the given key (used by CLI for `/new` command).
+    /// Clear the session for the given key (used by CLI for '/new' command).
     ///
     /// This resets the conversation history so the next message starts fresh.
     /// No-op for subagents (no session storage).
@@ -394,20 +397,48 @@ impl AgentLoop {
         // ── 4. Truncate history (pure computation) ─────────────────
         let processed = process_history(history_snapshot, &self.history_config);
 
-        // ── 5. Summarize evicted messages (direct, Option-aware) ───────
+        // ── 5. Load existing summary + spawn background compression ─────
+        //
+        // The summarization LLM call is expensive (~10-30s). Instead of blocking
+        // the user's response, we:
+        //   a) Load the existing (possibly stale) summary — cheap SQLite read.
+        //   b) If there are evictions, fire off a background `tokio::spawn` task
+        //      to generate an updated summary. It will be available next turn.
+        //   c) Use the existing summary for this turn's prompt assembly.
         let summary = match &self.summarization {
-            Some(s) if !processed.evicted.is_empty() => {
-                match s.compress(&session_key_str, &processed.evicted).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!("Summarization failed: {}", e);
-                        None
-                    }
-                }
-            }
             Some(s) => {
-                // No evictions — still try to load existing summary
-                s.compress(&session_key_str, &[]).await.unwrap_or_default()
+                // Always load the existing summary (fast, no LLM call)
+                let existing = s.load_summary(&session_key_str).await;
+
+                // If messages were evicted, spawn background compression
+                if !processed.evicted.is_empty() {
+                    let svc = Arc::clone(s);
+                    let key = session_key_str.clone();
+                    let evicted = processed.evicted.clone();
+
+                    tokio::spawn(async move {
+                        debug!(
+                            "[Summarization] Background compression task started for session '{}'",
+                            key
+                        );
+                        match svc.compress(&key, &evicted).await {
+                            Ok(_) => {
+                                debug!(
+                                    "[Summarization] Background compression completed for session '{}'",
+                                    key
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "[Summarization] Background compression failed for session '{}': {}",
+                                    key, e
+                                );
+                            }
+                        }
+                    });
+                }
+
+                existing
             }
             None => None,
         };
@@ -473,9 +504,9 @@ impl AgentLoop {
 
     /// Unified agent iteration loop.
     ///
-    /// Always uses `chat_stream` — for non-streaming providers the default
+    /// Always uses 'chat_stream' — for non-streaming providers the default
     /// trait impl wraps the response in a single-chunk stream, so both paths
-    /// converge here.  When `callback` is `None`, stream events are silently
+    /// converge here.  When 'callback' is 'None', stream events are silently
     /// discarded.
     async fn run_agent_loop(
         &self,

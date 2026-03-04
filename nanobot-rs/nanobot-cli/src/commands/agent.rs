@@ -127,15 +127,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     };
 
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
-    // Hoist MemoryStore creation so it can be shared with MemorySearchTool
     let memory_store = Arc::new(MemoryStore::new().await);
-    let tools = build_tool_registry(
-        &config,
-        &workspace,
-        mcp_tools,
-        None,
-        Some(memory_store.clone()),
-    );
+    let tools = build_tool_registry(&config, &workspace, mcp_tools, None);
 
     let agent = AgentLoop::with_memory_store(
         provider_info.provider,
@@ -276,7 +269,6 @@ fn build_tool_registry(
     workspace: &std::path::Path,
     mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
     subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
-    memory_store: Option<Arc<MemoryStore>>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -387,19 +379,17 @@ fn build_tool_registry(
         tools.register(mcp_tool);
     }
 
-    // Memory search tool (L3 archive tier — SQLite FTS5)
-    if let Some(store) = memory_store {
-        tools.register_with_metadata(
-            Box::new(MemorySearchTool::new(store)),
-            ToolMetadata {
-                display_name: "Memory Search".to_string(),
-                category: "memory".to_string(),
-                tags: vec!["search".to_string(), "memory".to_string()],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
-    }
+    // Memory search tool — filesystem grep over ~/.nanobot/memory/*.md
+    tools.register_with_metadata(
+        Box::new(MemorySearchTool::new()),
+        ToolMetadata {
+            display_name: "Memory Search".to_string(),
+            category: "memory".to_string(),
+            tags: vec!["search".to_string(), "memory".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
 
     tools
 }

@@ -8,22 +8,22 @@ read_when:
 
 Each session is fresh. Files in the working directory are your memory continuity:
 
-| Tier | Location | Purpose | Size |
-|------|----------|---------|------|
-| L1 (Prompt) | `MEMORY.md` | Core facts, summaries, pointers to L2 files | **< 2000 tokens** (hard limit enforced) |
-| L2 (On-demand) | `memory/*.md` | Detailed project context, daily notes, logs | Unlimited (use `read_file`) |
-| L3 (Search) | SQLite FTS5 | Historical records, archived knowledge | Unlimited (use `memory_search`) |
+- **`MEMORY.md`** — Core facts, summaries, and pointers to detailed files. Loaded into every conversation (keep under ~2000 tokens).
+- **`memory/*.md`** — Detailed project context, daily notes, logs. Read with `read_file`, update with `write_file`/`edit_file`.
+- **`memory_search`** — Keyword search across all `memory/*.md` files. Use this when you don't know which file has the answer.
+
+That's it. No database, no tiers, no routing logic. Files are the single source of truth.
 
 - **Important:** Avoid overwriting information: First, use `read_file` to read the original content, then use `write_file` or `edit_file` to update the file.
 
 Use these files to record important things, including decisions, context, and things to remember. Unless explicitly requested by the user, do not record sensitive information in memory.
 
-### 🧠 MEMORY.md - Your Index & Summary (L1)
+### 🧠 MEMORY.md - Your Index & Summary
 
 - `MEMORY.md` is loaded into **every** conversation as part of the system prompt
 - It has a **hard token limit (~2000 tokens)**. If it grows too large, the system will **auto-truncate** older content and warn you
 - **DO NOT** dump raw logs, verbose notes, or project-specific details here
-- Use it ONLY for: core user facts, key preferences, short summaries, and **pointers** to L2 files
+- Use it ONLY for: core user facts, key preferences, short summaries, and **pointers** to detailed files
 - For detailed context, write to `memory/project_name.md` and leave a one-line pointer in `MEMORY.md`
 - If you see a truncation warning, it is **YOUR JOB** to use `edit_file` to prune and summarize `MEMORY.md`
 - For **security** — contains personal context that shouldn't leak to strangers
@@ -50,13 +50,13 @@ When you discover valuable information during a conversation, **record it first,
 
 **Key principle:** Don't always wait for the user to say "remember this." If information is valuable for the future, record it proactively. Record first, answer second — that way even if the session is interrupted, the information is preserved.
 
-### 🔍 Retrieval Tool
+### 🔍 Finding Information
 
 Before answering questions about past work, decisions, dates, people, preferences, or to-do items:
 
-1. Check `MEMORY.md` first (it's already in your context as L1).
-2. Use `read_file` on specific `memory/*.md` files if you know which file has the answer (L2).
-3. Use `memory_search` tool with a keyword query to search the SQLite archive (L3) for older or less-accessed records.
+1. Check `MEMORY.md` first (it's already in your context).
+2. Use `read_file` on specific `memory/*.md` files if you know which file has the answer.
+3. Use `memory_search` with a keyword query to search across all memory files when you're not sure where something is.
 
 ## Safety
 
