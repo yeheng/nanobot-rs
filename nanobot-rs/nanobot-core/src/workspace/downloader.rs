@@ -109,7 +109,11 @@ impl WorkspaceDownloader {
         let mut archive = tar::Archive::new(decoder);
 
         // The tarball prefix: e.g., "nanobot-rs-main/"
-        let prefix = format!("{}-{}/workspace/", GITHUB_REPO.split('/').last().unwrap_or("nanobot-rs"), GITHUB_BRANCH);
+        let prefix = format!(
+            "{}-{}/workspace/",
+            GITHUB_REPO.split('/').next_back().unwrap_or("nanobot-rs"),
+            GITHUB_BRANCH
+        );
 
         debug!("Looking for entries with prefix: {}", prefix);
 
@@ -130,8 +134,9 @@ impl WorkspaceDownloader {
                 if path.ends_with('/') {
                     // Create directory
                     if !target_path.exists() {
-                        std::fs::create_dir_all(&target_path)
-                            .with_context(|| format!("Failed to create directory: {:?}", target_path))?;
+                        std::fs::create_dir_all(&target_path).with_context(|| {
+                            format!("Failed to create directory: {:?}", target_path)
+                        })?;
                         // Remove trailing slash for display
                         let dir_name = relative_str.trim_end_matches('/');
                         result.created_dirs.push(dir_name.to_string());
@@ -141,8 +146,9 @@ impl WorkspaceDownloader {
                     // Ensure parent directory exists
                     if let Some(parent) = target_path.parent() {
                         if !parent.exists() {
-                            std::fs::create_dir_all(parent)
-                                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
+                            std::fs::create_dir_all(parent).with_context(|| {
+                                format!("Failed to create directory: {:?}", parent)
+                            })?;
                         }
                     }
 

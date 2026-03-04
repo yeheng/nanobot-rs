@@ -28,9 +28,9 @@ pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod tools;
-pub mod workspace;
 #[cfg(feature = "webhook")]
 pub mod webhook;
+pub mod workspace;
 
 pub use config::Config;
 pub use error::{AgentError, ChannelError, McpError, ProviderError};
