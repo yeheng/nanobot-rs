@@ -231,6 +231,59 @@ impl AgentLoop {
         })
     }
 
+    /// Create a new agent loop with an **externally created** `MemoryStore`.
+    ///
+    /// Use this when the `MemoryStore` must be shared with tools (e.g. `MemorySearchTool`)
+    /// that are registered before the agent loop is constructed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workspace bootstrap files exist but cannot be read.
+    pub async fn with_memory_store(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        memory_store: Arc<MemoryStore>,
+    ) -> Result<Self, AgentError> {
+        let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
+
+        let store_arc = memory_store.sqlite_store().clone();
+        let summarization = Arc::new(SummarizationService::new(
+            provider.clone(),
+            Arc::new(store_arc),
+            config.model.clone(),
+        ));
+
+        // Load system prompt and skills directly — no hook indirection
+        let system_prompt =
+            prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
+        let skills_context = prompt::load_skills_context(&workspace).await;
+
+        // External shell hooks: look for scripts in ~/.nanobot/hooks/
+        let hooks_dir = dirs::home_dir()
+            .map(|p| p.join(".nanobot").join("hooks"))
+            .unwrap_or_else(|| {
+                tracing::warn!("Could not resolve home directory, disabling external hooks.");
+                PathBuf::from("/dev/null")
+            });
+        let external_hooks = ExternalHookRunner::new(hooks_dir);
+
+        Ok(Self {
+            provider,
+            tools,
+            config,
+            workspace,
+            history_config: HistoryConfig::default(),
+            session_manager: Some(session_manager),
+            memory_store: Some(memory_store),
+            summarization: Some(summarization),
+            system_prompt,
+            skills_context,
+            external_hooks,
+        })
+    }
+
     /// Create a new agent loop for subagents without default hooks or services.
     ///
     /// System prompt is empty by default; use `set_system_prompt()` to configure.
@@ -376,9 +429,24 @@ impl AgentLoop {
         }
 
         // ── 7. Read long-term memory (direct, Option-aware) ────────────
+        //
+        // Defensive truncation: even though the primary MEMORY.md path is the
+        // filesystem (truncated in prompt.rs), this SQLite path may be used in
+        // the future. Apply the same hard limit as a safety net.
         let memory_content = match &self.memory_store {
             Some(ms) => match ms.read_long_term().await {
-                Ok(mem) if !mem.is_empty() => Some(mem),
+                Ok(mem) if !mem.is_empty() => {
+                    let tokens = crate::agent::history_processor::count_tokens(&mem);
+                    if tokens > prompt::MEMORY_TOKEN_HARD_LIMIT {
+                        warn!(
+                            "Long-term memory (SQLite) has {} tokens (limit {}). Truncating.",
+                            tokens, prompt::MEMORY_TOKEN_HARD_LIMIT
+                        );
+                        Some(prompt::truncate_keep_tail(&mem, prompt::MEMORY_TOKEN_HARD_LIMIT))
+                    } else {
+                        Some(mem)
+                    }
+                }
                 Ok(_) => None,
                 Err(e) => {
                     warn!("Failed to read long-term memory: {}", e);

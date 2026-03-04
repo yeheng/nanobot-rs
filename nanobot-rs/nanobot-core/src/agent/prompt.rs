@@ -27,6 +27,13 @@ pub const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["PROFILE.md", "SOUL.md"];
 /// Maximum tokens allowed per single bootstrap file before emitting a warning
 const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
 
+/// Hard token limit for MEMORY.md — content exceeding this is truncated.
+/// Keeps the tail (most recent entries) and drops the head (oldest entries).
+pub const MEMORY_TOKEN_HARD_LIMIT: usize = 2048;
+
+/// Files subject to hard token truncation (not just a warning).
+const TRUNCATABLE_FILES: &[&str] = &["MEMORY.md"];
+
 /// Load the system prompt from workspace bootstrap files.
 ///
 /// Reads the specified files from the workspace directory and concatenates them.
@@ -53,18 +60,43 @@ pub async fn load_system_prompt(
     for filename in files {
         let file_path = workspace.join(filename);
         if file_path.exists() {
-            let content = fs::read_to_string(&file_path).await?;
-            if !content.trim().is_empty() {
-                let tokens = count_tokens(content.trim());
-                if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
+            let raw_content = fs::read_to_string(&file_path).await?;
+            if !raw_content.trim().is_empty() {
+                let trimmed = raw_content.trim();
+                let tokens = count_tokens(trimmed);
+
+                // Hard truncation for memory-class files (e.g. MEMORY.md)
+                let content = if TRUNCATABLE_FILES.contains(filename)
+                    && tokens > MEMORY_TOKEN_HARD_LIMIT
+                {
                     warn!(
-                        "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
-                        filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
+                        "Bootstrap file {} has {} tokens (hard limit {}). Truncating tail-keep.",
+                        filename, tokens, MEMORY_TOKEN_HARD_LIMIT
                     );
-                }
-                total_tokens += tokens;
-                debug!("Loaded bootstrap file: {} ({} tokens)", filename, tokens);
-                parts.push(format!("## {}\n\n{}", filename, content.trim()));
+                    truncate_keep_tail(trimmed, MEMORY_TOKEN_HARD_LIMIT)
+                } else {
+                    if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
+                        warn!(
+                            "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
+                            filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
+                        );
+                    }
+                    trimmed.to_string()
+                };
+
+                let final_tokens = count_tokens(&content);
+                total_tokens += final_tokens;
+                debug!(
+                    "Loaded bootstrap file: {} ({} tokens{})",
+                    filename,
+                    final_tokens,
+                    if final_tokens < tokens {
+                        format!(", truncated from {}", tokens)
+                    } else {
+                        String::new()
+                    }
+                );
+                parts.push(format!("## {}\n\n{}", filename, content));
                 loaded_any = true;
             }
         }
@@ -91,4 +123,32 @@ pub async fn load_skills_context(workspace: &Path) -> Option<String> {
     } else {
         Some(format!("# Skills\n\n{}", ctx))
     }
+}
+
+/// Truncate content to fit within `max_tokens`, keeping the **tail** (most recent
+/// entries) and dropping lines from the head. Prepends a system warning so the
+/// agent knows it must clean up.
+pub fn truncate_keep_tail(content: &str, max_tokens: usize) -> String {
+    let warning = "[SYSTEM WARNING: This file was truncated because it exceeded the token limit. \
+        Oldest entries were removed. Use 'read_file' to view the full file on disk, \
+        and 'edit_file' to prune, summarize, or move details to separate files in memory/.]";
+    let warning_tokens = count_tokens(warning) + 10; // margin for newlines
+    let budget = max_tokens.saturating_sub(warning_tokens);
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut kept_tokens: usize = 0;
+
+    // Walk from the tail (newest) toward the head (oldest)
+    for line in lines.iter().rev() {
+        let line_tokens = count_tokens(line);
+        if kept_tokens + line_tokens > budget {
+            break;
+        }
+        kept.push(line);
+        kept_tokens += line_tokens;
+    }
+
+    kept.reverse();
+    format!("{}\n\n{}", warning, kept.join("\n"))
 }

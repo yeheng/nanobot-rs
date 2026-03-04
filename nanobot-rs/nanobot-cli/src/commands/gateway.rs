@@ -6,11 +6,12 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
+use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
 use nanobot_core::tools::{
-    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
-    ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, ExecTool, ListDirTool, MemorySearchTool, MessageTool, ReadFileTool,
+    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 use nanobot_core::{Config, Tool};
 use tokio::sync::mpsc::Sender;
@@ -76,6 +77,9 @@ pub async fn cmd_gateway() -> Result<()> {
         Vec::new()
     };
 
+    // Hoist MemoryStore creation so it can be shared with MemorySearchTool
+    let memory_store = Arc::new(MemoryStore::new().await);
+
     let subagent_manager = Arc::new(
         SubagentManager::new(
             provider_info.provider.clone(),
@@ -86,7 +90,7 @@ pub async fn cmd_gateway() -> Result<()> {
                 let cron_svc = cron_service.clone();
                 let ob_tx = bus.outbound_sender();
                 move || {
-                    build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
+                    build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone(), None)
                 }
             }),
             bus.outbound_sender(),
@@ -102,14 +106,16 @@ pub async fn cmd_gateway() -> Result<()> {
         mcp_tools,
         Some(subagent_manager),
         bus.outbound_sender(),
+        Some(memory_store.clone()),
     );
 
     let agent = Arc::new(
-        AgentLoop::new(
+        AgentLoop::with_memory_store(
             provider_info.provider,
             workspace.clone(),
             agent_config,
             tools,
+            memory_store,
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?,
@@ -302,6 +308,7 @@ fn build_tool_registry(
     mcp_tools: Vec<Box<dyn Tool>>,
     subagent_manager: Option<Arc<SubagentManager>>,
     outbound_tx: Sender<nanobot_core::bus::OutboundMessage>,
+    memory_store: Option<Arc<MemoryStore>>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -434,10 +441,23 @@ fn build_tool_registry(
         tools.register(mcp_tool);
     }
 
+    // Memory search tool (L3 archive tier — SQLite FTS5)
+    if let Some(store) = memory_store {
+        tools.register_with_metadata(
+            Box::new(MemorySearchTool::new(store)),
+            ToolMetadata {
+                display_name: "Memory Search".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["search".to_string(), "memory".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
+
     tools
 }
 
-/// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
 /// Creates the directory if it doesn't exist.
 fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::path::PathBuf {

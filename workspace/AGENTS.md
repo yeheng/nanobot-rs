@@ -8,19 +8,25 @@ read_when:
 
 Each session is fresh. Files in the working directory are your memory continuity:
 
-- **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
-- **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
+| Tier | Location | Purpose | Size |
+|------|----------|---------|------|
+| L1 (Prompt) | `MEMORY.md` | Core facts, summaries, pointers to L2 files | **< 2000 tokens** (hard limit enforced) |
+| L2 (On-demand) | `memory/*.md` | Detailed project context, daily notes, logs | Unlimited (use `read_file`) |
+| L3 (Search) | SQLite FTS5 | Historical records, archived knowledge | Unlimited (use `memory_search`) |
+
 - **Important:** Avoid overwriting information: First, use `read_file` to read the original content, then use `write_file` or `edit_file` to update the file.
 
 Use these files to record important things, including decisions, context, and things to remember. Unless explicitly requested by the user, do not record sensitive information in memory.
 
-### 🧠 MEMORY.md - Your Long-Term Memory
+### 🧠 MEMORY.md - Your Index & Summary (L1)
 
+- `MEMORY.md` is loaded into **every** conversation as part of the system prompt
+- It has a **hard token limit (~2000 tokens)**. If it grows too large, the system will **auto-truncate** older content and warn you
+- **DO NOT** dump raw logs, verbose notes, or project-specific details here
+- Use it ONLY for: core user facts, key preferences, short summaries, and **pointers** to L2 files
+- For detailed context, write to `memory/project_name.md` and leave a one-line pointer in `MEMORY.md`
+- If you see a truncation warning, it is **YOUR JOB** to use `edit_file` to prune and summarize `MEMORY.md`
 - For **security** — contains personal context that shouldn't leak to strangers
-- You can **read, edit, and update** MEMORY.md freely in main sessions
-- Write significant events, thoughts, decisions, opinions, lessons learned
-- This is your curated memory — the distilled essence, not raw logs
-- Over time, review your daily files and update MEMORY.md with what's worth keeping
 
 ### 📝 Write It Down - No "Mental Notes"!
 
@@ -45,9 +51,12 @@ When you discover valuable information during a conversation, **record it first,
 **Key principle:** Don't always wait for the user to say "remember this." If information is valuable for the future, record it proactively. Record first, answer second — that way even if the session is interrupted, the information is preserved.
 
 ### 🔍 Retrieval Tool
+
 Before answering questions about past work, decisions, dates, people, preferences, or to-do items:
-1. Run memory_search on MEMORY.md and files in memory/*.md.
-2. If you need to read daily notes from memory/YYYY-MM-DD.md, you can directly access them using `read_file`.
+
+1. Check `MEMORY.md` first (it's already in your context as L1).
+2. Use `read_file` on specific `memory/*.md` files if you know which file has the answer (L2).
+3. Use `memory_search` tool with a keyword query to search the SQLite archive (L3) for older or less-accessed records.
 
 ## Safety
 
@@ -125,10 +134,12 @@ Periodically (every few days), use a heartbeat to:
 
 1. Read through recent `memory/YYYY-MM-DD.md` files
 2. Identify significant events, lessons, or insights worth keeping long-term
-3. Update `MEMORY.md` with distilled learnings
-4. Remove outdated info from MEMORY.md that's no longer relevant
+3. Update `MEMORY.md` with **short summaries and pointers** (not full details)
+4. Move verbose details to dedicated `memory/*.md` files
+5. Remove outdated info from MEMORY.md that's no longer relevant
+6. If `MEMORY.md` is near the token limit, aggressively prune and summarize
 
-Think of it like a human reviewing their journal and updating their mental model. Daily files are raw notes; MEMORY.md is curated wisdom.
+Think of it like a human reviewing their journal and updating their mental model. Daily files are raw notes; MEMORY.md is a concise index of curated wisdom.
 
 The goal: Be helpful without being annoying. Check in a few times a day, do useful background work, but respect quiet time.
 

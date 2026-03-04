@@ -9,11 +9,12 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
 use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
+use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::bus::events::SessionKey;
 use nanobot_core::config::{load_config, Config};
 use nanobot_core::tools::{
-    EditFileTool, ExecTool, ListDirTool, ReadFileTool, SpawnTool, ToolMetadata, ToolRegistry,
-    WebFetchTool, WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, ListDirTool, MemorySearchTool, ReadFileTool, SpawnTool, ToolMetadata,
+    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 use crate::cli::AgentOptions;
@@ -126,11 +127,19 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     };
 
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
-    let tools = build_tool_registry(&config, &workspace, mcp_tools, None);
+    // Hoist MemoryStore creation so it can be shared with MemorySearchTool
+    let memory_store = Arc::new(MemoryStore::new().await);
+    let tools = build_tool_registry(&config, &workspace, mcp_tools, None, Some(memory_store.clone()));
 
-    let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
-        .await
-        .context("Failed to initialize agent (check workspace bootstrap files)")?;
+    let agent = AgentLoop::with_memory_store(
+        provider_info.provider,
+        workspace,
+        agent_config,
+        tools,
+        memory_store,
+    )
+    .await
+    .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
 
@@ -261,6 +270,7 @@ fn build_tool_registry(
     workspace: &std::path::Path,
     mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
     subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
+    memory_store: Option<Arc<MemoryStore>>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -369,6 +379,20 @@ fn build_tool_registry(
     // MCP tools (metadata assigned by MCP manager)
     for mcp_tool in mcp_tools {
         tools.register(mcp_tool);
+    }
+
+    // Memory search tool (L3 archive tier — SQLite FTS5)
+    if let Some(store) = memory_store {
+        tools.register_with_metadata(
+            Box::new(MemorySearchTool::new(store)),
+            ToolMetadata {
+                display_name: "Memory Search".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["search".to_string(), "memory".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
     }
 
     tools
