@@ -8,6 +8,7 @@ mod channels;
 mod cron;
 mod gateway;
 mod onboard;
+pub mod registry;
 mod status;
 
 pub use agent::cmd_agent;

@@ -145,6 +145,10 @@ impl SkillsLoader {
     }
 
     /// Load skills from a specific directory
+    ///
+    /// Supports two layouts:
+    /// 1. Flat: `skills/weather.md`
+    /// 2. Nested: `skills/weather/SKILL.md`
     async fn load_from_dir(&self, dir: &Path, skills: &mut Vec<Skill>) -> Result<()> {
         let mut entries = fs::read_dir(dir)
             .await
@@ -153,7 +157,7 @@ impl SkillsLoader {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
 
-            // Only process .md files
+            // Check if it's a direct .md file (flat layout)
             if path.extension().map(|e| e == "md").unwrap_or(false) {
                 match self.load_skill(&path).await {
                     Ok(skill) => {
@@ -162,6 +166,21 @@ impl SkillsLoader {
                     }
                     Err(e) => {
                         warn!("Failed to load skill from {:?}: {}", path, e);
+                    }
+                }
+            }
+            // Check if it's a directory with SKILL.md inside (nested layout)
+            else if path.is_dir() {
+                let skill_file = path.join("SKILL.md");
+                if skill_file.exists() {
+                    match self.load_skill(&skill_file).await {
+                        Ok(skill) => {
+                            debug!("Loaded skill: {} from {:?}", skill.name(), skill_file);
+                            skills.push(skill);
+                        }
+                        Err(e) => {
+                            warn!("Failed to load skill from {:?}: {}", skill_file, e);
+                        }
                     }
                 }
             }

@@ -6,15 +6,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use nanobot_core::agent::memory::MemoryStore;
-use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
+use nanobot_core::agent::{AgentLoop, SubagentManager};
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
-use nanobot_core::tools::{
-    CronTool, EditFileTool, ExecTool, ListDirTool, MemorySearchTool, MessageTool, ReadFileTool,
-    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
-};
-use nanobot_core::{Config, Tool};
-use tokio::sync::mpsc::Sender;
+use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -54,7 +49,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config)?;
-    let mut agent_config = build_agent_config(&config);
+    let mut agent_config = super::registry::build_agent_config(&config);
     agent_config.model = provider_info.model.clone();
 
     // Handle thinking mode for gateway
@@ -87,10 +82,15 @@ pub async fn cmd_gateway() -> Result<()> {
             Arc::new({
                 let cfg = config.clone();
                 let ws = workspace.clone();
-                let cron_svc = cron_service.clone();
-                let ob_tx = bus.outbound_sender();
                 move || {
-                    build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone())
+                    super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
+                        config: cfg.clone(),
+                        workspace: ws.clone(),
+                        mcp_tools: vec![],
+                        subagent_manager: None,
+                        extra_tools: vec![],
+                        enable_tantivy_search: false,
+                    })
                 }
             }),
             bus.outbound_sender(),
@@ -98,15 +98,36 @@ pub async fn cmd_gateway() -> Result<()> {
         .await,
     );
 
-    // Build tool registry externally
-    let tools = build_tool_registry(
-        &config,
-        &workspace,
-        cron_service.clone(),
+    // Build tool registry externally with gateway-specific tools
+    let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
+        config: config.clone(),
+        workspace: workspace.clone(),
         mcp_tools,
-        Some(subagent_manager),
-        bus.outbound_sender(),
-    );
+        subagent_manager: Some(subagent_manager.clone()),
+        extra_tools: vec![
+            (
+                Box::new(MessageTool::new(bus.outbound_sender())),
+                ToolMetadata {
+                    display_name: "Send Message".to_string(),
+                    category: "communication".to_string(),
+                    tags: vec!["message".to_string(), "send".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            ),
+            (
+                Box::new(CronTool::new(cron_service.clone())),
+                ToolMetadata {
+                    display_name: "Schedule Task".to_string(),
+                    category: "system".to_string(),
+                    tags: vec!["cron".to_string(), "schedule".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            ),
+        ],
+        enable_tantivy_search: true, // Gateway mode disables Tantivy search tools
+    });
 
     let agent = Arc::new(
         AgentLoop::with_memory_store(
@@ -275,214 +296,6 @@ pub async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
-/// Build AgentConfig from the config file, applying defaults for zero-valued fields.
-fn build_agent_config(config: &Config) -> AgentConfig {
-    let defaults = AgentConfig::default();
-    AgentConfig {
-        model: String::new(), // caller overrides with resolved model
-        max_iterations: match config.agents.defaults.max_iterations {
-            0 => defaults.max_iterations,
-            v => v,
-        },
-        temperature: config.agents.defaults.temperature,
-        max_tokens: match config.agents.defaults.max_tokens {
-            0 => defaults.max_tokens,
-            v => v,
-        },
-        memory_window: match config.agents.defaults.memory_window {
-            0 => defaults.memory_window,
-            v => v,
-        },
-        max_tool_result_chars: defaults.max_tool_result_chars,
-        thinking_enabled: config.agents.defaults.thinking_enabled,
-        streaming: config.agents.defaults.streaming,
-    }
-}
-
-/// Build tool registry for gateway mode
-fn build_tool_registry(
-    config: &Config,
-    workspace: &std::path::Path,
-    cron_service: Arc<CronService>,
-    mcp_tools: Vec<Box<dyn Tool>>,
-    subagent_manager: Option<Arc<SubagentManager>>,
-    outbound_tx: Sender<nanobot_core::bus::OutboundMessage>,
-) -> ToolRegistry {
-    let restrict = config.tools.restrict_to_workspace;
-    let allowed_dir = if restrict {
-        Some(workspace.to_path_buf())
-    } else {
-        None
-    };
-
-    // Resolve exec workspace directory
-    let exec_workspace = resolve_exec_workspace(config, workspace);
-
-    let mut tools = ToolRegistry::new();
-
-    // Safe read-only tools (no approval required)
-    tools.register_with_metadata(
-        Box::new(ReadFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Read File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["read".to_string(), "file".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(ListDirTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "List Directory".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["read".to_string(), "directory".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(WebFetchTool::new()),
-        ToolMetadata {
-            display_name: "Web Fetch".to_string(),
-            category: "web".to_string(),
-            tags: vec!["http".to_string(), "fetch".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
-        ToolMetadata {
-            display_name: "Web Search".to_string(),
-            category: "web".to_string(),
-            tags: vec!["search".to_string(), "web".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-
-    // Dangerous mutating tools (require approval)
-    tools.register_with_metadata(
-        Box::new(WriteFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Write File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["write".to_string(), "file".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(EditFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Edit File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["edit".to_string(), "file".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(ExecTool::from_config(
-            exec_workspace,
-            &config.tools.exec,
-            restrict,
-        )),
-        ToolMetadata {
-            display_name: "Execute Command".to_string(),
-            category: "system".to_string(),
-            tags: vec!["shell".to_string(), "exec".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
-    let spawn_tool = match subagent_manager {
-        Some(mgr) => SpawnTool::with_manager(mgr),
-        None => SpawnTool::new(),
-    };
-    tools.register_with_metadata(
-        Box::new(spawn_tool),
-        ToolMetadata {
-            display_name: "Spawn Subagent".to_string(),
-            category: "system".to_string(),
-            tags: vec!["spawn".to_string(), "agent".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-
-    // Communication tools (gateway-specific)
-    tools.register_with_metadata(
-        Box::new(MessageTool::new(outbound_tx)),
-        ToolMetadata {
-            display_name: "Send Message".to_string(),
-            category: "communication".to_string(),
-            tags: vec!["message".to_string(), "send".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(CronTool::new(cron_service.clone())),
-        ToolMetadata {
-            display_name: "Schedule Task".to_string(),
-            category: "system".to_string(),
-            tags: vec!["cron".to_string(), "schedule".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-
-    // MCP tools (metadata assigned by MCP manager)
-    for mcp_tool in mcp_tools {
-        tools.register(mcp_tool);
-    }
-
-    // Memory search tool — filesystem grep over ~/.nanobot/memory/*.md
-    tools.register_with_metadata(
-        Box::new(MemorySearchTool::new()),
-        ToolMetadata {
-            display_name: "Memory Search".to_string(),
-            category: "memory".to_string(),
-            tags: vec!["search".to_string(), "memory".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-
-    tools
-}
-
-///
-/// Creates the directory if it doesn't exist.
-fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::path::PathBuf {
-    let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
-        std::path::PathBuf::from(ws)
-    } else {
-        // Default: $HOME/.nanobot
-        dirs::home_dir()
-            .map(|h| h.join(".nanobot"))
-            .unwrap_or_else(|| fallback.to_path_buf())
-    };
-
-    // Ensure the directory exists
-    if !workspace_path.exists() {
-        if let Err(e) = std::fs::create_dir_all(&workspace_path) {
-            tracing::warn!(
-                "Failed to create exec workspace {:?}: {}. Falling back to {:?}",
-                workspace_path,
-                e,
-                fallback
-            );
-            return fallback.to_path_buf();
-        }
-        tracing::info!("Created exec workspace: {:?}", workspace_path);
-    }
-
-    workspace_path
-}
-
 /// Unified channel initializer - eliminates repetitive channel startup code
 ///
 /// This function encapsulates the pattern of:
@@ -495,7 +308,7 @@ fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> std::p
 /// we've converted control flow into data-driven initialization.
 #[allow(unused_variables)]
 fn start_channels(
-    config: &Config,
+    config: &nanobot_core::Config,
     inbound_processor: &nanobot_core::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
