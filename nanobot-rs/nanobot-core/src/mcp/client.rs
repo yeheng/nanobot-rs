@@ -298,7 +298,7 @@ impl McpClient {
                 .collect();
             Ok(text.join("\n"))
         } else {
-            Ok(serde_json::to_string_pretty(&result)?)
+            Ok(serde_json::to_string(&result)?)
         }
     }
 

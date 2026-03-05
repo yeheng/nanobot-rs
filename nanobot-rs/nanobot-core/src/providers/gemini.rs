@@ -165,8 +165,7 @@ impl GeminiProvider {
 
         debug!(
             "Gemini request: {}",
-            serde_json::to_string_pretty(&body)
-                .unwrap_or_else(|_| "<serialization error>".to_string())
+            serde_json::to_string(&body).unwrap_or_else(|_| "<serialization error>".to_string())
         );
         body
     }
@@ -175,7 +174,7 @@ impl GeminiProvider {
     fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse> {
         debug!(
             "Gemini response: {}",
-            serde_json::to_string_pretty(&response)
+            serde_json::to_string(&response)
                 .unwrap_or_else(|_| "<serialization error>".to_string())
         );
 

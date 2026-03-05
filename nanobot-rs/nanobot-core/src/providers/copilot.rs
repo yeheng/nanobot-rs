@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use super::copilot_oauth::CopilotOAuth;
@@ -121,7 +121,7 @@ impl CopilotProvider {
             });
         }
 
-        debug!("Copilot token refreshed, refresh in {} seconds", refresh_in);
+        info!("Copilot token refreshed, refresh in {} seconds", refresh_in);
         Ok(token)
     }
 
@@ -183,7 +183,7 @@ impl LlmProvider for CopilotProvider {
         debug!(
             "[copilot] POST {} | request body:\n{}",
             url,
-            serde_json::to_string_pretty(&openai_request)
+            serde_json::to_string(&openai_request)
                 .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
         );
 
@@ -196,7 +196,7 @@ impl LlmProvider for CopilotProvider {
             .await?;
 
         let status = response.status();
-        debug!("[copilot] response status: {}", status);
+        info!("[copilot] response status: {}", status);
 
         // Handle 401 - token might have expired, try once more
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -226,7 +226,7 @@ impl LlmProvider for CopilotProvider {
         }
 
         let body = response.text().await?;
-        debug!("[copilot] response body:\n{}", body);
+        info!("[copilot] response body:\n{}", body);
 
         if !status.is_success() {
             anyhow::bail!("Copilot API error: {} - {}", status, body);
@@ -254,7 +254,7 @@ impl LlmProvider for CopilotProvider {
         debug!(
             "[copilot] POST {} (stream) | request body:\n{}",
             url,
-            serde_json::to_string_pretty(&openai_request)
+            serde_json::to_string(&openai_request)
                 .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
         );
 

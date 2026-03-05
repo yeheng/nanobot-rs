@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use super::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
@@ -231,7 +231,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             "[{}] POST {} | request body:\n{}",
             self.config.name,
             url,
-            serde_json::to_string_pretty(&openai_request)
+            serde_json::to_string(&openai_request)
                 .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
         );
 
@@ -249,10 +249,10 @@ impl LlmProvider for OpenAICompatibleProvider {
         let response = req.json(&openai_request).send().await?;
 
         let status = response.status();
-        debug!("[{}] response status: {}", self.config.name, status);
+        info!("[{}] response status: {}", self.config.name, status);
 
         let body = response.text().await?;
-        debug!("[{}] response body:\n{}", self.config.name, body);
+        info!("[{}] response body:\n{}", self.config.name, body);
 
         if !status.is_success() {
             anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
@@ -312,7 +312,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             "[{}] POST {} (stream) | request body:\n{}",
             self.config.name,
             url,
-            serde_json::to_string_pretty(&openai_request)
+            serde_json::to_string(&openai_request)
                 .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
         );
 
@@ -329,7 +329,7 @@ impl LlmProvider for OpenAICompatibleProvider {
         let response = req.json(&openai_request).send().await?;
 
         let status = response.status();
-        debug!("[{}] stream response status: {}", self.config.name, status);
+        info!("[{}] stream response status: {}", self.config.name, status);
 
         if !status.is_success() {
             let body = response.text().await?;

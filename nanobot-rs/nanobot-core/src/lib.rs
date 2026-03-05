@@ -25,6 +25,8 @@ pub mod hooks;
 pub mod mcp;
 pub mod memory;
 pub mod providers;
+pub mod search;
+
 pub mod session;
 pub mod skills;
 pub mod tools;

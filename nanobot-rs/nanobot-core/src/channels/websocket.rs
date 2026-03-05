@@ -232,6 +232,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
             while let Some(Ok(msg)) = receiver.next().await {
                 match msg {
                     Message::Text(text) => {
+                        debug!("incoming messages: {}", text);
                         // Create InboundMessage and send to bus
                         let inbound = InboundMessage {
                             channel: WebSocketChannel,

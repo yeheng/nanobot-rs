@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{debug, instrument};
+use tracing::{info, instrument};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
@@ -79,7 +79,7 @@ impl Tool for WebFetchTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        debug!("Fetching URL: {}", args.url);
+        info!("Fetching URL: {}", args.url);
 
         let response = self
             .client

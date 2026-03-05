@@ -97,6 +97,12 @@ bytes = "1"
 # SQLite (async)
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 
+# Full-text search
+tantivy = "0.25"
+
+# Concurrency
+parking_lot = "0.12"
+
 # Token counting
 tiktoken-rs = "0.9"
 

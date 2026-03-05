@@ -13,8 +13,9 @@ use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback,
 use nanobot_core::bus::events::SessionKey;
 use nanobot_core::config::{load_config, Config};
 use nanobot_core::tools::{
-    EditFileTool, ExecTool, ListDirTool, MemorySearchTool, ReadFileTool, SpawnTool, ToolMetadata,
-    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, HistoryTantivySearchTool, ListDirTool, MemorySearchTool,
+    MemoryTantivySearchTool, ReadFileTool, SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool,
+    WebSearchTool, WriteFileTool,
 };
 
 use crate::cli::AgentOptions;
@@ -390,6 +391,41 @@ fn build_tool_registry(
             is_mutating: false,
         },
     );
+
+    // Tantivy-powered advanced search tools
+    if let Ok(memory_tool) = MemoryTantivySearchTool::with_defaults() {
+        tools.register_with_metadata(
+            Box::new(memory_tool),
+            ToolMetadata {
+                display_name: "Memory Tantivy Search".to_string(),
+                category: "search".to_string(),
+                tags: vec![
+                    "tantivy".to_string(),
+                    "full-text".to_string(),
+                    "memory".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
+
+    if let Ok(history_tool) = HistoryTantivySearchTool::with_defaults() {
+        tools.register_with_metadata(
+            Box::new(history_tool),
+            ToolMetadata {
+                display_name: "History Tantivy Search".to_string(),
+                category: "search".to_string(),
+                tags: vec![
+                    "tantivy".to_string(),
+                    "full-text".to_string(),
+                    "history".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
 
     tools
 }
