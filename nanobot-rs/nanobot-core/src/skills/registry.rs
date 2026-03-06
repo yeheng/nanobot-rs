@@ -181,10 +181,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn create_test_skill(name: &str, description: &str, always: bool) -> Skill {
-        let mut metadata = SkillMetadata::default();
-        metadata.name = name.to_string();
-        metadata.description = description.to_string();
-        metadata.always = always;
+        let metadata = SkillMetadata {
+            name: name.to_string(),
+            description: description.to_string(),
+            always,
+            ..Default::default()
+        };
 
         Skill::new(
             metadata,
@@ -234,10 +236,12 @@ mod tests {
         registry.register(available);
 
         // Unavailable skill (has missing dependency)
-        let mut metadata = SkillMetadata::default();
-        metadata.name = "unavailable".to_string();
-        metadata.description = "Unavailable skill".to_string();
-        metadata.bins = vec!["nonexistent-binary-xyz".to_string()];
+        let metadata = SkillMetadata {
+            name: "unavailable".to_string(),
+            description: "Unavailable skill".to_string(),
+            bins: vec!["nonexistent-binary-xyz".to_string()],
+            ..Default::default()
+        };
         let unavailable = Skill::new(
             metadata,
             "content".to_string(),

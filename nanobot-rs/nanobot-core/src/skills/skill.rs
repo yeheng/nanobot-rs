@@ -161,9 +161,11 @@ mod tests {
 
     #[test]
     fn test_skill_creation() {
-        let mut metadata = SkillMetadata::default();
-        metadata.name = "test-skill".to_string();
-        metadata.description = "A test skill".to_string();
+        let metadata = SkillMetadata {
+            name: "test-skill".to_string(),
+            description: "A test skill".to_string(),
+            ..Default::default()
+        };
 
         let content = "# Test Skill\n\nThis is a test.".to_string();
         let path = PathBuf::from("/test/skill.md");
@@ -175,14 +177,16 @@ mod tests {
         assert_eq!(skill.content(), &content);
         assert_eq!(skill.path(), &path);
         assert!(skill.is_available());
-        assert!(skill.always_load() == false);
+        assert!(!skill.always_load());
     }
 
     #[test]
     fn test_lazy_skill() {
-        let mut metadata = SkillMetadata::default();
-        metadata.name = "lazy-skill".to_string();
-        metadata.description = "A lazy skill".to_string();
+        let metadata = SkillMetadata {
+            name: "lazy-skill".to_string(),
+            description: "A lazy skill".to_string(),
+            ..Default::default()
+        };
 
         let path = PathBuf::from("/test/lazy.md");
         let skill = Skill::new_lazy(metadata, path);
@@ -194,10 +198,12 @@ mod tests {
 
     #[test]
     fn test_skill_summary() {
-        let mut metadata = SkillMetadata::default();
-        metadata.name = "github".to_string();
-        metadata.description = "GitHub operations".to_string();
-        metadata.bins = vec!["gh".to_string()];
+        let metadata = SkillMetadata {
+            name: "github".to_string(),
+            description: "GitHub operations".to_string(),
+            bins: vec!["gh".to_string()],
+            ..Default::default()
+        };
 
         let skill = Skill::new(
             metadata,
@@ -212,9 +218,11 @@ mod tests {
 
     #[test]
     fn test_unavailable_skill() {
-        let mut metadata = SkillMetadata::default();
-        metadata.name = "unavailable".to_string();
-        metadata.bins = vec!["nonexistent-binary-xyz".to_string()];
+        let metadata = SkillMetadata {
+            name: "unavailable".to_string(),
+            bins: vec!["nonexistent-binary-xyz".to_string()],
+            ..Default::default()
+        };
 
         let skill = Skill::new(
             metadata,

@@ -465,8 +465,12 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn test_default_client_id() {
-        assert!(!DEFAULT_CLIENT_ID.is_empty());
+        assert!(
+            !DEFAULT_CLIENT_ID.is_empty(),
+            "DEFAULT_CLIENT_ID should not be empty"
+        );
     }
 
     #[test]

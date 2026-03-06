@@ -238,7 +238,7 @@ This is the skill content.
 
         assert_eq!(metadata.name, "test-skill");
         assert_eq!(metadata.description, "A test skill");
-        assert_eq!(metadata.always, true);
+        assert!(metadata.always);
         assert_eq!(metadata.bins, vec!["git", "gh"]);
         assert_eq!(metadata.env_vars, vec!["GITHUB_TOKEN"]);
         assert!(markdown.contains("# Test Skill"));
@@ -262,7 +262,7 @@ description: Minimal skill
 
         assert_eq!(metadata.name, "minimal");
         assert_eq!(metadata.description, "Minimal skill");
-        assert_eq!(metadata.always, false);
+        assert!(!metadata.always);
         assert!(metadata.bins.is_empty());
         assert!(markdown.contains("# Content"));
     }

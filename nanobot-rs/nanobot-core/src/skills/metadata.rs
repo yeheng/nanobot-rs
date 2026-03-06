@@ -72,15 +72,17 @@ mod tests {
     #[test]
     fn test_default_metadata() {
         let meta = SkillMetadata::default();
-        assert_eq!(meta.always, false);
+        assert!(!meta.always);
         assert!(meta.bins.is_empty());
         assert!(meta.env_vars.is_empty());
     }
 
     #[test]
     fn test_check_dependencies_env_var() {
-        let mut meta = SkillMetadata::default();
-        meta.env_vars.push("NANOBOT_TEST_VAR_12345".to_string());
+        let meta = SkillMetadata {
+            env_vars: vec!["NANOBOT_TEST_VAR_12345".to_string()],
+            ..Default::default()
+        };
 
         // Should fail - env var not set
         assert!(meta.check_dependencies().is_err());
@@ -97,9 +99,11 @@ mod tests {
 
     #[test]
     fn test_is_available() {
-        let mut meta = SkillMetadata::default();
-        meta.name = "test-skill".to_string();
-        meta.description = "Test skill".to_string();
+        let mut meta = SkillMetadata {
+            name: "test-skill".to_string(),
+            description: "Test skill".to_string(),
+            ..Default::default()
+        };
 
         assert!(meta.is_available());
 

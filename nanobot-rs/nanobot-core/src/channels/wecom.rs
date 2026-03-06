@@ -808,7 +808,7 @@ mod tests {
         plaintext.extend_from_slice(corpid.as_bytes());
 
         let pad_len = 32 - (plaintext.len() % 32);
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let mut buf = plaintext;
         let buf_len = buf.len();
@@ -866,7 +866,7 @@ mod tests {
             <CreateTime>1348831860</CreateTime>
             <MsgType><![CDATA[text]]></MsgType>
             <Content><![CDATA[Hello callback!]]></Content>
-            <MsgId>123456</MsgId>
+            <MsgId><![CDATA[123456]]></MsgId>
             <AgentID>1000002</AgentID>
         </xml>"#;
 
@@ -879,7 +879,7 @@ mod tests {
         plaintext.extend_from_slice(corpid.as_bytes());
 
         let pad_len = 32 - (plaintext.len() % 32);
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let mut buf = plaintext;
         let buf_len = buf.len();
@@ -949,7 +949,7 @@ mod tests {
         plaintext.extend_from_slice(corpid.as_bytes());
 
         let pad_len = 32 - (plaintext.len() % 32);
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let mut buf = plaintext;
         let buf_len = buf.len();

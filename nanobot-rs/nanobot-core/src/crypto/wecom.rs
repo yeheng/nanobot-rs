@@ -136,7 +136,7 @@ mod tests {
 
         // PKCS#7 pad to 32-byte boundary
         let pad_len = 32 - (plaintext.len() % 32);
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let iv: &[u8; 16] = aes_key[..16].try_into().unwrap();
         let key: &[u8; 32] = aes_key.try_into().unwrap();

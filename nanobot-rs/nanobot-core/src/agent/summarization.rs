@@ -180,8 +180,12 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn test_summarization_prompt_not_empty() {
-        assert!(!SUMMARIZATION_PROMPT.is_empty());
+        assert!(
+            !SUMMARIZATION_PROMPT.is_empty(),
+            "SUMMARIZATION_PROMPT should not be empty"
+        );
     }
 
     #[test]

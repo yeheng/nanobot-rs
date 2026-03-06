@@ -7,6 +7,7 @@ use colored::Colorize;
 
 use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, SubagentManager};
+#[allow(unused_imports)]
 use nanobot_core::channels::Channel;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
@@ -336,12 +337,13 @@ pub async fn cmd_gateway() -> Result<()> {
 /// 5. Adding the task to the tasks list
 ///
 /// Returns a list of initialization errors for channels that failed to start.
-#[allow(unused_variables, unused_mut)]
+#[allow(unused_variables, clippy::ptr_arg)]
 fn start_channels(
     config: &nanobot_core::Config,
     inbound_processor: &nanobot_core::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Vec<String> {
+    #[allow(unused_mut)]
     let mut errors = Vec::new();
 
     // Start Telegram if configured
