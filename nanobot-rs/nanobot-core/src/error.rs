@@ -122,6 +122,26 @@ pub enum ChannelError {
     InvalidFormat(String),
 }
 
+/// Configuration validation errors
+#[derive(Debug, Error)]
+pub enum ConfigValidationError {
+    /// Provider not available (missing API key for non-local providers)
+    #[error("Provider '{0}' is not available (missing API key)")]
+    ProviderNotAvailable(String),
+
+    /// Incomplete email configuration
+    #[error("Email channel requires either IMAP or SMTP configuration (host, username, password, and from_address for SMTP)")]
+    IncompleteEmailConfig,
+
+    /// Missing specific email config field
+    #[error("Email configuration missing required field: {0}")]
+    MissingEmailField(String),
+
+    /// Invalid channel configuration
+    #[error("Channel '{0}' has invalid configuration: {1}")]
+    InvalidChannelConfig(String, String),
+}
+
 // Implement From for common error types to enable `?` operator
 impl From<std::io::Error> for McpError {
     fn from(err: std::io::Error) -> Self {

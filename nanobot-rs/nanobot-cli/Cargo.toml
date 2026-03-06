@@ -18,6 +18,8 @@ discord = ["nanobot-core/discord"]
 slack = ["nanobot-core/slack"]
 email = ["nanobot-core/email"]
 feishu = ["nanobot-core/feishu"]
+dingtalk = ["nanobot-core/dingtalk"]
+wecom = ["nanobot-core/wecom"]
 all-channels = ["nanobot-core/all-channels"]
 
 [dependencies]

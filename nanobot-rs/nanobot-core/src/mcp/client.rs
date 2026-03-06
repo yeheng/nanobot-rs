@@ -12,6 +12,9 @@ use tracing::{debug, info};
 use super::types::{McpServerConfig, McpTool};
 use crate::error::McpError;
 
+/// Default timeout for MCP requests in seconds
+const MCP_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 /// Pending requests awaiting responses
 type PendingRequests = Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
@@ -170,20 +173,21 @@ impl McpClient {
         // Lock released here - response will arrive asynchronously
 
         // Wait for response with timeout (no lock held during wait!)
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| {
-                McpError::TimeoutError(format!(
-                    "MCP server {} timed out on method '{}'",
-                    self.name, method
-                ))
-            })?
-            .map_err(|_| {
-                McpError::ConnectionError(format!(
-                    "MCP server {} dropped response channel",
-                    self.name
-                ))
-            })?;
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(MCP_REQUEST_TIMEOUT_SECS), rx)
+                .await
+                .map_err(|_| {
+                    McpError::TimeoutError(format!(
+                        "MCP server {} timed out on method '{}'",
+                        self.name, method
+                    ))
+                })?
+                .map_err(|_| {
+                    McpError::ConnectionError(format!(
+                        "MCP server {} dropped response channel",
+                        self.name
+                    ))
+                })?;
 
         // Check for JSON-RPC error
         if let Some(err) = response.get("error") {

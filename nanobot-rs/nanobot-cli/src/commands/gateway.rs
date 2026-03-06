@@ -7,6 +7,7 @@ use colored::Colorize;
 
 use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, SubagentManager};
+use nanobot_core::channels::Channel;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
@@ -14,6 +15,17 @@ use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
+
+    // Validate configuration before starting
+    if let Err(errors) = config.validate() {
+        println!("{}", "Configuration validation failed:".red());
+        for error in &errors {
+            println!("  - {}", error);
+        }
+        println!("\nPlease fix the configuration and try again.");
+        return Ok(());
+    }
+
     let workspace = dirs::home_dir()
         .context("Could not find home directory")?
         .join(".nanobot");
@@ -23,11 +35,20 @@ pub async fn cmd_gateway() -> Result<()> {
     let has_discord = config.channels.discord.as_ref().is_some_and(|c| c.enabled);
     let has_slack = config.channels.slack.as_ref().is_some_and(|c| c.enabled);
     let has_feishu = config.channels.feishu.as_ref().is_some_and(|c| c.enabled);
+    let has_email = config.channels.email.as_ref().is_some_and(|c| c.enabled);
+    let has_dingtalk = config.channels.dingtalk.as_ref().is_some_and(|c| c.enabled);
 
     // WebSocket is enabled by feature flag
     let has_websocket = cfg!(feature = "all-channels");
 
-    if !has_telegram && !has_discord && !has_slack && !has_feishu && !has_websocket {
+    if !has_telegram
+        && !has_discord
+        && !has_slack
+        && !has_feishu
+        && !has_email
+        && !has_dingtalk
+        && !has_websocket
+    {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
         println!("\n  channels:");
@@ -280,7 +301,16 @@ pub async fn cmd_gateway() -> Result<()> {
     }
 
     // --- Start all configured channels using unified initializer ---
-    start_channels(&config, &inbound_processor, &mut tasks);
+    let channel_errors = start_channels(&config, &inbound_processor, &mut tasks);
+    if !channel_errors.is_empty() {
+        println!(
+            "{}",
+            "Warning: Some channels failed to initialize:".yellow()
+        );
+        for error in &channel_errors {
+            println!("  - {}", error);
+        }
+    }
 
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
 
@@ -296,41 +326,31 @@ pub async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
-/// Unified channel initializer - eliminates repetitive channel startup code
+/// Unified channel initializer
 ///
 /// This function encapsulates the pattern of:
 /// 1. Checking if a channel is enabled in config
-/// 2. Creating the channel instance
-/// 3. Spawning a task to run it
-/// 4. Adding the task to the tasks list
+/// 2. Validating channel configuration
+/// 3. Creating the channel instance
+/// 4. Spawning a task to run it
+/// 5. Adding the task to the tasks list
 ///
-/// This follows the "Good programmers worry about data structures" principle -
-/// we've converted control flow into data-driven initialization.
-#[allow(unused_variables)]
+/// Returns a list of initialization errors for channels that failed to start.
+#[allow(unused_variables, unused_mut)]
 fn start_channels(
     config: &nanobot_core::Config,
     inbound_processor: &nanobot_core::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) {
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
     // Start Telegram if configured
     #[cfg(feature = "telegram")]
     if let Some(telegram_config) = &config.channels.telegram {
         if telegram_config.enabled {
-            println!("{} Telegram channel", "✓".green());
-
-            let telegram_cfg = nanobot_core::channels::telegram::TelegramConfig {
-                token: telegram_config.token.clone(),
-                allow_from: telegram_config.allow_from.clone(),
-            };
-
-            let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
-                telegram_cfg,
-                inbound_processor.raw_sender(),
-            );
-
-            tasks.push(tokio::spawn(async move {
-                let _ = telegram_channel.start().await;
-            }));
+            if let Err(e) = start_telegram_channel(telegram_config, inbound_processor, tasks) {
+                errors.push(format!("Telegram: {}", e));
+            }
         }
     }
 
@@ -338,21 +358,19 @@ fn start_channels(
     #[cfg(feature = "discord")]
     if let Some(discord_config) = &config.channels.discord {
         if discord_config.enabled {
-            println!("{} Discord channel", "✓".green());
+            if let Err(e) = start_discord_channel(discord_config, inbound_processor, tasks) {
+                errors.push(format!("Discord: {}", e));
+            }
+        }
+    }
 
-            let discord_cfg = nanobot_core::channels::discord::DiscordConfig {
-                token: discord_config.token.clone(),
-                allow_from: discord_config.allow_from.clone(),
-            };
-
-            let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
-                discord_cfg,
-                inbound_processor.raw_sender(),
-            );
-
-            tasks.push(tokio::spawn(async move {
-                let _ = discord_channel.start_bot().await;
-            }));
+    // Start Slack if configured
+    #[cfg(feature = "slack")]
+    if let Some(slack_config) = &config.channels.slack {
+        if slack_config.enabled {
+            if let Err(e) = start_slack_channel(slack_config, inbound_processor, tasks) {
+                errors.push(format!("Slack: {}", e));
+            }
         }
     }
 
@@ -360,25 +378,9 @@ fn start_channels(
     #[cfg(feature = "feishu")]
     if let Some(feishu_config) = &config.channels.feishu {
         if feishu_config.enabled {
-            use nanobot_core::channels::Channel;
-            println!("{} Feishu channel", "✓".green());
-
-            let feishu_cfg = nanobot_core::channels::feishu::FeishuConfig {
-                app_id: feishu_config.app_id.clone(),
-                app_secret: feishu_config.app_secret.clone(),
-                verification_token: feishu_config.verification_token.clone(),
-                encrypt_key: feishu_config.encrypt_key.clone(),
-                allow_from: feishu_config.allow_from.clone(),
-            };
-
-            let mut feishu_channel = nanobot_core::channels::feishu::FeishuChannel::new(
-                feishu_cfg,
-                inbound_processor.clone(),
-            );
-
-            tasks.push(tokio::spawn(async move {
-                let _ = feishu_channel.start().await;
-            }));
+            if let Err(e) = start_feishu_channel(feishu_config, inbound_processor, tasks) {
+                errors.push(format!("Feishu: {}", e));
+            }
         }
     }
 
@@ -386,41 +388,209 @@ fn start_channels(
     #[cfg(feature = "email")]
     if let Some(email_config) = &config.channels.email {
         if email_config.enabled {
-            // Check if required fields are present
-            let has_imap = email_config.imap_host.is_some()
-                && email_config.imap_username.is_some()
-                && email_config.imap_password.is_some();
-            let has_smtp = email_config.smtp_host.is_some()
-                && email_config.smtp_username.is_some()
-                && email_config.smtp_password.is_some()
-                && email_config.from_address.is_some();
-
-            if has_imap || has_smtp {
-                println!("{} Email channel", "✓".green());
-
-                let email_cfg = nanobot_core::channels::email::EmailConfig {
-                    imap_host: email_config.imap_host.clone().unwrap_or_default(),
-                    imap_port: email_config.imap_port,
-                    imap_username: email_config.imap_username.clone().unwrap_or_default(),
-                    imap_password: email_config.imap_password.clone().unwrap_or_default(),
-                    smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
-                    smtp_port: email_config.smtp_port,
-                    smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
-                    smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
-                    from_address: email_config.from_address.clone().unwrap_or_default(),
-                    allow_from: email_config.allow_from.clone(),
-                    consent_granted: email_config.consent_granted,
-                };
-
-                let email_channel = nanobot_core::channels::email::EmailChannel::new(
-                    email_cfg,
-                    inbound_processor.raw_sender(),
+            // Validate email configuration first
+            if !email_config.has_valid_config() {
+                errors.push(
+                    "Email: incomplete configuration (requires IMAP or SMTP with from_address)"
+                        .to_string(),
                 );
-
-                tasks.push(tokio::spawn(async move {
-                    let _ = email_channel.start_polling().await;
-                }));
+            } else if let Err(e) = start_email_channel(email_config, inbound_processor, tasks) {
+                errors.push(format!("Email: {}", e));
             }
         }
     }
+
+    // Start DingTalk if configured
+    #[cfg(feature = "dingtalk")]
+    if let Some(dingtalk_config) = &config.channels.dingtalk {
+        if dingtalk_config.enabled {
+            if let Err(e) = start_dingtalk_channel(dingtalk_config, inbound_processor, tasks) {
+                errors.push(format!("DingTalk: {}", e));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        tracing::warn!("{} channel(s) failed to initialize", errors.len());
+    }
+
+    errors
+}
+
+/// Start a single Telegram channel
+#[cfg(feature = "telegram")]
+fn start_telegram_channel(
+    telegram_config: &nanobot_core::config::TelegramConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} Telegram channel", "✓".green());
+
+    let telegram_cfg = nanobot_core::channels::telegram::TelegramConfig {
+        token: telegram_config.token.clone(),
+        allow_from: telegram_config.allow_from.clone(),
+    };
+
+    let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
+        telegram_cfg,
+        inbound_processor.raw_sender(),
+    );
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = telegram_channel.start().await {
+            tracing::error!("Telegram channel error: {}", e);
+        }
+    }));
+
+    Ok(())
+}
+
+/// Start a single Discord channel
+#[cfg(feature = "discord")]
+fn start_discord_channel(
+    discord_config: &nanobot_core::config::DiscordConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} Discord channel", "✓".green());
+
+    let discord_cfg = nanobot_core::channels::discord::DiscordConfig {
+        token: discord_config.token.clone(),
+        allow_from: discord_config.allow_from.clone(),
+    };
+
+    let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
+        discord_cfg,
+        inbound_processor.raw_sender(),
+    );
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = discord_channel.start_bot().await {
+            tracing::error!("Discord channel error: {}", e);
+        }
+    }));
+
+    Ok(())
+}
+
+/// Start a single Slack channel
+#[cfg(feature = "slack")]
+fn start_slack_channel(
+    slack_config: &nanobot_core::config::SlackConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} Slack channel", "✓".green());
+
+    let slack_cfg = nanobot_core::channels::slack::SlackConfig {
+        bot_token: slack_config.bot_token.clone(),
+        app_token: slack_config.app_token.clone(),
+        group_policy: slack_config.group_policy.clone(),
+        allow_from: slack_config.allow_from.clone(),
+    };
+
+    let slack_channel =
+        nanobot_core::channels::slack::SlackChannel::new(slack_cfg, inbound_processor.raw_sender());
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = slack_channel.start_bot().await {
+            tracing::error!("Slack channel error: {}", e);
+        }
+    }));
+
+    Ok(())
+}
+
+/// Start a single Feishu channel
+#[cfg(feature = "feishu")]
+fn start_feishu_channel(
+    feishu_config: &nanobot_core::config::FeishuConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} Feishu channel", "✓".green());
+
+    let feishu_cfg = nanobot_core::channels::feishu::FeishuConfig {
+        app_id: feishu_config.app_id.clone(),
+        app_secret: feishu_config.app_secret.clone(),
+        verification_token: feishu_config.verification_token.clone(),
+        encrypt_key: feishu_config.encrypt_key.clone(),
+        allow_from: feishu_config.allow_from.clone(),
+    };
+
+    let mut feishu_channel =
+        nanobot_core::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = feishu_channel.start().await {
+            tracing::error!("Feishu channel error: {}", e);
+        }
+    }));
+
+    Ok(())
+}
+
+/// Start a single Email channel
+#[cfg(feature = "email")]
+fn start_email_channel(
+    email_config: &nanobot_core::config::EmailConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} Email channel", "✓".green());
+
+    let email_cfg = nanobot_core::channels::email::EmailConfig {
+        imap_host: email_config.imap_host.clone().unwrap_or_default(),
+        imap_port: email_config.imap_port,
+        imap_username: email_config.imap_username.clone().unwrap_or_default(),
+        imap_password: email_config.imap_password.clone().unwrap_or_default(),
+        smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
+        smtp_port: email_config.smtp_port,
+        smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
+        smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
+        from_address: email_config.from_address.clone().unwrap_or_default(),
+        allow_from: email_config.allow_from.clone(),
+        consent_granted: email_config.consent_granted,
+    };
+
+    let email_channel =
+        nanobot_core::channels::email::EmailChannel::new(email_cfg, inbound_processor.raw_sender());
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = email_channel.start_polling().await {
+            tracing::error!("Email channel error: {}", e);
+        }
+    }));
+
+    Ok(())
+}
+
+/// Start a single DingTalk channel
+#[cfg(feature = "dingtalk")]
+fn start_dingtalk_channel(
+    dingtalk_config: &nanobot_core::config::DingTalkConfig,
+    inbound_processor: &nanobot_core::channels::InboundSender,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    println!("{} DingTalk channel", "✓".green());
+
+    let dingtalk_cfg = nanobot_core::channels::dingtalk::DingTalkConfig {
+        webhook_url: dingtalk_config.webhook_url.clone(),
+        secret: dingtalk_config.secret.clone(),
+        access_token: dingtalk_config.access_token.clone(),
+        allow_from: dingtalk_config.allow_from.clone(),
+    };
+
+    let mut dingtalk_channel = nanobot_core::channels::dingtalk::DingTalkChannel::new(
+        dingtalk_cfg,
+        inbound_processor.clone(),
+    );
+
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = dingtalk_channel.start().await {
+            tracing::error!("DingTalk channel error: {}", e);
+        }
+    }));
+
+    Ok(())
 }

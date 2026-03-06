@@ -45,6 +45,19 @@ use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
 use crate::session::SessionManager;
 
+/// Default model for agent
+const DEFAULT_MODEL: &str = "gpt-4o";
+/// Default maximum iterations for agent loop
+const DEFAULT_MAX_ITERATIONS: u32 = 20;
+/// Default temperature for generation
+const DEFAULT_TEMPERATURE: f32 = 1.0;
+/// Default maximum tokens for generation
+const DEFAULT_MAX_TOKENS: u32 = 65536;
+/// Default memory window size
+const DEFAULT_MEMORY_WINDOW: usize = 50;
+/// Default maximum characters for tool result output
+const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 8000;
+
 /// Agent loop configuration
 pub struct AgentConfig {
     pub model: String,
@@ -63,12 +76,12 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model: "gpt-4o".to_string(),
-            max_iterations: 20,
-            temperature: 1.0,
-            max_tokens: 65536,
-            memory_window: 50,
-            max_tool_result_chars: 8000,
+            model: DEFAULT_MODEL.to_string(),
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            temperature: DEFAULT_TEMPERATURE,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            memory_window: DEFAULT_MEMORY_WINDOW,
+            max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
             thinking_enabled: false,
             streaming: true,
         }
@@ -640,10 +653,12 @@ impl AgentLoop {
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // 1. Build the system prompt
-        let system_content = system_prompts.join("\n\n");
-        if !system_content.is_empty() {
-            messages.push(ChatMessage::system(system_content));
+        // 1. Build the system prompt (only if non-empty)
+        if !system_prompts.is_empty() {
+            let system_content = system_prompts.join("\n\n");
+            if !system_content.is_empty() {
+                messages.push(ChatMessage::system(system_content));
+            }
         }
 
         // 2. Inject summary as assistant message (if exists)
@@ -657,15 +672,15 @@ impl AgentLoop {
             }
         }
 
-        // 3. Add processed history messages
+        // 3. Add processed history messages (consume msg.content to avoid cloning)
         let history_count = processed_history.len();
         for msg in processed_history {
             match msg.role {
                 crate::providers::MessageRole::User => {
-                    messages.push(ChatMessage::user(&msg.content))
+                    messages.push(ChatMessage::user(msg.content))
                 }
                 crate::providers::MessageRole::Assistant => {
-                    messages.push(ChatMessage::assistant(&msg.content))
+                    messages.push(ChatMessage::assistant(msg.content))
                 }
                 _ => {}
             }

@@ -237,7 +237,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                         let inbound = InboundMessage {
                             channel: WebSocketChannel,
                             sender_id: user_id.clone(),
-                            chat_id: connection_id.clone(),
+                            chat_id: user_id.clone(), // Use user_id for session persistence
                             content: text.to_string(),
                             media: None,
                             metadata: None,

@@ -20,6 +20,9 @@ use super::sandbox::{self, SandboxExecutor};
 use super::{Tool, ToolError, ToolResult};
 use crate::config::ExecToolConfig;
 
+/// Dangerous patterns that could indicate command injection attempts
+const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", ">", ">>", "|", "\n", "\r"];
+
 /// Shell execution tool with optional sandboxing.
 pub struct ExecTool {
     working_dir: PathBuf,
@@ -118,6 +121,19 @@ impl ExecTool {
 
         Ok(())
     }
+
+    /// Validate command for potential injection attempts.
+    fn validate_command(&self, command: &str) -> Result<(), ToolError> {
+        for pattern in DANGEROUS_PATTERNS {
+            if command.contains(pattern) {
+                return Err(ToolError::InvalidArguments(format!(
+                    "Potentially unsafe pattern detected: '{}'. Command injection is not allowed.",
+                    pattern
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for ExecTool {
@@ -168,6 +184,9 @@ impl Tool for ExecTool {
                 "Shell execution is disabled. Set 'enabled: true' in tool configuration to allow command execution.".to_string(),
             ));
         }
+
+        // Step 0: Command injection validation
+        self.validate_command(&args.command)?;
 
         // Step 1: Command policy check (advisory)
         match self.policy.check(&args.command) {

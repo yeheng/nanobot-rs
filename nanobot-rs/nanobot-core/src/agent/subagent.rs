@@ -12,6 +12,9 @@ use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentConfig, AgentLoop};
 
+/// Default timeout for subagent execution (10 minutes)
+const SUBAGENT_TIMEOUT_SECS: u64 = 600;
+
 pub struct SubagentManager {
     provider: Arc<dyn LlmProvider>,
     workspace: PathBuf,
@@ -84,7 +87,7 @@ impl SubagentManager {
                 };
             agent.set_system_prompt(system_prompt);
 
-            let timeout_duration = std::time::Duration::from_secs(600); // 10 minutes hard timeout
+            let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
             let result = tokio::time::timeout(
                 timeout_duration,
                 agent.process_direct(&prompt, &session_key),

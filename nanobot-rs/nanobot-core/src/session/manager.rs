@@ -271,10 +271,18 @@ impl SessionManager {
     ///
     /// Preferred method for `/new`-style reset: directly issues a DELETE
     /// against the DB without loading the full session first.
+    /// Preserves the last_consolidated value to maintain summary context.
     #[instrument(name = "session.clear", skip(self), fields(key = %key))]
     pub async fn clear_session(&self, key: &SessionKey) {
         let key_str = key.to_string();
-        if let Err(e) = self.clear_and_save_meta(&key_str, 0).await {
+
+        // Load existing last_consolidated value to preserve summary context
+        let last_consolidated = match self.store.load_session_meta(&key_str).await {
+            Ok(Some(meta)) => meta.last_consolidated,
+            _ => 0,
+        };
+
+        if let Err(e) = self.clear_and_save_meta(&key_str, last_consolidated).await {
             warn!("Failed to clear session {} in SQLite: {}", key_str, e);
         }
     }
