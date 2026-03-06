@@ -8,9 +8,8 @@ use nanobot_core::agent::AgentConfig;
 use nanobot_core::config::Config;
 use nanobot_core::search::tantivy::{open_history_index, open_memory_index};
 use nanobot_core::tools::{
-    EditFileTool, ExecTool, HistoryTantivySearchTool, ListDirTool, MemorySearchTool,
-    MemoryTantivySearchTool, ReadFileTool, SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool,
-    WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, HistoryTantivySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
+    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 /// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
@@ -222,9 +221,23 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         tools.register(mcp_tool);
     }
 
-    // Memory search tool — filesystem grep over ~/.nanobot/memory/*.md
+    // Memory search tool — unified: Tantivy when available, filesystem fallback
+    // Create base tool and optionally attach Tantivy reader
+    let mut memory_tool = MemorySearchTool::new();
+
+    if enable_tantivy_search {
+        let config_dir = nanobot_core::config::config_dir();
+        let memory_index_path = config_dir.join("tantivy-index").join("memory");
+        let memory_dir = config_dir.join("memory");
+
+        if let Ok((m_reader, _m_writer)) = open_memory_index(&memory_index_path, &memory_dir) {
+            memory_tool = memory_tool.with_tantivy_reader(Arc::new(m_reader));
+            tracing::debug!("Memory search tool: Tantivy reader attached");
+        }
+    }
+
     tools.register_with_metadata(
-        Box::new(MemorySearchTool::new()),
+        Box::new(memory_tool),
         ToolMetadata {
             display_name: "Memory Search".to_string(),
             category: "memory".to_string(),
@@ -234,39 +247,16 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // Tantivy-powered advanced search tools (optional)
+    // History search tool — Tantivy-powered (optional)
     if enable_tantivy_search {
         let config_dir = nanobot_core::config::config_dir();
-
-        // Memory index: create paired reader+writer sharing the same underlying index
-        let memory_index_path = config_dir.join("tantivy-index").join("memory");
-        let memory_dir = config_dir.join("memory");
-
-        if let Ok((m_reader, _m_writer)) = open_memory_index(&memory_index_path, &memory_dir) {
-            tools.register_with_metadata(
-                Box::new(MemoryTantivySearchTool::new(Arc::new(m_reader))),
-                ToolMetadata {
-                    display_name: "Memory Tantivy Search".to_string(),
-                    category: "search".to_string(),
-                    tags: vec![
-                        "tantivy".to_string(),
-                        "full-text".to_string(),
-                        "memory".to_string(),
-                    ],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            );
-        }
-
-        // History index: create paired reader+writer sharing the same underlying index
         let history_index_path = config_dir.join("tantivy-index").join("history");
 
         if let Ok((h_reader, _h_writer)) = open_history_index(&history_index_path) {
             tools.register_with_metadata(
                 Box::new(HistoryTantivySearchTool::new(Arc::new(h_reader))),
                 ToolMetadata {
-                    display_name: "History Tantivy Search".to_string(),
+                    display_name: "History Search".to_string(),
                     category: "search".to_string(),
                     tags: vec![
                         "tantivy".to_string(),

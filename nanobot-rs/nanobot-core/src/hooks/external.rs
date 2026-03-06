@@ -59,29 +59,81 @@ impl ExternalHookOutput {
 
 // ── Runner ──────────────────────────────────────────────────
 
+/// Script availability cache — avoids filesystem I/O on hot paths.
+#[derive(Debug, Clone, Copy)]
+struct ScriptAvailability {
+    /// Whether pre_request.sh exists and is executable
+    has_pre_request: bool,
+    /// Whether post_response.sh exists and is executable
+    has_post_response: bool,
+}
+
+impl ScriptAvailability {
+    fn scan(hooks_dir: &Path) -> Self {
+        let pre_request_path = hooks_dir.join("pre_request.sh");
+        let post_response_path = hooks_dir.join("post_response.sh");
+
+        let has_pre_request = pre_request_path.exists() && is_executable(&pre_request_path);
+        let has_post_response = post_response_path.exists() && is_executable(&post_response_path);
+
+        if has_pre_request || has_post_response {
+            debug!(
+                "Hook scripts available: pre_request={}, post_response={}",
+                has_pre_request, has_post_response
+            );
+        }
+
+        Self {
+            has_pre_request,
+            has_post_response,
+        }
+    }
+}
+
 /// Executes external shell hook scripts from a directory.
 ///
 /// If the hooks directory doesn't exist or a script is missing,
 /// the runner silently returns `None` — hooks are optional.
 pub struct ExternalHookRunner {
     hooks_dir: Option<PathBuf>,
+    /// Cached script availability — scanned once at startup.
+    script_availability: ScriptAvailability,
 }
 
 impl ExternalHookRunner {
     /// Create a runner that looks for scripts in the given directory.
+    ///
+    /// Scans for script availability once at creation time, avoiding
+    /// filesystem I/O on every message.
     pub fn new(hooks_dir: PathBuf) -> Self {
-        let hooks_dir = if hooks_dir.is_dir() {
-            Some(hooks_dir)
+        let (hooks_dir, script_availability) = if hooks_dir.is_dir() {
+            let availability = ScriptAvailability::scan(&hooks_dir);
+            (Some(hooks_dir), availability)
         } else {
             debug!("Hooks directory not found: {}", hooks_dir.display());
-            None
+            (
+                None,
+                ScriptAvailability {
+                    has_pre_request: false,
+                    has_post_response: false,
+                },
+            )
         };
-        Self { hooks_dir }
+        Self {
+            hooks_dir,
+            script_availability,
+        }
     }
 
     /// Create a no-op runner (for subagents or testing).
     pub fn noop() -> Self {
-        Self { hooks_dir: None }
+        Self {
+            hooks_dir: None,
+            script_availability: ScriptAvailability {
+                has_pre_request: false,
+                has_post_response: false,
+            },
+        }
     }
 
     /// Run the `pre_request.sh` hook.
@@ -94,6 +146,11 @@ impl ExternalHookRunner {
         session_key: &str,
         user_message: &str,
     ) -> anyhow::Result<Option<ExternalHookOutput>> {
+        // Fast path: check cached availability before any I/O
+        if !self.script_availability.has_pre_request {
+            return Ok(None);
+        }
+
         let input = ExternalHookInput {
             event: "pre_request".to_string(),
             session_id: session_key.to_string(),
@@ -113,6 +170,11 @@ impl ExternalHookRunner {
         response_content: &str,
         tools_used: &str,
     ) -> anyhow::Result<Option<ExternalHookOutput>> {
+        // Fast path: check cached availability before any I/O
+        if !self.script_availability.has_post_response {
+            return Ok(None);
+        }
+
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             "tools_used".to_string(),
@@ -139,18 +201,6 @@ impl ExternalHookRunner {
         };
 
         let script_path = hooks_dir.join(script_name);
-        if !script_path.exists() {
-            return Ok(None);
-        }
-
-        // Check executable permission
-        if !is_executable(&script_path) {
-            warn!(
-                "Hook script exists but is not executable: {}",
-                script_path.display()
-            );
-            return Ok(None);
-        }
 
         let json_input = serde_json::to_string(input)?;
         debug!(
@@ -329,6 +379,8 @@ mod tests {
     fn test_noop_runner() {
         let runner = ExternalHookRunner::noop();
         assert!(runner.hooks_dir.is_none());
+        assert!(!runner.script_availability.has_pre_request);
+        assert!(!runner.script_availability.has_post_response);
     }
 
     #[tokio::test]
@@ -342,6 +394,8 @@ mod tests {
     #[tokio::test]
     async fn test_missing_hooks_dir_returns_none() {
         let runner = ExternalHookRunner::new(PathBuf::from("/nonexistent/path"));
+        assert!(!runner.script_availability.has_pre_request);
+        assert!(!runner.script_availability.has_post_response);
         let result = runner.run_pre_request("test:session", "hello").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());

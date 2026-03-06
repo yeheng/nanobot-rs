@@ -8,7 +8,6 @@ mod history_tantivy_index;
 mod history_tantivy_search;
 mod memory_search;
 mod memory_tantivy_index;
-mod memory_tantivy_search;
 mod message;
 mod registry;
 pub mod resource_limits;
@@ -25,7 +24,7 @@ pub use history_tantivy_index::HistoryTantivyIndexTool;
 pub use history_tantivy_search::HistoryTantivySearchTool;
 pub use memory_search::MemorySearchTool;
 pub use memory_tantivy_index::MemoryTantivyIndexTool;
-pub use memory_tantivy_search::MemoryTantivySearchTool;
+// MemoryTantivySearchTool removed — merged into MemorySearchTool
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
 pub use shell::ExecTool;

@@ -413,6 +413,7 @@ impl EmailConfig {
     }
 
     /// Build email config, returning error if validation fails
+    #[cfg(feature = "email")]
     pub fn build_or_err(
         &self,
     ) -> Result<crate::channels::email::EmailConfig, ConfigValidationError> {
