@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use nanobot_core::agent::AgentConfig;
 use nanobot_core::config::Config;
+use nanobot_core::search::tantivy::{open_history_index, open_memory_index};
 use nanobot_core::tools::{
     EditFileTool, ExecTool, HistoryTantivySearchTool, ListDirTool, MemorySearchTool,
     MemoryTantivySearchTool, ReadFileTool, SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool,
@@ -235,9 +236,15 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // Tantivy-powered advanced search tools (optional)
     if enable_tantivy_search {
-        if let Ok(memory_tool) = MemoryTantivySearchTool::with_defaults() {
+        let config_dir = nanobot_core::config::config_dir();
+
+        // Memory index: create paired reader+writer sharing the same underlying index
+        let memory_index_path = config_dir.join("tantivy-index").join("memory");
+        let memory_dir = config_dir.join("memory");
+
+        if let Ok((m_reader, _m_writer)) = open_memory_index(&memory_index_path, &memory_dir) {
             tools.register_with_metadata(
-                Box::new(memory_tool),
+                Box::new(MemoryTantivySearchTool::new(Arc::new(m_reader))),
                 ToolMetadata {
                     display_name: "Memory Tantivy Search".to_string(),
                     category: "search".to_string(),
@@ -252,9 +259,12 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             );
         }
 
-        if let Ok(history_tool) = HistoryTantivySearchTool::with_defaults() {
+        // History index: create paired reader+writer sharing the same underlying index
+        let history_index_path = config_dir.join("tantivy-index").join("history");
+
+        if let Ok((h_reader, _h_writer)) = open_history_index(&history_index_path) {
             tools.register_with_metadata(
-                Box::new(history_tool),
+                Box::new(HistoryTantivySearchTool::new(Arc::new(h_reader))),
                 ToolMetadata {
                     display_name: "History Tantivy Search".to_string(),
                     category: "search".to_string(),

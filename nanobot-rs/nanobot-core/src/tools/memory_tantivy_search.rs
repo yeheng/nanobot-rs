@@ -10,24 +10,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::info;
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
-use crate::search::tantivy::MemoryIndex;
+use crate::search::tantivy::{open_memory_index, MemoryIndexReader};
 use crate::search::{BooleanQuery, FuzzyQuery, SearchQuery, SortOrder};
 
 /// Tool that searches memory files using Tantivy full-text search.
 pub struct MemoryTantivySearchTool {
-    index: Arc<RwLock<MemoryIndex>>,
+    reader: Arc<MemoryIndexReader>,
 }
 
 impl MemoryTantivySearchTool {
-    /// Create a new memory tantivy search tool.
-    pub fn new(index: Arc<RwLock<MemoryIndex>>) -> Self {
-        Self { index }
+    /// Create a new memory tantivy search tool from a shared reader.
+    pub fn new(reader: Arc<MemoryIndexReader>) -> Self {
+        Self { reader }
     }
 
     /// Create with default paths.
@@ -36,12 +35,12 @@ impl MemoryTantivySearchTool {
         let index_path = config_dir.join("tantivy-index").join("memory");
         let memory_dir = config_dir.join("memory");
 
-        let index = MemoryIndex::new(&index_path, &memory_dir).map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to create memory index: {}", e))
+        let (reader, _writer) = open_memory_index(&index_path, &memory_dir).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to open memory index: {}", e))
         })?;
 
         Ok(Self {
-            index: Arc::new(RwLock::new(index)),
+            reader: Arc::new(reader),
         })
     }
 }
@@ -171,9 +170,9 @@ impl Tool for MemoryTantivySearchTool {
 
         info!("memory_tantivy_search: executing query {:?}", search_query);
 
-        // Execute search
-        let index = self.index.read();
-        let results = index
+        // Execute search — direct call, no lock needed
+        let results = self
+            .reader
             .search(&search_query)
             .map_err(|e| ToolError::ExecutionError(format!("Search failed: {}", e)))?;
 
@@ -215,22 +214,6 @@ impl Tool for MemoryTantivySearchTool {
 
         Ok(output)
     }
-}
-
-/// Rebuild the memory index from all files.
-#[allow(dead_code)]
-pub async fn rebuild_memory_index(index: Arc<RwLock<MemoryIndex>>) -> Result<usize, ToolError> {
-    // Use tokio::task::spawn_blocking to avoid holding lock across await
-    let index_clone = Arc::clone(&index);
-    tokio::task::spawn_blocking(move || {
-        let mut idx = index_clone.write();
-        // Create a new tokio runtime for the async rebuild
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { idx.rebuild().await })
-    })
-    .await
-    .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn blocking task: {}", e)))?
-    .map_err(|e| ToolError::ExecutionError(format!("Failed to rebuild index: {}", e)))
 }
 
 #[cfg(test)]

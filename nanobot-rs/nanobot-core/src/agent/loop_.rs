@@ -134,16 +134,6 @@ fn log_llm_response(response: &ChatResponse, iteration: u32) {
     }
 }
 
-/// Log a tool result — name, preview, and duration.
-fn log_tool_result(tool_name: &str, tool_result: &str, duration_ms: u64) {
-    let preview = if tool_result.len() > 500 {
-        format!("{}... (truncated)", &tool_result[..500])
-    } else {
-        tool_result.to_string()
-    };
-    debug!("[Tool] {} -> {} ({}ms)", tool_name, preview, duration_ms);
-}
-
 // ── AgentLoop ───────────────────────────────────────────────
 
 /// The agent loop - core processing engine.
@@ -621,7 +611,10 @@ impl AgentLoop {
             let tool_name = tool_call.function.name.clone();
 
             // Inline logging (replaces LoggingHook::on_tool_result)
-            log_tool_result(&tool_name, &result.output, duration_ms);
+            debug!(
+                "[Tool] {} -> {} ({}ms)",
+                tool_name, &result.output, duration_ms
+            );
 
             state.tools_used.push(tool_name.clone());
 

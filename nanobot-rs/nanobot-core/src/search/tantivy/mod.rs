@@ -3,8 +3,8 @@
 mod history_index;
 mod memory_index;
 
-pub use history_index::HistoryIndex;
-pub use memory_index::MemoryIndex;
+pub use history_index::{HistoryIndexReader, HistoryIndexWriter, open_history_index};
+pub use memory_index::{IndexUpdateStats, MemoryIndexReader, MemoryIndexWriter, open_memory_index};
 
 /// Error type for Tantivy operations.
 #[derive(Debug, thiserror::Error)]

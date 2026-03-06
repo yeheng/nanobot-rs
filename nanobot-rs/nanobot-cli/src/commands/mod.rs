@@ -9,6 +9,7 @@ mod cron;
 mod gateway;
 mod onboard;
 pub mod registry;
+mod search;
 mod status;
 
 pub use agent::cmd_agent;
@@ -19,4 +20,5 @@ pub use cron::{
 };
 pub use gateway::cmd_gateway;
 pub use onboard::cmd_onboard;
+pub use search::{cmd_search_rebuild, cmd_search_status, cmd_search_update};
 pub use status::{cmd_auth_status, cmd_status};

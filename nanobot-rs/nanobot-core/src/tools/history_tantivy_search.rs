@@ -11,24 +11,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::info;
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
-use crate::search::tantivy::HistoryIndex;
+use crate::search::tantivy::{open_history_index, HistoryIndexReader};
 use crate::search::{BooleanQuery, DateRange, FuzzyQuery, SearchQuery, SortOrder};
 
 /// Tool that searches session history using Tantivy full-text search.
 pub struct HistoryTantivySearchTool {
-    index: Arc<RwLock<HistoryIndex>>,
+    reader: Arc<HistoryIndexReader>,
 }
 
 impl HistoryTantivySearchTool {
-    /// Create a new history tantivy search tool.
-    pub fn new(index: Arc<RwLock<HistoryIndex>>) -> Self {
-        Self { index }
+    /// Create a new history tantivy search tool from a shared reader.
+    pub fn new(reader: Arc<HistoryIndexReader>) -> Self {
+        Self { reader }
     }
 
     /// Create with default paths.
@@ -36,12 +35,12 @@ impl HistoryTantivySearchTool {
         let config_dir = crate::config::config_dir();
         let index_path = config_dir.join("tantivy-index").join("history");
 
-        let index = HistoryIndex::new(&index_path).map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to create history index: {}", e))
+        let (reader, _writer) = open_history_index(&index_path).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to open history index: {}", e))
         })?;
 
         Ok(Self {
-            index: Arc::new(RwLock::new(index)),
+            reader: Arc::new(reader),
         })
     }
 }
@@ -199,9 +198,9 @@ impl Tool for HistoryTantivySearchTool {
 
         info!("history_tantivy_search: executing query {:?}", search_query);
 
-        // Execute search
-        let index = self.index.read();
-        let results = index
+        // Execute search — direct call, no lock needed
+        let results = self
+            .reader
             .search(&search_query)
             .map_err(|e| ToolError::ExecutionError(format!("Search failed: {}", e)))?;
 

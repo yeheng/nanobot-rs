@@ -43,6 +43,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: CronCommands,
     },
+
+    /// Manage Tantivy search indexes
+    Search {
+        #[command(subcommand)]
+        command: SearchCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -135,4 +141,24 @@ pub enum CronCommands {
         /// Job ID to disable
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SearchCommands {
+    /// Rebuild search indexes from scratch
+    Rebuild {
+        /// Index type: "memory", "history", or "all" (default: all)
+        #[arg(short, long, default_value = "all")]
+        r#type: String,
+    },
+
+    /// Incrementally update search indexes
+    Update {
+        /// Index type: "memory", "history", or "all" (default: all)
+        #[arg(short, long, default_value = "all")]
+        r#type: String,
+    },
+
+    /// Show index statistics
+    Status,
 }

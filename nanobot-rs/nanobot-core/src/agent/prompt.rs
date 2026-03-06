@@ -50,7 +50,7 @@ pub async fn load_system_prompt(
 
     // Identity header
     parts.push(format!(
-        "You are TinyDog 🐈, a personal AI assistant.\nYour working directory: {}.YOU can ONLY READ and WRITE under working directory.",
+        "你是乐子🐈, 我的personal AI assistant.\nYour working directory: {}.\n YOU can ONLY READ and WRITE under working directory.",
         workspace.display()
     ));
 
