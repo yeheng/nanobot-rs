@@ -10,7 +10,7 @@ use crate::bus::events::SessionKey;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
-use super::loop_::{AgentConfig, AgentLoop};
+use super::loop_::{AgentConfig, AgentLoop, AgentResponse};
 
 /// Default timeout for subagent execution (10 minutes)
 const SUBAGENT_TIMEOUT_SECS: u64 = 600;
@@ -118,5 +118,75 @@ impl SubagentManager {
         });
 
         Ok(())
+    }
+
+    /// Submit a prompt and **synchronously wait** for the agent response.
+    ///
+    /// Unlike `submit()` (fire-and-forget), this method blocks the caller
+    /// until the subagent finishes. It is designed for governance-layer
+    /// agents (e.g. review gates) where the pipeline must wait for a
+    /// decision before proceeding.
+    ///
+    /// An optional `system_prompt` can be provided to inject a role-specific
+    /// SOUL.md — if `None`, the default minimal bootstrap prompt is used.
+    #[instrument(name = "subagent.submit_and_wait", skip_all)]
+    pub async fn submit_and_wait(
+        &self,
+        prompt_text: &str,
+        system_prompt: Option<&str>,
+    ) -> anyhow::Result<AgentResponse> {
+        let provider = self.provider.clone();
+        let workspace = self.workspace.clone();
+        let tool_factory = self.tool_factory.clone();
+        let prompt_text = prompt_text.to_string();
+        let custom_system = system_prompt.map(|s| s.to_string());
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<anyhow::Result<AgentResponse>>();
+
+        tokio::spawn(async move {
+            let result = async {
+                info!(
+                    "Subagent (sync) started: {}",
+                    &prompt_text[..prompt_text.len().min(80)]
+                );
+                let agent_config = AgentConfig {
+                    model: provider.default_model().to_string(),
+                    max_iterations: 10,
+                    ..Default::default()
+                };
+                let tools = tool_factory();
+
+                let mut agent =
+                    AgentLoop::builder(provider, workspace.clone(), agent_config, tools)?;
+
+                // Use custom system prompt if provided, otherwise load default
+                let sys = match custom_system {
+                    Some(s) => s,
+                    None => {
+                        prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
+                            .await?
+                    }
+                };
+                agent.set_system_prompt(sys);
+
+                let session_key = SessionKey::new(crate::bus::ChannelType::Cli, "pipeline_sync");
+                let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
+
+                tokio::time::timeout(
+                    timeout_duration,
+                    agent.process_direct(&prompt_text, &session_key),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Subagent timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
+                .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+            .await;
+
+            // Send result back; if the receiver was dropped, discard silently
+            let _ = tx.send(result);
+        });
+
+        rx.await
+            .map_err(|_| anyhow::anyhow!("Subagent task was cancelled"))?
     }
 }

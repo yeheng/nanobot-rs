@@ -24,6 +24,11 @@ pub struct Config {
     /// Tools configuration
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    /// Multi-agent pipeline configuration (opt-in).
+    /// When absent or `enabled: false`, the pipeline subsystem is completely dormant.
+    #[serde(default)]
+    pub pipeline: Option<crate::pipeline::PipelineConfig>,
 }
 
 /// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)

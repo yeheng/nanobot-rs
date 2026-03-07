@@ -3,13 +3,16 @@
 mod base;
 pub mod command_policy;
 mod cron;
+pub mod delegate;
 mod filesystem;
 mod history_tantivy_index;
 mod history_tantivy_search;
 mod memory_search;
 mod memory_tantivy_index;
 mod message;
+pub mod pipeline_task;
 mod registry;
+pub mod report_progress;
 pub mod resource_limits;
 pub mod sandbox;
 mod shell;
@@ -19,6 +22,7 @@ mod web_search;
 
 pub use base::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
 pub use cron::CronTool;
+pub use delegate::DelegateTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use history_tantivy_index::HistoryTantivyIndexTool;
 pub use history_tantivy_search::HistoryTantivySearchTool;
@@ -26,7 +30,9 @@ pub use memory_search::MemorySearchTool;
 pub use memory_tantivy_index::MemoryTantivyIndexTool;
 // MemoryTantivySearchTool removed — merged into MemorySearchTool
 pub use message::MessageTool;
+pub use pipeline_task::PipelineTaskTool;
 pub use registry::ToolRegistry;
+pub use report_progress::ReportProgressTool;
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
 pub use web_fetch::WebFetchTool;
