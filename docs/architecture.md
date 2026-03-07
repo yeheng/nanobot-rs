@@ -20,10 +20,11 @@ nanobot-rs/                    (Cargo workspace)
 │       ├── hooks/             外部 Shell Hook 系统
 │       ├── mcp/               MCP 协议 (client, manager, tool, types)
 │       ├── memory/            存储层 (MemoryStore trait + SQLite FTS5)
+│       ├── pipeline/          多 Agent 协作管线 (三省六部, opt-in) → 详见 pipeline.md
 │       ├── providers/         LLM 提供商 (OpenAI 兼容 + Gemini + Copilot)
 │       ├── session/           会话管理 (SQLite 后端)
 │       ├── skills/            技能加载器
-│       ├── tools/             工具系统 (14 个内置工具)
+│       ├── tools/             工具系统 (14 个内置 + 3 个管线工具)
 │       ├── webhook/           Webhook 服务器
 │       └── workspace/         工作空间模板文件
 └── nanobot-cli/               CLI 可执行文件
@@ -107,6 +108,22 @@ nanobot-rs/                    (Cargo workspace)
 │  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      │ │
 │  │  Service      │  │  (定时任务)     │  │  (JSON-RPC 2.0)  │ │
 │  └───────────────┘  └────────────────┘  └──────────────────┘ │
+│                                                               │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              Pipeline (三省六部, opt-in)                 │  │
+│  │                                                         │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
+│  │  │Orchestrator │  │  Permission  │  │  Stall        │  │  │
+│  │  │  Actor      │  │   Matrix     │  │  Detector     │  │  │
+│  │  │(mpsc event) │  │  (有向图)    │  │  (30s 扫描)   │  │  │
+│  │  └──────┬──────┘  └──────────────┘  └───────────────┘  │  │
+│  │         │                                               │  │
+│  │  ┌──────▼────────────────────────────────────────────┐  │  │
+│  │  │ TaskState 状态机 + PipelineStore (SQLite 3 表)    │  │  │
+│  │  └───────────────────────────────────────────────────┘  │  │
+│  │                                                         │  │
+│  │  Tools: pipeline_task | delegate | report_progress      │  │
+│  └─────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 
                     ┌─────────────────────┐
@@ -126,3 +143,4 @@ nanobot-rs/                    (Cargo workspace)
 | **外部 Hook 扩展** | 遵循 UNIX 哲学，通过 `~/.nanobot/hooks/` 下的 Shell 脚本扩展，数据通过 stdin/stdout JSON 流转 |
 | **Feature Flag 编译** | 各通信渠道通过 Cargo feature flag 独立编译，按需启用 |
 | **无内存缓存** | SessionManager 直接读写 SQLite，利用 SQLite page cache 避免缓存一致性问题 |
+| **Opt-in Pipeline** | 多 Agent 协作管线完全可选 — `pipeline.enabled: false` 时零开销，不创建表、不注册工具、不启动检测器 |

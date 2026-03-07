@@ -106,6 +106,9 @@ parking_lot = "0.12"
 # Token counting
 tiktoken-rs = "0.9"
 
+# Regex for vault placeholder scanning
+regex = "1"
+
 # Archive extraction (for workspace template downloads)
 tar = "0.4"
 flate2 = "1.0"

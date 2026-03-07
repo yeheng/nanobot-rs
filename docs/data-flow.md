@@ -332,3 +332,147 @@ chat_stream() ──▶ Stream<ChatStreamChunk>
     callback()      callback()    解析为 Vec<ToolCall>
     (实时输出)      (实时输出)    → ChatResponse
 ```
+
+---
+
+## 6. Pipeline 数据流 (opt-in)
+
+> 仅在 `pipeline.enabled: true` 时激活，否则完全不存在。
+
+### 6.1 任务生命周期
+
+```
+用户请求 → pipeline_task(create)
+               │
+        ┌──────▼───────┐
+        │   Pending    │
+        └──────┬───────┘
+               │  PipelineEvent::TaskCreated
+               │  (OrchestratorActor 自动推进)
+        ┌──────▼───────┐
+        │   Triage     │  ← 太子 Agent (submit_and_wait)
+        │   分析分类    │
+        └──────┬───────┘
+               │  pipeline_task(transition → planning)
+        ┌──────▼───────┐
+        │   Planning   │  ← 中书省 Agent (submit_and_wait)
+        │   制定计划    │
+        └──────┬───────┘
+               │  pipeline_task(transition → reviewing)
+        ┌──────▼───────┐
+        │   Reviewing  │  ← 门下省 Agent (submit_and_wait)
+        │   审核质量    │
+        └──┬───────┬───┘
+           │       │
+     批准  │       │  拒绝
+           │       │
+     ┌─────▼──┐    └──▶ 回到 Planning (review_count++)
+     │Assigned│
+     │ 分派   │  ← 尚书省 Agent (submit_and_wait)
+     └──┬─────┘
+        │  pipeline_task(transition → executing)
+     ┌──▼──────────┐
+     │  Executing  │  ← 六部 Agent (submit, fire-and-forget)
+     │  执行任务    │
+     │  ↕ report_  │
+     │   progress  │  (每 30 秒更新心跳)
+     └──┬──────┬───┘
+        │      │
+  完成  │      │  受阻
+        │      │
+  ┌─────▼──┐   └──▶ Blocked ──▶ 三级恢复策略
+  │ Review │
+  │ 结果审核│  ← 门下省 Agent
+  └──┬──┬──┘
+     │  │
+ 通过│  │ 问题
+     │  │
+┌────▼┐ └──▶ Blocked
+│Done │
+│完成 │
+└─────┘
+```
+
+### 6.2 编排器事件循环
+
+```
+pipeline_task tool ──▶ PipelineEvent ──▶ mpsc channel ──▶ OrchestratorActor
+report_progress tool ─┘                                        │
+stall_detector ───────┘                                        │
+                                                               ▼
+                                                    ┌─────────────────────┐
+                                                    │  match event {      │
+                                                    │    TaskCreated →    │
+                                                    │      Pending→Triage│
+                                                    │      dispatch(taizi)│
+                                                    │                     │
+                                                    │    TaskTransitioned→│
+                                                    │      查找负责角色    │
+                                                    │      dispatch(role) │
+                                                    │                     │
+                                                    │    StallDetected → │
+                                                    │      L1: 重试       │
+                                                    │      L2: Blocked   │
+                                                    │  }                  │
+                                                    └──────────┬──────────┘
+                                                               │
+                                              ┌────────────────┼────────────────┐
+                                              │                │                │
+                                        治理层 Agent      执行层 Agent    停滞恢复
+                                              │                │                │
+                                    submit_and_wait()     submit()        update_heartbeat()
+                                    (同步等待决策)       (异步+进度上报)   retry / block
+```
+
+### 6.3 SubagentManager 两种调度模式
+
+```
+─── submit() (异步 fire-and-forget) ───
+
+调用者 ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
+  │                              │                              │
+  │  立即返回 Ok(())             │  10 分钟超时                  │  通过 outbound_tx
+  │                              │                              │  发送到渠道
+  ▼                              ▼                              ▼
+(不等待)                    (后台运行)                     (结果路由到 chat)
+
+
+─── submit_and_wait() (同步等待) ───
+
+调用者 ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ oneshot::Sender
+  │              │                                              │
+  │  await rx    │  10 分钟超时                                  │ tx.send(result)
+  │  (阻塞等待)  │                                              │
+  ▼              ▼                                              ▼
+(收到 AgentResponse                                    (oneshot channel)
+ 或 Error)
+```
+
+### 6.4 停滞检测流程
+
+```
+┌──────────────────────┐
+│   StallDetector      │
+│   (30s interval)     │
+└──────────┬───────────┘
+           │
+     每 30 秒查询:
+     SELECT * FROM pipeline_tasks
+     WHERE last_heartbeat < (now - stall_timeout)
+       AND state IN ('executing','triage','planning','reviewing','assigned')
+           │
+           │  找到超时任务
+           ▼
+     PipelineEvent::StallDetected { task_id }
+           │
+           ▼
+     OrchestratorActor
+           │
+     ┌─────▼──────────────────────────────────────┐
+     │  retry_count == 0?                          │
+     │  ├── YES: L1 重试 → 重新 dispatch 同一 Agent│
+     │  │        retry_count++                     │
+     │  └── NO:  L2 阻塞 → 转为 Blocked 状态       │
+     │           写入 flow_log                     │
+     └────────────────────────────────────────────┘
+```

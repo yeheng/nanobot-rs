@@ -40,10 +40,12 @@ use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::tools::ToolRegistry;
+use crate::vault::{VaultInjector, VaultStore, redact_secrets};
 
 use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
 use crate::session::SessionManager;
+use std::sync::Mutex;
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -121,15 +123,18 @@ struct ToolCallState<'a> {
 // ── Inline logging functions (replaces LoggingHook) ─────────
 
 /// Log an LLM response — reasoning and content.
-fn log_llm_response(response: &ChatResponse, iteration: u32) {
+/// Redacts sensitive values if provided.
+fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
     if let Some(ref reasoning) = response.reasoning_content {
         if !reasoning.is_empty() {
-            debug!("[Agent] Reasoning (iter {}): {}", iteration, reasoning);
+            let safe_reasoning = redact_secrets(reasoning, vault_values);
+            debug!("[Agent] Reasoning (iter {}): {}", iteration, safe_reasoning);
         }
     }
     if let Some(ref content) = response.content {
         if !content.is_empty() {
-            info!("[Agent] Response (iter {}): {}", iteration, content);
+            let safe_content = redact_secrets(content, vault_values);
+            info!("[Agent] Response (iter {}): {}", iteration, safe_content);
         }
     }
 }
@@ -171,6 +176,10 @@ pub struct AgentLoop {
     skills_context: Option<String>,
     /// External shell hook runner (pre_request / post_response).
     external_hooks: ExternalHookRunner,
+    /// Vault injector for sensitive data (optional).
+    vault_injector: Option<VaultInjector>,
+    /// Injected values for log redaction (thread-safe).
+    vault_values: Mutex<Vec<String>>,
 }
 
 impl AgentLoop {
@@ -218,6 +227,18 @@ impl AgentLoop {
             });
         let external_hooks = ExternalHookRunner::new(hooks_dir);
 
+        // Initialize vault (optional - for sensitive data isolation)
+        let vault_injector = match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(e) => {
+                debug!("[Agent] Vault not available: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             provider,
             tools,
@@ -229,6 +250,8 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             external_hooks,
+            vault_injector,
+            vault_values: Mutex::new(Vec::new()),
         })
     }
 
@@ -270,6 +293,18 @@ impl AgentLoop {
             });
         let external_hooks = ExternalHookRunner::new(hooks_dir);
 
+        // Initialize vault (optional - for sensitive data isolation)
+        let vault_injector = match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(e) => {
+                debug!("[Agent] Vault not available: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             provider,
             tools,
@@ -281,6 +316,8 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             external_hooks,
+            vault_injector,
+            vault_values: Mutex::new(Vec::new()),
         })
     }
 
@@ -289,6 +326,7 @@ impl AgentLoop {
     /// System prompt is empty by default; use 'set_system_prompt()' to configure.
     /// Subagents get 'None' for all storage services (no persistence).
     /// No external hooks for subagents.
+    /// No vault for subagents.
     pub fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
@@ -306,6 +344,8 @@ impl AgentLoop {
             system_prompt: String::new(),
             skills_context: None,
             external_hooks: ExternalHookRunner::noop(),
+            vault_injector: None,
+            vault_values: Mutex::new(Vec::new()),
         })
     }
 
@@ -456,12 +496,34 @@ impl AgentLoop {
         }
 
         // ── 7. Assemble prompt (pure, synchronous) ─────────────────
-        let messages = Self::assemble_prompt(
+        let mut messages = Self::assemble_prompt(
             processed.messages,
             content,
             &system_prompts,
             summary.as_deref(),
         );
+
+        // ── 7.5. Inject vault secrets (before sending to LLM) ────────
+        let _injection_report = if let Some(ref injector) = self.vault_injector {
+            let report = injector.inject(&mut messages);
+
+            // Store injected values for log redaction
+            if let Ok(mut values) = self.vault_values.lock() {
+                *values = report.injected_values.clone();
+            }
+
+            if !report.missing_keys.is_empty() {
+                warn!("[Vault] Missing keys: {:?}", report.missing_keys);
+            }
+            if !report.keys_used.is_empty() {
+                debug!("[Vault] Injected {} keys: {:?}",
+                       report.keys_used.len(), report.keys_used);
+            }
+
+            Some(report)
+        } else {
+            None
+        };
 
         // ── 8. Run agent loop ─────────────────────────────────────
         let effective_cb = if self.config.streaming {
@@ -473,21 +535,36 @@ impl AgentLoop {
 
         // ── 9. External hook: post_response (audit / alerting) ────
         let tools_used_str = result.tools_used.join(", ");
+
+        // Redact secrets from post_response hook
+        let safe_content = if let Ok(ref values) = self.vault_values.lock().as_ref() {
+            redact_secrets(&result.content, values)
+        } else {
+            result.content.clone()
+        };
+
         if let Err(e) = self
             .external_hooks
-            .run_post_response(&session_key_str, &result.content, &tools_used_str)
+            .run_post_response(&session_key_str, &safe_content, &tools_used_str)
             .await
         {
             warn!("post_response hook failed (ignored): {}", e);
         }
 
         // ── 10. Save assistant message (direct, Option-aware) ──────────
+        // Redact secrets before saving to history
         if let Some(ref sm) = self.session_manager {
+            let history_content = if let Ok(ref values) = self.vault_values.lock().as_ref() {
+                redact_secrets(&result.content, values)
+            } else {
+                result.content.clone()
+            };
+
             if let Err(e) = sm
                 .append_by_key(
                     session_key,
                     "assistant",
-                    &result.content,
+                    &history_content,
                     Some(result.tools_used.clone()),
                 )
                 .await
@@ -519,6 +596,11 @@ impl AgentLoop {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 
+        // Get vault values for log redaction
+        let vault_values: Vec<String> = self.vault_values.lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+
         let mut messages = initial_messages;
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
@@ -532,7 +614,7 @@ impl AgentLoop {
             let response = stream::accumulate_stream(&mut stream_result, cb).await?;
 
             // Inline logging (replaces LoggingHook::on_llm_response)
-            log_llm_response(&response, iteration);
+            log_llm_response(&response, iteration, &vault_values);
 
             if !response.has_tool_calls() {
                 let content = response.content.unwrap_or_else(|| {

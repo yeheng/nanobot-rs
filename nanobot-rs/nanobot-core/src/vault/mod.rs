@@ -1,0 +1,50 @@
+//! Vault: Sensitive data isolation module
+//!
+//! Provides secure storage and runtime injection for sensitive data.
+//!
+//! # Design Principles
+//!
+//! 1. **Data Structure Isolation**: VaultStore is completely separated from memory/history
+//! 2. **Runtime Injection**: Secrets are only injected at the last moment before sending to LLM
+//! 3. **Zero Trust**: Sensitive data never persists to LLM-accessible storage
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use nanobot_core::vault::{VaultStore, VaultInjector};
+//! use std::sync::Arc;
+//!
+//! // Create store
+//! let store = Arc::new(VaultStore::new()?);
+//! store.set("api_key", "sk-12345", Some("OpenAI API key"))?;
+//!
+//! // Create injector
+//! let injector = VaultInjector::new(store);
+//!
+//! // Inject messages
+//! let mut messages = vec![ChatMessage::user("Use {{vault:api_key}}")];
+//! let report = injector.inject(&mut messages);
+//! // messages[0].content == "Use sk-12345"
+//! ```
+//!
+//! # Placeholder Format
+//!
+//! Use `{{vault:key_name}}` in your messages:
+//!
+//! ```text
+//! "Connect to database with {{vault:db_password}}"
+//! "API key: {{vault:openai_api_key}}"
+//! "AWS credentials: {{vault:aws_access_key}} {{vault:aws_secret_key}}"
+//! ```
+
+mod error;
+mod store;
+mod scanner;
+mod injector;
+mod redaction;
+
+pub use error::VaultError;
+pub use store::{VaultStore, VaultEntry, VaultMetadata};
+pub use scanner::{Placeholder, scan_placeholders, extract_keys, replace_placeholders, contains_placeholders, PLACEHOLDER_PATTERN};
+pub use injector::{VaultInjector, InjectionReport};
+pub use redaction::{redact_secrets, contains_secrets, redact_message_secrets};
