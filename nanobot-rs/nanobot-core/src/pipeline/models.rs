@@ -5,8 +5,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::state_machine::TaskState;
-
 /// Priority levels for pipeline tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,7 +39,7 @@ impl TaskPriority {
     }
 }
 
-/// A pipeline task — the central entity that flows through the state machine.
+/// A pipeline task — the central entity that flows through the pipeline graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineTask {
     /// Unique identifier (UUID v4).
@@ -50,8 +48,8 @@ pub struct PipelineTask {
     pub title: String,
     /// Detailed description / prompt.
     pub description: String,
-    /// Current state in the pipeline.
-    pub state: TaskState,
+    /// Current state in the pipeline (validated against PipelineGraph at boundaries).
+    pub state: String,
     /// Priority level.
     pub priority: TaskPriority,
     /// Role currently responsible for this task.

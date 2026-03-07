@@ -4,12 +4,13 @@
 //! progress entries. Shares the same `SqlitePool` as the rest of the
 //! system but operates on its own set of tables.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use tracing::debug;
 
 use super::models::{FlowLogEntry, PipelineTask, ProgressEntry, TaskPriority};
-use super::state_machine::TaskState;
 
 /// Persistence layer for pipeline entities.
 #[derive(Clone)]
@@ -108,7 +109,7 @@ impl PipelineStore {
 
     // ── Task CRUD ───────────────────────────────────────────────────
 
-    /// Create a new pipeline task in Pending state.
+    /// Create a new pipeline task.
     pub async fn create_task(&self, task: &PipelineTask) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO pipeline_tasks
@@ -120,7 +121,7 @@ impl PipelineStore {
         .bind(&task.id)
         .bind(&task.title)
         .bind(&task.description)
-        .bind(task.state.to_string())
+        .bind(&task.state)
         .bind(task.priority.to_string())
         .bind(&task.assigned_role)
         .bind(task.review_count)
@@ -159,8 +160,8 @@ impl PipelineStore {
     pub async fn update_task_state(
         &self,
         id: &str,
-        expected: TaskState,
-        new_state: TaskState,
+        expected: &str,
+        new_state: &str,
         assigned_role: Option<&str>,
     ) -> anyhow::Result<bool> {
         let now = Utc::now().to_rfc3339();
@@ -170,12 +171,12 @@ impl PipelineStore {
                  updated_at = ?, last_heartbeat = ?
              WHERE id = ? AND state = ?",
         )
-        .bind(new_state.to_string())
+        .bind(new_state)
         .bind(assigned_role)
         .bind(&now)
         .bind(&now)
         .bind(id)
-        .bind(expected.to_string())
+        .bind(expected)
         .execute(&self.pool)
         .await?;
 
@@ -210,14 +211,14 @@ impl PipelineStore {
     }
 
     /// List tasks filtered by state.
-    pub async fn list_tasks_by_state(&self, state: TaskState) -> anyhow::Result<Vec<PipelineTask>> {
+    pub async fn list_tasks_by_state(&self, state: &str) -> anyhow::Result<Vec<PipelineTask>> {
         let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
                     result, origin_channel, origin_chat_id
              FROM pipeline_tasks WHERE state = ? ORDER BY created_at ASC",
         )
-        .bind(state.to_string())
+        .bind(state)
         .fetch_all(&self.pool)
         .await?;
 
@@ -253,21 +254,38 @@ impl PipelineStore {
     }
 
     /// Find tasks whose heartbeat is older than `timeout_secs` and that are
-    /// in an active state (Executing, Triage, Planning, Reviewing, Assigned).
-    pub async fn find_stalled_tasks(&self, timeout_secs: u64) -> anyhow::Result<Vec<PipelineTask>> {
+    /// in one of the given active states.
+    pub async fn find_stalled_tasks(
+        &self,
+        timeout_secs: u64,
+        active_states: &HashSet<String>,
+    ) -> anyhow::Result<Vec<PipelineTask>> {
+        if active_states.is_empty() {
+            return Ok(vec![]);
+        }
+
         let cutoff = Utc::now() - chrono::Duration::seconds(timeout_secs as i64);
-        let rows = sqlx::query_as::<_, TaskRow>(
+
+        // Build dynamic IN clause: IN (?, ?, ...)
+        let placeholders: Vec<&str> = active_states.iter().map(|_| "?").collect();
+        let sql = format!(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
                     result, origin_channel, origin_chat_id
              FROM pipeline_tasks
              WHERE last_heartbeat < ?
-               AND state IN ('executing', 'triage', 'planning', 'reviewing', 'assigned')
+               AND state IN ({})
              ORDER BY last_heartbeat ASC",
-        )
-        .bind(cutoff.to_rfc3339())
-        .fetch_all(&self.pool)
-        .await?;
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query_as::<_, TaskRow>(&sql).bind(cutoff.to_rfc3339());
+
+        for state in active_states {
+            query = query.bind(state.clone());
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -385,7 +403,7 @@ impl From<TaskRow> for PipelineTask {
             id: r.id,
             title: r.title,
             description: r.description,
-            state: TaskState::from_str_lossy(&r.state).unwrap_or(TaskState::Pending),
+            state: r.state,
             priority: TaskPriority::from_str_lossy(&r.priority),
             assigned_role: r.assigned_role,
             review_count: r.review_count as u32,
@@ -489,7 +507,7 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             description: String::new(),
-            state: TaskState::Pending,
+            state: "pending".to_string(),
             priority: TaskPriority::Normal,
             assigned_role: None,
             review_count: 0,
@@ -511,7 +529,7 @@ mod tests {
 
         let fetched = store.get_task("t1").await.unwrap().unwrap();
         assert_eq!(fetched.title, "Test Task");
-        assert_eq!(fetched.state, TaskState::Pending);
+        assert_eq!(fetched.state, "pending");
     }
 
     #[tokio::test]
@@ -521,14 +539,14 @@ mod tests {
 
         // Correct expected state
         let ok = store
-            .update_task_state("t2", TaskState::Pending, TaskState::Triage, Some("taizi"))
+            .update_task_state("t2", "pending", "triage", Some("taizi"))
             .await
             .unwrap();
         assert!(ok);
 
         // Wrong expected state → no rows affected
         let fail = store
-            .update_task_state("t2", TaskState::Pending, TaskState::Planning, None)
+            .update_task_state("t2", "pending", "planning", None)
             .await
             .unwrap();
         assert!(!fail);
@@ -540,15 +558,15 @@ mod tests {
         store.create_task(&make_task("a", "A")).await.unwrap();
         store.create_task(&make_task("b", "B")).await.unwrap();
         store
-            .update_task_state("b", TaskState::Pending, TaskState::Triage, Some("taizi"))
+            .update_task_state("b", "pending", "triage", Some("taizi"))
             .await
             .unwrap();
 
-        let pending = store.list_tasks_by_state(TaskState::Pending).await.unwrap();
+        let pending = store.list_tasks_by_state("pending").await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "a");
 
-        let triage = store.list_tasks_by_state(TaskState::Triage).await.unwrap();
+        let triage = store.list_tasks_by_state("triage").await.unwrap();
         assert_eq!(triage.len(), 1);
         assert_eq!(triage[0].id, "b");
     }
@@ -598,15 +616,34 @@ mod tests {
         let mut task = make_task("s1", "Stall");
         // Set heartbeat to 2 minutes ago
         task.last_heartbeat = Utc::now() - chrono::Duration::seconds(120);
-        task.state = TaskState::Executing;
+        task.state = "executing".to_string();
         store.create_task(&task).await.unwrap();
 
-        let stalled = store.find_stalled_tasks(60).await.unwrap();
+        let active_states: HashSet<String> =
+            ["executing", "triage", "planning", "reviewing", "assigned"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+
+        let stalled = store.find_stalled_tasks(60, &active_states).await.unwrap();
         assert_eq!(stalled.len(), 1);
         assert_eq!(stalled[0].id, "s1");
 
         // With a longer timeout, the task is not stalled
-        let not_stalled = store.find_stalled_tasks(300).await.unwrap();
+        let not_stalled = store.find_stalled_tasks(300, &active_states).await.unwrap();
         assert_eq!(not_stalled.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stalled_tasks_empty_active_states() {
+        let store = temp_store().await;
+        let mut task = make_task("s2", "Stall2");
+        task.last_heartbeat = Utc::now() - chrono::Duration::seconds(120);
+        task.state = "executing".to_string();
+        store.create_task(&task).await.unwrap();
+
+        let empty: HashSet<String> = HashSet::new();
+        let stalled = store.find_stalled_tasks(60, &empty).await.unwrap();
+        assert!(stalled.is_empty());
     }
 }

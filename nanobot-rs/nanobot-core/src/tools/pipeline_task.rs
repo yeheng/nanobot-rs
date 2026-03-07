@@ -3,6 +3,8 @@
 //! Allows agents to interact with the shared task board:
 //! create, get, list, transition, and query flow logs.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
@@ -11,19 +13,28 @@ use tokio::sync::mpsc;
 use tracing::instrument;
 
 use super::base::{Tool, ToolError, ToolResult};
+use crate::pipeline::graph::PipelineGraph;
 use crate::pipeline::models::{PipelineTask, TaskPriority};
 use crate::pipeline::orchestrator::PipelineEvent;
-use crate::pipeline::state_machine::TaskState;
 use crate::pipeline::store::PipelineStore;
 
 pub struct PipelineTaskTool {
     store: PipelineStore,
     event_tx: mpsc::Sender<PipelineEvent>,
+    graph: Arc<PipelineGraph>,
 }
 
 impl PipelineTaskTool {
-    pub fn new(store: PipelineStore, event_tx: mpsc::Sender<PipelineEvent>) -> Self {
-        Self { store, event_tx }
+    pub fn new(
+        store: PipelineStore,
+        event_tx: mpsc::Sender<PipelineEvent>,
+        graph: Arc<PipelineGraph>,
+    ) -> Self {
+        Self {
+            store,
+            event_tx,
+            graph,
+        }
     }
 }
 
@@ -146,7 +157,7 @@ impl PipelineTaskTool {
             id: id.clone(),
             title,
             description: args.description.unwrap_or_default(),
-            state: TaskState::Pending,
+            state: "pending".to_string(),
             priority: args
                 .priority
                 .as_deref()
@@ -200,11 +211,13 @@ impl PipelineTaskTool {
 
     async fn do_list(&self, args: TaskArgs) -> ToolResult {
         let tasks = if let Some(state_str) = &args.state {
-            let state = TaskState::from_str_lossy(state_str).ok_or_else(|| {
-                ToolError::InvalidArguments(format!("Unknown state: {state_str}"))
-            })?;
+            if !self.graph.is_valid_state(state_str) {
+                return Err(ToolError::InvalidArguments(format!(
+                    "Unknown state: {state_str}"
+                )));
+            }
             self.store
-                .list_tasks_by_state(state)
+                .list_tasks_by_state(state_str)
                 .await
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?
         } else if let Some(role) = &args.role {
@@ -215,7 +228,7 @@ impl PipelineTaskTool {
         } else {
             // Default: list all pending
             self.store
-                .list_tasks_by_state(TaskState::Pending)
+                .list_tasks_by_state("pending")
                 .await
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?
         };
@@ -227,15 +240,18 @@ impl PipelineTaskTool {
         let id = args
             .task_id
             .ok_or_else(|| ToolError::InvalidArguments("task_id is required".into()))?;
-        let to_str = args
+        let to_state = args
             .to_state
             .ok_or_else(|| ToolError::InvalidArguments("to_state is required".into()))?;
         let agent_role = args
             .agent_role
             .ok_or_else(|| ToolError::InvalidArguments("agent_role is required".into()))?;
 
-        let to_state = TaskState::from_str_lossy(&to_str)
-            .ok_or_else(|| ToolError::InvalidArguments(format!("Unknown state: {to_str}")))?;
+        if !self.graph.is_valid_state(&to_state) {
+            return Err(ToolError::InvalidArguments(format!(
+                "Unknown state: {to_state}"
+            )));
+        }
 
         // Fetch current task to validate transition
         let task = self
@@ -245,7 +261,7 @@ impl PipelineTaskTool {
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?
             .ok_or_else(|| ToolError::NotFound(format!("Task {id} not found")))?;
 
-        if !task.state.can_transition_to(to_state) {
+        if !self.graph.can_transition(&task.state, &to_state) {
             return Err(ToolError::ExecutionError(format!(
                 "Invalid transition: {} → {}",
                 task.state, to_state
@@ -254,7 +270,7 @@ impl PipelineTaskTool {
 
         let ok = self
             .store
-            .update_task_state(&id, task.state, to_state, Some(&agent_role))
+            .update_task_state(&id, &task.state, &to_state, Some(&agent_role))
             .await
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
@@ -268,8 +284,8 @@ impl PipelineTaskTool {
         self.store
             .append_flow_log(
                 &id,
-                &task.state.to_string(),
-                &to_state.to_string(),
+                &task.state,
+                &to_state,
                 &agent_role,
                 args.reason.as_deref(),
             )
@@ -281,7 +297,7 @@ impl PipelineTaskTool {
             .event_tx
             .send(PipelineEvent::TaskTransitioned {
                 task_id: id.clone(),
-                new_state: to_state,
+                new_state: to_state.clone(),
                 agent_role: agent_role.clone(),
             })
             .await;
@@ -289,8 +305,8 @@ impl PipelineTaskTool {
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "status": "transitioned",
             "task_id": id,
-            "from": task.state.to_string(),
-            "to": to_state.to_string(),
+            "from": task.state,
+            "to": to_state,
         }))
         .unwrap())
     }

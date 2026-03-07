@@ -1,7 +1,7 @@
 //! Orchestrator actor for the multi-agent pipeline.
 //!
 //! Receives `PipelineEvent` messages on a dedicated mpsc channel and
-//! dispatches agents according to the state machine and permission matrix.
+//! dispatches agents according to the pipeline graph and permission matrix.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use tracing::{debug, error, info, warn};
 use crate::agent::subagent::SubagentManager;
 
 use super::config::PipelineConfig;
+use super::graph::PipelineGraph;
 use super::permission::PermissionMatrix;
-use super::state_machine::TaskState;
 use super::store::PipelineStore;
 
 /// Events processed by the orchestrator's event loop.
@@ -25,7 +25,7 @@ pub enum PipelineEvent {
     /// A task transitioned to a new state.
     TaskTransitioned {
         task_id: String,
-        new_state: TaskState,
+        new_state: String,
         agent_role: String,
     },
 
@@ -35,9 +35,6 @@ pub enum PipelineEvent {
     /// Stall detector found a stalled task.
     StallDetected { task_id: String },
 }
-
-/// The governance roles that use synchronous (wait) dispatch.
-const GOVERNANCE_ROLES: &[&str] = &["taizi", "zhongshu", "menxia", "shangshu"];
 
 /// The central orchestrator that drives the pipeline lifecycle.
 pub struct OrchestratorActor {
@@ -49,6 +46,8 @@ pub struct OrchestratorActor {
     event_rx: mpsc::Receiver<PipelineEvent>,
     /// Role name → SOUL.md content.
     soul_templates: HashMap<String, String>,
+    /// The pipeline graph that defines states, transitions, and role mappings.
+    graph: PipelineGraph,
 }
 
 impl OrchestratorActor {
@@ -59,6 +58,7 @@ impl OrchestratorActor {
         config: PipelineConfig,
         event_rx: mpsc::Receiver<PipelineEvent>,
         soul_templates: HashMap<String, String>,
+        graph: PipelineGraph,
     ) -> Self {
         Self {
             store,
@@ -67,6 +67,7 @@ impl OrchestratorActor {
             config,
             event_rx,
             soul_templates,
+            graph,
         }
     }
 
@@ -92,7 +93,7 @@ impl OrchestratorActor {
                 new_state,
                 agent_role: _,
             } => {
-                self.handle_task_transitioned(&task_id, new_state).await?;
+                self.handle_task_transitioned(&task_id, &new_state).await?;
             }
             PipelineEvent::ProgressReported {
                 task_id,
@@ -107,20 +108,18 @@ impl OrchestratorActor {
         Ok(())
     }
 
-    /// New task created → advance Pending → Triage and dispatch the taizi agent.
+    /// New task created → advance "pending" → entry_state and dispatch the responsible agent.
     async fn handle_task_created(&self, task_id: &str) -> anyhow::Result<()> {
+        let entry_state = &self.graph.entry_state;
+        let role = self.graph.responsible_role(entry_state).unwrap_or("system");
+
         let ok = self
             .store
-            .update_task_state(
-                task_id,
-                TaskState::Pending,
-                TaskState::Triage,
-                Some("taizi"),
-            )
+            .update_task_state(task_id, "pending", entry_state, Some(role))
             .await?;
 
         if !ok {
-            warn!("Task {} already moved past Pending", task_id);
+            warn!("Task {} already moved past pending", task_id);
             return Ok(());
         }
 
@@ -128,51 +127,42 @@ impl OrchestratorActor {
             .append_flow_log(
                 task_id,
                 "pending",
-                "triage",
+                entry_state,
                 "system",
                 Some("auto dispatch"),
             )
             .await?;
 
-        self.dispatch_agent(task_id, "taizi").await
+        self.dispatch_agent(task_id, role).await
     }
 
     /// A task transitioned → look up the new responsible role and dispatch.
-    async fn handle_task_transitioned(
-        &self,
-        task_id: &str,
-        new_state: TaskState,
-    ) -> anyhow::Result<()> {
-        if new_state == TaskState::Done {
+    async fn handle_task_transitioned(&self, task_id: &str, new_state: &str) -> anyhow::Result<()> {
+        if self.graph.is_terminal(new_state) {
             info!("Task {} completed", task_id);
             return Ok(());
         }
 
-        let role = new_state.responsible_role();
+        let role = self.graph.responsible_role(new_state).unwrap_or("system");
 
-        // For Reviewing state, increment review count and check limits
-        if new_state == TaskState::Reviewing {
+        // For gated states, increment review count and check limits
+        if let Some(gate) = self.graph.gate_config(new_state) {
             let count = self.store.increment_review_count(task_id).await?;
             if count > self.config.max_reviews {
                 warn!(
                     "Task {} exceeded max reviews ({}), escalating",
                     task_id, self.config.max_reviews
                 );
-                // Force to Blocked for manual intervention
+                // Force to the gate's reject_to state for intervention
                 let _ = self
                     .store
-                    .update_task_state(
-                        task_id,
-                        TaskState::Reviewing,
-                        TaskState::Blocked,
-                        Some("system"),
-                    )
+                    .update_task_state(task_id, new_state, &gate.reject_to, Some("system"))
                     .await;
                 self.store
                     .append_flow_log(
                         task_id,
-                        "reviewing",
-                        "blocked",
+                        new_state,
+                        &gate.reject_to,
                         "system",
                         Some("review limit exceeded"),
                     )
@@ -203,7 +193,7 @@ impl OrchestratorActor {
             let role = task
                 .assigned_role
                 .as_deref()
-                .unwrap_or(task.state.responsible_role());
+                .unwrap_or_else(|| self.graph.responsible_role(&task.state).unwrap_or("system"));
             self.dispatch_agent(task_id, role).await?;
             // Increment retry so next stall escalates
             sqlx::query("UPDATE pipeline_tasks SET retry_count = retry_count + 1 WHERE id = ?")
@@ -216,12 +206,12 @@ impl OrchestratorActor {
             warn!("Stall L2: blocking task {}", task_id);
             let _ = self
                 .store
-                .update_task_state(task_id, task.state, TaskState::Blocked, Some("system"))
+                .update_task_state(task_id, &task.state, "blocked", Some("system"))
                 .await;
             self.store
                 .append_flow_log(
                     task_id,
-                    &task.state.to_string(),
+                    &task.state,
                     "blocked",
                     "system",
                     Some("stall detected, escalated"),
@@ -257,7 +247,7 @@ impl OrchestratorActor {
 
         let system_prompt = self.soul_templates.get(role);
 
-        if GOVERNANCE_ROLES.contains(&role) {
+        if self.graph.is_sync_role(role) {
             // Synchronous dispatch for governance agents
             info!(
                 "Dispatching governance agent '{}' for task {}",
@@ -281,7 +271,7 @@ impl OrchestratorActor {
                 }
             }
         } else {
-            // Async dispatch for execution agents (六部)
+            // Async dispatch for execution agents
             info!(
                 "Dispatching execution agent '{}' for task {}",
                 role, task_id

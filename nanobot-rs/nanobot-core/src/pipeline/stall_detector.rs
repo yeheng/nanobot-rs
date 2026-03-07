@@ -4,6 +4,7 @@
 //! than the configured timeout and emits `PipelineEvent::StallDetected`
 //! so the orchestrator can recover.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -20,6 +21,8 @@ pub struct StallDetector {
     store: PipelineStore,
     event_tx: mpsc::Sender<PipelineEvent>,
     timeout_secs: u64,
+    /// The set of states considered "active" for stall detection purposes.
+    active_states: HashSet<String>,
 }
 
 impl StallDetector {
@@ -27,11 +30,13 @@ impl StallDetector {
         store: PipelineStore,
         event_tx: mpsc::Sender<PipelineEvent>,
         timeout_secs: u64,
+        active_states: HashSet<String>,
     ) -> Self {
         Self {
             store,
             event_tx,
             timeout_secs,
+            active_states,
         }
     }
 
@@ -53,7 +58,10 @@ impl StallDetector {
     }
 
     async fn scan(&self) -> anyhow::Result<()> {
-        let stalled = self.store.find_stalled_tasks(self.timeout_secs).await?;
+        let stalled = self
+            .store
+            .find_stalled_tasks(self.timeout_secs, &self.active_states)
+            .await?;
 
         if !stalled.is_empty() {
             debug!("Stall detector found {} stalled task(s)", stalled.len());

@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::graph::PipelineGraph;
+
 /// Top-level pipeline configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
@@ -32,6 +34,11 @@ pub struct PipelineConfig {
     /// Global model override for all pipeline agents.
     #[serde(default)]
     pub model: Option<String>,
+
+    /// Custom pipeline graph. When `None`, `use_default_template` controls
+    /// whether the built-in 三省六部 graph is used.
+    #[serde(default)]
+    pub graph: Option<PipelineGraph>,
 }
 
 impl Default for PipelineConfig {
@@ -43,6 +50,33 @@ impl Default for PipelineConfig {
             max_reviews: default_max_reviews(),
             stall_timeout_secs: default_stall_timeout(),
             model: None,
+            graph: None,
+        }
+    }
+}
+
+impl PipelineConfig {
+    /// Resolve the effective pipeline graph from configuration.
+    ///
+    /// Resolution logic:
+    /// - `graph: Some(g)` → validate and use the custom graph
+    /// - `graph: None` + `use_default_template: true` → `PipelineGraph::default_sansheng()`
+    /// - `graph: None` + `use_default_template: false` → error
+    pub fn resolve_graph(&self) -> anyhow::Result<PipelineGraph> {
+        if let Some(ref g) = self.graph {
+            g.validate().map_err(|errors| {
+                anyhow::anyhow!(
+                    "Pipeline graph validation failed:\n  - {}",
+                    errors.join("\n  - ")
+                )
+            })?;
+            Ok(g.clone())
+        } else if self.use_default_template {
+            Ok(PipelineGraph::default_sansheng())
+        } else {
+            Err(anyhow::anyhow!(
+                "Pipeline is enabled with useDefaultTemplate=false but no custom graph is provided"
+            ))
         }
     }
 }
@@ -96,6 +130,7 @@ mod tests {
         assert!(cfg.use_default_template);
         assert_eq!(cfg.max_reviews, 3);
         assert_eq!(cfg.stall_timeout_secs, 60);
+        assert!(cfg.graph.is_none());
     }
 
     #[test]
@@ -143,5 +178,70 @@ roles:
 
         let gong = cfg.roles.get("gong").unwrap();
         assert_eq!(gong.soul_path.as_deref(), Some("/custom/gong.md"));
+    }
+
+    #[test]
+    fn test_resolve_graph_default_template() {
+        let cfg = PipelineConfig::default();
+        let graph = cfg.resolve_graph().unwrap();
+        assert_eq!(graph.entry_state, "triage");
+        assert!(graph.terminal_states.contains("done"));
+    }
+
+    #[test]
+    fn test_resolve_graph_no_template_no_graph_errors() {
+        let cfg = PipelineConfig {
+            use_default_template: false,
+            ..Default::default()
+        };
+        assert!(cfg.resolve_graph().is_err());
+    }
+
+    #[test]
+    fn test_resolve_graph_custom() {
+        let graph = PipelineGraph::default_sansheng();
+        let cfg = PipelineConfig {
+            graph: Some(graph),
+            ..Default::default()
+        };
+        let resolved = cfg.resolve_graph().unwrap();
+        assert_eq!(resolved.entry_state, "triage");
+    }
+
+    #[test]
+    fn test_parse_yaml_with_custom_graph() {
+        let yaml = r#"
+enabled: true
+useDefaultTemplate: false
+graph:
+  entryState: analysis
+  terminalStates: [done]
+  activeStates: [analysis, development, testing]
+  syncRoles: [lead, reviewer]
+  gates:
+    code_review:
+      rejectTo: development
+  transitions:
+    pending: [analysis]
+    analysis: [development]
+    development: [code_review]
+    code_review: [testing, development]
+    testing: [done, blocked]
+    blocked: [development, analysis]
+    done: []
+  stateRoles:
+    analysis: lead
+    development: developer
+    code_review: reviewer
+    testing: tester
+    blocked: lead
+"#;
+        let cfg: PipelineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.graph.is_some());
+        let graph = cfg.resolve_graph().unwrap();
+        assert_eq!(graph.entry_state, "analysis");
+        assert!(graph.can_transition("development", "code_review"));
+        assert!(graph.is_sync_role("lead"));
+        assert!(!graph.is_sync_role("developer"));
     }
 }
