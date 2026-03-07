@@ -95,6 +95,9 @@ trait Tool: Send + Sync {
 | `message` | communication | 通过 Bus 发消息到渠道 |
 | `cron` | system | 管理定时任务 (CRUD) |
 | `memory_search` | memory | 搜索结构化记忆 (FTS5) |
+| `pipeline_task` | pipeline | 管线任务看板 (创建/查询/转换/流转日志) |
+| `delegate` | pipeline | Agent 间权限委派 (校验权限矩阵) |
+| `report_progress` | pipeline | 执行进度上报 + 心跳更新 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
 
 ### 辅助模块
@@ -254,7 +257,7 @@ trait MemoryStore: Send + Sync {
 | `request.rs` | 请求构建与重试逻辑 |
 | `memory.rs` | Agent 工作空间内存管理 |
 | `skill_loader.rs` | 技能文件加载器 (Markdown + YAML frontmatter) |
-| `subagent.rs` | 子代理管理 |
+| `subagent.rs` | 子代理管理 (`submit()` 异步 + `submit_and_wait()` 同步) |
 
 ### ContextCompressionHook
 
@@ -278,10 +281,41 @@ trait ContextCompressionHook: Send + Sync {
 ## 10. config/ — 配置管理
 
 - `loader.rs` — 配置文件加载 (`~/.nanobot/config.yaml`)
-- `schema.rs` — 配置结构定义 (providers, agents, channels, tools 等)
+- `schema.rs` — 配置结构定义 (providers, agents, channels, tools, pipeline 等)
 - 兼容 Python nanobot 配置格式
 
-## 11. 其他模块
+## 11. pipeline/ — 多 Agent 协作管线 (opt-in)
+
+> 详细使用指南见 [pipeline.md](pipeline.md)
+
+### 核心组件
+
+| 文件 | 职责 |
+|------|------|
+| `state_machine.rs` | `TaskState` 枚举 + 合法转换表 + 负责角色映射 |
+| `permission.rs` | `PermissionMatrix` — 有向图权限矩阵，`is_allowed(caller, target)` |
+| `config.rs` | `PipelineConfig`, `AgentRoleDef` — YAML 配置映射 |
+| `models.rs` | `PipelineTask`, `FlowLogEntry`, `ProgressEntry`, `TaskPriority` |
+| `store.rs` | `PipelineStore` — SQLite CRUD + 乐观锁 + 停滞查询 |
+| `orchestrator.rs` | `OrchestratorActor` — mpsc 事件循环，调度 Agent |
+| `stall_detector.rs` | `StallDetector` — 30 秒扫描心跳超时任务 |
+
+### 三层架构
+
+```
+分诊层:  太子 (taizi) — 分析分类
+治理层:  中书省 (zhongshu) → 门下省 (menxia) → 尚书省 (shangshu)
+执行层:  礼部 (li) | 户部 (hu) | 兵部 (bing) | 刑部 (xing) | 工部 (gong) | 殿中 (dianzhong)
+```
+
+### 调度模式
+
+- 治理层 Agent → `SubagentManager::submit_and_wait()` — 同步等待决策
+- 执行层 Agent → `SubagentManager::submit()` — 异步 fire-and-forget + 进度上报
+
+---
+
+## 12. 其他模块
 
 | 模块 | 说明 |
 |------|------|
