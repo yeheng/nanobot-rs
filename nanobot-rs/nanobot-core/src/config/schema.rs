@@ -51,6 +51,18 @@ pub struct ProviderConfig {
     /// OAuth client ID for providers that support OAuth (e.g., GitHub Copilot)
     #[serde(default, alias = "clientId")]
     pub client_id: Option<String>,
+
+    /// Price per million input tokens (for cost calculation)
+    #[serde(default, alias = "priceInputPerMillion")]
+    pub price_input_per_million: Option<f64>,
+
+    /// Price per million output tokens (for cost calculation)
+    #[serde(default, alias = "priceOutputPerMillion")]
+    pub price_output_per_million: Option<f64>,
+
+    /// Currency code for pricing (default: "USD")
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -63,6 +75,9 @@ impl std::fmt::Debug for ProviderConfig {
                 "client_id",
                 &self.client_id.as_ref().map(|_| "***REDACTED***"),
             )
+            .field("price_input_per_million", &self.price_input_per_million)
+            .field("price_output_per_million", &self.price_output_per_million)
+            .field("currency", &self.currency)
             .finish()
     }
 }
@@ -89,6 +104,21 @@ impl ProviderConfig {
         self.api_key
             .as_ref()
             .is_some_and(|key| !key.trim().is_empty())
+    }
+
+    /// Get model pricing configuration if configured
+    pub fn get_pricing(&self) -> Option<crate::token_tracker::ModelPricing> {
+        match (self.price_input_per_million, self.price_output_per_million) {
+            (Some(input_price), Some(output_price)) => {
+                let currency = self.currency.as_deref().unwrap_or("USD");
+                Some(crate::token_tracker::ModelPricing::new(
+                    input_price,
+                    output_price,
+                    currency,
+                ))
+            }
+            _ => None,
+        }
     }
 }
 

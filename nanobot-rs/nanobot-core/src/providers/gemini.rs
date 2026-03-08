@@ -227,6 +227,7 @@ impl GeminiProvider {
             content,
             tool_calls,
             reasoning_content: None,
+            usage: None,
         })
     }
 }

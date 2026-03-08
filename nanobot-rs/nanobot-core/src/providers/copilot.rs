@@ -310,6 +310,7 @@ fn parse_copilot_response(body: &str) -> anyhow::Result<ChatResponse> {
         content: choice.message.content,
         tool_calls,
         reasoning_content: None, // Copilot doesn't support reasoning_content
+        usage: None,
     })
 }
 

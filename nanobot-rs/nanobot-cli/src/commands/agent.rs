@@ -107,6 +107,14 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 arguments: _,
             } => {}
             StreamEvent::ToolEnd { name: _, output: _ } => {}
+            StreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost, currency } => {
+                // Display token stats after response
+                let currency_symbol = if currency == "CNY" { "¥" } else { "$" };
+                eprintln!(
+                    "[Token Usage] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                    input_tokens, output_tokens, total_tokens, currency_symbol, cost
+                );
+            }
             StreamEvent::Done => {
                 // Ensure stdout ends with newline for clean separation
                 eprintln!("\n");

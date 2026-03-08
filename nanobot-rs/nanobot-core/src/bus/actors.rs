@@ -125,6 +125,16 @@ pub async fn run_session_actor(
                             StreamEvent::ToolEnd { name, output } => Some(
                                 WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
                             ),
+                            StreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost, currency } => {
+                                // Token stats are logged separately, not sent to WebSocket
+                                tracing::info!(
+                                    "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                                    input_tokens, output_tokens, total_tokens,
+                                    if currency == "CNY" { "¥" } else { "$" },
+                                    cost
+                                );
+                                None
+                            }
                             StreamEvent::Done => Some(WebSocketMessage::done()),
                         };
 

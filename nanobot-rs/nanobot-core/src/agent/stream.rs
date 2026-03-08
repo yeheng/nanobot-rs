@@ -29,6 +29,19 @@ pub enum StreamEvent {
     },
     /// Tool execution finished
     ToolEnd { name: String, output: String },
+    /// Token usage statistics (emitted when stream completes)
+    TokenStats {
+        /// Input tokens
+        input_tokens: usize,
+        /// Output tokens
+        output_tokens: usize,
+        /// Total tokens
+        total_tokens: usize,
+        /// Cost (if pricing configured)
+        cost: f64,
+        /// Currency code
+        currency: String,
+    },
     /// Stream completed
     Done,
 }
@@ -150,6 +163,7 @@ pub async fn accumulate_stream(
         } else {
             Some(reasoning_content)
         },
+        usage: None,
     })
 }
 

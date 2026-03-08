@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
             SearchCommands::Update { r#type } => commands::cmd_search_update(&r#type).await,
             SearchCommands::Status => commands::cmd_search_status().await,
         },
+        Some(Commands::Stats) => commands::cmd_stats().await,
         None => {
             // No command - show help
             println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
@@ -77,7 +78,8 @@ async fn main() -> Result<()> {
             println!("  gateway   Start the gateway");
             println!("  auth      Authentication commands");
             println!("  cron      Manage scheduled tasks");
-            println!("  search    Manage search indexes\n");
+            println!("  search    Manage search indexes");
+            println!("  stats     Show session token usage and cost statistics\n");
             println!("Run 'nanobot --help' for more information.");
             Ok(())
         }

@@ -287,10 +287,18 @@ impl LlmProvider for OpenAICompatibleProvider {
             })
             .collect();
 
+        // Convert API usage to ChatResponse usage
+        let usage = api_response.usage.map(|u| crate::providers::Usage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            total_tokens: u.total_tokens,
+        });
+
         Ok(ChatResponse {
             content: choice.message.content,
             tool_calls,
             reasoning_content: choice.message.reasoning_content,
+            usage,
         })
     }
 
@@ -369,6 +377,18 @@ struct OpenAICompatibleRequest {
 #[derive(Debug, Deserialize)]
 struct OpenAICompatibleResponse {
     choices: Vec<OpenAICompatibleChoice>,
+    #[serde(default)]
+    usage: Option<OpenAICompatibleUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAICompatibleUsage {
+    #[serde(default, rename = "prompt_tokens")]
+    input_tokens: usize,
+    #[serde(default, rename = "completion_tokens")]
+    output_tokens: usize,
+    #[serde(default, rename = "total_tokens")]
+    total_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]

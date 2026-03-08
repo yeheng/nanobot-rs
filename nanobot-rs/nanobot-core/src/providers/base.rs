@@ -343,6 +343,20 @@ where
     }
 }
 
+/// Token usage information from an LLM response
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Usage {
+    /// Number of tokens in the prompt
+    #[serde(default, rename = "prompt_tokens")]
+    pub input_tokens: usize,
+    /// Number of tokens in the completion
+    #[serde(default, rename = "completion_tokens")]
+    pub output_tokens: usize,
+    /// Total tokens used
+    #[serde(default, rename = "total_tokens")]
+    pub total_tokens: usize,
+}
+
 /// Chat completion response
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatResponse {
@@ -354,6 +368,10 @@ pub struct ChatResponse {
 
     /// Reasoning content (for models that support it)
     pub reasoning_content: Option<String>,
+
+    /// Token usage information (if provided by API)
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 impl ChatResponse {
@@ -367,6 +385,7 @@ impl ChatResponse {
             content: Some(content.into()),
             tool_calls: Vec::new(),
             reasoning_content: None,
+            usage: None,
         }
     }
 
@@ -376,7 +395,15 @@ impl ChatResponse {
             content: None,
             tool_calls,
             reasoning_content: None,
+            usage: None,
         }
+    }
+
+    /// Get token usage, converting from TokenUsage if needed
+    pub fn token_usage(&self) -> Option<crate::token_tracker::TokenUsage> {
+        self.usage.as_ref().map(|u| {
+            crate::token_tracker::TokenUsage::from_api_fields(u.input_tokens, u.output_tokens)
+        })
     }
 }
 

@@ -49,6 +49,9 @@ pub enum Commands {
         #[command(subcommand)]
         command: SearchCommands,
     },
+
+    /// Show session token usage and cost statistics
+    Stats,
 }
 
 /// Options for the `agent` command.

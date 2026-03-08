@@ -29,6 +29,7 @@ pub mod search;
 
 pub mod session;
 pub mod skills;
+pub mod token_tracker;
 pub mod tools;
 pub mod vault;
 #[cfg(feature = "webhook")]

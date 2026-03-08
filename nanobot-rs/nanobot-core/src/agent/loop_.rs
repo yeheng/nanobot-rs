@@ -110,6 +110,10 @@ struct AgentLoopResult {
     reasoning_content: Option<String>,
     /// Tools used during processing
     tools_used: Vec<String>,
+    /// Token usage for this request
+    token_usage: Option<crate::token_tracker::TokenUsage>,
+    /// Cost for this request
+    cost: f64,
 }
 
 /// Mutable state for tool call handling.
@@ -180,6 +184,8 @@ pub struct AgentLoop {
     vault_injector: Option<VaultInjector>,
     /// Injected values for log redaction (thread-safe).
     vault_values: Mutex<Vec<String>>,
+    /// Token usage tracker for the session
+    session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
 }
 
 impl AgentLoop {
@@ -252,6 +258,7 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             vault_values: Mutex::new(Vec::new()),
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -318,6 +325,7 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             vault_values: Mutex::new(Vec::new()),
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -346,6 +354,7 @@ impl AgentLoop {
             external_hooks: ExternalHookRunner::noop(),
             vault_injector: None,
             vault_values: Mutex::new(Vec::new()),
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -576,6 +585,13 @@ impl AgentLoop {
             }
         }
 
+        // Output session token stats if available
+        if let Ok(stats) = self.session_stats.lock() {
+            if stats.request_count > 0 {
+                info!("{}", stats.format_summary());
+            }
+        }
+
         Ok(AgentResponse {
             content: result.content,
             reasoning_content: result.reasoning_content,
@@ -584,6 +600,37 @@ impl AgentLoop {
     }
 
     // ── Agent Loop Internals ────────────────────────────────
+
+    /// Calculate token usage and cost for a response.
+    ///
+    /// Uses API-provided usage when available, falls back to tiktoken-rs estimation.
+    fn calculate_token_usage(&self, response: &ChatResponse, _model: &str) -> (Option<crate::token_tracker::TokenUsage>, f64) {
+        // Try to get usage from API response first
+        if let Some(usage) = &response.usage {
+            let token_usage = crate::token_tracker::TokenUsage::from_api_fields(
+                usage.input_tokens,
+                usage.output_tokens,
+            );
+            // For now, return 0 cost since we don't have provider pricing accessible here
+            // Cost calculation would require passing pricing config to AgentLoop
+            return (Some(token_usage), 0.0);
+        }
+
+        // Fallback: estimate tokens using tiktoken-rs
+        let mut output_tokens = 0;
+
+        // Estimate output from response content
+        if let Some(ref content) = response.content {
+            output_tokens = crate::token_tracker::estimate_tokens(content);
+        }
+
+        // We can't accurately estimate input tokens without access to the full request
+        // For now, use a rough heuristic based on output tokens
+        let input_tokens = output_tokens * 2; // Rough estimate: input is typically 2x output
+
+        let token_usage = crate::token_tracker::TokenUsage::new(input_tokens, output_tokens);
+        (Some(token_usage), 0.0)
+    }
 
     /// Unified agent iteration loop.
     ///
@@ -615,8 +662,20 @@ impl AgentLoop {
             debug!("Agent loop iteration {}", iteration);
 
             let request = request_handler.build_chat_request(&messages);
+            let model = request.model.clone();
             let mut stream_result = request_handler.send_with_retry(request).await?;
             let response = stream::accumulate_stream(&mut stream_result, cb).await?;
+
+            // Calculate token usage and cost
+            let (token_usage, cost) = self.calculate_token_usage(&response, &model);
+
+            // Log token/cost info
+            if let Some(ref usage) = token_usage {
+                info!(
+                    "[Token] {}",
+                    crate::token_tracker::format_request_stats(usage, cost, "USD", None)
+                );
+            }
 
             // Inline logging (replaces LoggingHook::on_llm_response)
             log_llm_response(&response, iteration, &vault_values);
@@ -626,10 +685,20 @@ impl AgentLoop {
                     "I've completed processing but have no response to give.".to_string()
                 });
                 cb(&StreamEvent::Done);
+
+                // Track session stats
+                if let Some(ref usage) = token_usage {
+                    if let Ok(mut stats) = self.session_stats.lock() {
+                        stats.add_usage(usage, cost);
+                    }
+                }
+
                 return Ok(AgentLoopResult {
                     content,
                     reasoning_content: response.reasoning_content,
                     tools_used,
+                    token_usage,
+                    cost,
                 });
             }
 
@@ -647,6 +716,8 @@ impl AgentLoop {
             content: "I've completed processing but have no response to give.".to_string(),
             reasoning_content: None,
             tools_used,
+            token_usage: None,
+            cost: 0.0,
         })
     }
 
