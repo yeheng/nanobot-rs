@@ -70,6 +70,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             price_input_per_million: None,
             price_output_per_million: None,
             currency: None,
+            models: Default::default(),
         },
     );
 

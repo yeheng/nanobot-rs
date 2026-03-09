@@ -167,8 +167,8 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
     let provider = build_provider(&provider_name, api_key, provider_config, &model);
     let supports_thinking = provider_config.supports_thinking();
 
-    // Get pricing configuration if available
-    let pricing = provider_config.get_pricing().map(|p| {
+    // Get pricing configuration if available (model-level overrides provider-level)
+    let pricing = provider_config.get_pricing_for_model(&model).map(|p| {
         (
             p.price_input_per_million,
             p.price_output_per_million,

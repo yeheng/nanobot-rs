@@ -31,6 +31,22 @@ pub struct Config {
     pub state_machine: Option<serde_json::Value>,
 }
 
+/// Model-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelConfig {
+    /// Price per million input tokens
+    #[serde(default, alias = "priceInputPerMillion")]
+    pub price_input_per_million: Option<f64>,
+
+    /// Price per million output tokens
+    #[serde(default, alias = "priceOutputPerMillion")]
+    pub price_output_per_million: Option<f64>,
+
+    /// Currency code (inherits from provider if not set)
+    #[serde(default)]
+    pub currency: Option<String>,
+}
+
 /// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
@@ -63,6 +79,10 @@ pub struct ProviderConfig {
     /// Currency code for pricing (default: "USD")
     #[serde(default)]
     pub currency: Option<String>,
+
+    /// Model-specific configurations (override provider-level pricing)
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -78,6 +98,7 @@ impl std::fmt::Debug for ProviderConfig {
             .field("price_input_per_million", &self.price_input_per_million)
             .field("price_output_per_million", &self.price_output_per_million)
             .field("currency", &self.currency)
+            .field("models", &self.models)
             .finish()
     }
 }
@@ -119,6 +140,36 @@ impl ProviderConfig {
             }
             _ => None,
         }
+    }
+
+    /// Get pricing for a specific model (model-level overrides provider-level).
+    ///
+    /// Priority:
+    /// 1. Model-level pricing (if configured in `models` map)
+    /// 2. Provider-level pricing (fallback to default)
+    pub fn get_pricing_for_model(
+        &self,
+        model_name: &str,
+    ) -> Option<crate::token_tracker::ModelPricing> {
+        // 1. Try model-level pricing first
+        if let Some(model_cfg) = self.models.get(model_name) {
+            if let (Some(input), Some(output)) = (
+                model_cfg.price_input_per_million,
+                model_cfg.price_output_per_million,
+            ) {
+                let currency = model_cfg
+                    .currency
+                    .as_deref()
+                    .or(self.currency.as_deref())
+                    .unwrap_or("USD");
+                return Some(crate::token_tracker::ModelPricing::new(
+                    input, output, currency,
+                ));
+            }
+        }
+
+        // 2. Fallback to provider-level pricing
+        self.get_pricing()
     }
 }
 
@@ -1029,5 +1080,133 @@ channels:
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         // Telegram (enabled) + Email (enabled) = 2
         assert_eq!(config.channels.enabled_count(), 2);
+    }
+
+    // ── Model-Level Pricing Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_model_level_pricing() {
+        let yaml = r#"
+providers:
+  deepseek:
+    api_key: sk-xxx
+    price_input_per_million: 0.5
+    price_output_per_million: 1.0
+    currency: CNY
+    models:
+      deepseek-reasoner:
+        price_input_per_million: 2.0
+        price_output_per_million: 8.0
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let provider = config.providers.get("deepseek").unwrap();
+
+        // Model-level pricing for deepseek-reasoner
+        let pricing = provider.get_pricing_for_model("deepseek-reasoner").unwrap();
+        assert_eq!(pricing.price_input_per_million, 2.0);
+        assert_eq!(pricing.price_output_per_million, 8.0);
+        // Should inherit provider-level currency
+        assert_eq!(pricing.currency, "CNY");
+
+        // Provider-level fallback for deepseek-chat
+        let pricing = provider.get_pricing_for_model("deepseek-chat").unwrap();
+        assert_eq!(pricing.price_input_per_million, 0.5);
+        assert_eq!(pricing.price_output_per_million, 1.0);
+        assert_eq!(pricing.currency, "CNY");
+    }
+
+    #[test]
+    fn test_model_level_pricing_with_own_currency() {
+        let yaml = r#"
+providers:
+  openai:
+    api_key: sk-xxx
+    currency: USD
+    models:
+      gpt-4o:
+        price_input_per_million: 2.5
+        price_output_per_million: 10.0
+        currency: EUR
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let provider = config.providers.get("openai").unwrap();
+
+        // Model-level pricing with own currency
+        let pricing = provider.get_pricing_for_model("gpt-4o").unwrap();
+        assert_eq!(pricing.price_input_per_million, 2.5);
+        assert_eq!(pricing.price_output_per_million, 10.0);
+        assert_eq!(pricing.currency, "EUR");
+
+        // Provider-level currency for other models
+        let pricing = provider.get_pricing_for_model("gpt-3.5-turbo");
+        // No provider-level pricing set, should return None
+        assert!(pricing.is_none());
+    }
+
+    #[test]
+    fn test_model_level_pricing_backward_compatible() {
+        // Old config without models field should still work
+        let yaml = r#"
+providers:
+  anthropic:
+    api_key: sk-xxx
+    price_input_per_million: 3.0
+    price_output_per_million: 15.0
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let provider = config.providers.get("anthropic").unwrap();
+
+        // Should use provider-level pricing
+        let pricing = provider.get_pricing_for_model("claude-opus").unwrap();
+        assert_eq!(pricing.price_input_per_million, 3.0);
+        assert_eq!(pricing.price_output_per_million, 15.0);
+
+        // models map should be empty
+        assert!(provider.models.is_empty());
+    }
+
+    #[test]
+    fn test_model_level_pricing_partial_config() {
+        // Model config with only input price (no output) should not be used
+        let yaml = r#"
+providers:
+  test:
+    api_key: sk-xxx
+    price_input_per_million: 1.0
+    price_output_per_million: 2.0
+    models:
+      partial-model:
+        price_input_per_million: 5.0
+        # Missing price_output_per_million
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let provider = config.providers.get("test").unwrap();
+
+        // Should fall back to provider-level pricing
+        let pricing = provider.get_pricing_for_model("partial-model").unwrap();
+        assert_eq!(pricing.price_input_per_million, 1.0);
+        assert_eq!(pricing.price_output_per_million, 2.0);
+    }
+
+    #[test]
+    fn test_model_level_pricing_camel_case() {
+        // Test camelCase alias support for model config
+        let yaml = r#"
+providers:
+  test:
+    apiKey: sk-xxx
+    priceInputPerMillion: 1.0
+    priceOutputPerMillion: 2.0
+    models:
+      some-model:
+        priceInputPerMillion: 3.0
+        priceOutputPerMillion: 4.0
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let provider = config.providers.get("test").unwrap();
+
+        let pricing = provider.get_pricing_for_model("some-model").unwrap();
+        assert_eq!(pricing.price_input_per_million, 3.0);
+        assert_eq!(pricing.price_output_per_million, 4.0);
     }
 }
