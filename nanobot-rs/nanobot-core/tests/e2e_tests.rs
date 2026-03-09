@@ -282,6 +282,36 @@ async fn test_simple_schema() {
         .contains(&serde_json::json!("path")));
 }
 
+#[test]
+fn test_simple_schema_with_array() {
+    use nanobot_core::tools::simple_schema;
+
+    // Test array type with default string items
+    let schema = simple_schema(&[
+        ("tags", "array", false, "List of tags"),
+        ("ids", "array<integer>", false, "List of IDs"),
+    ]);
+
+    // Debug: print the schema
+    println!(
+        "Generated schema:\n{}",
+        serde_json::to_string_pretty(&schema).unwrap()
+    );
+
+    // Verify tags array has items with string type
+    let tags_prop = &schema["properties"]["tags"];
+    assert!(tags_prop.is_object());
+    assert_eq!(tags_prop["type"], "array");
+    assert_eq!(tags_prop["items"]["type"], "string");
+    assert_eq!(tags_prop["description"], "List of tags");
+
+    // Verify ids array has items with integer type
+    let ids_prop = &schema["properties"]["ids"];
+    assert!(ids_prop.is_object());
+    assert_eq!(ids_prop["type"], "array");
+    assert_eq!(ids_prop["items"]["type"], "integer");
+}
+
 // =============================================================================
 // Config Tests
 // =============================================================================

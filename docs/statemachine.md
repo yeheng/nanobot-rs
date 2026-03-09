@@ -103,6 +103,18 @@ state_machine:
 
 ### 状态机配置文件格式
 
+#### 方式 1：在主配置中直接定义
+
+```yaml
+state_machine:
+  enabled: true
+  config_path: "~/.nanobot/state_machine.yaml"
+```
+
+#### 方式 2：使用独立配置文件
+
+创建 `~/.nanobot/state_machine.yaml`：
+
 ```yaml
 # ~/.nanobot/state_machine.yaml
 
@@ -537,6 +549,12 @@ nanobot-rs/nanobot-statemachine/
 ---
 
 ## 配置示例合集
+
+更多示例配置文件请参考 [examples/](examples/) 目录：
+
+- [state_machine_sansheng.yaml](examples/state_machine_sansheng.yaml) - 三省六部完整配置
+- [state_machine_simple.yaml](examples/state_machine_simple.yaml) - 简单工作流配置
+- [state_machine_software_dev.yaml](examples/state_machine_software_dev.yaml) - 软件开发工作流
 
 ### 示例 1：最简开发模式
 

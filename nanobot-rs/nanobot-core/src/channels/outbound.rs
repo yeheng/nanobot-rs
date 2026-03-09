@@ -322,12 +322,17 @@ impl FeishuSender {
 #[async_trait]
 impl OutboundSender for FeishuSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::feishu::send_text_stateless(&self.app_id, &self.app_secret, &msg.chat_id, &msg.content)
-            .await
-            .map_err(|e| ChannelError::DeliveryFailed {
-                channel: "feishu".to_string(),
-                message: e.to_string(),
-            })
+        super::feishu::send_text_stateless(
+            &self.app_id,
+            &self.app_secret,
+            &msg.chat_id,
+            &msg.content,
+        )
+        .await
+        .map_err(|e| ChannelError::DeliveryFailed {
+            channel: "feishu".to_string(),
+            message: e.to_string(),
+        })
     }
 
     fn name(&self) -> &str {
@@ -395,7 +400,10 @@ pub struct DingTalkSender {
 #[cfg(feature = "dingtalk")]
 impl DingTalkSender {
     pub fn new(webhook_url: String, secret: Option<String>) -> Self {
-        Self { webhook_url, secret }
+        Self {
+            webhook_url,
+            secret,
+        }
     }
 }
 
@@ -403,12 +411,16 @@ impl DingTalkSender {
 #[async_trait]
 impl OutboundSender for DingTalkSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::dingtalk::send_message_stateless(&self.webhook_url, self.secret.as_deref(), &msg.content)
-            .await
-            .map_err(|e| ChannelError::DeliveryFailed {
-                channel: "dingtalk".to_string(),
-                message: e.to_string(),
-            })
+        super::dingtalk::send_message_stateless(
+            &self.webhook_url,
+            self.secret.as_deref(),
+            &msg.content,
+        )
+        .await
+        .map_err(|e| ChannelError::DeliveryFailed {
+            channel: "dingtalk".to_string(),
+            message: e.to_string(),
+        })
     }
 
     fn name(&self) -> &str {
@@ -484,7 +496,8 @@ mod tests {
     #[tokio::test]
     async fn test_unregistered_channel_returns_ok() {
         let registry = OutboundSenderRegistry::new();
-        let msg = OutboundMessage::new(ChannelType::Custom("unknown".to_string()), "chat1", "hello");
+        let msg =
+            OutboundMessage::new(ChannelType::Custom("unknown".to_string()), "chat1", "hello");
 
         // Should return Ok (not error) for unregistered channels
         let result = registry.send(msg).await;

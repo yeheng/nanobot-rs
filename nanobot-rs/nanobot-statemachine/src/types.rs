@@ -176,7 +176,10 @@ impl StateMachineConfig {
         // 5. gate states and reject_to targets must be known
         for (state, gate) in &self.gates {
             if !known_states.contains(state.as_str()) {
-                errors.push(format!("gate state '{}' is not defined in transitions", state));
+                errors.push(format!(
+                    "gate state '{}' is not defined in transitions",
+                    state
+                ));
             }
             if !known_states.contains(gate.reject_to.as_str()) {
                 errors.push(format!(
@@ -197,9 +200,7 @@ impl StateMachineConfig {
     pub fn build_transition_map(&self) -> HashMap<String, Vec<String>> {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for t in &self.transitions {
-            map.entry(t.from.clone())
-                .or_default()
-                .push(t.to.clone());
+            map.entry(t.from.clone()).or_default().push(t.to.clone());
         }
         map
     }
@@ -441,7 +442,9 @@ mod tests {
     #[test]
     fn test_gate_config() {
         let config = StateMachineConfig::default();
-        let gate = config.gate_config("reviewing").expect("reviewing has a gate");
+        let gate = config
+            .gate_config("reviewing")
+            .expect("reviewing has a gate");
         assert_eq!(gate.reject_to, "blocked");
     }
 

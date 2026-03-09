@@ -160,8 +160,7 @@ impl StateMachineConfigBuilder {
     }
 
     pub fn state_role(mut self, state: &str, role: &str) -> Self {
-        self.state_roles
-            .insert(state.to_string(), role.to_string());
+        self.state_roles.insert(state.to_string(), role.to_string());
         self
     }
 
@@ -189,21 +188,10 @@ impl StateMachineConfigBuilder {
         let default = StateMachineConfig::default();
 
         let config = StateMachineConfig {
-            initial_state: self
-                .initial_state
-                .unwrap_or(default.initial_state),
-            terminal_states: self
-                .terminal_states
-                .into_iter()
-                .collect(),
-            active_states: self
-                .active_states
-                .into_iter()
-                .collect(),
-            sync_roles: self
-                .sync_roles
-                .into_iter()
-                .collect(),
+            initial_state: self.initial_state.unwrap_or(default.initial_state),
+            terminal_states: self.terminal_states.into_iter().collect(),
+            active_states: self.active_states.into_iter().collect(),
+            sync_roles: self.sync_roles.into_iter().collect(),
             gates: self.gates,
             transitions: self.transitions,
             state_roles: self.state_roles,
@@ -214,7 +202,9 @@ impl StateMachineConfigBuilder {
                 .unwrap_or(default.stall_timeout_secs),
         };
 
-        config.validate().map_err(|errors| anyhow::anyhow!("Validation failed:\n  - {}", errors.join("\n  - ")))?;
+        config.validate().map_err(|errors| {
+            anyhow::anyhow!("Validation failed:\n  - {}", errors.join("\n  - "))
+        })?;
         Ok(config)
     }
 }

@@ -179,7 +179,10 @@ impl StateMachineEngine {
     ) -> anyhow::Result<()> {
         // Check if this is a terminal state
         if self.config.is_terminal(to_state) {
-            info!("Task {} reached terminal state {} via {}", task_id, to_state, agent_role);
+            info!(
+                "Task {} reached terminal state {} via {}",
+                task_id, to_state, agent_role
+            );
             return Ok(());
         }
 
@@ -210,10 +213,7 @@ impl StateMachineEngine {
         }
 
         // Dispatch the agent responsible for the new state
-        let next_role = self
-            .config
-            .responsible_role(to_state)
-            .unwrap_or("system");
+        let next_role = self.config.responsible_role(to_state).unwrap_or("system");
 
         info!(
             "Task {} transitioned {} -> {}, dispatching {}",
@@ -230,7 +230,10 @@ impl StateMachineEngine {
         agent_role: &str,
         content: &str,
     ) -> anyhow::Result<()> {
-        debug!("Progress from {} on task {}: {}", agent_role, task_id, content);
+        debug!(
+            "Progress from {} on task {}: {}",
+            agent_role, task_id, content
+        );
 
         // Append to progress log (this also updates heartbeat)
         self.store
@@ -266,11 +269,13 @@ impl StateMachineEngine {
             self.dispatch_agent(task_id, role, &task.state).await?;
 
             // Increment retry so next stall escalates
-            sqlx::query("UPDATE state_machine_tasks SET retry_count = retry_count + 1 WHERE id = ?")
-                .bind(task_id)
-                .execute(&self.store.pool)
-                .await
-                .ok();
+            sqlx::query(
+                "UPDATE state_machine_tasks SET retry_count = retry_count + 1 WHERE id = ?",
+            )
+            .bind(task_id)
+            .execute(&self.store.pool)
+            .await
+            .ok();
         } else {
             // Level 2+: block the task for manual intervention
             warn!("Stall L2: blocking task {}", task_id);

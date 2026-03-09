@@ -178,7 +178,11 @@ mod tests {
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].name, "test");
-        assert!(messages[0].content.as_ref().unwrap().starts_with("[Modified]"));
+        assert!(messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .starts_with("[Modified]"));
     }
 
     #[test]

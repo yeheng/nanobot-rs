@@ -1,0 +1,96 @@
+# 简单工作流配置示例
+#
+# 一个简单的 分析 → 执行 → 审核 流程
+# 适合个人开发者或小型团队使用
+
+# 初始状态
+initial_state: analysis
+
+# 终端状态
+terminal_states:
+  - done
+  - cancelled
+
+# 活跃状态 (需要停滞检测)
+active_states:
+  - analysis
+  - executing
+
+# 同步角色 (使用同步调度)
+sync_roles:
+  - analyst
+  - reviewer
+
+# 状态流转
+transitions:
+  # 任务创建 → 分析
+  - from: pending
+    to: analysis
+
+  # 分析完成 → 执行
+  - from: analysis
+    to: executing
+
+  # 分析后取消
+  - from: analysis
+    to: cancelled
+
+  # 执行完成 → 审核
+  - from: executing
+    to: review
+
+  # 审核通过 → 完成
+  - from: review
+    to: done
+
+  # 审核拒绝 → 打回分析
+  - from: review
+    to: analysis
+
+  # 审核拒绝 → 取消
+  - from: review
+    to: cancelled
+
+# 状态 → 角色映射
+state_roles:
+  pending: system
+  analysis: analyst
+  executing: executor
+  review: reviewer
+  done: system
+  cancelled: system
+
+# 门控配置 - 审核超过 max_reviews 次后打回分析
+gates:
+  review:
+    reject_to: analysis
+
+# 角色定义
+roles:
+  analyst:
+    description: "需求分析师"
+    allowed_agents:
+      - executor
+    responsible_states:
+      - analysis
+
+  executor:
+    description: "执行者"
+    allowed_agents:
+      - reviewer
+    responsible_states:
+      - executing
+
+  reviewer:
+    description: "审核者"
+    allowed_agents:
+      - analyst
+      - executor
+    responsible_states:
+      - review
+
+# 最大审核轮次
+max_reviews: 3
+
+# 停滞超时 (秒)
+stall_timeout_secs: 120

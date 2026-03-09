@@ -1,0 +1,152 @@
+# 三省六部状态机配置示例
+#
+# 这是默认的三省六部协作流程配置
+# 复制到 ~/.nanobot/state_machine.yaml 使用
+
+# 初始状态 - 任务创建后自动进入此状态
+initial_state: triage
+
+# 终端状态 - 到达这些状态的任务视为完成
+terminal_states:
+  - done
+
+# 活跃状态 - 需要停滞检测的状态 (超过 stall_timeout_secs 无心跳会被标记为停滞)
+active_states:
+  - triage
+  - planning
+  - executing
+  - review
+  - assigned
+
+# 同步角色 - 使用同步调度模式 (submit_and_wait) 的角色
+# 其他角色使用异步模式 (submit)
+sync_roles:
+  - taizi
+  - zhongshu
+  - menxia
+  - shangshu
+
+# 状态流转定义
+# 每个转换定义从 from 状态到 to 状态的合法路径
+transitions:
+  # 太子分诊流程
+  - from: pending
+    to: triage
+
+  # 太子分诊 → 中书省规划
+  - from: triage
+    to: planning
+
+  # 中书省规划 → 门下省审核
+  - from: planning
+    to: reviewing
+
+  # 门下省审核通过 → 尚书省调度
+  - from: reviewing
+    to: assigned
+
+  # 门下省审核拒绝 → 打回中书省重新规划
+  - from: reviewing
+    to: planning
+
+  # 尚书省调度 → 六部执行
+  - from: assigned
+    to: executing
+
+  # 六部执行完成 → 门下省审核
+  - from: executing
+    to: review
+
+  # 六部执行遇阻 → 阻塞状态
+  - from: executing
+    to: blocked
+
+  # 门下省审核通过 → 完成
+  - from: review
+    to: done
+
+  # 门下省审核拒绝 → 阻塞状态
+  - from: review
+    to: blocked
+
+  # 完成状态 (自循环，防止误操作)
+  - from: done
+    to: done
+
+  # 阻塞恢复 → 恢复执行
+  - from: blocked
+    to: executing
+
+  # 阻塞恢复 → 重新规划
+  - from: blocked
+    to: planning
+
+# 状态 → 负责角色映射
+state_roles:
+  pending: system
+  triage: taizi
+  planning: zhongshu
+  reviewing: menxia
+  assigned: shangshu
+  executing: ministry
+  review: menxia
+  done: system
+  blocked: shangshu
+
+# 审核门控配置
+# 当某个状态的审核次数超过 max_reviews 时，自动转移到 reject_to 状态
+gates:
+  reviewing:
+    reject_to: blocked
+
+# 角色定义 (可选 - 用于扩展现有角色或添加自定义角色)
+roles:
+  taizi:
+    description: "太子 - 分诊分析"
+    allowed_agents:
+      - zhongshu
+    responsible_states:
+      - triage
+
+  zhongshu:
+    description: "中书省 - 战略规划"
+    allowed_agents:
+      - menxia
+    responsible_states:
+      - planning
+
+  menxia:
+    description: "门下省 - 审核质量门控"
+    allowed_agents:
+      - shangshu
+      - zhongshu
+    responsible_states:
+      - reviewing
+      - review
+
+  shangshu:
+    description: "尚书省 - 任务调度"
+    allowed_agents:
+      - li
+      - hu
+      - bing
+      - xing
+      - gong
+      - dianzhong
+      - ministry
+    responsible_states:
+      - assigned
+      - blocked
+
+  ministry:
+    description: "六部 - 执行层"
+    allowed_agents:
+      - shangshu
+    responsible_states:
+      - executing
+
+# 最大审核轮次 - 超过此值会触发门控机制
+max_reviews: 3
+
+# 停滞超时秒数 - 超过此值无心跳会被标记为停滞
+stall_timeout_secs: 60

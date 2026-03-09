@@ -169,7 +169,11 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
 
     // Get pricing configuration if available
     let pricing = provider_config.get_pricing().map(|p| {
-        (p.price_input_per_million, p.price_output_per_million, p.currency)
+        (
+            p.price_input_per_million,
+            p.price_output_per_million,
+            p.currency,
+        )
     });
 
     Ok(ProviderInfo {

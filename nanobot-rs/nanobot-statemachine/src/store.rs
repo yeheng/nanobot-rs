@@ -214,10 +214,7 @@ impl StateMachineStore {
     }
 
     /// List tasks filtered by state.
-    pub async fn list_tasks_by_state(
-        &self,
-        state: &str,
-    ) -> anyhow::Result<Vec<StateMachineTask>> {
+    pub async fn list_tasks_by_state(&self, state: &str) -> anyhow::Result<Vec<StateMachineTask>> {
         let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,

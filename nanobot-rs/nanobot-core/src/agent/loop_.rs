@@ -11,7 +11,7 @@
 //! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if messages were evicted (non-blocking)
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
-//! 7.5. run_interceptors          → middleware chain (vault injection, etc.)
+//!    7.5. run_interceptors          → middleware chain (vault injection, etc.)
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
 //! 10. save_assistant_msg          → inline: Option<SessionManager> persists assistant msg
@@ -664,7 +664,8 @@ impl AgentLoop {
         // Calculate cost for estimated tokens if pricing is configured
         let cost = if let Some(ref pricing) = self.pricing {
             let input_cost = (input_tokens as f64) * pricing.price_input_per_million / 1_000_000.0;
-            let output_cost = (output_tokens as f64) * pricing.price_output_per_million / 1_000_000.0;
+            let output_cost =
+                (output_tokens as f64) * pricing.price_output_per_million / 1_000_000.0;
             input_cost + output_cost
         } else {
             0.0

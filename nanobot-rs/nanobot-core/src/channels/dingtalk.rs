@@ -52,7 +52,10 @@ pub async fn send_message_stateless(
         let sign = BASE64.encode(hmac.finalize());
         let sign_encoded = urlencoding::encode(&sign);
 
-        format!("{}&timestamp={}&sign={}", webhook_url, timestamp, sign_encoded)
+        format!(
+            "{}&timestamp={}&sign={}",
+            webhook_url, timestamp, sign_encoded
+        )
     } else {
         webhook_url.to_string()
     };

@@ -171,7 +171,9 @@ pub async fn bootstrap(
     let config = if let Some(path) = &bootstrap_config.config_path {
         let path = std::path::Path::new(path);
         let loaded = load_from_file(path)?;
-        loaded.validate().map_err(|errors| anyhow::anyhow!("Validation failed:\n  - {}", errors.join("\n  - ")))?;
+        loaded.validate().map_err(|errors| {
+            anyhow::anyhow!("Validation failed:\n  - {}", errors.join("\n  - "))
+        })?;
         loaded
     } else if bootstrap_config.use_default_template {
         StateMachineConfig::default()
