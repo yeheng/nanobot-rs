@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue';
-import { Plus, MessageSquare, Menu, X, Trash2 } from 'lucide-vue-next';
+import { Plus, MessageSquare, Menu, X, Trash2, Pencil, Check as CheckIcon } from 'lucide-vue-next';
 import ChatArea from './components/ChatArea.vue';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -27,6 +27,10 @@ const sessions = ref<Session[]>([]);
 const activeSessionId = ref<string>('');
 const isSidebarOpen = ref(true);
 
+// Session rename state
+const editingSessionId = ref<string | null>(null);
+const editingName = ref('');
+
 // Load from LocalStorage
 onMounted(() => {
   const saved = localStorage.getItem('nanobot_sessions');
@@ -47,9 +51,17 @@ onMounted(() => {
   }
 });
 
-// Save to LocalStorage when changed
-watch(sessions, (newSessions) => {
-  localStorage.setItem('nanobot_sessions', JSON.stringify(newSessions));
+// Debounced save to LocalStorage
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const debouncedSave = () => {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    localStorage.setItem('nanobot_sessions', JSON.stringify(sessions.value));
+  }, 1000);
+};
+
+watch(sessions, () => {
+  debouncedSave();
 }, { deep: true });
 
 const createNewSession = () => {
@@ -83,6 +95,33 @@ const selectSession = (id: string) => {
   activeSessionId.value = id;
   if (window.innerWidth < 768) {
     isSidebarOpen.value = false;
+  }
+};
+
+// Session rename
+const startRename = (session: Session, event: Event) => {
+  event.stopPropagation();
+  editingSessionId.value = session.id;
+  editingName.value = session.name;
+};
+
+const confirmRename = (sessionId: string) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (session && editingName.value.trim()) {
+    session.name = editingName.value.trim();
+  }
+  editingSessionId.value = null;
+};
+
+const cancelRename = () => {
+  editingSessionId.value = null;
+};
+
+const handleRenameKeydown = (event: KeyboardEvent, sessionId: string) => {
+  if (event.key === 'Enter') {
+    confirmRename(sessionId);
+  } else if (event.key === 'Escape') {
+    cancelRename();
   }
 };
 
@@ -154,13 +193,39 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
             @click="selectSession(session.id)"
           >
             <MessageSquare class="w-4 h-4 shrink-0 opacity-70 group-hover:opacity-100" />
-            <span class="flex-1 truncate text-sm">{{ session.name }}</span>
-            <button 
-              class="hidden group-hover:flex items-center justify-center p-1 text-slate-400 hover:text-red-500 transition-colors"
-              @click.stop="deleteSession(session.id)"
-            >
-              <Trash2 class="w-4 h-4" />
-            </button>
+            
+            <!-- Editing mode -->
+            <template v-if="editingSessionId === session.id">
+              <input
+                v-model="editingName"
+                @click.stop
+                @keydown="(e) => handleRenameKeydown(e, session.id)"
+                @blur="confirmRename(session.id)"
+                class="flex-1 text-sm bg-slate-800 border border-blue-500/50 rounded px-1.5 py-0.5 text-slate-100 outline-none focus:ring-1 focus:ring-blue-500/30 min-w-0"
+                autofocus
+              />
+            </template>
+            <!-- Display mode -->
+            <template v-else>
+              <span class="flex-1 truncate text-sm" @dblclick="startRename(session, $event)">{{ session.name }}</span>
+            </template>
+
+            <div class="hidden group-hover:flex items-center gap-0.5">
+              <button 
+                class="items-center justify-center p-1 text-slate-400 hover:text-blue-400 transition-colors"
+                @click.stop="startRename(session, $event)"
+                title="Rename"
+              >
+                <Pencil class="w-3.5 h-3.5" />
+              </button>
+              <button 
+                class="items-center justify-center p-1 text-slate-400 hover:text-red-500 transition-colors"
+                @click.stop="deleteSession(session.id)"
+                title="Delete"
+              >
+                <Trash2 class="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       </ScrollArea>
