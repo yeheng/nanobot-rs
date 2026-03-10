@@ -47,8 +47,11 @@ pub async fn run_outbound_actor(
     while let Some(msg) = rx.recv().await {
         #[cfg(feature = "webhook")]
         if let crate::bus::events::ChannelType::WebSocket = msg.channel {
+            tracing::debug!("Outbound Actor: routing WebSocket message to chat {}", msg.chat_id);
             if let Some(ref manager) = websocket_manager {
                 manager.send(msg).await;
+            } else {
+                tracing::warn!("Outbound Actor: websocket_manager is None, cannot send WebSocket message");
             }
             continue;
         }
@@ -92,7 +95,7 @@ pub async fn run_session_actor(
     agent: Arc<AgentLoop>,
 ) {
     let session_key_str = session_key.to_string();
-    tracing::debug!("Session Actor [{}] spawned", session_key_str);
+    tracing::info!("Session Actor [{}] spawned", session_key_str);
     let idle_timeout = Duration::from_secs(3600); // 1 hour idle → self-destruct
 
     loop {
@@ -108,9 +111,15 @@ pub async fn run_session_actor(
                 #[cfg(not(feature = "webhook"))]
                 let is_websocket = false;
 
+                tracing::info!(
+                    "Session Actor [{}] processing message: channel={:?}, chat_id={}, is_websocket={}",
+                    session_key_str, channel, chat_id, is_websocket
+                );
+
                 // Create streaming callback for WebSocket channels
                 // Use synchronous send to preserve message ordering
                 let callback: Option<StreamCallback> = if is_websocket {
+                    tracing::debug!("Session Actor [{}]: Creating streaming callback for WebSocket", session_key_str);
                     let ob_tx = outbound_tx.clone();
                     let ch = channel.clone();
                     let cid = chat_id.clone();
@@ -118,17 +127,23 @@ pub async fn run_session_actor(
                         let ws_msg =
                             match event {
                                 StreamEvent::Content(content) => {
+                                    tracing::trace!("[WS-Callback] StreamEvent::Content: {} chars", content.len());
                                     Some(WebSocketMessage::content(content.clone()))
                                 }
                                 StreamEvent::Reasoning(content) => {
+                                    tracing::trace!("[WS-Callback] StreamEvent::Reasoning: {} chars", content.len());
                                     Some(WebSocketMessage::thinking(content.clone()))
                                 }
-                                StreamEvent::ToolStart { name, arguments } => Some(
+                                StreamEvent::ToolStart { name, arguments } => {
+                                    tracing::debug!("[WS-Callback] StreamEvent::ToolStart: {}", name);
+                                    Some(
                                     WebSocketMessage::tool_start(name.clone(), arguments.clone()),
-                                ),
-                                StreamEvent::ToolEnd { name, output } => Some(
+                                )},
+                                StreamEvent::ToolEnd { name, output } => {
+                                    tracing::debug!("[WS-Callback] StreamEvent::ToolEnd: {}", name);
+                                    Some(
                                     WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
-                                ),
+                                )},
                                 StreamEvent::TokenStats {
                                     input_tokens,
                                     output_tokens,
@@ -137,24 +152,33 @@ pub async fn run_session_actor(
                                     currency,
                                 } => {
                                     // Token stats are logged separately, not sent to WebSocket
-                                    tracing::info!(
+                                    tracing::debug!(
                                     "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                     input_tokens, output_tokens, total_tokens,
-                                    if currency == "CNY" { "¥" } else { "$" },
+                                    if currency == "CN" { "¥" } else { "$" },
                                     cost
                                 );
                                     None
                                 }
-                                StreamEvent::Done => Some(WebSocketMessage::done()),
+                                StreamEvent::Done => {
+                                    tracing::debug!("[WS-Callback] StreamEvent::Done received, sending Done message to WebSocket");
+                                    Some(WebSocketMessage::done())
+                                }
                             };
 
                         if let Some(ws_msg) = ws_msg {
+                            tracing::trace!("[WS-Callback] Sending WebSocket message type: {:?}", std::mem::discriminant(&ws_msg));
                             let outbound =
                                 OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
                             // Synchronous send to preserve ordering
                             // Use try_send to avoid blocking, but still maintain order
-                            if let Err(e) = ob_tx.try_send(outbound) {
-                                tracing::error!("Failed to send streaming event: {}", e);
+                            match ob_tx.try_send(outbound) {
+                                Ok(_) => {
+                                    tracing::trace!("[WS-Callback] Streaming event sent to outbound channel successfully");
+                                }
+                                Err(e) => {
+                                    tracing::error!("[WS-Callback] Failed to send streaming event (channel may be full): {:?}", e);
+                                }
                             }
                         }
                     }))
@@ -205,7 +229,7 @@ pub async fn run_session_actor(
             }
             Ok(None) => {
                 // Channel closed (gateway shutting down)
-                tracing::debug!("Session [{}] channel closed", session_key_str);
+                tracing::info!("Session [{}] channel closed", session_key_str);
                 break;
             }
             Err(_) => {
@@ -248,7 +272,7 @@ pub async fn run_router_actor(
             if tx.send(msg.clone()).await.is_ok() {
                 needs_respawn = false;
             } else {
-                tracing::debug!("Session [{}] channel dead, respawning...", key);
+                tracing::info!("Session [{}] channel dead, respawning...", key);
             }
         }
 

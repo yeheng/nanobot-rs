@@ -557,7 +557,14 @@ impl AgentLoop {
         // This is a simplified approach - in production, interceptors would report injected values.
 
         // ── 8. Run agent loop ─────────────────────────────────────
-        let effective_cb = if self.config.streaming {
+        // For WebSocket and other real-time channels, always use the callback if provided,
+        // regardless of the streaming config. The streaming config is for CLI output formatting,
+        // but WebSocket clients expect real-time events.
+        let effective_cb = if callback.is_some() {
+            // If a callback was explicitly provided (e.g., for WebSocket), use it
+            callback
+        } else if self.config.streaming {
+            // Otherwise, respect the streaming config
             callback
         } else {
             None
@@ -739,7 +746,11 @@ impl AgentLoop {
             // Inline logging (replaces LoggingHook::on_llm_response)
             log_llm_response(&response, iteration, &vault_values);
 
-            if !response.has_tool_calls() {
+            let has_tools = response.has_tool_calls();
+            info!("[Agent] iter {} has_tool_calls={}, tool_count={}", iteration, has_tools, response.tool_calls.len());
+
+            if !has_tools {
+                info!("[Agent] No tool calls, sending Done event and returning response");
                 let content = response.content.unwrap_or_else(|| {
                     "I've completed processing but have no response to give.".to_string()
                 });
@@ -771,6 +782,9 @@ impl AgentLoop {
         }
 
         // Exhausted max iterations without a final response
+        // Send Done event to signal stream completion
+        cb(&StreamEvent::Done);
+
         Ok(AgentLoopResult {
             content: "I've completed processing but have no response to give.".to_string(),
             reasoning_content: None,

@@ -28,7 +28,10 @@ impl ModelConfig {
     }
 
     /// Get pricing if complete configuration exists
-    pub fn get_pricing(&self, default_currency: Option<&str>) -> Option<crate::token_tracker::ModelPricing> {
+    pub fn get_pricing(
+        &self,
+        default_currency: Option<&str>,
+    ) -> Option<crate::token_tracker::ModelPricing> {
         match (self.price_input_per_million, self.price_output_per_million) {
             (Some(input), Some(output)) => {
                 let currency = self
@@ -36,7 +39,9 @@ impl ModelConfig {
                     .as_deref()
                     .or(default_currency)
                     .unwrap_or("USD");
-                Some(crate::token_tracker::ModelPricing::new(input, output, currency))
+                Some(crate::token_tracker::ModelPricing::new(
+                    input, output, currency,
+                ))
             }
             _ => None,
         }
@@ -174,16 +179,17 @@ impl From<LegacyProviderConfig> for ProviderConfig {
 
         // If legacy provider-level pricing exists, create a "_default" entry
         // This allows backward compatibility for get_pricing_for_model
-        if let (Some(input), Some(output)) =
-            (legacy.price_input_per_million, legacy.price_output_per_million)
-        {
-            models.entry("_default".to_string()).or_insert_with(|| {
-                ModelConfig {
+        if let (Some(input), Some(output)) = (
+            legacy.price_input_per_million,
+            legacy.price_output_per_million,
+        ) {
+            models
+                .entry("_default".to_string())
+                .or_insert_with(|| ModelConfig {
                     price_input_per_million: Some(input),
                     price_output_per_million: Some(output),
                     currency: legacy.currency.clone(),
-                }
-            });
+                });
         }
 
         ProviderConfig {
@@ -371,7 +377,10 @@ models:
 "#;
         let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(provider.api_key, Some("sk-xxx".to_string()));
-        assert_eq!(provider.api_base, Some("https://api.example.com".to_string()));
+        assert_eq!(
+            provider.api_base,
+            Some("https://api.example.com".to_string())
+        );
         assert_eq!(provider.supports_thinking, Some(true));
         assert_eq!(provider.client_id, Some("my-client-id".to_string()));
         assert_eq!(provider.default_currency, Some("EUR".to_string()));

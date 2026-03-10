@@ -101,6 +101,14 @@ const updateSessionMessages = (sessionId: string, messages: Message[]) => {
   }
 };
 
+const clearSessionMessages = (sessionId: string) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (session) {
+    session.messages = [];
+    session.updatedAt = Date.now();
+  }
+};
+
 const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
 </script>
 
@@ -167,11 +175,12 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
 
     <!-- Main Chat Area -->
     <main class="flex-1 flex flex-col min-w-0 relative bg-slate-800/40 md:pt-0 pt-14">
-      <ChatArea 
-        v-if="activeSessionId" 
+      <ChatArea
+        v-if="activeSessionId"
         :session-id="activeSessionId"
         :messages="sessions.find(s => s.id === activeSessionId)?.messages || []"
         @update-messages="(msgs) => updateSessionMessages(activeSessionId, msgs)"
+        @clear-messages="clearSessionMessages(activeSessionId)"
       />
     </main>
   </div>
