@@ -47,11 +47,16 @@ pub async fn run_outbound_actor(
     while let Some(msg) = rx.recv().await {
         #[cfg(feature = "webhook")]
         if let crate::bus::events::ChannelType::WebSocket = msg.channel {
-            tracing::debug!("Outbound Actor: routing WebSocket message to chat {}", msg.chat_id);
+            tracing::debug!(
+                "Outbound Actor: routing WebSocket message to chat {}",
+                msg.chat_id
+            );
             if let Some(ref manager) = websocket_manager {
                 manager.send(msg).await;
             } else {
-                tracing::warn!("Outbound Actor: websocket_manager is None, cannot send WebSocket message");
+                tracing::warn!(
+                    "Outbound Actor: websocket_manager is None, cannot send WebSocket message"
+                );
             }
             continue;
         }
@@ -119,55 +124,72 @@ pub async fn run_session_actor(
                 // Create streaming callback for WebSocket channels
                 // Use synchronous send to preserve message ordering
                 let callback: Option<StreamCallback> = if is_websocket {
-                    tracing::debug!("Session Actor [{}]: Creating streaming callback for WebSocket", session_key_str);
+                    tracing::debug!(
+                        "Session Actor [{}]: Creating streaming callback for WebSocket",
+                        session_key_str
+                    );
                     let ob_tx = outbound_tx.clone();
                     let ch = channel.clone();
                     let cid = chat_id.clone();
                     Some(Box::new(move |event: &StreamEvent| {
-                        let ws_msg =
-                            match event {
-                                StreamEvent::Content(content) => {
-                                    tracing::trace!("[WS-Callback] StreamEvent::Content: {} chars", content.len());
-                                    Some(WebSocketMessage::content(content.clone()))
-                                }
-                                StreamEvent::Reasoning(content) => {
-                                    tracing::trace!("[WS-Callback] StreamEvent::Reasoning: {} chars", content.len());
-                                    Some(WebSocketMessage::thinking(content.clone()))
-                                }
-                                StreamEvent::ToolStart { name, arguments } => {
-                                    tracing::debug!("[WS-Callback] StreamEvent::ToolStart: {}", name);
-                                    Some(
-                                    WebSocketMessage::tool_start(name.clone(), arguments.clone()),
-                                )},
-                                StreamEvent::ToolEnd { name, output } => {
-                                    tracing::debug!("[WS-Callback] StreamEvent::ToolEnd: {}", name);
-                                    Some(
-                                    WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
-                                )},
-                                StreamEvent::TokenStats {
+                        let ws_msg = match event {
+                            StreamEvent::Content(content) => {
+                                tracing::trace!(
+                                    "[WS-Callback] StreamEvent::Content: {} chars",
+                                    content.len()
+                                );
+                                Some(WebSocketMessage::content(content.clone()))
+                            }
+                            StreamEvent::Reasoning(content) => {
+                                tracing::trace!(
+                                    "[WS-Callback] StreamEvent::Reasoning: {} chars",
+                                    content.len()
+                                );
+                                Some(WebSocketMessage::thinking(content.clone()))
+                            }
+                            StreamEvent::ToolStart { name, arguments } => {
+                                tracing::debug!("[WS-Callback] StreamEvent::ToolStart: {}", name);
+                                Some(WebSocketMessage::tool_start(
+                                    name.clone(),
+                                    arguments.clone(),
+                                ))
+                            }
+                            StreamEvent::ToolEnd { name, output } => {
+                                tracing::debug!("[WS-Callback] StreamEvent::ToolEnd: {}", name);
+                                Some(WebSocketMessage::tool_end(
+                                    name.clone(),
+                                    Some(output.clone()),
+                                ))
+                            }
+                            StreamEvent::TokenStats {
+                                input_tokens,
+                                output_tokens,
+                                total_tokens,
+                                cost,
+                                currency,
+                            } => {
+                                // Token stats are logged separately, not sent to WebSocket
+                                tracing::debug!(
+                                    "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                     input_tokens,
                                     output_tokens,
                                     total_tokens,
-                                    cost,
-                                    currency,
-                                } => {
-                                    // Token stats are logged separately, not sent to WebSocket
-                                    tracing::debug!(
-                                    "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                    input_tokens, output_tokens, total_tokens,
                                     if currency == "CN" { "¥" } else { "$" },
                                     cost
                                 );
-                                    None
-                                }
-                                StreamEvent::Done => {
-                                    tracing::debug!("[WS-Callback] StreamEvent::Done received, sending Done message to WebSocket");
-                                    Some(WebSocketMessage::done())
-                                }
-                            };
+                                None
+                            }
+                            StreamEvent::Done => {
+                                tracing::debug!("[WS-Callback] StreamEvent::Done received, sending Done message to WebSocket");
+                                Some(WebSocketMessage::done())
+                            }
+                        };
 
                         if let Some(ws_msg) = ws_msg {
-                            tracing::trace!("[WS-Callback] Sending WebSocket message type: {:?}", std::mem::discriminant(&ws_msg));
+                            tracing::trace!(
+                                "[WS-Callback] Sending WebSocket message type: {:?}",
+                                std::mem::discriminant(&ws_msg)
+                            );
                             let outbound =
                                 OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
                             // Synchronous send to preserve ordering

@@ -747,7 +747,12 @@ impl AgentLoop {
             log_llm_response(&response, iteration, &vault_values);
 
             let has_tools = response.has_tool_calls();
-            info!("[Agent] iter {} has_tool_calls={}, tool_count={}", iteration, has_tools, response.tool_calls.len());
+            info!(
+                "[Agent] iter {} has_tool_calls={}, tool_count={}",
+                iteration,
+                has_tools,
+                response.tool_calls.len()
+            );
 
             if !has_tools {
                 info!("[Agent] No tool calls, sending Done event and returning response");

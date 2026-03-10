@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue';
-import { Send, Cpu, Loader2, ChevronDown, ChevronRight, Check, Trash2, Wifi, WifiOff, Upload, Zap, Brain, Wrench } from 'lucide-vue-next';
+import { Send, Cpu, Loader2, ChevronDown, ChevronRight, Check, Trash2, Wifi, WifiOff, Upload, Brain } from 'lucide-vue-next';
 import { marked } from 'marked';
 import type { Message } from '../App.vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -207,6 +207,13 @@ const handleMessage = (data: string) => {
         if (botMsg.content || (botMsg.toolCalls && botMsg.toolCalls.length > 0)) {
           expandedThinking.value[botMsg.id] = false;
         }
+        // Expands full height and scroll to end of chat area
+        setTimeout(() => {
+          const scrollEl = getScrollElement(scrollAreaRef.value);
+          if (scrollEl) {
+            scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
+          }
+        }, 150);
         break;
       case 'text':
         isThinking.value = false;
@@ -295,7 +302,8 @@ const scrollToBottom = async () => {
 
 const scrollToMessage = async (msgId: string) => {
   await nextTick();
-  // Wait a bit for DOM to render the new message
+  // With large messages, Vue needs a moment to mount the DOM element.
+  // Using 150ms to ensure element exists before scrolling.
   setTimeout(() => {
     const scrollEl = getScrollElement(scrollAreaRef.value);
     if (!scrollEl) return;
@@ -303,16 +311,15 @@ const scrollToMessage = async (msgId: string) => {
     // Find the message element by id
     const messageEl = document.getElementById(`msg-${msgId}`);
     if (messageEl) {
-      // Calculate position to scroll to (with a little top padding)
-      const topPos = messageEl.offsetTop - 24; 
+      // Calculate position to scroll to
+      const topPos = messageEl.offsetTop - 32;
       
-      // Use smooth scrolling for better UX
       scrollEl.scrollTo({
         top: topPos,
         behavior: 'smooth'
       });
     }
-  }, 50);
+  }, 150);
 };
 
 const renderMarkdown = (text: string) => {
@@ -413,48 +420,44 @@ const toggleThinkingExpand = (msgId: string) => {
                     v-show="expandedThinking[msg.id] !== false"
                     class="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50"
                   >
-                    <div class="text-xs text-slate-400 italic whitespace-pre-wrap leading-relaxed max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                    <div class="text-[13px] text-slate-400/80 italic whitespace-pre-wrap leading-relaxed">
                       {{ msg.thinking }}
                     </div>
                   </div>
                 </div>
 
-                <!-- Tool calls section - separate block, default collapsed -->
+                <!-- Tool calls section - highly compact -->
                 <div
                   v-if="msg.toolCalls && msg.toolCalls.length > 0"
-                  class="mb-4 pb-4 border-b border-white/10 w-full"
+                  class="mb-3 w-full"
                 >
-                  <div class="flex items-center gap-2 mb-2">
-                    <Wrench class="w-4 h-4 text-emerald-400" />
-                    <span class="text-xs font-medium text-emerald-400">Tool Calls ({{ msg.toolCalls.length }})</span>
-                  </div>
-                  <div class="space-y-2 w-full">
+                  <div class="flex flex-wrap gap-2 w-full">
                     <div
                       v-for="(tool, index) in msg.toolCalls"
                       :key="index"
-                      class="rounded-lg border bg-slate-900/50 border-slate-700/50 overflow-hidden w-full"
+                      class="flex flex-col border border-slate-700/60 bg-slate-900/60 rounded-md overflow-hidden text-sm"
+                      :class="expandedTools[msg.id + '_' + index] ? 'w-full' : 'w-auto max-w-full'"
                     >
                       <!-- Tool header - clickable to expand -->
                       <div
-                        class="flex items-center justify-between p-2 px-3 cursor-pointer hover:bg-slate-700/30 transition-colors w-full"
+                        class="flex items-center gap-2 p-1.5 px-2.5 cursor-pointer hover:bg-slate-700/40 transition-colors select-none"
                         @click="toggleToolExpand(msg.id + '_' + index)"
                       >
-                        <div class="flex items-center gap-2 text-sm">
-                          <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400" />
-                          <Check v-else class="w-3.5 h-3.5 text-emerald-400" />
-                          <span class="font-mono text-xs text-slate-300">{{ tool.name }}</span>
-                        </div>
-                        <ChevronDown v-if="expandedTools[msg.id + '_' + index]" class="w-4 h-4 text-slate-500" />
-                        <ChevronRight v-else class="w-4 h-4 text-slate-500" />
+                        <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <Check v-else class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span class="font-mono text-xs text-slate-300 truncate"><span class="text-slate-500">Call </span>{{ tool.name }}</span>
+                        <ChevronDown v-if="expandedTools[msg.id + '_' + index]" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                        <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
                       </div>
+                      
                       <!-- Tool details - only shown when expanded -->
-                      <div v-if="expandedTools[msg.id + '_' + index]" class="px-3 pb-3 pt-0 border-t border-slate-700/30">
-                        <div class="text-xs font-semibold text-slate-500 mb-1 mt-2">Arguments:</div>
-                        <pre class="bg-black/40 rounded p-2 font-mono text-xs text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-blue-500/50 m-0"><code>{{ tool.arguments || '{}' }}</code></pre>
+                      <div v-if="expandedTools[msg.id + '_' + index]" class="p-2 pt-0 border-t border-slate-700/60 bg-slate-950/50">
+                        <div class="text-[11px] font-semibold text-slate-500 mb-1 mt-2 uppercase tracking-wider">Arguments</div>
+                        <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-blue-500/50 custom-scrollbar m-0"><code>{{ tool.arguments || '{}' }}</code></pre>
 
                         <template v-if="tool.result">
-                          <div class="text-xs font-semibold text-slate-500 mb-1 mt-2">Result:</div>
-                          <pre class="bg-black/40 rounded p-2 font-mono text-xs text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-amber-500/50 max-h-[200px] overflow-y-auto m-0"><code>{{ tool.result }}</code></pre>
+                          <div class="text-[11px] font-semibold text-slate-500 mb-1 mt-2 uppercase tracking-wider">Result</div>
+                          <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-amber-500/50 m-0"><code>{{ tool.result }}</code></pre>
                         </template>
                       </div>
                     </div>
@@ -462,7 +465,11 @@ const toggleThinkingExpand = (msgId: string) => {
                 </div>
 
                 <!-- Final response content - separate from tool calls -->
-                <div v-if="msg.content" class="prose prose-invert max-w-none text-sm leading-relaxed" v-html="renderMarkdown(msg.content)"></div>
+                <div
+                  v-if="msg.content"
+                  class="prose prose-invert max-w-none text-sm leading-relaxed transition-all"
+                  v-html="renderMarkdown(msg.content)"
+                ></div>
 
                 <!-- Typing indicator when no content yet -->
                 <div v-else-if="localMessages[localMessages.length - 1].id === msg.id && (isReceiving || isThinking)" class="flex items-center gap-2 text-slate-400">
@@ -487,29 +494,6 @@ const toggleThinkingExpand = (msgId: string) => {
       <!-- Input Area -->
       <div class="p-6 pt-0 bg-transparent shrink-0">
         <div class="max-w-4xl mx-auto w-full relative">
-          <!-- Status Bar above input -->
-          <div
-            v-if="sessionStatus === 'receiving'"
-            class="flex items-center justify-center gap-2 mb-3 py-2 px-4 bg-violet-500/10 border border-violet-500/20 rounded-xl"
-          >
-            <Loader2 class="w-4 h-4 text-violet-400 animate-spin" />
-            <span class="text-sm text-violet-400 font-medium">AI is processing your request...</span>
-          </div>
-          <div
-            v-else-if="sessionStatus === 'sending'"
-            class="flex items-center justify-center gap-2 mb-3 py-2 px-4 bg-blue-500/10 border border-blue-500/20 rounded-xl"
-          >
-            <Upload class="w-4 h-4 text-blue-400 animate-pulse" />
-            <span class="text-sm text-blue-400 font-medium">Sending your message...</span>
-          </div>
-          <div
-            v-else-if="sessionStatus === 'idle' && localMessages.length > 0"
-            class="flex items-center justify-center gap-2 mb-3 py-2 px-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl"
-          >
-            <Zap class="w-4 h-4 text-emerald-400" />
-            <span class="text-sm text-emerald-400 font-medium">Ready for your next prompt</span>
-          </div>
-
           <div
             class="flex items-end bg-slate-900/70 border border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
             :class="{
@@ -524,7 +508,7 @@ const toggleThinkingExpand = (msgId: string) => {
               @keydown.enter.meta.prevent="sendMessage"
               @keydown.enter.ctrl.prevent="sendMessage"
               @input="autoResize"
-              :placeholder="sessionStatus === 'receiving' ? 'Please wait for AI response...' : sessionStatus === 'sending' ? 'Sending...' : 'Type your message... (Cmd+Enter to send)'"
+              :placeholder="sessionStatus === 'receiving' ? 'AI is processing your request...' : sessionStatus === 'sending' ? 'Sending your message...' : (localMessages.length > 0 ? 'Ready for your next prompt... (Cmd+Enter to send)' : 'Type your message... (Cmd+Enter to send)')"
               :disabled="!isConnected || sessionStatus === 'receiving' || sessionStatus === 'sending'"
               autofocus
               rows="1"

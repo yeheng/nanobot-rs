@@ -116,14 +116,24 @@ impl WebSocketManager {
         // Try to find the connection by chat_id (which could be user_id or connection_id)
         let connection_id = if let Some(conn_id) = user_connections.get(&msg.chat_id) {
             // chat_id is a user_id, look up the connection
-            debug!("WebSocketManager::send - found connection {} for user_id {}", conn_id, msg.chat_id);
+            debug!(
+                "WebSocketManager::send - found connection {} for user_id {}",
+                conn_id, msg.chat_id
+            );
             conn_id.clone()
         } else if connections.contains_key(&msg.chat_id) {
             // chat_id is already a connection_id
-            debug!("WebSocketManager::send - chat_id {} is a connection_id", msg.chat_id);
+            debug!(
+                "WebSocketManager::send - chat_id {} is a connection_id",
+                msg.chat_id
+            );
             msg.chat_id.clone()
         } else {
-            warn!("No connection found for chat_id: {} (user_connections: {:?})", msg.chat_id, user_connections.keys().collect::<Vec<_>>());
+            warn!(
+                "No connection found for chat_id: {} (user_connections: {:?})",
+                msg.chat_id,
+                user_connections.keys().collect::<Vec<_>>()
+            );
             return;
         };
 
@@ -135,7 +145,10 @@ impl WebSocketManager {
                 json
             } else if !msg.content.is_empty() {
                 // Legacy: send plain text (wrapped in JSON for consistency)
-                debug!("WebSocketManager::send - sending content: {}", &msg.content[..msg.content.len().min(100)]);
+                debug!(
+                    "WebSocketManager::send - sending content: {}",
+                    &msg.content[..msg.content.len().min(100)]
+                );
                 msg.content
             } else {
                 // Empty message, skip
@@ -149,7 +162,10 @@ impl WebSocketManager {
                     connection_id, e
                 );
             } else {
-                debug!("WebSocketManager::send - message sent successfully to {}", connection_id);
+                debug!(
+                    "WebSocketManager::send - message sent successfully to {}",
+                    connection_id
+                );
             }
         } else {
             warn!(
