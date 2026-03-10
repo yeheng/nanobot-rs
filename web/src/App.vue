@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
-import { Plus, MessageSquare, Menu, X, Trash2, Pencil, Check as CheckIcon } from 'lucide-vue-next';
-import ChatArea from './components/ChatArea.vue';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Menu, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
+import { onMounted, ref, watch } from 'vue';
+import ChatArea from './components/ChatArea.vue';
 
 // Types
 export interface Message {

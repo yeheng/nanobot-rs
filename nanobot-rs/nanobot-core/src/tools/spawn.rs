@@ -99,9 +99,6 @@ impl Tool for SpawnTool {
             .submit(&args.task, &channel, &chat_id)
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn task: {}", e)))?;
 
-        Ok(format!(
-            "Background task started: {}",
-            &args.task[..args.task.len().min(100)]
-        ))
+        Ok(format!("Background task started: {}", &args.task))
     }
 }

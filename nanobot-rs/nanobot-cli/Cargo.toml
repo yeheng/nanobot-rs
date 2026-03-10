@@ -58,6 +58,9 @@ dirs.workspace = true
 # Terminal
 colored.workspace = true
 
+# Interactive CLI
+dialoguer.workspace = true
+
 # REPL
 reedline.workspace = true
 nu-ansi-term.workspace = true

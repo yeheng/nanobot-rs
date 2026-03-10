@@ -47,10 +47,6 @@ pub async fn run_outbound_actor(
     while let Some(msg) = rx.recv().await {
         #[cfg(feature = "webhook")]
         if let crate::bus::events::ChannelType::WebSocket = msg.channel {
-            tracing::debug!(
-                "Outbound Actor: routing WebSocket message to chat {}",
-                msg.chat_id
-            );
             if let Some(ref manager) = websocket_manager {
                 manager.send(msg).await;
             } else {
@@ -121,30 +117,43 @@ pub async fn run_session_actor(
                     session_key_str, channel, chat_id, is_websocket
                 );
 
-                // Create streaming callback for WebSocket channels
-                // Use synchronous send to preserve message ordering
+                // Create streaming callback for WebSocket channels.
+                //
+                // Design: We use an unbounded channel as an intermediate buffer
+                // between the synchronous callback and the bounded outbound channel.
+                // The callback writes to the unbounded sender (never blocks, never drops),
+                // and a forwarder task drains it into the bounded outbound channel.
+                // This prevents message loss that try_send would cause under backpressure.
                 let callback: Option<StreamCallback> = if is_websocket {
                     tracing::debug!(
                         "Session Actor [{}]: Creating streaming callback for WebSocket",
                         session_key_str
                     );
-                    let ob_tx = outbound_tx.clone();
                     let ch = channel.clone();
                     let cid = chat_id.clone();
+
+                    // Unbounded buffer: callback → forwarder → outbound
+                    let (stream_tx, mut stream_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<OutboundMessage>();
+
+                    // Forwarder task: drains unbounded buffer into bounded outbound channel.
+                    // Preserves FIFO ordering. Exits when stream_tx is dropped (callback goes out of scope).
+                    let ob_tx_fwd = outbound_tx.clone();
+                    tokio::spawn(async move {
+                        while let Some(msg) = stream_rx.recv().await {
+                            if let Err(e) = ob_tx_fwd.send(msg).await {
+                                tracing::error!("[WS-Forwarder] Outbound channel closed: {:?}", e);
+                                break;
+                            }
+                        }
+                    });
+
                     Some(Box::new(move |event: &StreamEvent| {
                         let ws_msg = match event {
                             StreamEvent::Content(content) => {
-                                tracing::trace!(
-                                    "[WS-Callback] StreamEvent::Content: {} chars",
-                                    content.len()
-                                );
                                 Some(WebSocketMessage::content(content.clone()))
                             }
                             StreamEvent::Reasoning(content) => {
-                                tracing::trace!(
-                                    "[WS-Callback] StreamEvent::Reasoning: {} chars",
-                                    content.len()
-                                );
                                 Some(WebSocketMessage::thinking(content.clone()))
                             }
                             StreamEvent::ToolStart { name, arguments } => {
@@ -168,7 +177,6 @@ pub async fn run_session_actor(
                                 cost,
                                 currency,
                             } => {
-                                // Token stats are logged separately, not sent to WebSocket
                                 tracing::debug!(
                                     "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                     input_tokens,
@@ -180,27 +188,18 @@ pub async fn run_session_actor(
                                 None
                             }
                             StreamEvent::Done => {
-                                tracing::debug!("[WS-Callback] StreamEvent::Done received, sending Done message to WebSocket");
+                                tracing::debug!("[WS-Callback] StreamEvent::Done");
                                 Some(WebSocketMessage::done())
                             }
                         };
 
                         if let Some(ws_msg) = ws_msg {
-                            tracing::trace!(
-                                "[WS-Callback] Sending WebSocket message type: {:?}",
-                                std::mem::discriminant(&ws_msg)
-                            );
                             let outbound =
                                 OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
-                            // Synchronous send to preserve ordering
-                            // Use try_send to avoid blocking, but still maintain order
-                            match ob_tx.try_send(outbound) {
-                                Ok(_) => {
-                                    tracing::trace!("[WS-Callback] Streaming event sent to outbound channel successfully");
-                                }
-                                Err(e) => {
-                                    tracing::error!("[WS-Callback] Failed to send streaming event (channel may be full): {:?}", e);
-                                }
+                            // Unbounded send: guaranteed not to fail unless receiver is dropped.
+                            // Messages are buffered here and drained by the forwarder task.
+                            if let Err(e) = stream_tx.send(outbound) {
+                                tracing::error!("[WS-Callback] Forwarder channel closed: {:?}", e);
                             }
                         }
                     }))

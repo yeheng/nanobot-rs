@@ -94,3 +94,6 @@ colored = "3"
 # REPL
 reedline = "0.45"
 nu-ansi-term = "0.50"
+
+# Interactive CLI
+dialoguer = "0.11"

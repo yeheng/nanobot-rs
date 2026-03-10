@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument};
+use tracing::{info, instrument};
 
 use super::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
@@ -227,7 +227,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: false,
         };
 
-        debug!(
+        tracing::trace!(
             "[{}] POST {} | request body:\n{}",
             self.config.name,
             url,
@@ -316,7 +316,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: true,
         };
 
-        debug!(
+        tracing::trace!(
             "[{}] POST {} (stream) | request body:\n{}",
             self.config.name,
             url,

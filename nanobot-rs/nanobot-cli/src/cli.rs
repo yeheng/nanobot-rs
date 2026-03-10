@@ -52,6 +52,12 @@ pub enum Commands {
 
     /// Show session token usage and cost statistics
     Stats,
+
+    /// Manage vault secrets (sensitive data storage)
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -164,4 +170,66 @@ pub enum SearchCommands {
 
     /// Show index statistics
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum VaultCommands {
+    /// List all vault entries (values hidden)
+    List,
+
+    /// Set a vault entry (will prompt for value if not provided)
+    Set {
+        /// Key name (alphanumeric and underscores only)
+        key: String,
+
+        /// Secret value (will prompt if not provided)
+        #[arg(short, long)]
+        value: Option<String>,
+
+        /// Description for the entry
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Get a vault entry value (outputs the raw value)
+    Get {
+        /// Key name
+        key: String,
+    },
+
+    /// Delete a vault entry
+    Delete {
+        /// Key name
+        key: String,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Show detailed info for a vault entry
+    Show {
+        /// Key name
+        key: String,
+
+        /// Show the secret value (use with caution)
+        #[arg(long)]
+        show_value: bool,
+    },
+
+    /// Import vault entries from a JSON file
+    Import {
+        /// Path to JSON file
+        file: String,
+
+        /// Merge with existing entries (don't overwrite existing keys)
+        #[arg(short, long)]
+        merge: bool,
+    },
+
+    /// Export vault entries to a JSON file
+    Export {
+        /// Path to output file
+        file: String,
+    },
 }

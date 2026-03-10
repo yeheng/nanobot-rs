@@ -341,7 +341,15 @@ const handleMessage = (data: string) => {
       case 'tool_end':
         isThinking.value = true;
         if (botMsg.toolCalls && botMsg.toolCalls.length > 0) {
-          const activeTool = botMsg.toolCalls[botMsg.toolCalls.length - 1];
+          // Match by tool name (msg.name) instead of blindly using the last entry.
+          // Find the last tool with matching name that is still 'running'.
+          // This correctly handles: tool_start(A), tool_start(B), tool_end(A), tool_end(B)
+          const matchingTool = [...botMsg.toolCalls].reverse().find(
+            t => t.name === msg.name && t.status === 'running'
+          );
+          const activeTool = matchingTool
+            || [...botMsg.toolCalls].reverse().find(t => t.status === 'running')
+            || botMsg.toolCalls[botMsg.toolCalls.length - 1];
           activeTool.status = msg.error ? 'error' : 'complete';
           activeTool.result = msg.error || msg.output;
           // Calculate duration

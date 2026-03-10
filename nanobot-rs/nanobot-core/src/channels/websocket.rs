@@ -34,20 +34,54 @@ pub struct WebSocketQuery {
     pub user_id: Option<String>,
 }
 
-/// Guard to ensure connection cleanup even on panic or early return
+/// Unified guard for connection cleanup on disconnect.
+///
+/// Uses ownership verification (compare-and-swap pattern) to prevent
+/// a stale guard from destroying a newer connection for the same user.
+/// This handles the race where:
+///   1. User disconnects → guard drop spawns async cleanup
+///   2. User reconnects → new connection registered
+///   3. Old cleanup task runs → must NOT remove the new connection
 struct ConnectionGuard {
     manager: Arc<WebSocketManager>,
     connection_id: ConnectionId,
+    user_id: UserId,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         let manager = self.manager.clone();
         let connection_id = self.connection_id.clone();
-        // Use tokio::spawn to handle async cleanup in Drop
+        let user_id = self.user_id.clone();
         tokio::spawn(async move {
-            manager.connections.write().await.remove(&connection_id);
-            debug!("Connection guard cleaned up connection: {}", connection_id);
+            // Acquire both locks in a single scope to avoid interleaving
+            let mut connections = manager.connections.write().await;
+            let mut user_connections = manager.user_connections.write().await;
+
+            // Only remove from connections if the stored entry is still ours.
+            // If a new connection has replaced us, the map entry will have a
+            // different sender (same key but re-inserted), so we check by key
+            // existence — the new connection would have removed our old entry
+            // during registration and inserted its own.
+            connections.remove(&connection_id);
+
+            // Only remove user mapping if it still points to OUR connection_id.
+            // If a newer connection has taken over, user_connections[user_id]
+            // will point to the new connection_id — we must not touch it.
+            if let Some(current_conn_id) = user_connections.get(&user_id) {
+                if *current_conn_id == connection_id {
+                    user_connections.remove(&user_id);
+                    debug!(
+                        "Connection guard cleaned up user {} and connection {}",
+                        user_id, connection_id
+                    );
+                } else {
+                    debug!(
+                        "Connection guard skipped user {} cleanup: current connection is {}, not {}",
+                        user_id, current_conn_id, connection_id
+                    );
+                }
+            }
         });
     }
 }
@@ -106,27 +140,12 @@ impl WebSocketManager {
         let connections = self.connections.read().await;
         let user_connections = self.user_connections.read().await;
 
-        debug!(
-            "WebSocketManager::send - chat_id={}, has_ws_message={}, content_len={}",
-            msg.chat_id,
-            msg.ws_message.is_some(),
-            msg.content.len()
-        );
-
         // Try to find the connection by chat_id (which could be user_id or connection_id)
         let connection_id = if let Some(conn_id) = user_connections.get(&msg.chat_id) {
             // chat_id is a user_id, look up the connection
-            debug!(
-                "WebSocketManager::send - found connection {} for user_id {}",
-                conn_id, msg.chat_id
-            );
             conn_id.clone()
         } else if connections.contains_key(&msg.chat_id) {
             // chat_id is already a connection_id
-            debug!(
-                "WebSocketManager::send - chat_id {} is a connection_id",
-                msg.chat_id
-            );
             msg.chat_id.clone()
         } else {
             warn!(
@@ -140,15 +159,9 @@ impl WebSocketManager {
         if let Some(sender) = connections.get(&connection_id) {
             // Check if we have a structured WebSocket message
             let text = if let Some(ref ws_msg) = msg.ws_message {
-                let json = ws_msg.to_json();
-                debug!("WebSocketManager::send - sending ws_message: {}", json);
-                json
+                ws_msg.to_json()
             } else if !msg.content.is_empty() {
                 // Legacy: send plain text (wrapped in JSON for consistency)
-                debug!(
-                    "WebSocketManager::send - sending content: {}",
-                    &msg.content[..msg.content.len().min(100)]
-                );
                 msg.content
             } else {
                 // Empty message, skip
@@ -160,11 +173,6 @@ impl WebSocketManager {
                 warn!(
                     "Failed to send message to connection {}: {}",
                     connection_id, e
-                );
-            } else {
-                debug!(
-                    "WebSocketManager::send - message sent successfully to {}",
-                    connection_id
                 );
             }
         } else {
@@ -242,15 +250,11 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
         manager.connection_count().await
     );
 
-    // Create guard to ensure cleanup
+    // Single unified guard handles both connection and user mapping cleanup.
+    // Uses ownership verification to avoid destroying newer connections.
     let _guard = ConnectionGuard {
         manager: manager.clone(),
         connection_id: connection_id.clone(),
-    };
-
-    // Also clean up user connection mapping on exit (guard will be dropped with _guard)
-    let _user_cleanup_guard = UserConnectionGuard {
-        manager: manager.clone(),
         user_id: user_id.clone(),
     };
 
@@ -292,12 +296,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                         }
                     }
                     Message::Close(_) => {
-                        debug!("Received close frame from {}", connection_id);
+                        tracing::trace!("Received close frame from {}", connection_id);
                         break;
                     }
                     Message::Ping(_data) => {
                         // Handle ping for keepalive
-                        debug!("Received ping from {}", connection_id);
+                        tracing::trace!("Received ping from {}", connection_id);
                         // Note: axum handles pong automatically
                     }
                     _ => {}
@@ -309,40 +313,15 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     // Wait for either task to finish
     tokio::select! {
         _ = (&mut send_task) => {
-            debug!("Send task finished for {}", connection_id);
+            tracing::trace!("Send task finished for {}", connection_id);
         },
         _ = (&mut recv_task) => {
-            debug!("Recv task finished for {}", connection_id);
+            tracing::trace!("Recv task finished for {}", connection_id);
         },
     }
 
     // Guard will clean up automatically
     debug!("WebSocket connection closed: {}", connection_id);
-}
-
-/// Guard to clean up user connection mapping
-struct UserConnectionGuard {
-    manager: Arc<WebSocketManager>,
-    user_id: String,
-}
-
-impl Drop for UserConnectionGuard {
-    fn drop(&mut self) {
-        let manager = self.manager.clone();
-        let user_id = self.user_id.clone();
-        tokio::spawn(async move {
-            let mut user_connections = manager.user_connections.write().await;
-            if let Some(conn_id) = user_connections.remove(&user_id) {
-                // Also remove from connections map
-                let mut connections = manager.connections.write().await;
-                connections.remove(&conn_id);
-                debug!(
-                    "User connection guard cleaned up user {} and connection {}",
-                    user_id, conn_id
-                );
-            }
-        });
-    }
 }
 
 #[cfg(test)]

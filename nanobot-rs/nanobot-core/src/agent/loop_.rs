@@ -848,18 +848,13 @@ impl AgentLoop {
             let tool_name = tool_call.function.name.clone();
 
             // Inline logging (replaces LoggingHook::on_tool_result)
-            debug!(
-                "[Tool] {} -> {} ({}ms)",
-                tool_name, &result.output, duration_ms
-            );
+            debug!("[Tool] {} -> done ({}ms)", tool_name, duration_ms);
 
             state.tools_used.push(tool_name.clone());
 
-            let output_preview = truncate_preview(&result.output, 500);
-
             cb(&StreamEvent::ToolEnd {
                 name: tool_name.clone(),
-                output: output_preview,
+                output: result.output.clone(),
             });
             // Add the tool result to the conversation
             state.messages.push(ChatMessage::tool_result(
@@ -927,18 +922,4 @@ impl AgentLoop {
 
         messages
     }
-}
-
-/// Truncate a string for preview logging, respecting UTF-8 char boundaries.
-fn truncate_preview(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        return s.to_string();
-    }
-    let end = s
-        .char_indices()
-        .take_while(|(i, _)| *i < max_chars)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    format!("{}... (truncated, {} chars total)", &s[..end], s.len())
 }
