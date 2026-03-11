@@ -19,7 +19,9 @@ pub use base::{
     FinishReason, LlmProvider, MessageRole, ThinkingConfig, ToolCall, ToolCallDelta,
     ToolDefinition, Usage,
 };
-pub use common::{parse_json_args, OpenAICompatibleProvider, ProviderConfig, ProviderError, ProviderResult};
+pub use common::{
+    parse_json_args, OpenAICompatibleProvider, ProviderConfig, ProviderError, ProviderResult,
+};
 pub use copilot::CopilotProvider;
 pub use copilot_oauth::{CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse};
 pub use gemini::GeminiProvider;

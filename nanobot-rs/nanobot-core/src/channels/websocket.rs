@@ -59,21 +59,23 @@ impl Drop for ConnectionGuard {
 
         // Only remove user mapping if it still points to OUR connection_id.
         // DashMap's remove_if allows atomic check-and-remove.
-        manager.user_connections.remove_if(&user_id, |_, current_conn_id| {
-            let is_ours = *current_conn_id == connection_id;
-            if is_ours {
-                debug!(
-                    "Connection guard cleaned up user {} and connection {}",
-                    user_id, connection_id
-                );
-            } else {
-                debug!(
+        manager
+            .user_connections
+            .remove_if(&user_id, |_, current_conn_id| {
+                let is_ours = *current_conn_id == connection_id;
+                if is_ours {
+                    debug!(
+                        "Connection guard cleaned up user {} and connection {}",
+                        user_id, connection_id
+                    );
+                } else {
+                    debug!(
                     "Connection guard skipped user {} cleanup: current connection is {}, not {}",
                     user_id, current_conn_id, connection_id
                 );
-            }
-            is_ours
-        });
+                }
+                is_ours
+            });
     }
 }
 
@@ -145,7 +147,10 @@ impl WebSocketManager {
             warn!(
                 "No connection found for chat_id: {} (user_connections: {:?})",
                 msg.chat_id,
-                self.user_connections.iter().map(|e| e.key().clone()).collect::<Vec<_>>()
+                self.user_connections
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect::<Vec<_>>()
             );
             return;
         };
@@ -229,7 +234,9 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     }
 
     manager.connections.insert(connection_id.clone(), tx);
-    manager.user_connections.insert(user_id.clone(), connection_id.clone());
+    manager
+        .user_connections
+        .insert(user_id.clone(), connection_id.clone());
 
     info!(
         "WebSocket connected: {} (user: {}), total connections: {}",

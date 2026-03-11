@@ -133,7 +133,10 @@ impl AgentContext for PersistentContext {
 
         // Try to acquire the "lock" via compare-and-swap
         // If already true, another task is running - skip this one
-        if flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        if flag
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             debug!(
                 "[Summarization] Skipping compression for session '{}' - another task is already running",
                 key
