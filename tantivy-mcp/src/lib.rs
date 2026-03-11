@@ -6,8 +6,8 @@
 
 pub mod error;
 pub mod index;
-pub mod mcp;
 pub mod maintenance;
+pub mod mcp;
 mod tools;
 
 pub use error::{Error, Result};

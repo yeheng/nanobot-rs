@@ -93,7 +93,8 @@ impl MaintenanceScheduler {
         let status = self.status.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(config.expire_interval_secs));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(config.expire_interval_secs));
 
             loop {
                 interval.tick().await;
@@ -145,7 +146,9 @@ async fn run_maintenance(
                     error!("Compaction failed for {}: {}", index_name, e);
                 } else {
                     let mut status = status.write().await;
-                    status.last_compaction.insert(index_name.clone(), Utc::now());
+                    status
+                        .last_compaction
+                        .insert(index_name.clone(), Utc::now());
                 }
             }
         }

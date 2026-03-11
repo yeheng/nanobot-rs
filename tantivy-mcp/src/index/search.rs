@@ -163,7 +163,12 @@ impl SearchQuery {
     }
 
     /// Add a filter.
-    pub fn with_filter(mut self, field: impl Into<String>, op: FilterOp, value: serde_json::Value) -> Self {
+    pub fn with_filter(
+        mut self,
+        field: impl Into<String>,
+        op: FilterOp,
+        value: serde_json::Value,
+    ) -> Self {
         self.filters.push(FieldFilter {
             field: field.into(),
             op,

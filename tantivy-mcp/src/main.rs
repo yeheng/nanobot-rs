@@ -84,7 +84,10 @@ async fn main() -> tantivy_mcp::Result<()> {
         };
         let scheduler = MaintenanceScheduler::new(manager.clone(), config);
         let handle = scheduler.start();
-        info!("Maintenance scheduler started (interval: {}s)", args.maintenance_interval);
+        info!(
+            "Maintenance scheduler started (interval: {}s)",
+            args.maintenance_interval
+        );
         Some(handle)
     } else {
         None
@@ -101,9 +104,7 @@ async fn main() -> tantivy_mcp::Result<()> {
     let shutdown = setup_shutdown_handler();
 
     // Run MCP server in a separate task
-    let server_task = tokio::task::spawn_blocking(move || {
-        handler.run()
-    });
+    let server_task = tokio::task::spawn_blocking(move || handler.run());
 
     // Wait for either server completion or shutdown signal
     tokio::select! {

@@ -17,7 +17,9 @@ pub fn compact_index(manager: &IndexManager, index_name: &str) -> Result<Compact
         segments_after: stats_after.segment_count,
         deleted_before: stats_before.deleted_count,
         deleted_after: stats_after.deleted_count,
-        bytes_saved: stats_before.size_bytes.saturating_sub(stats_after.size_bytes),
+        bytes_saved: stats_before
+            .size_bytes
+            .saturating_sub(stats_after.size_bytes),
     })
 }
 

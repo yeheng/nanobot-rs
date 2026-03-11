@@ -13,8 +13,6 @@ use nanobot_core::channels::OutboundSenderRegistry;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
-#[cfg(feature = "statemachine")]
-use nanobot_statemachine::{StateMachineBootstrapConfig, StateMachineHandle};
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -160,47 +158,6 @@ pub async fn cmd_gateway() -> Result<()> {
         },
         sqlite_store: Some(sqlite_store),
     });
-
-    // Initialize state machine subsystem if enabled
-    #[cfg(feature = "statemachine")]
-    let _statemachine_handle: Option<StateMachineHandle> = {
-        // Build bootstrap config from core config
-        let bootstrap_config = if let Some(ref sm_raw) = config.state_machine {
-            match serde_json::from_value::<StateMachineBootstrapConfig>(sm_raw.clone()) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    tracing::error!("Failed to parse state machine config: {}", e);
-                    StateMachineBootstrapConfig::default()
-                }
-            }
-        } else {
-            StateMachineBootstrapConfig::default()
-        };
-
-        match nanobot_statemachine::bootstrap(
-            &bootstrap_config,
-            memory_store.pool().clone(),
-            subagent_manager.clone(),
-            &mut tools,
-        )
-        .await
-        {
-            Ok(Some(handle)) => {
-                println!("{}", "✓ State machine subsystem enabled".green());
-                Some(handle)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                tracing::error!("Failed to initialize state machine: {}", e);
-                None
-            }
-        }
-    };
-
-    #[cfg(not(feature = "statemachine"))]
-    if config.state_machine.is_some() {
-        tracing::warn!("State machine config found but statemachine feature is not enabled.");
-    }
 
     let agent = Arc::new(
         AgentLoop::with_memory_store(

@@ -1,7 +1,7 @@
 //! Document operations.
 
-use serde_json::{Map, Value};
 use chrono::{DateTime, Utc};
+use serde_json::{Map, Value};
 
 /// Document for indexing.
 #[derive(Debug, Clone)]

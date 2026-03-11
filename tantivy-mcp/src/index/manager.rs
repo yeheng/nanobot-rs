@@ -24,7 +24,7 @@ use crate::{Error, Result};
 struct IndexState {
     schema: IndexSchema,
     config: IndexConfig,
-    tantivy_schema: Schema,
+    _tantivy_schema: Schema,
     tantivy_index: Index,
     reader: IndexReader,
     writer: Option<IndexWriter>,
@@ -141,7 +141,7 @@ impl IndexManager {
         let state = IndexState {
             schema: schema.clone(),
             config,
-            tantivy_schema,
+            _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
             writer: None,
@@ -150,7 +150,8 @@ impl IndexManager {
             expires_at_field,
         };
 
-        self.indexes.insert(name.to_string(), Arc::new(RwLock::new(state)));
+        self.indexes
+            .insert(name.to_string(), Arc::new(RwLock::new(state)));
 
         info!("Created index: {}", name);
         Ok(schema)
@@ -207,7 +208,10 @@ impl IndexManager {
 
         // Extract all needed values first
         let id = document.id.clone();
-        let expires_at_ts = document.expires_at.map(|t| t.timestamp()).unwrap_or(i64::MAX);
+        let expires_at_ts = document
+            .expires_at
+            .map(|t| t.timestamp())
+            .unwrap_or(i64::MAX);
         let field_values: Vec<(String, serde_json::Value)> = document.fields.into_iter().collect();
         let id_field = state.id_field;
         let expires_at_field = state.expires_at_field;
@@ -284,7 +288,11 @@ impl IndexManager {
         // Create snippet generator if highlighting is requested
         let snippet_generator = if let Some(ref highlight_config) = query.highlight {
             if let Some(ref query_text) = query.text {
-                Some(create_snippet_generator(&state, query_text, highlight_config)?)
+                Some(create_snippet_generator(
+                    &state,
+                    query_text,
+                    highlight_config,
+                )?)
             } else {
                 None
             }
@@ -314,7 +322,7 @@ impl IndexManager {
 
                 // Generate highlights if requested
                 let (highlights, legacy_highlight) = if let Some(ref gen) = snippet_generator {
-                    generate_highlights(&doc, gen, &query.highlight.as_ref().unwrap())
+                    generate_highlights(&doc, gen, query.highlight.as_ref().unwrap())
                 } else {
                     (None, None)
                 };
@@ -395,7 +403,12 @@ impl IndexManager {
     }
 
     /// List all documents in an index (with pagination).
-    pub fn list_documents(&self, index_name: &str, limit: usize, offset: usize) -> Result<Vec<Document>> {
+    pub fn list_documents(
+        &self,
+        index_name: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Document>> {
         let state = self.get_state(index_name)?;
         let state = state.blocking_read();
 
@@ -427,9 +440,7 @@ impl IndexManager {
                 let expires_at = doc
                     .get_first(expires_at_field)
                     .and_then(|v| v.as_i64())
-                    .map(|ts| {
-                        chrono::DateTime::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now())
-                    });
+                    .map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now));
 
                 let mut fields = serde_json::Map::new();
                 for (field_name, tantivy_field) in field_map {
@@ -439,7 +450,11 @@ impl IndexManager {
                     }
                 }
 
-                documents.push(Document { id, fields, expires_at });
+                documents.push(Document {
+                    id,
+                    fields,
+                    expires_at,
+                });
             }
         }
 
@@ -488,7 +503,7 @@ impl IndexManager {
         let state = IndexState {
             schema: metadata.schema,
             config: metadata.config,
-            tantivy_schema,
+            _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
             writer: None,
@@ -497,7 +512,8 @@ impl IndexManager {
             expires_at_field,
         };
 
-        self.indexes.insert(name.to_string(), Arc::new(RwLock::new(state)));
+        self.indexes
+            .insert(name.to_string(), Arc::new(RwLock::new(state)));
         Ok(())
     }
 
@@ -537,29 +553,19 @@ fn build_tantivy_schema(
                     .set_indexing_options(
                         TextFieldIndexing::default()
                             .set_tokenizer("default")
-                            .set_index_option(tantivy::schema::IndexRecordOption::WithFreqsAndPositions),
+                            .set_index_option(
+                                tantivy::schema::IndexRecordOption::WithFreqsAndPositions,
+                            ),
                     )
                     .set_stored();
                 builder.add_text_field(&field_def.name, options)
             }
-            FieldType::String => {
-                builder.add_text_field(&field_def.name, STRING | STORED)
-            }
-            FieldType::I64 => {
-                builder.add_i64_field(&field_def.name, STORED)
-            }
-            FieldType::F64 => {
-                builder.add_f64_field(&field_def.name, STORED)
-            }
-            FieldType::DateTime => {
-                builder.add_i64_field(&field_def.name, STORED)
-            }
-            FieldType::StringArray => {
-                builder.add_text_field(&field_def.name, STRING | STORED)
-            }
-            FieldType::Json => {
-                builder.add_json_field(&field_def.name, STORED)
-            }
+            FieldType::String => builder.add_text_field(&field_def.name, STRING | STORED),
+            FieldType::I64 => builder.add_i64_field(&field_def.name, STORED),
+            FieldType::F64 => builder.add_f64_field(&field_def.name, STORED),
+            FieldType::DateTime => builder.add_i64_field(&field_def.name, STORED),
+            FieldType::StringArray => builder.add_text_field(&field_def.name, STRING | STORED),
+            FieldType::Json => builder.add_json_field(&field_def.name, STORED),
         };
 
         field_map.insert(field_def.name.clone(), tantivy_field);
@@ -569,7 +575,11 @@ fn build_tantivy_schema(
 }
 
 /// Add a value to a Tantivy document.
-fn add_field_value(doc: &mut TantivyDocument, field: Field, value: &serde_json::Value) -> Result<()> {
+fn add_field_value(
+    doc: &mut TantivyDocument,
+    field: Field,
+    value: &serde_json::Value,
+) -> Result<()> {
     match value {
         serde_json::Value::String(s) => {
             doc.add_text(field, s);
@@ -637,8 +647,10 @@ fn build_tantivy_query(
             if let Some(field_def) = state.schema.get_field(field_name) {
                 if field_def.field_type == FieldType::Text && field_def.indexed {
                     let term = tantivy::Term::from_field_text(*tantivy_field, text);
-                    let term_query: Box<dyn tantivy::query::Query> =
-                        Box::new(TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions));
+                    let term_query: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
+                        term,
+                        IndexRecordOption::WithFreqsAndPositions,
+                    ));
                     queries.push((Occur::Should, term_query));
                 }
             }
@@ -690,7 +702,7 @@ fn build_filter_query(
                 _ => return Err(Error::InvalidFieldValue("Expected number".to_string())),
             };
 
-            let (from, to) = match op {
+            let (_from, _to) = match op {
                 super::search::FilterOp::Gte => (Some(num), None),
                 super::search::FilterOp::Lte => (None, Some(num)),
                 _ => unreachable!(),
@@ -710,10 +722,6 @@ fn build_filter_query(
             Ok(Box::new(TermQuery::new(term, IndexRecordOption::Basic)))
         }
     }
-}
-
-fn i64_to_bound(v: i64) -> Bound<i64> {
-    Bound::Included(v)
 }
 
 /// Calculate directory size recursively.
@@ -776,7 +784,8 @@ fn create_snippet_generator(
     // Create a query parser with text fields
     let query_parser = QueryParser::for_index(&state.tantivy_index, text_fields.clone());
 
-    let query = query_parser.parse_query(query_text)
+    let query = query_parser
+        .parse_query(query_text)
         .map_err(|e| Error::ParseError(format!("Query parse error: {}", e)))?;
 
     // Create snippet generator for each text field
@@ -785,11 +794,8 @@ fn create_snippet_generator(
             // Check if this is a text field
             if let Some(field_def) = state.schema.get_field(&field_name) {
                 if field_def.field_type == FieldType::Text {
-                    let generator = SnippetGenerator::create(
-                        &state.reader.searcher(),
-                        &query,
-                        tantivy_field,
-                    )?;
+                    let generator =
+                        SnippetGenerator::create(&state.reader.searcher(), &query, tantivy_field)?;
                     generators.push(SnippetGeneratorEntry {
                         field_name: field_name.clone(),
                         field: tantivy_field,
@@ -808,7 +814,10 @@ fn generate_highlights(
     doc: &TantivyDocument,
     generators: &[SnippetGeneratorEntry],
     config: &super::search::HighlightConfig,
-) -> (Option<serde_json::Map<String, serde_json::Value>>, Option<String>) {
+) -> (
+    Option<serde_json::Map<String, serde_json::Value>>,
+    Option<String>,
+) {
     let mut highlights = serde_json::Map::new();
     let mut first_highlight: Option<String> = None;
 
@@ -822,7 +831,10 @@ fn generate_highlights(
                 snippet.set_snippet_prefix_postfix(&open_tag, &close_tag);
 
                 let highlighted = snippet.to_html();
-                highlights.insert(entry.field_name.clone(), serde_json::Value::String(highlighted.clone()));
+                highlights.insert(
+                    entry.field_name.clone(),
+                    serde_json::Value::String(highlighted.clone()),
+                );
 
                 // Store first highlight for legacy field
                 if first_highlight.is_none() {

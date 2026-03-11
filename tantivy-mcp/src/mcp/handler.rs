@@ -69,10 +69,7 @@ impl McpHandler {
 
     fn handle_tools_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         let tools = self.tools.list_tools();
-        JsonRpcResponse::success(
-            request.id.clone(),
-            json!({ "tools": tools }),
-        )
+        JsonRpcResponse::success(request.id.clone(), json!({ "tools": tools }))
     }
 
     fn handle_tools_call(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
@@ -101,10 +98,15 @@ impl McpHandler {
         info!("Calling tool: {}", tool_name);
 
         match self.tools.call_tool(tool_name, arguments) {
-            Ok(result) => JsonRpcResponse::success(request.id.clone(), serde_json::to_value(result).unwrap()),
+            Ok(result) => {
+                JsonRpcResponse::success(request.id.clone(), serde_json::to_value(result).unwrap())
+            }
             Err(e) => {
                 let error_result = ToolResult::error(e.to_string());
-                JsonRpcResponse::success(request.id.clone(), serde_json::to_value(error_result).unwrap())
+                JsonRpcResponse::success(
+                    request.id.clone(),
+                    serde_json::to_value(error_result).unwrap(),
+                )
             }
         }
     }

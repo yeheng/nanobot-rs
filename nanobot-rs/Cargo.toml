@@ -13,7 +13,6 @@ resolver = "2"
 members = [
     "nanobot-core",
     "nanobot-cli",
-    "nanobot-statemachine",
 ]
 
 [workspace.dependencies]

@@ -21,11 +21,9 @@ feishu = ["nanobot-core/feishu"]
 dingtalk = ["nanobot-core/dingtalk"]
 wecom = ["nanobot-core/wecom"]
 all-channels = ["nanobot-core/all-channels"]
-statemachine = ["dep:nanobot-statemachine"]
 
 [dependencies]
 nanobot-core = { path = "../nanobot-core" }
-nanobot-statemachine = { path = "../nanobot-statemachine", optional = true }
 
 # Async
 tokio.workspace = true

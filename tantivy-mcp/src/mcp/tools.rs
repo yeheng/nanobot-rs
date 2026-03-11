@@ -1,7 +1,7 @@
 //! Tool registry for MCP tools.
 
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use super::types::{McpTool, ToolResult};
 use crate::Result;
@@ -26,7 +26,8 @@ impl ToolRegistry {
     where
         F: Fn(Option<Value>) -> Result<ToolResult> + Send + Sync + 'static,
     {
-        self.tools.insert(tool.name.clone(), (tool, Box::new(handler)));
+        self.tools
+            .insert(tool.name.clone(), (tool, Box::new(handler)));
     }
 
     /// Get all registered tools for tools/list.
