@@ -7,13 +7,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use directories::ProjectDirs;
+use directories::UserDirs;
 use tantivy_mcp::index::IndexManager;
 use tantivy_mcp::maintenance::{MaintenanceConfig, MaintenanceScheduler};
 use tantivy_mcp::mcp::{McpHandler, ToolRegistry};
 use tantivy_mcp::register_tools;
 use tokio::signal;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -58,9 +59,9 @@ async fn main() -> tantivy_mcp::Result<()> {
 
     // Determine index directory
     let index_dir = args.index_dir.unwrap_or_else(|| {
-        ProjectDirs::from("com", "nanobot", "tantivy-mcp")
-            .map(|d| d.data_dir().join("indexes"))
-            .unwrap_or_else(|| PathBuf::from(".tantivy-mcp/indexes"))
+        UserDirs::new()
+            .map(|dirs| dirs.home_dir().join(".nanobot/tantivy"))
+            .unwrap_or_else(|| PathBuf::from(".nanobot/tantivy"))
     });
 
     info!("Index directory: {:?}", index_dir);
@@ -73,8 +74,11 @@ async fn main() -> tantivy_mcp::Result<()> {
 
     let manager = Arc::new(RwLock::new(manager));
 
+    // Create cancellation token for graceful shutdown
+    let cancel_token = CancellationToken::new();
+
     // Start maintenance scheduler if enabled
-    let _scheduler_handle = if args.auto_maintain {
+    let (scheduler_handle, scheduler_token) = if args.auto_maintain {
         let config = MaintenanceConfig {
             auto_compact: true,
             deleted_ratio_threshold: 0.2,
@@ -83,14 +87,14 @@ async fn main() -> tantivy_mcp::Result<()> {
             expire_interval_secs: args.maintenance_interval,
         };
         let scheduler = MaintenanceScheduler::new(manager.clone(), config);
-        let handle = scheduler.start();
+        let (handle, token) = scheduler.start();
         info!(
             "Maintenance scheduler started (interval: {}s)",
             args.maintenance_interval
         );
-        Some(handle)
+        (Some(handle), Some(token))
     } else {
-        None
+        (None, None)
     };
 
     // Create tool registry and register tools
@@ -101,14 +105,22 @@ async fn main() -> tantivy_mcp::Result<()> {
     let mut handler = McpHandler::new(tools);
 
     // Set up graceful shutdown
+    let shutdown_token = cancel_token.clone();
     let shutdown = setup_shutdown_handler();
 
     // Run MCP server in a separate task
-    let server_task = tokio::task::spawn_blocking(move || handler.run());
+    let server_token = cancel_token.clone();
+    let server_task = tokio::spawn(async move {
+        handler.run(server_token).await
+    });
 
     // Wait for either server completion or shutdown signal
     tokio::select! {
         result = server_task => {
+            // Cancel scheduler when server completes
+            if let Some(ref token) = scheduler_token {
+                token.cancel();
+            }
             match result {
                 Ok(Ok(())) => info!("MCP server completed normally"),
                 Ok(Err(e)) => {
@@ -123,6 +135,38 @@ async fn main() -> tantivy_mcp::Result<()> {
         }
         _ = shutdown => {
             info!("Received shutdown signal");
+            // Cancel all tasks
+            shutdown_token.cancel();
+            if let Some(token) = scheduler_token {
+                token.cancel();
+            }
+        }
+    }
+
+    // Wait for server task to finish (with timeout)
+    if let Ok(_handle) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        async {
+            // The server task should have already finished due to cancellation
+            // but we wait for it to clean up properly
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    ).await {
+        info!("Server shutdown complete");
+    } else {
+        tracing::warn!("Server shutdown timed out");
+    }
+
+    // Wait for maintenance scheduler to stop
+    if let Some(handle) = scheduler_handle {
+        // Scheduler should already be stopped via cancellation
+        if let Ok(_) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle
+        ).await {
+            info!("Maintenance scheduler stopped");
+        } else {
+            tracing::warn!("Maintenance scheduler stop timed out");
         }
     }
 

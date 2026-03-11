@@ -15,7 +15,22 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::{info, instrument};
+
+/// Errors that can occur when creating or using a provider.
+#[derive(Debug, Error)]
+pub enum ProviderError {
+    /// The provider name is unknown and no api_base was provided.
+    #[error("Unknown provider '{name}'. Add it to PROVIDER_DEFAULTS or provide api_base.")]
+    UnknownProvider {
+        /// The provider name that was not recognized
+        name: String,
+    },
+}
+
+/// Result type for provider operations.
+pub type ProviderResult<T> = Result<T, ProviderError>;
 
 use super::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
@@ -125,60 +140,72 @@ impl OpenAICompatibleProvider {
     /// This is the recommended way to create providers. The URL and default model
     /// are looked up from the data table, so adding new providers requires no code changes.
     ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError::UnknownProvider` if the provider name is not in
+    /// `PROVIDER_DEFAULTS` and no `api_base` is provided.
+    ///
     /// # Example
     /// ```ignore
-    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None);
+    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None)?;
     /// ```
     pub fn from_name(
         name: &str,
         api_key: impl Into<String>,
         api_base: Option<String>,
         default_model: Option<String>,
-    ) -> Self {
+    ) -> ProviderResult<Self> {
         let resolved_base = api_base
             .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
-            .unwrap_or_else(|| {
-                panic!(
-                    "Unknown provider: {}. Add it to PROVIDER_DEFAULTS or provide api_base.",
-                    name
-                )
-            });
+            .ok_or_else(|| ProviderError::UnknownProvider {
+                name: name.to_string(),
+            })?;
 
         let resolved_model = default_model
             .or_else(|| get_default_model(name).map(|s| s.to_string()))
             .unwrap_or_else(|| "default".to_string());
 
-        Self::new(ProviderConfig {
+        Ok(Self::new(ProviderConfig {
             name: name.to_string(),
             api_base: resolved_base,
             api_key: api_key.into(),
             default_model: resolved_model,
             extra_headers: HashMap::new(),
-        })
+        }))
     }
 
     /// Create a provider by name with extra headers (e.g., for MiniMax's X-Group-Id)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError::UnknownProvider` if the provider name is not in
+    /// `PROVIDER_DEFAULTS` and no `api_base` is provided.
     pub fn from_name_with_headers(
         name: &str,
         api_key: impl Into<String>,
         api_base: Option<String>,
         default_model: Option<String>,
         extra_headers: HashMap<String, String>,
-    ) -> Self {
-        let mut provider = Self::from_name(name, api_key, api_base, default_model);
+    ) -> ProviderResult<Self> {
+        let mut provider = Self::from_name(name, api_key, api_base, default_model)?;
         provider.config.extra_headers = extra_headers;
-        provider
+        Ok(provider)
     }
 
     // -- Special constructors --
 
     /// Create a MiniMax provider
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError::UnknownProvider` if MiniMax is not in
+    /// `PROVIDER_DEFAULTS` (which should never happen).
     pub fn minimax(
         api_key: impl Into<String>,
         api_base: Option<String>,
         default_model: impl Into<String>,
         group_id: Option<String>,
-    ) -> Self {
+    ) -> ProviderResult<Self> {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
@@ -445,7 +472,8 @@ mod tests {
             "test-key",
             None,
             Some("gpt-4o".to_string()),
-        );
+        )
+        .expect("openai should be known provider");
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "https://api.openai.com/v1");
@@ -458,7 +486,8 @@ mod tests {
             "sk-or-test",
             None,
             Some("anthropic/claude-sonnet-4".to_string()),
-        );
+        )
+        .expect("openrouter should be known provider");
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
@@ -470,7 +499,8 @@ mod tests {
             "sk-ant-test",
             None,
             Some("claude-sonnet-4-20250514".to_string()),
-        );
+        )
+        .expect("anthropic should be known provider");
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
@@ -482,7 +512,8 @@ mod tests {
             "test-key",
             None,
             Some("qwen-max".to_string()),
-        );
+        )
+        .expect("dashscope should be known provider");
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(
@@ -498,7 +529,8 @@ mod tests {
             "test-key",
             None,
             Some("moonshot-v1-8k".to_string()),
-        );
+        )
+        .expect("moonshot should be known provider");
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
@@ -510,7 +542,8 @@ mod tests {
             "test-jwt",
             None,
             Some("GLM-5".to_string()),
-        );
+        )
+        .expect("zhipu should be known provider");
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
         assert_eq!(provider.api_base(), "https://open.bigmodel.cn/api/paas/v4");
@@ -523,7 +556,8 @@ mod tests {
             None,
             "abab6.5-chat",
             Some("group123".to_string()),
-        );
+        )
+        .expect("minimax should be known provider");
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }
@@ -535,7 +569,8 @@ mod tests {
             "ollama",
             None,
             Some("llama2".to_string()),
-        );
+        )
+        .expect("ollama should be known provider");
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
         assert_eq!(provider.api_base(), "http://localhost:11434/v1");
@@ -548,7 +583,8 @@ mod tests {
             "ollama",
             Some("http://192.168.1.100:11434/v1".to_string()),
             Some("mistral".to_string()),
-        );
+        )
+        .expect("ollama should be known provider");
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
         assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");
@@ -561,7 +597,8 @@ mod tests {
             "", // LiteLLM may not require API key
             None,
             Some("gpt-4o".to_string()),
-        );
+        )
+        .expect("litellm should be known provider");
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "http://localhost:4000/v1");
@@ -574,10 +611,43 @@ mod tests {
             "sk-test-key",
             Some("http://192.168.1.100:4000/v1".to_string()),
             Some("claude-3-opus".to_string()),
-        );
+        )
+        .expect("litellm should be known provider");
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "claude-3-opus");
         assert_eq!(provider.api_base(), "http://192.168.1.100:4000/v1");
+    }
+
+    #[test]
+    fn test_unknown_provider_error() {
+        let result = OpenAICompatibleProvider::from_name(
+            "unknown-provider",
+            "test-key",
+            None, // No api_base provided
+            None,
+        );
+        assert!(result.is_err());
+        match result {
+            Err(ProviderError::UnknownProvider { name }) => {
+                assert_eq!(name, "unknown-provider");
+            }
+            _ => panic!("Expected UnknownProvider error"),
+        }
+    }
+
+    #[test]
+    fn test_unknown_provider_with_custom_base() {
+        // Unknown provider with custom api_base should succeed
+        let provider = OpenAICompatibleProvider::from_name(
+            "custom-provider",
+            "test-key",
+            Some("https://custom.api.com/v1".to_string()),
+            Some("custom-model".to_string()),
+        )
+        .expect("unknown provider with api_base should succeed");
+        assert_eq!(provider.name(), "custom-provider");
+        assert_eq!(provider.api_base(), "https://custom.api.com/v1");
+        assert_eq!(provider.default_model(), "custom-model");
     }
 
     #[test]

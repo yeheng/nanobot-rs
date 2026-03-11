@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::index::IndexManager;
@@ -87,25 +88,38 @@ impl MaintenanceScheduler {
     }
 
     /// Start the maintenance scheduler.
-    pub fn start(&self) -> tokio::task::JoinHandle<()> {
+    /// Returns the JoinHandle and a CancellationToken to signal shutdown.
+    pub fn start(&self) -> (tokio::task::JoinHandle<()>, CancellationToken) {
         let manager = self.manager.clone();
         let config = self.config.clone();
         let status = self.status.clone();
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(config.expire_interval_secs));
 
             loop {
-                interval.tick().await;
-
-                if config.auto_expire || config.auto_compact {
-                    if let Err(e) = run_maintenance(&manager, &config, &status).await {
-                        error!("Maintenance error: {}", e);
+                tokio::select! {
+                    _ = cancel_token_clone.cancelled() => {
+                        info!("Maintenance scheduler received shutdown signal");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        if config.auto_expire || config.auto_compact {
+                            if let Err(e) = run_maintenance(&manager, &config, &status).await {
+                                error!("Maintenance error: {}", e);
+                            }
+                        }
                     }
                 }
             }
-        })
+
+            info!("Maintenance scheduler stopped");
+        });
+
+        (handle, cancel_token)
     }
 
     /// Get current maintenance status.

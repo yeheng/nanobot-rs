@@ -1,6 +1,7 @@
 //! MCP request handler.
 
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::tools::ToolRegistry;
@@ -25,27 +26,43 @@ impl McpHandler {
     }
 
     /// Run the MCP server loop.
-    pub fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self, cancel_token: CancellationToken) -> Result<()> {
         info!("Starting MCP server");
 
-        while let Some(request) = self.transport.read_request() {
-            debug!("Processing request: {:?}", request.method);
-
-            let response = match request.method.as_str() {
-                "initialize" => self.handle_initialize(&request),
-                "notifications/initialized" => {
-                    self.initialized = true;
-                    continue; // No response for notifications
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!("MCP server received shutdown signal");
+                    break;
                 }
-                "tools/list" => self.handle_tools_list(&request),
-                "tools/call" => self.handle_tools_call(&request),
-                method => {
-                    let error = JsonRpcError::method_not_found(method);
-                    JsonRpcResponse::error(request.id, error)
-                }
-            };
+                request_opt = self.transport.read_request() => {
+                    match request_opt {
+                        Some(request) => {
+                            debug!("Processing request: {:?}", request.method);
 
-            self.transport.write_response(&response)?;
+                            let response = match request.method.as_str() {
+                                "initialize" => self.handle_initialize(&request),
+                                "notifications/initialized" => {
+                                    self.initialized = true;
+                                    continue; // No response for notifications
+                                }
+                                "tools/list" => self.handle_tools_list(&request),
+                                "tools/call" => self.handle_tools_call(&request),
+                                method => {
+                                    let error = JsonRpcError::method_not_found(method);
+                                    JsonRpcResponse::error(request.id, error)
+                                }
+                            };
+
+                            self.transport.write_response(&response).await?;
+                        }
+                        None => {
+                            // EOF reached
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         info!("MCP server shutting down");

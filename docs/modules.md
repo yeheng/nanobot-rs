@@ -95,9 +95,7 @@ trait Tool: Send + Sync {
 | `message` | communication | 通过 Bus 发消息到渠道 |
 | `cron` | system | 管理定时任务 (CRUD) |
 | `memory_search` | memory | 搜索结构化记忆 (FTS5) |
-| `pipeline_task` | pipeline | 管线任务看板 (创建/查询/转换/流转日志) |
-| `delegate` | pipeline | Agent 间权限委派 (校验权限矩阵) |
-| `report_progress` | pipeline | 执行进度上报 + 心跳更新 |
+| `history_search` | memory | 搜索会话历史 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
 
 ### 辅助模块
@@ -281,47 +279,119 @@ trait ContextCompressionHook: Send + Sync {
 ## 10. config/ — 配置管理
 
 - `loader.rs` — 配置文件加载 (`~/.nanobot/config.yaml`)
-- `schema.rs` — 配置结构定义 (providers, agents, channels, tools, pipeline 等)
+- `schema.rs` — 配置结构定义 (providers, agents, channels, tools 等)
+- `provider.rs` — Provider 配置定义
+- `agent.rs` — Agent 配置定义
+- `channel.rs` — 渠道配置定义
 - 兼容 Python nanobot 配置格式
 
-## 11. pipeline/ — 多 Agent 协作管线 (opt-in)
+---
 
-> 详细使用指南见 [pipeline.md](pipeline.md)
+## 11. vault/ — 敏感数据隔离模块
+
+> 详细使用指南见 [vault-guide.md](vault-guide.md)
 
 ### 核心组件
 
 | 文件 | 职责 |
 |------|------|
-| `state_machine.rs` | `TaskState` 枚举 + 合法转换表 + 负责角色映射 |
-| `permission.rs` | `PermissionMatrix` — 有向图权限矩阵，`is_allowed(caller, target)` |
-| `config.rs` | `PipelineConfig`, `AgentRoleDef` — YAML 配置映射 |
-| `models.rs` | `PipelineTask`, `FlowLogEntry`, `ProgressEntry`, `TaskPriority` |
-| `store.rs` | `PipelineStore` — SQLite CRUD + 乐观锁 + 停滞查询 |
-| `orchestrator.rs` | `OrchestratorActor` — mpsc 事件循环，调度 Agent |
-| `stall_detector.rs` | `StallDetector` — 30 秒扫描心跳超时任务 |
+| `store.rs` | `VaultStore` — JSON 文件存储，支持加密 |
+| `injector.rs` | `VaultInjector` — 运行时占位符替换 |
+| `scanner.rs` | 占位符扫描与解析 (`{{vault:key}}`) |
+| `crypto.rs` | `VaultCrypto` — AES-256-GCM 加密 |
+| `redaction.rs` | 日志脱敏函数 (`redact_secrets`) |
+| `error.rs` | `VaultError` 错误类型 |
 
-### 三层架构
+### 设计原则
+
+1. **数据结构隔离** — VaultStore 完全独立于 memory/history 存储
+2. **运行时注入** — 敏感数据仅在发送给 LLM 前一刻注入
+3. **零信任设计** — 敏感数据永不持久化到 LLM 可访问的存储
+
+### 占位符语法
 
 ```
-分诊层:  太子 (taizi) — 分析分类
-治理层:  中书省 (zhongshu) → 门下省 (menxia) → 尚书省 (shangshu)
-执行层:  礼部 (li) | 户部 (hu) | 兵部 (bing) | 刑部 (xing) | 工部 (gong) | 殿中 (dianzhong)
+使用 {{vault:api_key}} 来访问 API
+密码: {{vault:db_password}}
 ```
-
-### 调度模式
-
-- 治理层 Agent → `SubagentManager::submit_and_wait()` — 同步等待决策
-- 执行层 Agent → `SubagentManager::submit()` — 异步 fire-and-forget + 进度上报
 
 ---
 
-## 12. 其他模块
+## 12. search/ — 搜索类型定义
+
+### 核心类型
+
+```rust
+// 搜索查询
+pub enum SearchQuery {
+    Boolean(BooleanQuery),
+    Fuzzy(FuzzyQuery),
+    DateRange(DateRange),
+}
+
+// 搜索结果
+pub struct SearchResult {
+    pub id: String,
+    pub score: f32,
+    pub highlights: Vec<HighlightedText>,
+}
+
+pub struct HighlightedText {
+    pub field: String,
+    pub text: String,
+    pub highlights: Vec<(usize, usize)>, // 高亮范围
+}
+```
+
+> **注意**: 高级 Tantivy 全文搜索已迁移到独立的 `tantivy-mcp` MCP 服务器。
+
+---
+
+## 13. 其他模块
 
 | 模块 | 说明 |
 |------|------|
 | `cron/` | 定时任务服务，每 60 秒检查到期任务 |
 | `heartbeat/` | 心跳服务，读取 HEARTBEAT.md 定时触发 |
 | `crypto/` | 加密工具（企业微信等渠道需要的消息加解密） |
-| `skills/` | 技能定义与加载（Markdown + YAML frontmatter） |
+| `skills/` | 技能系统 (详见下方) |
 | `webhook/` | Webhook HTTP 服务器（axum） |
 | `workspace/` | 工作空间模板文件（初始化时复制） |
+| `error.rs` | 统一错误类型定义（AgentError, ProviderError, McpError, ChannelError, PipelineError） |
+| `token_tracker.rs` | Token 计数与追踪 |
+
+---
+
+## 14. skills/ — 技能系统
+
+### 模块结构
+
+| 文件 | 职责 |
+|------|------|
+| `loader.rs` | `SkillsLoader` — 从 Markdown 文件加载技能 |
+| `registry.rs` | `SkillsRegistry` — 技能注册表管理 |
+| `skill.rs` | `Skill` — 技能定义结构 |
+| `metadata.rs` | `SkillMetadata` — 技能元数据（依赖、标签等） |
+
+### 技能文件格式
+
+```markdown
+---
+name: my_skill
+description: A sample skill
+dependencies:
+  binaries: ["node", "npm"]
+  env_vars: ["API_KEY"]
+tags: ["automation", "web"]
+always_load: false
+---
+
+# My Skill
+
+技能的详细说明和使用方法...
+```
+
+### 加载模式
+
+- **always_load: true** — 启动时自动加载
+- **always_load: false** — 按需加载

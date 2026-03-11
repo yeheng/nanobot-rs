@@ -22,9 +22,11 @@
 //! context.save_message(&session_key, "user", "Hello").await;
 //! ```
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use tracing::{debug, warn};
 
 use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
@@ -63,9 +65,18 @@ pub trait AgentContext: Send + Sync {
 /// Persistent context with full session and summarization support.
 ///
 /// Used by main agents that need to persist conversations and compress context.
+///
+/// # Concurrency Safety
+///
+/// The `compression_in_progress` map ensures that only one summarization task
+/// runs per session at any time. This prevents API flooding when multiple
+/// messages trigger compression in quick succession.
 pub struct PersistentContext {
     session_manager: Arc<SessionManager>,
     summarization: Arc<SummarizationService>,
+    /// Tracks which sessions have an active compression task.
+    /// Key: session_key, Value: flag indicating compression is in progress.
+    compression_in_progress: Arc<DashMap<String, Arc<AtomicBool>>>,
 }
 
 impl PersistentContext {
@@ -77,6 +88,7 @@ impl PersistentContext {
         Self {
             session_manager,
             summarization,
+            compression_in_progress: Arc::new(DashMap::new()),
         }
     }
 }
@@ -112,29 +124,53 @@ impl AgentContext for PersistentContext {
             return;
         }
 
+        // Get or create the in-progress flag for this session
+        let flag = self
+            .compression_in_progress
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+
+        // Try to acquire the "lock" via compare-and-swap
+        // If already true, another task is running - skip this one
+        if flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            debug!(
+                "[Summarization] Skipping compression for session '{}' - another task is already running",
+                key
+            );
+            return;
+        }
+
         let svc = Arc::clone(&self.summarization);
-        let key = key.to_string();
+        let key_owned = key.to_string();
         let evicted = evicted.to_vec();
+        let flag_clone = flag.clone();
+        let compression_map = Arc::clone(&self.compression_in_progress);
 
         tokio::spawn(async move {
             debug!(
                 "[Summarization] Background compression task started for session '{}'",
-                key
+                key_owned
             );
-            match svc.compress(&key, &evicted).await {
+            match svc.compress(&key_owned, &evicted).await {
                 Ok(_) => {
                     debug!(
                         "[Summarization] Background compression completed for session '{}'",
-                        key
+                        key_owned
                     );
                 }
                 Err(e) => {
                     warn!(
                         "[Summarization] Background compression failed for session '{}': {}",
-                        key, e
+                        key_owned, e
                     );
                 }
             }
+
+            // Release the "lock" and clean up the entry
+            flag_clone.store(false, Ordering::Release);
+            // Only remove if the flag is still the one we set (defensive)
+            compression_map.remove_if(&key_owned, |_, v| Arc::ptr_eq(v, &flag_clone));
         });
     }
 
