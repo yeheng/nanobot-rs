@@ -11,10 +11,21 @@ pub struct McpTool {
     pub input_schema: Option<Value>,
 }
 
+/// MCP transport type
+#[derive(Debug, Clone)]
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: Option<HashMap<String, String>>,
+    },
+    Http {
+        url: String,
+    },
+}
+
 /// MCP server configuration
 #[derive(Debug, Clone)]
 pub struct McpServerConfig {
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Option<HashMap<String, String>>,
+    pub transport: McpTransport,
 }

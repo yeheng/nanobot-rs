@@ -23,8 +23,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
-use crate::agent::{AgentLoop, StreamCallback, StreamEvent};
-use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey, WebSocketMessage};
+use crate::agent::AgentLoop;
+use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey};
 use crate::channels::OutboundSenderRegistry;
 
 // ── Outbound Actor ──────────────────────────────────────────
@@ -117,116 +117,12 @@ pub async fn run_session_actor(
                     session_key_str, channel, chat_id, is_websocket
                 );
 
-                // Create streaming callback for WebSocket channels.
-                //
-                // Design: We use an unbounded channel as an intermediate buffer
-                // between the synchronous callback and the bounded outbound channel.
-                // The callback writes to the unbounded sender (never blocks, never drops),
-                // and a forwarder task drains it into the bounded outbound channel.
-                // This prevents message loss that try_send would cause under backpressure.
-                let callback: Option<StreamCallback> = if is_websocket {
-                    tracing::debug!(
-                        "Session Actor [{}]: Creating streaming callback for WebSocket",
-                        session_key_str
-                    );
-                    let ch = channel.clone();
-                    let cid = chat_id.clone();
-
-                    // Unbounded buffer: callback → forwarder → outbound
-                    let (stream_tx, mut stream_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<OutboundMessage>();
-
-                    // Forwarder task: drains unbounded buffer into bounded outbound channel.
-                    // Preserves FIFO ordering. Exits when stream_tx is dropped (callback goes out of scope).
-                    let ob_tx_fwd = outbound_tx.clone();
-                    tokio::spawn(async move {
-                        while let Some(msg) = stream_rx.recv().await {
-                            if let Err(e) = ob_tx_fwd.send(msg).await {
-                                tracing::error!("[WS-Forwarder] Outbound channel closed: {:?}", e);
-                                break;
-                            }
-                        }
-                    });
-
-                    Some(Box::new(move |event: &StreamEvent| {
-                        let ws_msg = match event {
-                            StreamEvent::Content(content) => {
-                                Some(WebSocketMessage::content(content.clone()))
-                            }
-                            StreamEvent::Reasoning(content) => {
-                                Some(WebSocketMessage::thinking(content.clone()))
-                            }
-                            StreamEvent::ToolStart { name, arguments } => {
-                                tracing::debug!("[WS-Callback] StreamEvent::ToolStart: {}", name);
-                                Some(WebSocketMessage::tool_start(
-                                    name.clone(),
-                                    arguments.clone(),
-                                ))
-                            }
-                            StreamEvent::ToolEnd { name, output } => {
-                                tracing::debug!("[WS-Callback] StreamEvent::ToolEnd: {}", name);
-                                Some(WebSocketMessage::tool_end(
-                                    name.clone(),
-                                    Some(output.clone()),
-                                ))
-                            }
-                            StreamEvent::TokenStats {
-                                input_tokens,
-                                output_tokens,
-                                total_tokens,
-                                cost,
-                                currency,
-                            } => {
-                                tracing::debug!(
-                                    "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                    input_tokens,
-                                    output_tokens,
-                                    total_tokens,
-                                    if currency == "CN" { "¥" } else { "$" },
-                                    cost
-                                );
-                                None
-                            }
-                            StreamEvent::Done => {
-                                tracing::debug!("[WS-Callback] StreamEvent::Done");
-                                Some(WebSocketMessage::done())
-                            }
-                        };
-
-                        if let Some(ws_msg) = ws_msg {
-                            let outbound =
-                                OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
-                            // Unbounded send: guaranteed not to fail unless receiver is dropped.
-                            // Messages are buffered here and drained by the forwarder task.
-                            if let Err(e) = stream_tx.send(outbound) {
-                                tracing::error!("[WS-Callback] Forwarder channel closed: {:?}", e);
-                            }
-                        }
-                    }))
-                } else {
-                    None
-                };
-
-                // Serial processing: no locks needed, only one message at a time.
-                let result = match callback {
-                    Some(ref cb) => {
-                        agent
-                            .process_direct_with_callback(&msg.content, &session_key, Some(cb))
-                            .await
-                    }
-                    None => agent.process_direct(&msg.content, &session_key).await,
-                };
+                // Process message
+                let result = agent.process_direct(&msg.content, &session_key).await;
 
                 match result {
                     Ok(response) => {
-                        // For WebSocket channels, content was already streamed via callback
-                        // Skip sending the final response to avoid duplication
-                        #[cfg(feature = "webhook")]
-                        if is_websocket {
-                            continue;
-                        }
-
-                        // Forward to Outbound Actor — returns immediately, no network wait.
+                        // Forward to Outbound Actor
                         let outbound_msg = OutboundMessage {
                             channel,
                             chat_id,

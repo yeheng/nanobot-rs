@@ -41,7 +41,7 @@ use crate::agent::executor::ToolExecutor;
 use crate::agent::history_processor::{process_history, HistoryConfig};
 use crate::agent::prompt;
 use crate::agent::request::RequestHandler;
-use crate::agent::stream::{self, StreamCallback, StreamEvent};
+use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
 use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
@@ -438,25 +438,11 @@ impl AgentLoop {
         }
     }
 
-    /// Process a message directly (for CLI or testing)
+    /// Process a message and return response.
     pub async fn process_direct(
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<AgentResponse, AgentError> {
-        self.process_direct_with_callback(content, session_key, None)
-            .await
-    }
-
-    /// Process a message with optional streaming callback.
-    ///
-    /// The pipeline is a straight-line sequence with no hidden control flow.
-    /// See module-level docs for the full execution flow diagram.
-    pub async fn process_direct_with_callback(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse, AgentError> {
         let session_key_str = session_key.to_string();
         // ── 1. External hook: pre_request (can abort or modify) ───
@@ -558,21 +544,7 @@ impl AgentLoop {
         }
 
         // ── 8. Run agent loop ─────────────────────────────────────
-        // For WebSocket and other real-time channels, always use the callback if provided,
-        // regardless of the streaming config. The streaming config is for CLI output formatting,
-        // but WebSocket clients expect real-time events.
-        let effective_cb = if callback.is_some() {
-            // If a callback was explicitly provided (e.g., for WebSocket), use it
-            callback
-        } else if self.config.streaming {
-            // Otherwise, respect the streaming config
-            callback
-        } else {
-            None
-        };
-        let result = self
-            .run_agent_loop(messages, effective_cb, &local_vault_values)
-            .await?;
+        let result = self.run_agent_loop(messages, &local_vault_values).await?;
 
         // ── 9. External hook: post_response (audit / alerting) ────
         let tools_used_str = result.tools_used.join(", ");
@@ -602,6 +574,116 @@ impl AgentLoop {
             .await;
 
         // Output session token stats if available
+        if let Ok(stats) = self.session_stats.lock() {
+            if stats.request_count > 0 {
+                info!("{}", stats.format_summary());
+            }
+        }
+
+        Ok(AgentResponse {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+        })
+    }
+
+    /// Process a message with streaming callback.
+    pub async fn process_direct_streaming<F>(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        mut callback: F,
+    ) -> Result<AgentResponse, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send,
+    {
+        let session_key_str = session_key.to_string();
+        let content = match self
+            .external_hooks
+            .run_pre_request(&session_key_str, content)
+            .await
+        {
+            Ok(Some(output)) => {
+                if output.is_abort() {
+                    let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
+                    return Ok(AgentResponse {
+                        content: error_msg,
+                        reasoning_content: None,
+                        tools_used: vec![],
+                    });
+                }
+                output
+                    .modified_message
+                    .unwrap_or_else(|| content.to_string())
+            }
+            Ok(None) => content.to_string(),
+            Err(e) => {
+                warn!("pre_request hook failed (continuing): {}", e);
+                content.to_string()
+            }
+        };
+        let content = content.as_str();
+
+        let session = self.context.load_session(session_key).await;
+        let history_snapshot = session.get_history(self.config.memory_window);
+        self.context
+            .save_message(session_key, "user", content, None)
+            .await;
+
+        let processed = process_history(history_snapshot, &self.history_config);
+        let summary = self.context.load_summary(&session_key_str).await;
+        if !processed.evicted.is_empty() {
+            self.context
+                .compress_context(&session_key_str, &processed.evicted);
+        }
+
+        let mut system_prompts = Vec::new();
+        if !self.system_prompt.is_empty() {
+            system_prompts.push(self.system_prompt.clone());
+        }
+        if let Some(ref skills) = self.skills_context {
+            system_prompts.push(skills.clone());
+        }
+
+        let mut messages = Self::assemble_prompt(
+            processed.messages,
+            content,
+            &system_prompts,
+            summary.as_deref(),
+        );
+
+        let mut local_vault_values = Vec::new();
+        if let Some(ref vault) = self.vault_injector {
+            let report = vault.inject(&mut messages);
+            local_vault_values = report.injected_values;
+        }
+        local_vault_values.sort();
+        local_vault_values.dedup();
+
+        let result = self
+            .run_agent_loop_streaming(messages, &local_vault_values, &mut callback)
+            .await?;
+
+        let tools_used_str = result.tools_used.join(", ");
+        let safe_content = redact_secrets(&result.content, &local_vault_values);
+        if let Err(e) = self
+            .external_hooks
+            .run_post_response(&session_key_str, &safe_content, &tools_used_str)
+            .await
+        {
+            warn!("post_response hook failed (ignored): {}", e);
+        }
+
+        let history_content = redact_secrets(&result.content, &local_vault_values);
+        self.context
+            .save_message(
+                session_key,
+                "assistant",
+                &history_content,
+                Some(result.tools_used.clone()),
+            )
+            .await;
+
         if let Ok(stats) = self.session_stats.lock() {
             if stats.request_count > 0 {
                 info!("{}", stats.format_summary());
@@ -686,12 +768,8 @@ impl AgentLoop {
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,
-        callback: Option<&StreamCallback>,
         vault_values: &[String],
     ) -> Result<AgentLoopResult, AgentError> {
-        let noop: StreamCallback = Box::new(|_| {});
-        let cb: &StreamCallback = callback.unwrap_or(&noop);
-
         let mut messages = initial_messages;
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
@@ -702,8 +780,10 @@ impl AgentLoop {
 
             let request = request_handler.build_chat_request(&messages);
             let model = request.model.clone();
-            let mut stream_result = request_handler.send_with_retry(request).await?;
-            let response = stream::accumulate_stream(&mut stream_result, cb).await?;
+            let stream_result = request_handler.send_with_retry(request).await?;
+
+            let (_event_stream, response_future) = stream::stream_events(stream_result);
+            let response = response_future.await?;
 
             // Calculate token usage and cost
             let (token_usage, cost) = self.calculate_token_usage(&response, &model);
@@ -749,7 +829,6 @@ impl AgentLoop {
                 let content = response.content.unwrap_or_else(|| {
                     "I've completed processing but have no response to give.".to_string()
                 });
-                cb(&StreamEvent::Done);
 
                 // Track session stats
                 if let Some(ref usage) = token_usage {
@@ -772,14 +851,105 @@ impl AgentLoop {
                 messages: &mut messages,
                 tools_used: &mut tools_used,
             };
-            self.handle_tool_calls(&response, &executor, &mut state, cb)
+            self.handle_tool_calls(&response, &executor, &mut state)
                 .await;
         }
 
         // Exhausted max iterations without a final response
-        // Send Done event to signal stream completion
-        cb(&StreamEvent::Done);
 
+        Ok(AgentLoopResult {
+            content: "I've completed processing but have no response to give.".to_string(),
+            reasoning_content: None,
+            tools_used,
+            token_usage: None,
+            cost: 0.0,
+        })
+    }
+
+    async fn run_agent_loop_streaming<F>(
+        &self,
+        initial_messages: Vec<ChatMessage>,
+        vault_values: &[String],
+        callback: &mut F,
+    ) -> Result<AgentLoopResult, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send,
+    {
+        use futures::StreamExt;
+
+        let mut messages = initial_messages;
+        let mut tools_used = Vec::new();
+        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
+
+        for iteration in 1..=self.config.max_iterations {
+            debug!("Agent loop iteration {}", iteration);
+
+            let request = request_handler.build_chat_request(&messages);
+            let model = request.model.clone();
+            let stream_result = request_handler.send_with_retry(request).await?;
+
+            let (mut event_stream, response_future) = stream::stream_events(stream_result);
+
+            // Consume stream and response concurrently
+            let response = tokio::select! {
+                resp = response_future => resp?,
+                _ = async {
+                    while let Some(event) = event_stream.next().await {
+                        callback(event);
+                    }
+                } => return Err(AgentError::ProviderError(anyhow::anyhow!("Stream ended without response").into())),
+            };
+
+            let (token_usage, cost) = self.calculate_token_usage(&response, &model);
+
+            if let Some(ref usage) = token_usage {
+                let currency = self
+                    .pricing
+                    .as_ref()
+                    .map(|p| p.currency.as_str())
+                    .unwrap_or("USD");
+                callback(stream::StreamEvent::TokenStats {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                    cost,
+                    currency: currency.to_string(),
+                });
+            }
+
+            log_llm_response(&response, iteration, vault_values);
+
+            if !response.has_tool_calls() {
+                callback(stream::StreamEvent::Done);
+                let content = response.content.unwrap_or_else(|| {
+                    "I've completed processing but have no response to give.".to_string()
+                });
+
+                if let Some(ref usage) = token_usage {
+                    if let Ok(mut stats) = self.session_stats.lock() {
+                        stats.add_usage(usage, cost);
+                    }
+                }
+
+                return Ok(AgentLoopResult {
+                    content,
+                    reasoning_content: response.reasoning_content,
+                    tools_used,
+                    token_usage,
+                    cost,
+                });
+            }
+
+            let mut state = ToolCallState {
+                messages: &mut messages,
+                tools_used: &mut tools_used,
+            };
+            self.handle_tool_calls(&response, &executor, &mut state)
+                .await;
+        }
+
+        callback(stream::StreamEvent::Done);
         Ok(AgentLoopResult {
             content: "I've completed processing but have no response to give.".to_string(),
             reasoning_content: None,
@@ -795,7 +965,6 @@ impl AgentLoop {
         response: &ChatResponse,
         executor: &ToolExecutor<'_>,
         state: &mut ToolCallState<'_>,
-        cb: &StreamCallback,
     ) {
         info!(
             "[Agent] Executing {} tool call(s): {}",
@@ -820,32 +989,16 @@ impl AgentLoop {
             ));
         }
 
-        // Emit ToolStart events before execution
-        for tool_call in &response.tool_calls {
-            cb(&StreamEvent::ToolStart {
-                name: tool_call.function.name.clone(),
-                arguments: Some(tool_call.function.arguments.to_string()),
-            });
-        }
-
-        // Execute tool calls sequentially to prevent race conditions
-        // and maintain LLM's expected causal ordering
+        // Execute tool calls sequentially
         for tool_call in &response.tool_calls {
             let start = std::time::Instant::now();
             let result = executor.execute_one(tool_call).await;
             let duration_ms = start.elapsed().as_millis() as u64;
 
             let tool_name = tool_call.function.name.clone();
-
-            // Inline logging (replaces LoggingHook::on_tool_result)
             debug!("[Tool] {} -> done ({}ms)", tool_name, duration_ms);
 
             state.tools_used.push(tool_name.clone());
-
-            cb(&StreamEvent::ToolEnd {
-                name: tool_name.clone(),
-                output: result.output.clone(),
-            });
             // Add the tool result to the conversation
             state.messages.push(ChatMessage::tool_result(
                 tool_call.id.clone(),

@@ -9,7 +9,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 use tracing::{debug, info};
 
-use super::types::{McpServerConfig, McpTool};
+use super::types::{McpServerConfig, McpTool, McpTransport};
 use crate::error::McpError;
 
 /// Expand tilde (~) in path to user's home directory
@@ -28,66 +28,88 @@ const MCP_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Pending requests awaiting responses
 type PendingRequests = Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
-/// MCP client for communicating with a server via JSON-RPC over stdio
+enum Transport {
+    Stdio {
+        process: Child,
+        stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
+    },
+    Http {
+        url: String,
+        client: reqwest::Client,
+    },
+}
+
+/// MCP client for communicating with a server via JSON-RPC
 pub struct McpClient {
     name: String,
-    config: McpServerConfig,
-    process: Option<Child>,
-    /// Stdin wrapped in Arc<Mutex> for concurrent write access
-    stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
+    transport: Option<Transport>,
     tools: Vec<McpTool>,
-    /// Atomic request ID counter for lock-free ID generation
     request_id: Arc<AtomicU64>,
     pending: PendingRequests,
 }
 
 impl McpClient {
     /// Create a new MCP client
-    pub fn new(name: String, config: McpServerConfig) -> Self {
+    pub fn new(name: String, _config: McpServerConfig) -> Self {
         Self {
             name,
-            config,
-            process: None,
-            stdin: Arc::new(tokio::sync::Mutex::new(None)),
+            transport: None,
             tools: Vec::new(),
             request_id: Arc::new(AtomicU64::new(0)),
             pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
-    /// Start the MCP server process and initialize
-    pub async fn start(&mut self) -> Result<(), McpError> {
+    /// Start the MCP server and initialize
+    pub async fn start(&mut self, config: McpServerConfig) -> Result<(), McpError> {
         info!("Starting MCP server: {}", self.name);
 
-        // Expand tilde in command path
-        let command = expand_tilde(&self.config.command);
-        let mut cmd = Command::new(&command);
+        match config.transport {
+            McpTransport::Stdio { command, args, env } => {
+                self.start_stdio(command, args, env).await?;
+            }
+            McpTransport::Http { url } => {
+                self.start_http(url).await?;
+            }
+        }
 
-        // Expand tilde in args as well
-        let args: Vec<String> = self.config.args.iter().map(|a| expand_tilde(a)).collect();
+        self.initialize().await?;
+        self.list_tools().await?;
+
+        info!("MCP server {} ready with {} tools", self.name, self.tools.len());
+        Ok(())
+    }
+
+    async fn start_stdio(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        env: Option<HashMap<String, String>>,
+    ) -> Result<(), McpError> {
+        let command = expand_tilde(&command);
+        let mut cmd = Command::new(&command);
+        let args: Vec<String> = args.iter().map(|a| expand_tilde(a)).collect();
+
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        if let Some(env) = &self.config.env {
+        if let Some(env) = env {
             for (key, value) in env {
                 cmd.env(key, value);
             }
         }
 
         let mut child = cmd.spawn()?;
-
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
 
-        // Store stdin in Arc<Mutex> for concurrent access
-        *self.stdin.lock().await = Some(stdin);
-
-        // Spawn a task to read stdout and dispatch responses
+        let stdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
         let pending = self.pending.clone();
         let server_name = self.name.clone();
+
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -98,59 +120,31 @@ impl McpClient {
                     continue;
                 }
 
-                debug!(
-                    "[MCP:{}] stdout: {}",
-                    server_name,
-                    &line[..line.len().min(200)]
-                );
+                debug!("[MCP:{}] stdout: {}", server_name, &line[..line.len().min(200)]);
 
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => {
-                        if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
-                            // This is a response — find the pending request
-                            let mut pending = pending.lock().await;
-                            if let Some(tx) = pending.remove(&id) {
-                                let _ = tx.send(msg);
-                            }
+                if let Ok(msg) = serde_json::from_str::<Value>(&line) {
+                    if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
+                        let mut pending = pending.lock().await;
+                        if let Some(tx) = pending.remove(&id) {
+                            let _ = tx.send(msg);
                         }
-                        // Notifications (no id) are logged but not dispatched
-                    }
-                    Err(e) => {
-                        debug!(
-                            "[MCP:{}] non-JSON line: {} ({})",
-                            server_name,
-                            &line[..line.len().min(80)],
-                            e
-                        );
                     }
                 }
             }
-
-            debug!("[MCP:{}] stdout reader exited", server_name);
         });
 
-        self.process = Some(child);
+        self.transport = Some(Transport::Stdio { process: child, stdin });
+        Ok(())
+    }
 
-        // Initialize connection
-        self.initialize().await?;
-
-        // List available tools
-        self.list_tools().await?;
-
-        info!(
-            "MCP server {} ready with {} tools",
-            self.name,
-            self.tools.len()
-        );
+    async fn start_http(&mut self, url: String) -> Result<(), McpError> {
+        let client = reqwest::Client::new();
+        self.transport = Some(Transport::Http { url, client });
         Ok(())
     }
 
     /// Send a JSON-RPC request and wait for the response
-    ///
-    /// This method only holds the stdin lock during the write operation,
-    /// allowing concurrent requests to be multiplexed over the same connection.
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value, McpError> {
-        // Generate ID atomically (lock-free)
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
         let request = serde_json::json!({
@@ -160,61 +154,77 @@ impl McpClient {
             "params": params.unwrap_or(Value::Object(serde_json::Map::new()))
         });
 
-        let request_str = serde_json::to_string(&request)?;
-        debug!(
-            "[MCP:{}] → {}",
-            self.name,
-            &request_str[..request_str.len().min(200)]
-        );
+        match &self.transport {
+            Some(Transport::Stdio { stdin, .. }) => {
+                self.send_request_stdio(id, request, stdin).await
+            }
+            Some(Transport::Http { url, client }) => {
+                self.send_request_http(request, url, client).await
+            }
+            None => Err(McpError::ConnectionError("Transport not initialized".into())),
+        }
+    }
 
-        // Register pending request BEFORE sending
+    async fn send_request_stdio(
+        &self,
+        id: u64,
+        request: Value,
+        stdin: &Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
+    ) -> Result<Value, McpError> {
+        let request_str = serde_json::to_string(&request)?;
+        debug!("[MCP:{}] → {}", self.name, &request_str[..request_str.len().min(200)]);
+
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        // Write to stdin - only hold lock during write operation
         {
-            let mut stdin_lock = self.stdin.lock().await;
+            let mut stdin_lock = stdin.lock().await;
             if let Some(ref mut stdin) = *stdin_lock {
                 stdin.write_all(request_str.as_bytes()).await?;
                 stdin.write_all(b"\n").await?;
                 stdin.flush().await?;
             } else {
-                return Err(McpError::ConnectionError(format!(
-                    "MCP server {} stdin not available",
-                    self.name
-                )));
+                return Err(McpError::ConnectionError(format!("MCP server {} stdin not available", self.name)));
             }
         }
-        // Lock released here - response will arrive asynchronously
 
-        // Wait for response with timeout (no lock held during wait!)
-        let response =
-            tokio::time::timeout(std::time::Duration::from_secs(MCP_REQUEST_TIMEOUT_SECS), rx)
-                .await
-                .map_err(|_| {
-                    McpError::TimeoutError(format!(
-                        "MCP server {} timed out on method '{}'",
-                        self.name, method
-                    ))
-                })?
-                .map_err(|_| {
-                    McpError::ConnectionError(format!(
-                        "MCP server {} dropped response channel",
-                        self.name
-                    ))
-                })?;
+        let response = tokio::time::timeout(std::time::Duration::from_secs(MCP_REQUEST_TIMEOUT_SECS), rx)
+            .await
+            .map_err(|_| McpError::TimeoutError(format!("MCP server {} timed out", self.name)))?
+            .map_err(|_| McpError::ConnectionError(format!("MCP server {} dropped response", self.name)))?;
 
-        // Check for JSON-RPC error
         if let Some(err) = response.get("error") {
             let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let message = err
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error");
-            return Err(McpError::JsonRpcError {
-                code,
-                message: message.to_string(),
-            });
+            let message = err.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            return Err(McpError::JsonRpcError { code, message: message.to_string() });
+        }
+
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    async fn send_request_http(
+        &self,
+        request: Value,
+        url: &str,
+        client: &reqwest::Client,
+    ) -> Result<Value, McpError> {
+        let response = client
+            .post(url)
+            .json(&request)
+            .timeout(std::time::Duration::from_secs(MCP_REQUEST_TIMEOUT_SECS))
+            .send()
+            .await
+            .map_err(|e| McpError::ConnectionError(format!("HTTP request failed: {}", e)))?;
+
+        let response: Value = response
+            .json()
+            .await
+            .map_err(|e| McpError::ConnectionError(format!("Failed to parse response: {}", e)))?;
+
+        if let Some(err) = response.get("error") {
+            let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let message = err.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            return Err(McpError::JsonRpcError { code, message: message.to_string() });
         }
 
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
@@ -228,17 +238,20 @@ impl McpClient {
             "params": params.unwrap_or(Value::Object(serde_json::Map::new()))
         });
 
-        let notification_str = serde_json::to_string(&notification)?;
-        debug!("[MCP:{}] notification → {}", self.name, method);
-
-        let mut stdin_lock = self.stdin.lock().await;
-        if let Some(ref mut stdin) = *stdin_lock {
-            stdin.write_all(notification_str.as_bytes()).await?;
-            stdin.write_all(b"\n").await?;
-            stdin.flush().await?;
+        match &self.transport {
+            Some(Transport::Stdio { stdin, .. }) => {
+                let notification_str = serde_json::to_string(&notification)?;
+                let mut stdin_lock = stdin.lock().await;
+                if let Some(ref mut stdin) = *stdin_lock {
+                    stdin.write_all(notification_str.as_bytes()).await?;
+                    stdin.write_all(b"\n").await?;
+                    stdin.flush().await?;
+                }
+                Ok(())
+            }
+            Some(Transport::Http { .. }) => Ok(()),
+            None => Err(McpError::ConnectionError("Transport not initialized".into())),
         }
-
-        Ok(())
     }
 
     async fn initialize(&mut self) -> Result<(), McpError> {
@@ -323,12 +336,12 @@ impl McpClient {
 
     /// Stop the MCP server
     pub async fn stop(&mut self) -> Result<(), McpError> {
-        if let Some(ref mut process) = self.process {
-            process.kill().await?;
-            info!("MCP server {} stopped", self.name);
+        if let Some(transport) = self.transport.take() {
+            if let Transport::Stdio { mut process, .. } = transport {
+                process.kill().await?;
+                info!("MCP server {} stopped", self.name);
+            }
         }
-        self.process = None;
-        *self.stdin.lock().await = None;
         Ok(())
     }
 }

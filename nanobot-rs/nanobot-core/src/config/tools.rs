@@ -16,7 +16,11 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub web: WebToolsConfig,
 
-    /// MCP servers
+    /// MCP servers (new grouped format)
+    #[serde(default)]
+    pub mcp: McpServersConfig,
+
+    /// MCP servers (legacy flat format, for backward compatibility)
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
@@ -74,7 +78,41 @@ pub struct WebToolsConfig {
 
 // ── MCP Server ────────────────────────────────────────────────────────────
 
-/// MCP server configuration
+/// MCP servers configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpServersConfig {
+    /// Stdio-based MCP servers
+    #[serde(default)]
+    pub stdio: HashMap<String, StdioMcpConfig>,
+
+    /// Remote HTTP-based MCP servers
+    #[serde(default)]
+    pub remote: HashMap<String, RemoteMcpConfig>,
+}
+
+/// Stdio MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StdioMcpConfig {
+    /// Command to run
+    pub command: String,
+
+    /// Arguments for the command
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Environment variables
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// Remote MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteMcpConfig {
+    /// URL for HTTP transport
+    pub url: String,
+}
+
+/// MCP server configuration (legacy, for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Command to run (for stdio transport)

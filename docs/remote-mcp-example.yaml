@@ -1,0 +1,26 @@
+# MCP Configuration Example
+
+tools:
+  mcp:
+    stdio:
+      tantivy:
+        command: npx
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-tantivy"
+
+      email:
+        command: python
+        args:
+          - "-m"
+          - "mcp_email_server"
+        env:
+          SMTP_HOST: smtp.example.com
+          SMTP_PORT: "587"
+
+    remote:
+      cloud-tools:
+        url: https://mcp.example.com/api
+
+      local-remote:
+        url: http://localhost:8080/mcp

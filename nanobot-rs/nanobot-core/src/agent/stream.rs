@@ -1,18 +1,14 @@
 //! Stream processing utilities for the agent.
 //!
-//! Provides streaming event types and stream accumulation logic.
+//! Provides streaming event types and native async Stream support.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
+use futures::stream::Stream;
 use futures::StreamExt;
 
 use crate::providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};
-
-/// Callback type for streaming output.
-///
-/// Called for each chunk of text or reasoning content as it arrives.
-pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send + Sync>;
 
 /// Events emitted during streaming.
 #[derive(Debug)]
@@ -114,63 +110,71 @@ impl Default for ToolCallAccumulator {
     }
 }
 
-/// Consume a stream, emitting events via callback, and return the
-/// accumulated complete `ChatResponse`.
-pub async fn accumulate_stream(
-    stream: &mut crate::providers::ChatStream,
-    callback: &StreamCallback,
-) -> Result<ChatResponse> {
-    let mut content = String::new();
-    let mut reasoning_content = String::new();
-    let mut tool_acc = ToolCallAccumulator::new();
-    let mut accumulated_usage: Option<crate::providers::Usage> = None;
+/// Convert LLM stream to event stream with backpressure support.
+///
+/// Returns (event_stream, final_response_future).
+pub fn stream_events(
+    mut llm_stream: crate::providers::ChatStream,
+) -> (
+    impl Stream<Item = StreamEvent>,
+    impl std::future::Future<Output = Result<ChatResponse>>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(32);
 
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result?;
+    let response_future = async move {
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let mut tool_acc = ToolCallAccumulator::new();
+        let mut accumulated_usage = None;
 
-        // Accumulate text content
-        if let Some(ref text) = chunk.delta.content {
-            if !text.is_empty() {
-                content.push_str(text);
-                callback(&StreamEvent::Content(text.clone()));
+        while let Some(chunk_result) = llm_stream.next().await {
+            let chunk = chunk_result?;
+
+            if let Some(ref text) = chunk.delta.content {
+                if !text.is_empty() {
+                    content.push_str(text);
+                    let _ = tx.send(StreamEvent::Content(text.clone())).await;
+                }
+            }
+
+            if let Some(ref reasoning) = chunk.delta.reasoning_content {
+                if !reasoning.is_empty() {
+                    reasoning_content.push_str(reasoning);
+                    let _ = tx.send(StreamEvent::Reasoning(reasoning.clone())).await;
+                }
+            }
+
+            for tc_delta in &chunk.delta.tool_calls {
+                tool_acc.feed(tc_delta);
+            }
+
+            if let Some(ref usage) = chunk.usage {
+                accumulated_usage = Some(usage.clone());
             }
         }
 
-        // Accumulate reasoning content
-        if let Some(ref reasoning) = chunk.delta.reasoning_content {
-            if !reasoning.is_empty() {
-                reasoning_content.push_str(reasoning);
-                callback(&StreamEvent::Reasoning(reasoning.clone()));
-            }
-        }
+        let _ = tx.send(StreamEvent::Done).await;
 
-        // Accumulate tool call deltas
-        for tc_delta in &chunk.delta.tool_calls {
-            tool_acc.feed(tc_delta);
-        }
+        Ok(ChatResponse {
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            tool_calls: tool_acc.finalize(),
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
+            usage: accumulated_usage,
+        })
+    };
 
-        // Capture usage from stream chunks (typically sent in the final chunk)
-        if let Some(ref usage) = chunk.usage {
-            accumulated_usage = Some(usage.clone());
-        }
-    }
-
-    eprintln!();
-
-    Ok(ChatResponse {
-        content: if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        },
-        tool_calls: tool_acc.finalize(),
-        reasoning_content: if reasoning_content.is_empty() {
-            None
-        } else {
-            Some(reasoning_content)
-        },
-        usage: accumulated_usage,
-    })
+    (
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        response_future,
+    )
 }
 
 #[cfg(test)]

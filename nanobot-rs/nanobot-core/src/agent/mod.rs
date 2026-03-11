@@ -17,6 +17,6 @@ pub use executor::ToolExecutor;
 pub use history_processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
-pub use stream::{StreamCallback, StreamEvent};
+pub use stream::StreamEvent;
 pub use subagent::SubagentManager;
 pub use summarization::ContextCompressionHook;

@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! let registry = OutboundSenderRegistry::from_config(&config.channels);
-//! registry.register_custom("sms".to_string(), Box::new(MySmsSender::new()));
+//! registry.register_custom("sms".to_string(), Arc::new(MySmsSender::new()));
 //! registry.send(msg).await?;
 //! ```
 

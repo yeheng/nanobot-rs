@@ -106,10 +106,9 @@ pub async fn cmd_gateway() -> Result<()> {
     }
 
     // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp_servers.is_empty() {
+    let mcp_tools = if !config.tools.mcp.stdio.is_empty() || !config.tools.mcp.remote.is_empty() || !config.tools.mcp_servers.is_empty() {
         println!("Starting MCP servers...");
-        let (_mcp_manager, tools) =
-            nanobot_core::mcp::start_mcp_servers(&config.tools.mcp_servers).await;
+        let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
         println!("  {} MCP tools loaded", tools.len());
         tools
     } else {

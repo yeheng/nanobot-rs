@@ -118,6 +118,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 # Archive extraction (for workspace template downloads)
 tar = "0.4"
 flate2 = "1.0"
+tokio-stream = "0.1.18"
 
 [dev-dependencies]
 tokio-test = "0.4"
