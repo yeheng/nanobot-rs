@@ -58,7 +58,9 @@ impl StdioTransport {
         let json = serde_json::to_string(response)?;
         debug!("Sending: {}", &json[..json.len().min(200)]);
         use tokio::io::AsyncWriteExt;
-        self.stdout.write_all(format!("{}\n", json).as_bytes()).await?;
+        self.stdout
+            .write_all(format!("{}\n", json).as_bytes())
+            .await?;
         self.stdout.flush().await?;
         Ok(())
     }

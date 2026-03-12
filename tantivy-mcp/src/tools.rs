@@ -1,8 +1,10 @@
 //! Tool registration for tantivy-mcp.
+//!
+//! All tools directly call IndexManager methods without any async wrapper overhead.
+//! The IndexManager handles its own internal locking via DashMap and per-index RwLock.
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use serde_json::{json, Map, Value};
 
 use crate::index::{Document, FieldDef, IndexConfig, IndexManager, SearchQuery};
@@ -10,7 +12,7 @@ use crate::mcp::{McpTool, ToolRegistry, ToolResult};
 use crate::Result;
 
 /// Register all MCP tools.
-pub fn register_tools(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+pub fn register_tools(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     // Index management tools
     register_index_create(registry, manager.clone());
     register_index_drop(registry, manager.clone());
@@ -31,7 +33,7 @@ pub fn register_tools(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexMana
     register_maintenance_status(registry, manager.clone());
 }
 
-fn register_index_create(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_create(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_create".to_string(),
@@ -75,10 +77,7 @@ fn register_index_create(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexM
     );
 }
 
-fn handle_index_create(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_index_create(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
     let name = params["name"]
         .as_str()
@@ -95,14 +94,7 @@ fn handle_index_create(
             auto_compact: None,
         });
 
-    // Use tokio::task::block_in_place for async operation
-    let schema = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let mut manager = manager.write();
-            manager.create_index(&name, fields, config)
-        })
-    })?;
+    let schema = manager.create_index(&name, fields, config)?;
 
     Ok(ToolResult::text(
         json!({
@@ -115,7 +107,7 @@ fn handle_index_create(
     ))
 }
 
-fn register_index_drop(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_drop(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_drop".to_string(),
@@ -138,22 +130,13 @@ fn register_index_drop(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexMan
     );
 }
 
-fn handle_index_drop(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_index_drop(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
     let name = params["name"]
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing name".to_string()))?;
 
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let mut manager = manager.write();
-            manager.drop_index(name)
-        })
-    })?;
+    manager.drop_index(name)?;
 
     Ok(ToolResult::text(
         json!({
@@ -164,7 +147,7 @@ fn handle_index_drop(
     ))
 }
 
-fn register_index_list(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_list(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_list".to_string(),
@@ -181,14 +164,8 @@ fn register_index_list(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexMan
     );
 }
 
-fn handle_index_list(manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
-    let indexes = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.list_indexes()
-        })
-    });
+fn handle_index_list(manager: Arc<IndexManager>) -> Result<ToolResult> {
+    let indexes = manager.list_indexes();
 
     Ok(ToolResult::text(
         json!({
@@ -198,7 +175,7 @@ fn handle_index_list(manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
     ))
 }
 
-fn register_index_stats(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_stats(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_stats".to_string(),
@@ -220,55 +197,30 @@ fn register_index_stats(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexMa
     );
 }
 
-fn handle_index_stats(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_index_stats(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let name = params
         .as_ref()
         .and_then(|p| p.get("name"))
         .and_then(|v| v.as_str());
 
     if let Some(index_name) = name {
-        let stats = tokio::task::block_in_place(|| {
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async {
-                let manager = manager.read();
-                manager.get_stats(index_name)
-            })
-        })?;
-
+        let stats = manager.get_stats(index_name)?;
         Ok(ToolResult::text(json!(stats).to_string()))
     } else {
-        // Return all indexes stats
-        let indexes = tokio::task::block_in_place(|| {
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async {
-                let manager = manager.read();
-                manager.list_indexes()
-            })
-        });
-
+        let indexes = manager.list_indexes();
         let mut all_stats = Vec::new();
         for index_name in indexes {
-            if let Ok(stats) = tokio::task::block_in_place(|| {
-                let rt = tokio::runtime::Handle::current();
-                rt.block_on(async {
-                    let manager = manager.read();
-                    manager.get_stats(&index_name)
-                })
-            }) {
+            if let Ok(stats) = manager.get_stats(&index_name) {
                 all_stats.push(stats);
             }
         }
-
         Ok(ToolResult::text(
             json!({ "indexes": all_stats }).to_string(),
         ))
     }
 }
 
-fn register_document_add(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_document_add(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "document_add".to_string(),
@@ -303,10 +255,7 @@ fn register_document_add(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexM
     );
 }
 
-fn handle_document_add(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_document_add(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
 
     let index_name = params["index"]
@@ -329,13 +278,7 @@ fn handle_document_add(
         doc = doc.with_expiry(expires_at);
     }
 
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.add_document(index_name, doc)
-        })
-    })?;
+    manager.add_document(index_name, doc)?;
 
     Ok(ToolResult::text(
         json!({
@@ -346,7 +289,7 @@ fn handle_document_add(
     ))
 }
 
-fn register_document_delete(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_document_delete(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "document_delete".to_string(),
@@ -373,10 +316,7 @@ fn register_document_delete(registry: &mut ToolRegistry, manager: Arc<RwLock<Ind
     );
 }
 
-fn handle_document_delete(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_document_delete(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
 
     let index_name = params["index"]
@@ -387,13 +327,7 @@ fn handle_document_delete(
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing id".to_string()))?;
 
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.delete_document(index_name, doc_id)
-        })
-    })?;
+    manager.delete_document(index_name, doc_id)?;
 
     Ok(ToolResult::text(
         json!({
@@ -404,7 +338,7 @@ fn handle_document_delete(
     ))
 }
 
-fn register_document_commit(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_document_commit(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "document_commit".to_string(),
@@ -427,23 +361,14 @@ fn register_document_commit(registry: &mut ToolRegistry, manager: Arc<RwLock<Ind
     );
 }
 
-fn handle_document_commit(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_document_commit(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
 
     let index_name = params["index"]
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing index".to_string()))?;
 
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.commit(index_name)
-        })
-    })?;
+    manager.commit(index_name)?;
 
     Ok(ToolResult::text(
         json!({
@@ -454,7 +379,7 @@ fn handle_document_commit(
     ))
 }
 
-fn register_search(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_search(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "search".to_string(),
@@ -496,7 +421,7 @@ fn register_search(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager
     );
 }
 
-fn handle_search(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
+fn handle_search(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
 
     let index_name = params["index"]
@@ -509,13 +434,7 @@ fn handle_search(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> R
         SearchQuery::default()
     };
 
-    let results = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.search(index_name, &query)
-        })
-    })?;
+    let results = manager.search(index_name, &query)?;
 
     Ok(ToolResult::text(
         json!({
@@ -526,7 +445,7 @@ fn handle_search(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> R
     ))
 }
 
-fn register_index_compact(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_compact(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_compact".to_string(),
@@ -549,39 +468,16 @@ fn register_index_compact(registry: &mut ToolRegistry, manager: Arc<RwLock<Index
     );
 }
 
-fn handle_index_compact(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_index_compact(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
 
     let index_name = params["index"]
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing index".to_string()))?;
 
-    let stats_before = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.get_stats(index_name)
-        })
-    })?;
-
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.compact(index_name)
-        })
-    })?;
-
-    let stats_after = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
-            manager.get_stats(index_name)
-        })
-    })?;
+    let stats_before = manager.get_stats(index_name)?;
+    manager.compact(index_name)?;
+    let stats_after = manager.get_stats(index_name)?;
 
     Ok(ToolResult::text(
         json!({
@@ -596,7 +492,7 @@ fn handle_index_compact(
     ))
 }
 
-fn register_index_rebuild(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_index_rebuild(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "index_rebuild".to_string(),
@@ -641,10 +537,7 @@ fn register_index_rebuild(registry: &mut ToolRegistry, manager: Arc<RwLock<Index
     );
 }
 
-fn handle_index_rebuild(
-    params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
-) -> Result<ToolResult> {
+fn handle_index_rebuild(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
     use crate::maintenance::rebuild_index;
     use crate::maintenance::RebuildResult;
 
@@ -666,13 +559,7 @@ fn handle_index_rebuild(
         .and_then(|v| v.as_u64())
         .unwrap_or(1000) as usize;
 
-    let result: RebuildResult = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let mut manager = manager.write();
-            rebuild_index(&mut manager, index_name, new_fields, batch_size)
-        })
-    })?;
+    let result: RebuildResult = rebuild_index(&manager, index_name, new_fields, batch_size)?;
     Ok(ToolResult::text(json!(result).to_string()))
 }
 
@@ -684,7 +571,6 @@ fn parse_ttl(ttl: &str) -> Result<chrono::Duration> {
         return Err(crate::Error::ParseError("Empty TTL".to_string()));
     }
 
-    // Get the numeric part and the unit
     let numeric_end = ttl.find(|c: char| !c.is_ascii_digit()).unwrap_or(ttl.len());
 
     if numeric_end == 0 {
@@ -714,7 +600,7 @@ fn parse_ttl(ttl: &str) -> Result<chrono::Duration> {
     Ok(duration)
 }
 
-fn register_maintenance_status(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+fn register_maintenance_status(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     registry.register(
         McpTool {
             name: "maintenance_status".to_string(),
@@ -738,54 +624,45 @@ fn register_maintenance_status(registry: &mut ToolRegistry, manager: Arc<RwLock<
 
 fn handle_maintenance_status(
     params: Option<Value>,
-    manager: Arc<RwLock<IndexManager>>,
+    manager: Arc<IndexManager>,
 ) -> Result<ToolResult> {
     let index_name = params
         .as_ref()
         .and_then(|p| p.get("index"))
         .and_then(|v| v.as_str());
 
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let manager = manager.read();
+    if let Some(name) = index_name {
+        let stats = manager.get_stats(name)?;
+        let config_opt = manager.get_config(name)?;
 
-            if let Some(name) = index_name {
-                // Get status for specific index
-                let stats = manager.get_stats(name)?;
-                let config_opt = manager.get_config(name)?;
+        Ok(ToolResult::text(
+            json!({
+                "index": name,
+                "stats": stats,
+                "config": config_opt
+            })
+            .to_string(),
+        ))
+    } else {
+        let indexes = manager.list_indexes();
+        let mut all_status = Vec::new();
 
-                Ok(ToolResult::text(
-                    json!({
-                        "index": name,
-                        "stats": stats,
-                        "config": config_opt
-                    })
-                    .to_string(),
-                ))
-            } else {
-                // Get status for all indexes
-                let indexes = manager.list_indexes();
-                let mut all_status = Vec::new();
-
-                for idx in indexes {
-                    if let Ok(stats) = manager.get_stats(&idx) {
-                        let config_opt = manager.get_config(&idx).ok().flatten();
-                        all_status.push(json!({
-                            "index": idx,
-                            "stats": stats,
-                            "config": config_opt
-                        }));
-                    }
-                }
-
-                Ok(ToolResult::text(
-                    json!({
-                        "indexes": all_status
-                    })
-                    .to_string(),
-                ))
+        for idx in indexes {
+            if let Ok(stats) = manager.get_stats(&idx) {
+                let config_opt = manager.get_config(&idx).ok().flatten();
+                all_status.push(json!({
+                    "index": idx,
+                    "stats": stats,
+                    "config": config_opt
+                }));
             }
-        })
-    })
+        }
+
+        Ok(ToolResult::text(
+            json!({
+                "indexes": all_status
+            })
+            .to_string(),
+        ))
+    }
 }

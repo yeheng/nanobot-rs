@@ -136,59 +136,42 @@ impl SubagentManager {
         prompt_text: &str,
         system_prompt: Option<&str>,
     ) -> anyhow::Result<AgentResponse> {
-        let provider = self.provider.clone();
-        let workspace = self.workspace.clone();
-        let tool_factory = self.tool_factory.clone();
-        let prompt_text = prompt_text.to_string();
-        let custom_system = system_prompt.map(|s| s.to_string());
+        info!(
+            "Subagent (sync) started: {}",
+            &prompt_text[..prompt_text.len().min(80)]
+        );
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<anyhow::Result<AgentResponse>>();
+        let agent_config = AgentConfig {
+            model: self.provider.default_model().to_string(),
+            max_iterations: 10,
+            ..Default::default()
+        };
+        let tools = (self.tool_factory)();
 
-        tokio::spawn(async move {
-            let result = async {
-                info!(
-                    "Subagent (sync) started: {}",
-                    &prompt_text[..prompt_text.len().min(80)]
-                );
-                let agent_config = AgentConfig {
-                    model: provider.default_model().to_string(),
-                    max_iterations: 10,
-                    ..Default::default()
-                };
-                let tools = tool_factory();
+        let mut agent = AgentLoop::builder(
+            self.provider.clone(),
+            self.workspace.clone(),
+            agent_config,
+            tools,
+        )?;
 
-                let mut agent =
-                    AgentLoop::builder(provider, workspace.clone(), agent_config, tools)?;
-
-                // Use custom system prompt if provided, otherwise load default
-                let sys = match custom_system {
-                    Some(s) => s,
-                    None => {
-                        prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
-                            .await?
-                    }
-                };
-                agent.set_system_prompt(sys);
-
-                let session_key = SessionKey::new(crate::bus::ChannelType::Cli, "pipeline_sync");
-                let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
-
-                tokio::time::timeout(
-                    timeout_duration,
-                    agent.process_direct(&prompt_text, &session_key),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("Subagent timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
-                .map_err(|e| anyhow::anyhow!("{}", e))
+        let sys = match system_prompt {
+            Some(s) => s.to_string(),
+            None => {
+                prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?
             }
-            .await;
+        };
+        agent.set_system_prompt(sys);
 
-            // Send result back; if the receiver was dropped, discard silently
-            let _ = tx.send(result);
-        });
+        let session_key = SessionKey::new(crate::bus::ChannelType::Cli, "pipeline_sync");
 
-        rx.await
-            .map_err(|_| anyhow::anyhow!("Subagent task was cancelled"))?
+        tokio::time::timeout(
+            std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
+            agent.process_direct(prompt_text, &session_key),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Subagent timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
+        .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// Submit a prompt with a **specific model** and wait for the response.
@@ -209,58 +192,31 @@ impl SubagentManager {
         provider: Arc<dyn LlmProvider>,
         agent_config: AgentConfig,
     ) -> anyhow::Result<AgentResponse> {
-        let workspace = self.workspace.clone();
-        let tool_factory = self.tool_factory.clone();
-        let prompt_text = prompt_text.to_string();
-        let custom_system = system_prompt.map(|s| s.to_string());
-        let model = agent_config.model.clone();
+        info!(
+            "Subagent (model switch) started with model '{}': {}",
+            agent_config.model,
+            &prompt_text[..prompt_text.len().min(80)]
+        );
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<anyhow::Result<AgentResponse>>();
+        let tools = (self.tool_factory)();
+        let mut agent = AgentLoop::builder(provider, self.workspace.clone(), agent_config, tools)?;
 
-        tokio::spawn(async move {
-            let result = async {
-                info!(
-                    "Subagent (model switch) started with model '{}': {}",
-                    model,
-                    &prompt_text[..prompt_text.len().min(80)]
-                );
-
-                let tools = tool_factory();
-
-                let mut agent =
-                    AgentLoop::builder(provider, workspace.clone(), agent_config, tools)?;
-
-                // Use custom system prompt if provided, otherwise load default
-                let sys = match custom_system {
-                    Some(s) => s,
-                    None => {
-                        prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
-                            .await?
-                    }
-                };
-                agent.set_system_prompt(sys);
-
-                let session_key =
-                    SessionKey::new(crate::bus::ChannelType::Cli, "model_switch_sync");
-                let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
-
-                tokio::time::timeout(
-                    timeout_duration,
-                    agent.process_direct(&prompt_text, &session_key),
-                )
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s")
-                })?
-                .map_err(|e| anyhow::anyhow!("{}", e))
+        let sys = match system_prompt {
+            Some(s) => s.to_string(),
+            None => {
+                prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?
             }
-            .await;
+        };
+        agent.set_system_prompt(sys);
 
-            // Send result back; if the receiver was dropped, discard silently
-            let _ = tx.send(result);
-        });
+        let session_key = SessionKey::new(crate::bus::ChannelType::Cli, "model_switch_sync");
 
-        rx.await
-            .map_err(|_| anyhow::anyhow!("Model switch task was cancelled"))?
+        tokio::time::timeout(
+            std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
+            agent.process_direct(prompt_text, &session_key),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
+        .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }

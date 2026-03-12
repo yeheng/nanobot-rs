@@ -53,6 +53,9 @@ pub enum Error {
 
     #[error("Query error: {0}")]
     QueryError(String),
+
+    #[error("Writer not initialized")]
+    WriterNotInitialized,
 }
 
 impl From<tantivy::query::QueryParserError> for Error {

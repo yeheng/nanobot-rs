@@ -40,7 +40,10 @@ pub fn backup_index(
 }
 
 /// Restore an index from a backup.
-pub fn restore_index(manager: &mut IndexManager, backup_path: &Path) -> Result<RestoreResult> {
+///
+/// Uses `&IndexManager` (not `&mut`) as all internal operations
+/// manage their own locking via DashMap and per-index RwLock.
+pub fn restore_index(manager: &IndexManager, backup_path: &Path) -> Result<RestoreResult> {
     // Read metadata to get index name
     let metadata_path = backup_path.join("metadata.json");
     let metadata_json = fs::read_to_string(&metadata_path)?;

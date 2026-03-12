@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use clap::Parser;
 use directories::UserDirs;
-use parking_lot::RwLock;
 use tantivy_mcp::index::IndexManager;
 use tantivy_mcp::maintenance::{MaintenanceConfig, MaintenanceScheduler};
 use tantivy_mcp::mcp::{McpHandler, ToolRegistry};
@@ -67,12 +66,13 @@ async fn main() -> tantivy_mcp::Result<()> {
     info!("Index directory: {:?}", index_dir);
 
     // Create index manager
-    let mut manager = IndexManager::new(&index_dir);
+    let manager = IndexManager::new(&index_dir);
 
-    // Load existing indexes
+    // Load existing indexes (no longer needs &mut self)
     manager.load_indexes()?;
 
-    let manager = Arc::new(RwLock::new(manager));
+    // Wrap in Arc for shared ownership (no RwLock needed - IndexManager handles its own locking)
+    let manager = Arc::new(manager);
 
     // Create cancellation token for graceful shutdown
     let cancel_token = CancellationToken::new();
@@ -110,9 +110,7 @@ async fn main() -> tantivy_mcp::Result<()> {
 
     // Run MCP server in a separate task
     let server_token = cancel_token.clone();
-    let server_task = tokio::spawn(async move {
-        handler.run(server_token).await
-    });
+    let server_task = tokio::spawn(async move { handler.run(server_token).await });
 
     // Wait for either server completion or shutdown signal
     tokio::select! {
@@ -144,14 +142,13 @@ async fn main() -> tantivy_mcp::Result<()> {
     }
 
     // Wait for server task to finish (with timeout)
-    if let Ok(_handle) = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async {
-            // The server task should have already finished due to cancellation
-            // but we wait for it to clean up properly
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    ).await {
+    if let Ok(_handle) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // The server task should have already finished due to cancellation
+        // but we wait for it to clean up properly
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    })
+    .await
+    {
         info!("Server shutdown complete");
     } else {
         tracing::warn!("Server shutdown timed out");
@@ -160,10 +157,10 @@ async fn main() -> tantivy_mcp::Result<()> {
     // Wait for maintenance scheduler to stop
     if let Some(handle) = scheduler_handle {
         // Scheduler should already be stopped via cancellation
-        if let Ok(_) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            handle
-        ).await {
+        if tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+        {
             info!("Maintenance scheduler stopped");
         } else {
             tracing::warn!("Maintenance scheduler stop timed out");
@@ -176,34 +173,32 @@ async fn main() -> tantivy_mcp::Result<()> {
 }
 
 /// Setup graceful shutdown handler.
-fn setup_shutdown_handler() -> impl std::future::Future<Output = ()> {
-    async {
-        #[cfg(unix)]
-        {
-            let ctrl_c = async {
-                signal::ctrl_c()
-                    .await
-                    .expect("Failed to install Ctrl+C handler");
-            };
-
-            let terminate = async {
-                signal::unix::signal(signal::unix::SignalKind::terminate())
-                    .expect("Failed to install signal handler")
-                    .recv()
-                    .await;
-            };
-
-            tokio::select! {
-                _ = ctrl_c => {},
-                _ = terminate => {},
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
+async fn setup_shutdown_handler() {
+    #[cfg(unix)]
+    {
+        let ctrl_c = async {
             signal::ctrl_c()
                 .await
                 .expect("Failed to install Ctrl+C handler");
+        };
+
+        let terminate = async {
+            signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("Failed to install signal handler")
+                .recv()
+                .await;
+        };
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
         }
+    }
+
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
     }
 }

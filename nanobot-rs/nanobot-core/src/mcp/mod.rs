@@ -34,14 +34,55 @@ pub async fn start_mcp_servers(
 
     // New grouped format: remote servers
     for (name, cfg) in &config.mcp.remote {
-        let transport = types::McpTransport::Http { url: cfg.url.clone() };
+        let transport = match cfg {
+            crate::config::RemoteMcpConfig::Simple { url } => types::McpTransport::Http {
+                url: url.clone(),
+                auth: types::McpAuth::default(),
+                timeout: 30,
+            },
+            crate::config::RemoteMcpConfig::Enhanced {
+                transport,
+                auth,
+                timeout,
+                ..
+            } => {
+                let mcp_auth = types::McpAuth {
+                    api_key: auth.api_key.clone(),
+                    bearer_token: auth.bearer_token.clone(),
+                    headers: auth.headers.clone(),
+                };
+                match transport {
+                    crate::config::RemoteTransportConfig::Http { url } => types::McpTransport::Http {
+                        url: url.clone(),
+                        auth: mcp_auth,
+                        timeout: *timeout,
+                    },
+                    crate::config::RemoteTransportConfig::Sse { url } => types::McpTransport::Sse {
+                        url: url.clone(),
+                        auth: mcp_auth,
+                        timeout: *timeout,
+                    },
+                    crate::config::RemoteTransportConfig::WebSocket { url } => {
+                        types::McpTransport::WebSocket {
+                            url: url.clone(),
+                            auth: mcp_auth,
+                            timeout: *timeout,
+                        }
+                    }
+                }
+            }
+        };
         manager.add_server(name.clone(), McpServerConfig { transport });
     }
 
     // Legacy flat format (backward compatibility)
     for (name, cfg) in &config.mcp_servers {
         let transport = if let Some(url) = &cfg.url {
-            types::McpTransport::Http { url: url.clone() }
+            types::McpTransport::Http {
+                url: url.clone(),
+                auth: types::McpAuth::default(),
+                timeout: 30,
+            }
         } else if let Some(command) = &cfg.command {
             types::McpTransport::Stdio {
                 command: command.clone(),
@@ -65,7 +106,11 @@ pub async fn start_mcp_servers(
     let tools: Vec<Box<dyn Tool>> = tool_info
         .iter()
         .map(|(server, mcp_tool)| {
-            Box::new(McpToolBridge::new(server.clone(), mcp_tool, manager.clone())) as Box<dyn Tool>
+            Box::new(McpToolBridge::new(
+                server.clone(),
+                mcp_tool,
+                manager.clone(),
+            )) as Box<dyn Tool>
         })
         .collect();
 

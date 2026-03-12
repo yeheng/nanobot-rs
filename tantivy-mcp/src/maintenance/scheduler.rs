@@ -1,4 +1,7 @@
 //! Automatic maintenance scheduler.
+//!
+//! Uses `Arc<IndexManager>` directly without outer RwLock.
+//! The IndexManager handles its own internal locking via DashMap.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use crate::Result;
 
 /// Maintenance scheduler for automatic index maintenance.
 pub struct MaintenanceScheduler {
-    manager: Arc<RwLock<IndexManager>>,
+    manager: Arc<IndexManager>,
     config: MaintenanceConfig,
     status: Arc<RwLock<MaintenanceStatus>>,
 }
@@ -79,7 +82,7 @@ pub enum MaintenanceTaskType {
 
 impl MaintenanceScheduler {
     /// Create a new maintenance scheduler.
-    pub fn new(manager: Arc<RwLock<IndexManager>>, config: MaintenanceConfig) -> Self {
+    pub fn new(manager: Arc<IndexManager>, config: MaintenanceConfig) -> Self {
         Self {
             manager,
             config,
@@ -108,7 +111,7 @@ impl MaintenanceScheduler {
                     }
                     _ = interval.tick() => {
                         if config.auto_expire || config.auto_compact {
-                            if let Err(e) = run_maintenance(&manager, &config, &status).await {
+                            if let Err(e) = run_maintenance(&manager, &config, &status) {
                                 error!("Maintenance error: {}", e);
                             }
                         }
@@ -129,33 +132,31 @@ impl MaintenanceScheduler {
 }
 
 /// Run maintenance tasks.
-async fn run_maintenance(
-    manager: &Arc<RwLock<IndexManager>>,
+///
+/// Directly calls IndexManager methods without any outer lock.
+/// Each operation manages its own internal locking.
+fn run_maintenance(
+    manager: &Arc<IndexManager>,
     config: &MaintenanceConfig,
     status: &Arc<RwLock<MaintenanceStatus>>,
 ) -> Result<()> {
-    let indexes: Vec<String> = {
-        let manager = manager.read();
-        manager.list_indexes()
-    };
+    // Get list of indexes (no lock needed for this read operation)
+    let indexes = manager.list_indexes();
 
     for index_name in indexes {
         // Check if compaction is needed
         if config.auto_compact {
-            let needs_compaction = {
-                let manager = manager.read();
-                if let Ok(stats) = manager.get_stats(&index_name) {
-                    let deleted_ratio = stats.deleted_count as f32 / (stats.doc_count as f32 + 1.0);
-                    deleted_ratio > config.deleted_ratio_threshold
-                        || stats.segment_count > config.max_segments
-                } else {
-                    false
-                }
+            let needs_compaction = if let Ok(stats) = manager.get_stats(&index_name) {
+                let deleted_ratio = stats.deleted_count as f32 / (stats.doc_count as f32 + 1.0);
+                deleted_ratio > config.deleted_ratio_threshold
+                    || stats.segment_count > config.max_segments
+            } else {
+                false
             };
 
             if needs_compaction {
                 info!("Auto-compacting index: {}", index_name);
-                let manager = manager.write();
+                // compact manages its own internal locking
                 if let Err(e) = manager.compact(&index_name) {
                     error!("Compaction failed for {}: {}", index_name, e);
                 } else {

@@ -30,7 +30,11 @@ impl McpManager {
 
     /// Start all servers
     pub async fn start_all(&mut self) -> Result<(), McpError> {
-        let configs: Vec<_> = self.configs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let configs: Vec<_> = self
+            .configs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         for (name, config) in configs {
             if let Some(client) = self.clients.get_mut(&name) {
                 if let Err(e) = client.start(config).await {

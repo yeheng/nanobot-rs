@@ -219,10 +219,13 @@ impl ExternalHookRunner {
             .stderr(std::process::Stdio::piped())
             .spawn()?;
 
-        // Write JSON to stdin and close it (send EOF)
+        // Write JSON to stdin in background to avoid IPC deadlock
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(json_input.as_bytes()).await?;
-            // stdin is dropped here, sending EOF
+            let json_string = json_input.clone();
+            tokio::spawn(async move {
+                let _ = stdin.write_all(json_string.as_bytes()).await;
+                // stdin dropped here, sending EOF
+            });
         }
 
         // Wait with timeout - kill_on_drop(true) ensures the process is killed on timeout

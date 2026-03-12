@@ -59,7 +59,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp.stdio.is_empty() || !config.tools.mcp.remote.is_empty() || !config.tools.mcp_servers.is_empty() {
+    let mcp_tools = if !config.tools.mcp.stdio.is_empty()
+        || !config.tools.mcp.remote.is_empty()
+        || !config.tools.mcp_servers.is_empty()
+    {
         println!("Starting MCP servers...");
         let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
         println!("  {} MCP tools loaded", tools.len());
@@ -200,7 +203,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             println!();
                             match agent.process_direct_streaming(line, &interactive_session, |event| {
                                 match event {
-                                    StreamEvent::Content(text) => print!("{}", text),
+                                    StreamEvent::Content(text) => {
+                                        print!("{}", text);
+                                        std::io::stdout().flush().ok();
+                                    }
                                     StreamEvent::Reasoning(text) => {
                                         eprint!("{}", text.dimmed().italic());
                                         std::io::stderr().flush().ok();
@@ -210,11 +216,11 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                         eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                             input_tokens, output_tokens, total_tokens, symbol, cost);
                                     }
-                                    StreamEvent::Done => println!(),
+                                    StreamEvent::Done => {}
                                     _ => {}
                                 }
                             }).await {
-                                Ok(_) => println!(),
+                                Ok(_) => println!("\n"),
                                 Err(e) => println!("\n{} {}\n", "Error:".red(), e),
                             }
                         } else {

@@ -1,4 +1,19 @@
 //! Index manager for managing multiple indexes.
+//!
+//! ## Locking Strategy
+//!
+//! This module uses a fine-grained locking strategy for optimal concurrency:
+//!
+//! 1. **DashMap for index registry**: Uses `DashMap<String, Arc<IndexState>>` instead of
+//!    `RwLock<HashMap<...>>`. This allows concurrent operations on different indexes without
+//!    global lock contention.
+//!
+//! 2. **Per-index state**: Each `IndexState` manages its own `writer` with a `RwLock`.
+//!    Read operations (search, list_documents) don't need the writer lock.
+//!    Write operations (add_document, delete_document, commit) acquire write lock.
+//!
+//! 3. **No outer RwLock**: The `IndexManager` is wrapped in `Arc<IndexManager>` directly,
+//!    not ``Arc<RwLock<IndexManager>>``. All synchronization happens inside.
 
 use std::collections::HashMap;
 use std::ops::Bound;
@@ -6,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tantivy::{
@@ -21,35 +37,71 @@ use super::search::{SearchQuery, SearchResult};
 use crate::{Error, Result};
 
 /// Internal index state.
+///
+/// Each index has its own state with:
+/// - Immutable data (schema, config, tantivy_index, reader, field_map)
+/// - Mutable writer protected by RwLock
 struct IndexState {
+    // Immutable fields (set at creation, never changed)
     schema: IndexSchema,
     config: IndexConfig,
     _tantivy_schema: Schema,
     tantivy_index: Index,
     reader: IndexReader,
-    writer: Option<IndexWriter>,
-    /// Field name to Tantivy field mapping.
     field_map: HashMap<String, Field>,
-    /// Hidden field for document ID.
     id_field: Field,
-    /// Hidden field for expiration time.
     expires_at_field: Field,
+
+    // Mutable field (protected by RwLock)
+    /// Index writer with lazy initialization.
+    /// Uses RwLock to allow multiple readers (for read-heavy operations)
+    /// while still allowing writer recreation during compact.
+    writer: RwLock<Option<IndexWriter>>,
 }
 
 impl IndexState {
-    /// Get or create a writer.
-    fn ensure_writer(&mut self) -> Result<&mut IndexWriter> {
-        if self.writer.is_none() {
-            self.writer = Some(self.tantivy_index.writer(50_000_000)?);
+    /// Ensure the writer is initialized.
+    fn ensure_writer(&self) -> Result<()> {
+        let mut guard = self.writer.write();
+        if guard.is_none() {
+            *guard = Some(self.tantivy_index.writer(50_000_000)?);
         }
-        Ok(self.writer.as_mut().unwrap())
+        Ok(())
+    }
+
+    /// Execute a write operation with the writer.
+    fn with_writer_mut<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut IndexWriter) -> Result<T>,
+    {
+        self.ensure_writer()?;
+        let mut guard = self.writer.write();
+        let writer = guard.as_mut().ok_or(Error::WriterNotInitialized)?;
+        f(writer)
+    }
+
+    /// Recreate the writer (used after compact).
+    fn recreate_writer(&self) -> Result<()> {
+        let mut guard = self.writer.write();
+        // Wait for existing writer to finish
+        if let Some(writer) = guard.take() {
+            writer.wait_merging_threads()?;
+        }
+        // Create new writer
+        *guard = Some(self.tantivy_index.writer(50_000_000)?);
+        Ok(())
     }
 }
 
 /// Index manager handling multiple indexes.
+///
+/// Uses `DashMap` for concurrent access to the index registry.
+/// Different indexes can be accessed in parallel without global lock contention.
 pub struct IndexManager {
     base_path: PathBuf,
-    indexes: HashMap<String, Arc<RwLock<IndexState>>>,
+    /// Concurrent index registry using DashMap.
+    /// Each index is wrapped in Arc for shared ownership.
+    indexes: DashMap<String, Arc<IndexState>>,
 }
 
 impl IndexManager {
@@ -98,38 +150,41 @@ impl IndexManager {
     pub fn new(base_path: impl AsRef<Path>) -> Self {
         Self {
             base_path: base_path.as_ref().to_path_buf(),
-            indexes: HashMap::new(),
+            indexes: DashMap::new(),
         }
     }
 
     /// Create a new index.
+    ///
+    /// This operation atomically inserts the new index into the registry.
+    /// If an index with the same name already exists, returns an error.
     pub fn create_index(
-        &mut self,
+        &self,
         name: &str,
         fields: Vec<FieldDef>,
         config: Option<IndexConfig>,
     ) -> Result<IndexSchema> {
+        // Quick check without holding any lock
         if self.indexes.contains_key(name) {
             return Err(Error::IndexAlreadyExists(name.to_string()));
         }
 
+        // Build index state outside of any lock
         let index_path = self.base_path.join("indexes").join(name);
         std::fs::create_dir_all(&index_path)?;
 
         let schema = IndexSchema::new(name, fields);
         let config = config.unwrap_or_default();
 
-        // Build Tantivy schema
         let (tantivy_schema, field_map, id_field, expires_at_field) =
             build_tantivy_schema(&schema)?;
 
-        // Create Tantivy index
         let directory = MmapDirectory::open(&index_path)
             .map_err(|e| Error::PathError(index_path.clone(), e.to_string()))?;
         let tantivy_index = Index::open_or_create(directory, tantivy_schema.clone())?;
         let reader = tantivy_index.reader()?;
 
-        // Save schema and config to metadata file
+        // Save metadata
         let metadata = IndexMetadata {
             schema: schema.clone(),
             config: config.clone(),
@@ -138,34 +193,45 @@ impl IndexManager {
         let metadata_json = serde_json::to_string_pretty(&metadata)?;
         std::fs::write(&metadata_path, metadata_json)?;
 
-        let state = IndexState {
+        let state = Arc::new(IndexState {
             schema: schema.clone(),
             config,
             _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
-            writer: None,
+            writer: RwLock::new(None),
             field_map,
             id_field,
             expires_at_field,
-        };
+        });
 
-        self.indexes
-            .insert(name.to_string(), Arc::new(RwLock::new(state)));
+        // Atomic insert with race condition check
+        if self.indexes.insert(name.to_string(), state).is_some() {
+            // Race condition: another thread created the same index
+            // Rollback by removing the directory we just created
+            let _ = std::fs::remove_dir_all(&index_path);
+            return Err(Error::IndexAlreadyExists(name.to_string()));
+        }
 
         info!("Created index: {}", name);
         Ok(schema)
     }
 
     /// Drop an index.
-    pub fn drop_index(&mut self, name: &str) -> Result<()> {
-        if !self.indexes.contains_key(name) {
-            return Err(Error::IndexNotFound(name.to_string()));
-        }
+    ///
+    /// Atomically removes the index from the registry and deletes its directory.
+    pub fn drop_index(&self, name: &str) -> Result<()> {
+        // Atomically remove and get the old value
+        let state = self
+            .indexes
+            .remove(name)
+            .ok_or_else(|| Error::IndexNotFound(name.to_string()))?;
 
-        self.indexes.remove(name);
+        // Drop the state (this will wait for any in-progress operations)
+        drop(state);
 
-        let index_path = self.base_path.join("indexes").join(name);
+        // Delete index directory
+        let index_path = self.index_path(name);
         if index_path.exists() {
             std::fs::remove_dir_all(&index_path)?;
         }
@@ -176,102 +242,87 @@ impl IndexManager {
 
     /// List all indexes.
     pub fn list_indexes(&self) -> Vec<String> {
-        self.indexes.keys().cloned().collect()
+        self.indexes
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Get index schema.
     pub fn get_schema(&self, name: &str) -> Result<Option<IndexSchema>> {
-        match self.indexes.get(name) {
-            Some(state) => {
-                let state = state.read();
-                Ok(Some(state.schema.clone()))
-            }
-            None => Ok(None),
-        }
+        Ok(self.indexes.get(name).map(|entry| entry.schema.clone()))
     }
 
     /// Get index config.
     pub fn get_config(&self, name: &str) -> Result<Option<IndexConfig>> {
-        match self.indexes.get(name) {
-            Some(state) => {
-                let state = state.read();
-                Ok(Some(state.config.clone()))
-            }
-            None => Ok(None),
-        }
+        Ok(self.indexes.get(name).map(|entry| entry.config.clone()))
     }
 
     /// Add a document to an index.
     pub fn add_document(&self, index_name: &str, document: Document) -> Result<()> {
-        let state = self.get_state(index_name)?;
-        let mut state = state.write();
+        let state = self.get_index(index_name)?;
 
-        // Extract all needed values first
         let id = document.id.clone();
         let expires_at_ts = document
             .expires_at
             .map(|t| t.timestamp())
             .unwrap_or(i64::MAX);
         let field_values: Vec<(String, serde_json::Value)> = document.fields.into_iter().collect();
-        let id_field = state.id_field;
-        let expires_at_field = state.expires_at_field;
-        let field_map = state.field_map.clone();
 
-        // Get writer
-        let writer = state.ensure_writer()?;
+        state.with_writer_mut(|writer| {
+            // Delete existing document with same ID
+            let delete_term = Term::from_field_text(state.id_field, &id);
+            writer.delete_term(delete_term);
 
-        // Delete existing document with same ID
-        let delete_term = Term::from_field_text(id_field, &id);
-        writer.delete_term(delete_term);
+            // Build new document
+            let mut doc = TantivyDocument::new();
+            doc.add_text(state.id_field, &id);
+            doc.add_i64(state.expires_at_field, expires_at_ts);
 
-        // Create new document
-        let mut doc = TantivyDocument::new();
-        doc.add_text(id_field, &id);
-        doc.add_i64(expires_at_field, expires_at_ts);
-
-        // Add fields
-        for (field_name, value) in field_values {
-            if let Some(tantivy_field) = field_map.get(&field_name) {
-                add_field_value(&mut doc, *tantivy_field, &value)?;
+            for (field_name, value) in field_values {
+                if let Some(tantivy_field) = state.field_map.get(&field_name) {
+                    add_field_value(&mut doc, *tantivy_field, &value)?;
+                }
             }
-        }
 
-        writer.add_document(doc)?;
-        debug!("Added document {} to index {}", id, index_name);
-        Ok(())
+            writer.add_document(doc)?;
+            debug!("Added document {} to index {}", id, index_name);
+            Ok(())
+        })
     }
 
     /// Delete a document from an index.
     pub fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<()> {
-        let state = self.get_state(index_name)?;
-        let mut state = state.write();
+        let state = self.get_index(index_name)?;
 
-        let id_field = state.id_field;
-        let writer = state.ensure_writer()?;
-        let delete_term = Term::from_field_text(id_field, doc_id);
-        writer.delete_term(delete_term);
-
-        debug!("Deleted document {} from index {}", doc_id, index_name);
-        Ok(())
+        state.with_writer_mut(|writer| {
+            let delete_term = Term::from_field_text(state.id_field, doc_id);
+            writer.delete_term(delete_term);
+            debug!("Deleted document {} from index {}", doc_id, index_name);
+            Ok(())
+        })
     }
 
     /// Commit changes to an index.
     pub fn commit(&self, index_name: &str) -> Result<()> {
-        let state = self.get_state(index_name)?;
-        let mut state = state.write();
+        let state = self.get_index(index_name)?;
 
-        if let Some(writer) = &mut state.writer {
+        state.with_writer_mut(|writer| {
             writer.commit()?;
-            state.reader.reload()?;
-            info!("Committed index {}", index_name);
-        }
+            Ok(())
+        })?;
+
+        // Reload reader after commit
+        state.reader.reload()?;
+        info!("Committed index {}", index_name);
         Ok(())
     }
 
     /// Search an index.
+    ///
+    /// This is a read-only operation and doesn't acquire the writer lock.
     pub fn search(&self, index_name: &str, query: &SearchQuery) -> Result<Vec<SearchResult>> {
-        let state = self.get_state(index_name)?;
-        let state = state.read();
+        let state = self.get_index(index_name)?;
 
         let searcher = state.reader.searcher();
         let tantivy_query = build_tantivy_query(&state, query)?;
@@ -342,8 +393,7 @@ impl IndexManager {
 
     /// Get index statistics.
     pub fn get_stats(&self, index_name: &str) -> Result<IndexStats> {
-        let state = self.get_state(index_name)?;
-        let state = state.read();
+        let state = self.get_index(index_name)?;
 
         let searcher = state.reader.searcher();
         let segment_readers = searcher.segment_readers();
@@ -351,17 +401,14 @@ impl IndexManager {
         let doc_count = searcher.num_docs();
         let segment_count = segment_readers.len();
 
-        // Estimate deleted count
-        let deleted_count = segment_readers
+        let deleted_count: u64 = segment_readers
             .iter()
             .map(|r| r.num_deleted_docs() as u64)
             .sum();
 
-        // Calculate directory size
-        let index_path = self.base_path.join("indexes").join(index_name);
+        let index_path = self.index_path(index_name);
         let size_bytes = calculate_dir_size(&index_path)?;
 
-        // Determine health
         let health = if deleted_count as f32 / (doc_count as f32 + 1.0) > 0.2 {
             IndexHealth::NeedsCompaction
         } else {
@@ -380,22 +427,24 @@ impl IndexManager {
     }
 
     /// Compact an index.
+    ///
+    /// This commits any pending changes, waits for merging threads, and recreates the writer.
     pub fn compact(&self, index_name: &str) -> Result<()> {
-        let state = self.get_state(index_name)?;
-        let mut state = state.write();
+        let state = self.get_index(index_name)?;
 
-        // Commit any pending changes first
-        if let Some(writer) = &mut state.writer {
-            writer.commit()?;
+        // Commit and wait for merges
+        {
+            let mut guard = state.writer.write();
+            if let Some(writer) = guard.as_mut() {
+                writer.commit()?;
+            }
+            if let Some(writer) = guard.take() {
+                writer.wait_merging_threads()?;
+            }
         }
 
-        // Take the writer and wait for merging threads
-        if let Some(writer) = state.writer.take() {
-            writer.wait_merging_threads()?;
-        }
-
-        // Create a new writer
-        state.writer = Some(state.tantivy_index.writer(50_000_000)?);
+        // Recreate writer
+        state.recreate_writer()?;
         state.reader.reload()?;
 
         info!("Compacted index {}", index_name);
@@ -409,8 +458,7 @@ impl IndexManager {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Document>> {
-        let state = self.get_state(index_name)?;
-        let state = state.read();
+        let state = self.get_index(index_name)?;
 
         let searcher = state.reader.searcher();
         let tantivy_query = tantivy::query::AllQuery;
@@ -462,7 +510,7 @@ impl IndexManager {
     }
 
     /// Load existing indexes from disk.
-    pub fn load_indexes(&mut self) -> Result<()> {
+    pub fn load_indexes(&self) -> Result<()> {
         let indexes_path = self.base_path.join("indexes");
         if !indexes_path.exists() {
             return Ok(());
@@ -487,11 +535,11 @@ impl IndexManager {
         Ok(())
     }
 
-    fn load_index(&mut self, name: &str, metadata_path: &Path) -> Result<()> {
+    fn load_index(&self, name: &str, metadata_path: &Path) -> Result<()> {
         let metadata_json = std::fs::read_to_string(metadata_path)?;
         let metadata: IndexMetadata = serde_json::from_str(&metadata_json)?;
 
-        let index_path = self.base_path.join("indexes").join(name);
+        let index_path = self.index_path(name);
         let (tantivy_schema, field_map, id_field, expires_at_field) =
             build_tantivy_schema(&metadata.schema)?;
 
@@ -500,27 +548,28 @@ impl IndexManager {
         let tantivy_index = Index::open(directory)?;
         let reader = tantivy_index.reader()?;
 
-        let state = IndexState {
+        let state = Arc::new(IndexState {
             schema: metadata.schema,
             config: metadata.config,
             _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
-            writer: None,
+            writer: RwLock::new(None),
             field_map,
             id_field,
             expires_at_field,
-        };
+        });
 
-        self.indexes
-            .insert(name.to_string(), Arc::new(RwLock::new(state)));
+        // Insert into DashMap
+        self.indexes.insert(name.to_string(), state);
         Ok(())
     }
 
-    fn get_state(&self, name: &str) -> Result<Arc<RwLock<IndexState>>> {
+    /// Get a reference to an index state.
+    fn get_index(&self, name: &str) -> Result<Arc<IndexState>> {
         self.indexes
             .get(name)
-            .cloned()
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| Error::IndexNotFound(name.to_string()))
     }
 }
@@ -539,13 +588,9 @@ fn build_tantivy_schema(
     let mut builder = SchemaBuilder::new();
     let mut field_map = HashMap::new();
 
-    // Hidden ID field
     let id_field = builder.add_text_field("_id", STRING | STORED);
-
-    // Hidden expiration field
     let expires_at_field = builder.add_i64_field("_expires_at", STORED);
 
-    // User-defined fields
     for field_def in &schema.fields {
         let tantivy_field = match field_def.field_type {
             FieldType::Text => {
@@ -602,7 +647,6 @@ fn add_field_value(
             }
         }
         serde_json::Value::Object(_) => {
-            // Skip JSON objects for now - tantivy 0.25 has different API
             debug!("Skipping JSON object field");
         }
         serde_json::Value::Null => {}
@@ -612,7 +656,6 @@ fn add_field_value(
 
 /// Convert Tantivy value to JSON.
 fn tantivy_value_to_json<'a>(value: impl tantivy::schema::Value<'a>) -> serde_json::Value {
-    // Convert the value to JSON using the trait methods
     if let Some(s) = value.as_str() {
         serde_json::Value::String(s.to_string())
     } else if let Some(n) = value.as_i64() {
@@ -640,9 +683,7 @@ fn build_tantivy_query(
 
     let mut queries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
 
-    // Text search
     if let Some(ref text) = query.text {
-        // Search across all text fields
         for (field_name, tantivy_field) in &state.field_map {
             if let Some(field_def) = state.schema.get_field(field_name) {
                 if field_def.field_type == FieldType::Text && field_def.indexed {
@@ -657,7 +698,6 @@ fn build_tantivy_query(
         }
     }
 
-    // Filters
     for filter in &query.filters {
         if let Some(tantivy_field) = state.field_map.get(&filter.field) {
             let filter_query = build_filter_query(*tantivy_field, &filter.op, &filter.value)?;
@@ -702,19 +742,12 @@ fn build_filter_query(
                 _ => return Err(Error::InvalidFieldValue("Expected number".to_string())),
             };
 
-            let (_from, _to) = match op {
-                super::search::FilterOp::Gte => (Some(num), None),
-                super::search::FilterOp::Lte => (None, Some(num)),
-                _ => unreachable!(),
-            };
-
             Ok(Box::new(RangeQuery::new(
                 Bound::Included(Term::from_field_i64(field, num)),
                 Bound::Unbounded,
             )))
         }
         _ => {
-            // For other operators, use simple term query for now
             let term = match value {
                 serde_json::Value::String(s) => tantivy::Term::from_field_text(field, s),
                 _ => return Err(Error::InvalidFieldValue("Invalid filter value".to_string())),
@@ -760,13 +793,11 @@ fn create_snippet_generator(
     let mut generators = Vec::new();
 
     let fields_to_highlight = if config.fields.is_empty() {
-        // If no fields specified, highlight all text fields
         state.field_map.keys().cloned().collect::<Vec<_>>()
     } else {
         config.fields.clone()
     };
 
-    // Collect text fields for query parser
     let text_fields: Vec<Field> = fields_to_highlight
         .iter()
         .filter_map(|field_name| {
@@ -781,17 +812,14 @@ fn create_snippet_generator(
         })
         .collect();
 
-    // Create a query parser with text fields
     let query_parser = QueryParser::for_index(&state.tantivy_index, text_fields.clone());
 
     let query = query_parser
         .parse_query(query_text)
         .map_err(|e| Error::ParseError(format!("Query parse error: {}", e)))?;
 
-    // Create snippet generator for each text field
     for field_name in fields_to_highlight {
         if let Some(&tantivy_field) = state.field_map.get(&field_name) {
-            // Check if this is a text field
             if let Some(field_def) = state.schema.get_field(&field_name) {
                 if field_def.field_type == FieldType::Text {
                     let generator =
@@ -836,7 +864,6 @@ fn generate_highlights(
                     serde_json::Value::String(highlighted.clone()),
                 );
 
-                // Store first highlight for legacy field
                 if first_highlight.is_none() {
                     first_highlight = Some(highlighted);
                 }

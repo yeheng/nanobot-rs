@@ -891,15 +891,19 @@ impl AgentLoop {
 
             let (mut event_stream, response_future) = stream::stream_events(stream_result);
 
-            // Consume stream and response concurrently
-            let response = tokio::select! {
-                resp = response_future => resp?,
-                _ = async {
-                    while let Some(event) = event_stream.next().await {
-                        callback(event);
-                    }
-                } => return Err(AgentError::ProviderError(anyhow::anyhow!("Stream ended without response").into())),
-            };
+            // Consume stream events while waiting for response
+            // Wrap response_future in a task so we can poll both concurrently
+            let response_handle = tokio::spawn(response_future);
+
+            // Process all stream events
+            while let Some(event) = event_stream.next().await {
+                callback(event);
+            }
+
+            // Now get the response (stream is exhausted)
+            let response = response_handle.await.map_err(|e| {
+                AgentError::ProviderError(anyhow::anyhow!("Response task failed: {}", e).into())
+            })??;
 
             let (token_usage, cost) = self.calculate_token_usage(&response, &model);
 
@@ -989,20 +993,27 @@ impl AgentLoop {
             ));
         }
 
-        // Execute tool calls sequentially
-        for tool_call in &response.tool_calls {
-            let start = std::time::Instant::now();
-            let result = executor.execute_one(tool_call).await;
-            let duration_ms = start.elapsed().as_millis() as u64;
+        // Execute tool calls in parallel
+        let futures: Vec<_> = response
+            .tool_calls
+            .iter()
+            .map(|tc| async move {
+                let start = std::time::Instant::now();
+                let result = executor.execute_one(tc).await;
+                (tc, result, start.elapsed())
+            })
+            .collect();
 
+        let results = futures::future::join_all(futures).await;
+
+        for (tool_call, result, duration) in results {
             let tool_name = tool_call.function.name.clone();
-            debug!("[Tool] {} -> done ({}ms)", tool_name, duration_ms);
+            debug!("[Tool] {} -> done ({}ms)", tool_name, duration.as_millis());
 
             state.tools_used.push(tool_name.clone());
-            // Add the tool result to the conversation
             state.messages.push(ChatMessage::tool_result(
                 tool_call.id.clone(),
-                tool_name.clone(),
+                tool_name,
                 result.output,
             ));
         }

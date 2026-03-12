@@ -16,8 +16,9 @@ pub use super::channel::{
 };
 pub use super::provider::{ModelConfig, ProviderConfig};
 pub use super::tools::{
-    CommandPolicyConfig, ExecToolConfig, McpServerConfig, ResourceLimitsConfig, SandboxConfig,
-    ToolsConfig, WebToolsConfig,
+    CommandPolicyConfig, ExecToolConfig, McpAuthConfig, McpHealthConfig, McpRetryConfig,
+    McpServerConfig, McpServersConfig, RemoteMcpConfig, RemoteTransportConfig,
+    ResourceLimitsConfig, SandboxConfig, StdioMcpConfig, ToolsConfig, WebToolsConfig,
 };
 
 /// Root configuration structure

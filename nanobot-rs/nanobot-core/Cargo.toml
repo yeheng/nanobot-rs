@@ -16,7 +16,9 @@ dingtalk = ["sha2"]
 feishu = []
 wecom = ["sha1", "aes", "cbc", "quick-xml"]
 webhook = ["axum", "tower", "tower-http"]
-all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
+# MCP WebSocket transport support
+mcp-websocket = ["tokio-tungstenite"]
+all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook", "mcp-websocket"]
 
 [dependencies]
 # Async
@@ -72,7 +74,7 @@ teloxide = { workspace = true, optional = true }
 # Discord (optional)
 serenity = { workspace = true, optional = true }
 
-# WebSocket (optional, for Slack)
+# WebSocket (for Slack and MCP WebSocket transport)
 tokio-tungstenite = { workspace = true, optional = true }
 
 # DingTalk (optional)

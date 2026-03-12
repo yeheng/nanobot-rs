@@ -136,37 +136,16 @@ impl ProviderRegistry {
 
     /// Get default API base URL for known providers
     fn get_default_api_base(name: &str) -> String {
-        match name {
-            "openai" => "https://api.openai.com/v1".to_string(),
-            "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-            "anthropic" => "https://api.anthropic.com/v1".to_string(),
-            "dashscope" => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            "moonshot" => "https://api.moonshot.cn/v1".to_string(),
-            "zhipu" => "https://open.bigmodel.cn/api/paas/v4".to_string(),
-            "zhipu_coding" => "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
-            "minimax" => "https://api.minimax.chat/v1".to_string(),
-            "deepseek" => "https://api.deepseek.com/v1".to_string(),
-            "ollama" => "http://localhost:11434/v1".to_string(),
-            "litellm" => "http://localhost:4000/v1".to_string(),
-            _ => format!("https://api.{}.com/v1", name),
-        }
+        super::common::get_default_api_base(name)
+            .unwrap_or_else(|| format!("https://api.{}.com/v1", name).leak())
+            .to_string()
     }
 
     /// Get default model for known providers
     fn get_default_model(name: &str) -> String {
-        match name {
-            "openai" => "gpt-4o".to_string(),
-            "openrouter" => "anthropic/claude-sonnet-4".to_string(),
-            "anthropic" => "claude-sonnet-4-20250514".to_string(),
-            "dashscope" => "qwen-max".to_string(),
-            "moonshot" => "kimi-k2.5".to_string(),
-            "zhipu" | "zhipu_coding" => "glm-5".to_string(),
-            "minimax" => "M2.2".to_string(),
-            "deepseek" => "deepseek-chat".to_string(),
-            "ollama" => "llama3".to_string(),
-            "litellm" => "gpt-4o".to_string(),
-            _ => "default".to_string(),
-        }
+        super::common::get_default_model(name)
+            .unwrap_or("default")
+            .to_string()
     }
 
     /// Check if a provider is configured

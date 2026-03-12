@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use tracing::{debug, warn};
 
-use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
+use crate::agent::summarization::SummarizationService;
 use crate::bus::events::SessionKey;
 use crate::session::{Session, SessionManager, SessionMessage};
 

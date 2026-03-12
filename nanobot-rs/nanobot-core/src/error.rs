@@ -116,6 +116,22 @@ pub enum McpError {
     #[error("JSON-RPC error (code {code}): {message}")]
     JsonRpcError { code: i64, message: String },
 
+    /// SSE (Server-Sent Events) error
+    #[error("SSE error: {0}")]
+    SseError(String),
+
+    /// WebSocket error
+    #[error("WebSocket error: {0}")]
+    WebSocketError(String),
+
+    /// Health check error
+    #[error("Health check failed for '{server}': {message}")]
+    HealthCheckError { server: String, message: String },
+
+    /// Retry exhausted error
+    #[error("Retry exhausted after {attempts} attempts: {message}")]
+    RetryExhausted { attempts: u32, message: String },
+
     /// Internal error preserving the full error chain
     #[error(transparent)]
     Internal(Box<dyn std::error::Error + Send + Sync>),

@@ -117,26 +117,77 @@ pub async fn run_session_actor(
                     session_key_str, channel, chat_id, is_websocket
                 );
 
-                // Process message
+                // Process message with streaming for WebSocket
+                #[cfg(feature = "webhook")]
+                let result = if is_websocket {
+                    let ob_tx = outbound_tx.clone();
+                    let ch = channel.clone();
+                    let cid = chat_id.clone();
+
+                    agent
+                        .process_direct_streaming(&msg.content, &session_key, move |event| {
+                            let ws_msg = match event {
+                                crate::agent::stream::StreamEvent::Content(content) => {
+                                    crate::bus::events::WebSocketMessage::content(content)
+                                }
+                                crate::agent::stream::StreamEvent::Reasoning(content) => {
+                                    crate::bus::events::WebSocketMessage::thinking(content)
+                                }
+                                crate::agent::stream::StreamEvent::ToolStart {
+                                    name,
+                                    arguments,
+                                } => crate::bus::events::WebSocketMessage::tool_start(
+                                    name, arguments,
+                                ),
+                                crate::agent::stream::StreamEvent::ToolEnd { name, output } => {
+                                    crate::bus::events::WebSocketMessage::tool_end(
+                                        name,
+                                        Some(output),
+                                    )
+                                }
+                                crate::agent::stream::StreamEvent::TokenStats { .. } => {
+                                    // Skip token stats for now
+                                    return;
+                                }
+                                crate::agent::stream::StreamEvent::Done => {
+                                    crate::bus::events::WebSocketMessage::done()
+                                }
+                            };
+
+                            // Send streaming event to outbound
+                            let outbound_msg =
+                                OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
+                            // Use try_send to avoid blocking the stream
+                            let _ = ob_tx.try_send(outbound_msg);
+                        })
+                        .await
+                } else {
+                    agent.process_direct(&msg.content, &session_key).await
+                };
+
+                #[cfg(not(feature = "webhook"))]
                 let result = agent.process_direct(&msg.content, &session_key).await;
 
                 match result {
                     Ok(response) => {
-                        // Forward to Outbound Actor
-                        let outbound_msg = OutboundMessage {
-                            channel,
-                            chat_id,
-                            content: response.content,
-                            metadata: None,
-                            trace_id,
-                            ws_message: None,
-                        };
-                        if let Err(e) = outbound_tx.send(outbound_msg).await {
-                            tracing::error!(
-                                "Session [{}] failed to send to outbound: {}",
-                                session_key_str,
-                                e
-                            );
+                        // For WebSocket, streaming events already sent via callback
+                        // Only send final response for non-WebSocket channels
+                        if !is_websocket {
+                            let outbound_msg = OutboundMessage {
+                                channel,
+                                chat_id,
+                                content: response.content,
+                                metadata: None,
+                                trace_id,
+                                ws_message: None,
+                            };
+                            if let Err(e) = outbound_tx.send(outbound_msg).await {
+                                tracing::error!(
+                                    "Session [{}] failed to send to outbound: {}",
+                                    session_key_str,
+                                    e
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -177,15 +228,13 @@ pub async fn run_router_actor(
     agent: Arc<AgentLoop>,
 ) {
     tracing::info!("Router Actor started");
-    // Plain HashMap — only this task touches it. No locks, no DashMap.
-    let mut sessions: HashMap<String, mpsc::Sender<InboundMessage>> = HashMap::new();
+    let mut sessions: HashMap<SessionKey, mpsc::Sender<InboundMessage>> = HashMap::new();
 
     while let Some(msg) = inbound_rx.recv().await {
-        let key = msg.session_key().to_string();
+        let key = msg.session_key().clone();
 
         let mut needs_respawn = true;
         if let Some(tx) = sessions.get(&key) {
-            // Try to send. If Err, the session actor has already self-destructed.
             if tx.send(msg.clone()).await.is_ok() {
                 needs_respawn = false;
             } else {
@@ -197,9 +246,8 @@ pub async fn run_router_actor(
             let (tx, rx) = mpsc::channel(32);
             let ob_tx = outbound_tx.clone();
             let agent_clone = agent.clone();
-            let session_key = SessionKey::from(key.clone());
+            let session_key = key.clone();
 
-            // Spawn a new session actor
             tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));
 
             // Send to the freshly created channel (guaranteed to succeed)
