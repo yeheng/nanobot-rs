@@ -13,6 +13,7 @@ use nanobot_core::agent::{AgentLoop, AgentResponse, StreamEvent};
 use nanobot_core::bus::events::SessionKey;
 use nanobot_core::config::{load_config, ModelRegistry};
 use nanobot_core::providers::ProviderRegistry;
+use nanobot_core::token_tracker::ModelPricing;
 
 use crate::cli::AgentOptions;
 
@@ -99,20 +100,21 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         provider_registry: Some(provider_registry),
     });
 
-    let mut agent = AgentLoop::with_memory_store(
+    // Convert pricing info to ModelPricing
+    let pricing = provider_info
+        .pricing
+        .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
+
+    let agent = AgentLoop::with_memory_store_and_pricing(
         provider_info.provider,
         workspace,
         agent_config,
         tools,
         memory_store,
+        pricing,
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?;
-
-    // Set pricing configuration if available
-    if let Some((input_price, output_price, currency)) = provider_info.pricing {
-        agent.set_pricing(input_price, output_price, &currency);
-    }
 
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;

@@ -24,7 +24,7 @@ use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
 use crate::error::AgentError;
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
-use crate::token_tracker::TokenUsage;
+use crate::token_tracker::{ModelPricing, TokenUsage};
 use crate::tools::ToolRegistry;
 use crate::vault::redact_secrets;
 
@@ -35,46 +35,13 @@ const DEFAULT_MAX_ITERATIONS: &str = "Maximum iterations reached.";
 
 // ── Configuration Types ─────────────────────────────────────
 
-/// Pricing configuration for cost calculation
-#[derive(Debug, Clone)]
-pub struct PricingConfig {
-    pub price_input_per_million: f64,
-    pub price_output_per_million: f64,
-    pub currency: String,
-}
-
-impl PricingConfig {
-    pub fn new(price_input: f64, price_output: f64, currency: &str) -> Self {
-        Self {
-            price_input_per_million: price_input,
-            price_output_per_million: price_output,
-            currency: currency.to_string(),
-        }
-    }
-
-    /// Calculate cost for given token usage
-    pub fn calculate_cost(&self, input_tokens: usize, output_tokens: usize) -> f64 {
-        let input_cost = (input_tokens as f64) * self.price_input_per_million / 1_000_000.0;
-        let output_cost = (output_tokens as f64) * self.price_output_per_million / 1_000_000.0;
-        input_cost + output_cost
-    }
-}
-
 /// Options for executor behavior
+#[derive(Default)]
 pub struct ExecutorOptions<'a> {
     /// Pricing configuration for cost calculation
-    pub pricing: Option<PricingConfig>,
+    pub pricing: Option<ModelPricing>,
     /// Vault values for log redaction
     pub vault_values: &'a [String],
-}
-
-impl<'a> Default for ExecutorOptions<'a> {
-    fn default() -> Self {
-        Self {
-            pricing: None,
-            vault_values: &[],
-        }
-    }
 }
 
 impl<'a> ExecutorOptions<'a> {
@@ -82,7 +49,7 @@ impl<'a> ExecutorOptions<'a> {
         Self::default()
     }
 
-    pub fn with_pricing(mut self, pricing: PricingConfig) -> Self {
+    pub fn with_pricing(mut self, pricing: ModelPricing) -> Self {
         self.pricing = Some(pricing);
         self
     }
@@ -125,7 +92,7 @@ impl ExecutionState {
         }
     }
 
-    fn accumulate_usage(&mut self, usage: &TokenUsage, pricing: Option<&PricingConfig>) {
+    fn accumulate_usage(&mut self, usage: &TokenUsage, pricing: Option<&ModelPricing>) {
         let cost = pricing
             .map(|p| p.calculate_cost(usage.input_tokens, usage.output_tokens))
             .unwrap_or(0.0);
@@ -176,11 +143,9 @@ impl<'a> AgentExecutor<'a> {
     }
 
     /// Execute agent loop - pure function with default options
-    pub async fn execute(
-        &self,
-        messages: Vec<ChatMessage>,
-    ) -> Result<ExecutionResult, AgentError> {
-        self.execute_with_options(messages, &ExecutorOptions::new()).await
+    pub async fn execute(&self, messages: Vec<ChatMessage>) -> Result<ExecutionResult, AgentError> {
+        self.execute_with_options(messages, &ExecutorOptions::new())
+            .await
     }
 
     /// Execute with options (cost calculation, log redaction)
@@ -218,7 +183,9 @@ impl<'a> AgentExecutor<'a> {
                 );
 
                 return Ok(state.into_result(
-                    response.content.unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                    response
+                        .content
+                        .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
                     response.reasoning_content,
                 ));
             }
@@ -308,7 +275,9 @@ impl<'a> AgentExecutor<'a> {
                 );
 
                 return Ok(state.into_result(
-                    response.content.unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                    response
+                        .content
+                        .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
                     response.reasoning_content,
                 ));
             }
@@ -329,23 +298,12 @@ impl<'a> AgentExecutor<'a> {
     // ── Internal Helpers ────────────────────────────────────
 
     /// Log token usage if available
-    fn log_token_usage(
-        state: &ExecutionState,
-        pricing: &Option<PricingConfig>,
-        iteration: u32,
-    ) {
+    fn log_token_usage(state: &ExecutionState, pricing: &Option<ModelPricing>, iteration: u32) {
         if let Some(ref usage) = state.total_usage {
             let currency = pricing
                 .as_ref()
                 .map(|p| p.currency.as_str())
                 .unwrap_or("USD");
-            let pricing_ref = pricing.as_ref().map(|p| {
-                crate::token_tracker::ModelPricing::new(
-                    p.price_input_per_million,
-                    p.price_output_per_million,
-                    &p.currency,
-                )
-            });
             info!(
                 "[Token] iter={} {}",
                 iteration,
@@ -353,7 +311,7 @@ impl<'a> AgentExecutor<'a> {
                     usage,
                     state.total_cost,
                     currency,
-                    pricing_ref.as_ref()
+                    pricing.as_ref()
                 )
             );
         }
@@ -453,8 +411,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pricing_config_calculate_cost() {
-        let pricing = PricingConfig::new(3.0, 15.0, "USD");
+    fn test_model_pricing_calculate_cost() {
+        let pricing = ModelPricing::new(3.0, 15.0, "USD");
 
         // 1000 input tokens, 500 output tokens
         let cost = pricing.calculate_cost(1000, 500);
@@ -466,7 +424,7 @@ mod tests {
     #[test]
     fn test_execution_state_accumulate_usage() {
         let mut state = ExecutionState::new(vec![]);
-        let pricing = PricingConfig::new(1.0, 2.0, "USD");
+        let pricing = ModelPricing::new(1.0, 2.0, "USD");
 
         let usage1 = TokenUsage::new(100, 50);
         state.accumulate_usage(&usage1, Some(&pricing));
@@ -496,11 +454,11 @@ mod tests {
 
     #[test]
     fn test_executor_options_builder() {
-        let pricing = PricingConfig::new(1.0, 2.0, "USD");
+        let pricing = ModelPricing::new(1.0, 2.0, "USD");
         let vault = vec!["secret".to_string()];
 
         let opts = ExecutorOptions::new()
-            .with_pricing(pricing.clone())
+            .with_pricing(pricing)
             .with_vault_values(&vault);
 
         assert!(opts.pricing.is_some());

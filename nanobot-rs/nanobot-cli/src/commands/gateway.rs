@@ -14,6 +14,7 @@ use nanobot_core::channels::OutboundSenderRegistry;
 use nanobot_core::config::{load_config, ModelRegistry};
 use nanobot_core::cron::CronService;
 use nanobot_core::providers::ProviderRegistry;
+use nanobot_core::token_tracker::ModelPricing;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 
 /// Run the gateway command
@@ -180,13 +181,19 @@ pub async fn cmd_gateway() -> Result<()> {
         provider_registry: Some(provider_registry.clone()),
     });
 
+    // Convert pricing info to ModelPricing
+    let pricing = provider_info
+        .pricing
+        .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
+
     let agent = Arc::new(
-        AgentLoop::with_memory_store(
+        AgentLoop::with_memory_store_and_pricing(
             provider_info.provider,
             workspace.clone(),
             agent_config,
             tools,
             memory_store,
+            pricing,
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?,

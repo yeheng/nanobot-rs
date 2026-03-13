@@ -159,21 +159,6 @@ struct AgentLoopResult {
     cost: f64,
 }
 
-// Note: ToolCallState, log_llm_response, and handle_tool_calls were moved to executor_core.rs
-// as part of the AgentExecutor refactoring. These types and functions are now
-// handled internally by the executor.
-
-/// Model pricing configuration for cost calculation (used by AgentLoop::set_pricing)
-#[derive(Debug, Clone)]
-struct ModelPricingInfo {
-    /// Price per million input tokens
-    price_input_per_million: f64,
-    /// Price per million output tokens
-    price_output_per_million: f64,
-    /// Currency code
-    currency: String,
-}
-
 // ── AgentLoop ───────────────────────────────────────────────
 
 /// The agent loop - core processing engine.
@@ -221,10 +206,10 @@ pub struct AgentLoop {
     external_hooks: ExternalHookRunner,
     /// Vault injector for pre-LLM secret injection (optional)
     vault_injector: Option<VaultInjector>,
+    /// Pricing configuration for cost calculation (optional)
+    pricing: Option<crate::token_tracker::ModelPricing>,
     /// Token usage tracker for the session
     session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
-    /// Model pricing configuration (optional)
-    pricing: Option<ModelPricingInfo>,
 }
 
 impl AgentLoop {
@@ -296,8 +281,8 @@ impl AgentLoop {
             skills_context,
             external_hooks,
             vault_injector,
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -315,6 +300,21 @@ impl AgentLoop {
         config: AgentConfig,
         tools: ToolRegistry,
         memory_store: Arc<MemoryStore>,
+    ) -> Result<Self, AgentError> {
+        Self::with_memory_store_and_pricing(provider, workspace, config, tools, memory_store, None)
+            .await
+    }
+
+    /// Create a new agent loop with MemoryStore and pricing configuration.
+    ///
+    /// Uses **PersistentContext** for full session persistence and compression.
+    pub async fn with_memory_store_and_pricing(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        memory_store: Arc<MemoryStore>,
+        pricing: Option<crate::token_tracker::ModelPricing>,
     ) -> Result<Self, AgentError> {
         let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
 
@@ -366,8 +366,13 @@ impl AgentLoop {
             skills_context,
             external_hooks,
             vault_injector,
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
-            pricing: None,
+            pricing: pricing.clone(),
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new(
+                pricing
+                    .as_ref()
+                    .map(|p| p.currency.as_str())
+                    .unwrap_or("USD"),
+            )),
         })
     }
 
@@ -397,32 +402,14 @@ impl AgentLoop {
             skills_context: None,
             external_hooks: ExternalHookRunner::noop(),
             vault_injector: None, // No vault for subagents
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
     /// Set the system prompt (used by subagents to configure identity).
     pub fn set_system_prompt(&mut self, prompt: String) {
         self.system_prompt = prompt;
-    }
-
-    /// Set the pricing configuration for cost calculation.
-    pub fn set_pricing(
-        &mut self,
-        price_input_per_million: f64,
-        price_output_per_million: f64,
-        currency: &str,
-    ) {
-        self.pricing = Some(ModelPricingInfo {
-            price_input_per_million,
-            price_output_per_million,
-            currency: currency.to_string(),
-        });
-        // Also update session stats currency
-        if let Ok(mut stats) = self.session_stats.lock() {
-            stats.currency = currency.to_string();
-        }
     }
 
     /// Get the model name
@@ -752,14 +739,12 @@ impl AgentLoop {
     ) -> Result<AgentLoopResult, AgentError> {
         use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-        let executor = AgentExecutor::new(
-            self.provider.clone(),
-            self.tools.clone(),
-            &self.config,
-        );
+        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
 
-        let options = ExecutorOptions::new()
-            .with_vault_values(vault_values);
+        let mut options = ExecutorOptions::new().with_vault_values(vault_values);
+        if let Some(ref pricing) = self.pricing {
+            options = options.with_pricing(pricing.clone());
+        }
 
         let result = executor.execute_with_options(messages, &options).await?;
 
@@ -800,14 +785,12 @@ impl AgentLoop {
         use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
         use tokio::sync::mpsc;
 
-        let executor = AgentExecutor::new(
-            self.provider.clone(),
-            self.tools.clone(),
-            &self.config,
-        );
+        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
 
-        let options = ExecutorOptions::new()
-            .with_vault_values(vault_values);
+        let mut options = ExecutorOptions::new().with_vault_values(vault_values);
+        if let Some(ref pricing) = self.pricing {
+            options = options.with_pricing(pricing.clone());
+        }
 
         // Create channel for stream events
         let (event_tx, mut event_rx) = mpsc::channel(64);
@@ -820,7 +803,9 @@ impl AgentLoop {
         });
 
         // Execute with streaming
-        let result = executor.execute_stream_with_options(messages, event_tx, &options).await?;
+        let result = executor
+            .execute_stream_with_options(messages, event_tx, &options)
+            .await?;
 
         // Wait for event forwarding to complete
         let _ = forward_handle.await;

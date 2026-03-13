@@ -1,7 +1,8 @@
-//! Outbound message routing with enum-based static dispatch.
+//! Outbound message routing with dynamic dispatch.
 //!
-//! This module uses enum variants for known channels to eliminate HashMap lookups
-//! and dynamic dispatch overhead, while still supporting custom channels via Arc<dyn Trait>.
+//! This module uses `Arc<dyn OutboundSender>` for all channels, providing clean
+//! code isolation and easy extensibility. The virtual table overhead is negligible
+//! compared to I/O latency.
 //!
 //! # Example
 //!
@@ -15,7 +16,7 @@
 //! // Register a custom sender
 //! registry.register_custom("sms".to_string(), Arc::new(MySmsSender::new()));
 //!
-//! // Send via registry - works for all channels including custom
+//! // Send via registry
 //! registry.send(msg).await?;
 //! ```
 
@@ -44,82 +45,13 @@ pub trait OutboundSender: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Enum-based outbound sender implementation for static dispatch.
-///
-/// Uses enum variants for known channels to eliminate HashMap lookups
-/// and dynamic dispatch overhead. Custom channels use Arc<dyn Trait>
-/// as a fallback for extensibility.
-#[derive(Clone)]
-pub enum OutboundSenderImpl {
-    #[cfg(feature = "telegram")]
-    Telegram(TelegramSender),
-    #[cfg(feature = "discord")]
-    Discord(DiscordSender),
-    #[cfg(feature = "slack")]
-    Slack(SlackSender),
-    #[cfg(feature = "feishu")]
-    Feishu(FeishuSender),
-    #[cfg(feature = "email")]
-    Email(EmailSender),
-    #[cfg(feature = "dingtalk")]
-    Dingtalk(DingTalkSender),
-    WebSocket(WebSocketSender),
-    Cli(CliSender),
-    Custom(Arc<dyn OutboundSender>),
-}
-
-impl OutboundSenderImpl {
-    /// Send a message using static dispatch for known channels.
-    pub async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        match self {
-            #[cfg(feature = "telegram")]
-            Self::Telegram(s) => s.send(msg).await,
-            #[cfg(feature = "discord")]
-            Self::Discord(s) => s.send(msg).await,
-            #[cfg(feature = "slack")]
-            Self::Slack(s) => s.send(msg).await,
-            #[cfg(feature = "feishu")]
-            Self::Feishu(s) => s.send(msg).await,
-            #[cfg(feature = "email")]
-            Self::Email(s) => s.send(msg).await,
-            #[cfg(feature = "dingtalk")]
-            Self::Dingtalk(s) => s.send(msg).await,
-            Self::WebSocket(s) => s.send(msg).await,
-            Self::Cli(s) => s.send(msg).await,
-            Self::Custom(s) => s.send(msg).await,
-        }
-    }
-
-    /// Get the sender name for logging.
-    pub fn name(&self) -> &str {
-        match self {
-            #[cfg(feature = "telegram")]
-            Self::Telegram(s) => s.name(),
-            #[cfg(feature = "discord")]
-            Self::Discord(s) => s.name(),
-            #[cfg(feature = "slack")]
-            Self::Slack(s) => s.name(),
-            #[cfg(feature = "feishu")]
-            Self::Feishu(s) => s.name(),
-            #[cfg(feature = "email")]
-            Self::Email(s) => s.name(),
-            #[cfg(feature = "dingtalk")]
-            Self::Dingtalk(s) => s.name(),
-            Self::WebSocket(s) => s.name(),
-            Self::Cli(s) => s.name(),
-            Self::Custom(s) => s.name(),
-        }
-    }
-}
-
 /// Registry for outbound message senders.
 ///
-/// Now uses enum-based static dispatch for known channels, eliminating
-/// HashMap lookups and virtual table overhead. Custom channels are stored
-/// separately for extensibility.
+/// Uses dynamic dispatch for all channels, providing clean code isolation
+/// and easy extensibility. Adding a new channel only requires implementing
+/// the `OutboundSender` trait and registering it.
 pub struct OutboundSenderRegistry {
-    /// Built-in senders using static dispatch
-    senders: HashMap<ChannelType, OutboundSenderImpl>,
+    senders: HashMap<ChannelType, Arc<dyn OutboundSender>>,
 }
 
 impl OutboundSenderRegistry {
@@ -140,7 +72,7 @@ impl OutboundSenderRegistry {
             if tel_config.enabled {
                 registry.senders.insert(
                     ChannelType::Telegram,
-                    OutboundSenderImpl::Telegram(TelegramSender::new(tel_config.token.clone())),
+                    Arc::new(TelegramSender::new(tel_config.token.clone())),
                 );
             }
         }
@@ -150,7 +82,7 @@ impl OutboundSenderRegistry {
             if discord_config.enabled {
                 registry.senders.insert(
                     ChannelType::Discord,
-                    OutboundSenderImpl::Discord(DiscordSender::new(discord_config.token.clone())),
+                    Arc::new(DiscordSender::new(discord_config.token.clone())),
                 );
             }
         }
@@ -160,7 +92,7 @@ impl OutboundSenderRegistry {
             if slack_config.enabled {
                 registry.senders.insert(
                     ChannelType::Slack,
-                    OutboundSenderImpl::Slack(SlackSender::new(slack_config.bot_token.clone())),
+                    Arc::new(SlackSender::new(slack_config.bot_token.clone())),
                 );
             }
         }
@@ -170,7 +102,7 @@ impl OutboundSenderRegistry {
             if feishu_config.enabled {
                 registry.senders.insert(
                     ChannelType::Feishu,
-                    OutboundSenderImpl::Feishu(FeishuSender::new(
+                    Arc::new(FeishuSender::new(
                         feishu_config.app_id.clone(),
                         feishu_config.app_secret.clone(),
                     )),
@@ -183,7 +115,7 @@ impl OutboundSenderRegistry {
             if email_config.enabled && email_config.has_smtp_config() {
                 registry.senders.insert(
                     ChannelType::Email,
-                    OutboundSenderImpl::Email(EmailSender::from_config(email_config)),
+                    Arc::new(EmailSender::from_config(email_config)),
                 );
             }
         }
@@ -193,7 +125,7 @@ impl OutboundSenderRegistry {
             if dingtalk_config.enabled {
                 registry.senders.insert(
                     ChannelType::Dingtalk,
-                    OutboundSenderImpl::Dingtalk(DingTalkSender::new(
+                    Arc::new(DingTalkSender::new(
                         dingtalk_config.webhook_url.clone(),
                         dingtalk_config.secret.clone(),
                     )),
@@ -201,13 +133,12 @@ impl OutboundSenderRegistry {
             }
         }
 
-        registry.senders.insert(
-            ChannelType::WebSocket,
-            OutboundSenderImpl::WebSocket(WebSocketSender),
-        );
         registry
             .senders
-            .insert(ChannelType::Cli, OutboundSenderImpl::Cli(CliSender));
+            .insert(ChannelType::WebSocket, Arc::new(WebSocketSender));
+        registry
+            .senders
+            .insert(ChannelType::Cli, Arc::new(CliSender));
 
         registry
     }
@@ -215,13 +146,10 @@ impl OutboundSenderRegistry {
     /// Register a custom channel sender.
     pub fn register_custom(&mut self, name: String, sender: Arc<dyn OutboundSender>) {
         debug!("Registering custom outbound sender: {}", name);
-        self.senders.insert(
-            ChannelType::Custom(name),
-            OutboundSenderImpl::Custom(sender),
-        );
+        self.senders.insert(ChannelType::Custom(name), sender);
     }
 
-    /// Send an outbound message via static dispatch.
+    /// Send an outbound message.
     pub async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
         match self.senders.get(&msg.channel) {
             Some(sender) => {
@@ -526,7 +454,7 @@ mod tests {
         let mut registry = OutboundSenderRegistry::new();
         registry
             .senders
-            .insert(ChannelType::Cli, OutboundSenderImpl::Cli(CliSender));
+            .insert(ChannelType::Cli, Arc::new(CliSender));
         assert!(registry.has_sender(&ChannelType::Cli));
     }
 
