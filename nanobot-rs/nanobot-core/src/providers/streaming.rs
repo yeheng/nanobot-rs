@@ -4,6 +4,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
+use tracing::{debug, trace};
 
 use super::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
 
@@ -71,9 +72,11 @@ pub fn parse_sse_stream(
 pub fn sse_lines(
     byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
 ) -> impl Stream<Item = Result<String>> + Send + 'static {
+    debug!("[SSE] Starting to parse byte stream");
+
     futures::stream::unfold(
-        (byte_stream.boxed(), Vec::<u8>::new()),
-        |(mut stream, mut buffer)| async move {
+        (byte_stream.boxed(), Vec::<u8>::new(), false),
+        |(mut stream, mut buffer, mut received_data)| async move {
             loop {
                 // Try to find a newline in the byte buffer
                 if let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
@@ -84,14 +87,15 @@ pub fn sse_lines(
                         Ok(line) => {
                             let line = line.trim_end().to_string();
                             if !line.is_empty() {
-                                return Some((Ok(line), (stream, buffer)));
+                                trace!("[SSE] Received line: {}", &line);
+                                return Some((Ok(line), (stream, buffer, received_data)));
                             }
                             // Skip empty lines, continue looking
                         }
                         Err(e) => {
                             return Some((
                                 Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)),
-                                (stream, buffer),
+                                (stream, buffer, received_data),
                             ));
                         }
                     }
@@ -99,32 +103,41 @@ pub fn sse_lines(
                 }
 
                 // Need more data
+                trace!("[SSE] Waiting for more data from stream...");
                 match stream.next().await {
                     Some(Ok(bytes)) => {
+                        if !received_data {
+                            received_data = true;
+                            debug!("[SSE] Received first chunk: {} bytes", bytes.len());
+                        }
+                        trace!("[SSE] Received chunk: {} bytes", bytes.len());
                         buffer.extend_from_slice(&bytes);
                     }
                     Some(Err(e)) => {
+                        debug!("[SSE] Stream error: {}", e);
                         return Some((
                             Err(anyhow::anyhow!("Stream error: {}", e)),
-                            (stream, buffer),
+                            (stream, buffer, received_data),
                         ));
                     }
                     None => {
+                        debug!("[SSE] Stream ended, buffer size: {}", buffer.len());
                         // Stream ended; yield any remaining data
                         if !buffer.is_empty() {
                             let remaining = std::mem::take(&mut buffer);
                             match String::from_utf8(remaining) {
                                 Ok(line) if !line.trim().is_empty() => {
+                                    debug!("[SSE] Yielding remaining data: {} bytes", line.len());
                                     return Some((
                                         Ok(line.trim_end().to_string()),
-                                        (stream, buffer),
+                                        (stream, buffer, received_data),
                                     ));
                                 }
                                 Ok(_) => {}
                                 Err(e) => {
                                     return Some((
                                         Err(anyhow::anyhow!("Invalid UTF-8 in stream: {}", e)),
-                                        (stream, buffer),
+                                        (stream, buffer, received_data),
                                     ));
                                 }
                             }

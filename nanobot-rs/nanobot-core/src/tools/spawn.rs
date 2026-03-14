@@ -18,6 +18,56 @@ use crate::bus::events::{OutboundMessage, WebSocketMessage};
 use crate::config::ModelRegistry;
 use crate::providers::ProviderRegistry;
 
+/// Buffered events for a single subagent
+struct BufferedEvents {
+    /// Collected WebSocket messages
+    messages: Vec<WebSocketMessage>,
+    /// Whether the subagent has completed
+    completed: bool,
+}
+
+impl BufferedEvents {
+    /// Flush messages in a user-friendly order:
+    /// 1. All Thinking messages first
+    /// 2. ToolStart/ToolEnd (if any, in original order relative to each other)
+    /// 3. All Content messages last
+    ///
+    /// This ensures the UI shows the thinking process before the response content,
+    /// avoiding the interleaved display issue.
+    fn flush_ordered(&mut self) -> Vec<WebSocketMessage> {
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+
+        let mut thinking_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut tool_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut content_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut other_msgs: Vec<WebSocketMessage> = Vec::new();
+
+        for msg in self.messages.drain(..) {
+            match &msg {
+                WebSocketMessage::Thinking { .. } => thinking_msgs.push(msg),
+                WebSocketMessage::ToolStart { .. } | WebSocketMessage::ToolEnd { .. } => {
+                    tool_msgs.push(msg)
+                }
+                WebSocketMessage::Content { .. } => content_msgs.push(msg),
+                _ => other_msgs.push(msg),
+            }
+        }
+
+        // Concatenate: Thinking -> Tools -> Content -> Other
+        let mut result = Vec::with_capacity(
+            thinking_msgs.len() + tool_msgs.len() + content_msgs.len() + other_msgs.len(),
+        );
+        result.append(&mut thinking_msgs);
+        result.append(&mut tool_msgs);
+        result.append(&mut content_msgs);
+        result.append(&mut other_msgs);
+
+        result
+    }
+}
+
 pub struct SpawnTool {
     manager: Option<Arc<SubagentManager>>,
     model_registry: Option<Arc<ModelRegistry>>,
@@ -50,6 +100,43 @@ impl SpawnTool {
             manager: Some(manager),
             model_registry: Some(model_registry),
             provider_registry: Some(provider_registry),
+        }
+    }
+
+    /// Select model based on model_id with fallback and optional smart selection.
+    ///
+    /// Selection logic:
+    /// 1. If model_id is provided, try exact match first
+    /// 2. If not found, fallback to default model
+    /// 3. If no model_id and smart-model-selection feature is enabled,
+    ///    analyze task content and select by capability
+    /// 4. Otherwise use default model
+    /// 5. Return None if no model profile matches (use manager default)
+    fn select_model<'a>(
+        &'a self,
+        model_id: &'a Option<String>,
+        _task: &str,
+    ) -> Option<(&'a str, &'a crate::config::ModelProfile)> {
+        let model_registry = self.model_registry.as_ref()?;
+
+        match model_id {
+            Some(id) => {
+                // Try exact match with fallback to default
+                model_registry.get_profile_with_fallback(Some(id))
+            }
+            None => {
+                // No model_id specified
+                #[cfg(feature = "smart-model-selection")]
+                {
+                    // Smart selection based on task content
+                    model_registry.select_by_capability(_task)
+                }
+                #[cfg(not(feature = "smart-model-selection"))]
+                {
+                    // Use default model
+                    model_registry.get_profile_with_fallback(None)
+                }
+            }
         }
     }
 }
@@ -127,18 +214,16 @@ impl Tool for SpawnTool {
             subagent_id, task
         );
 
-        // Prepare spawn configuration
-        let spawn_result = if let Some(model_id) = &args.model_id {
-            // Model switching requested
-            let model_registry = self.model_registry.as_ref().ok_or_else(|| {
-                ToolError::ExecutionError("Model registry not available".to_string())
-            })?;
+        // Prepare spawn configuration using Builder pattern
+        let mut builder = manager.task(subagent_id.clone(), task.clone());
+
+        // Model selection logic with fallback and optional smart selection
+        let selected_model = self.select_model(&args.model_id, &args.task);
+
+        // Apply selected model configuration if available
+        if let Some((profile_id, profile)) = selected_model {
             let provider_registry = self.provider_registry.as_ref().ok_or_else(|| {
                 ToolError::ExecutionError("Provider registry not available".to_string())
-            })?;
-
-            let profile = model_registry.get_profile(model_id).ok_or_else(|| {
-                ToolError::ExecutionError(format!("Model profile not found: {}", model_id))
             })?;
 
             let provider = provider_registry
@@ -155,29 +240,22 @@ impl Tool for SpawnTool {
                 ..Default::default()
             };
 
-            manager
-                .submit_tracked_streaming(
-                    subagent_id.clone(),
-                    task,
-                    result_tx.clone(),
-                    event_tx.clone(),
-                    Some(provider),
-                    Some(agent_config),
-                )
-                .await
+            builder = builder.with_provider(provider).with_config(agent_config);
+            info!(
+                "[Spawn] Using model profile '{}' (model: {}) for subagent {}",
+                profile_id, profile.model, subagent_id
+            );
         } else {
-            // Use default model
-            manager
-                .submit_tracked_streaming(
-                    subagent_id.clone(),
-                    task,
-                    result_tx.clone(),
-                    event_tx.clone(),
-                    None,
-                    None,
-                )
-                .await
-        };
+            info!(
+                "[Spawn] Using default provider for subagent {} (no model profile matched)",
+                subagent_id
+            );
+        }
+
+        let spawn_result = builder
+            .with_streaming(event_tx.clone())
+            .spawn(result_tx.clone())
+            .await;
 
         // Check spawn result
         if let Err(e) = spawn_result {
@@ -196,24 +274,43 @@ impl Tool for SpawnTool {
 
         // Get outbound channel and session key for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
-        let session_key = manager.session_key().cloned();
+        let session_key = manager.get_session_key().await;
+
+        // Track whether we're at the start of a new line (for prefix insertion)
+        let mut at_line_start = true;
+
+        // Buffer events until subagent completes
+        let mut buffer = BufferedEvents {
+            messages: Vec::new(),
+            completed: false,
+        };
 
         // Spawn background task to collect events and forward to WebSocket/channel
+        // Uses buffering: collect all events, send them only when subagent completes
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 // Log the event
                 match &event {
                     SubagentEvent::Started { id, task } => {
                         info!("[Spawn] Subagent {} started: {}", id, task);
+                        at_line_start = true;
                     }
                     SubagentEvent::Thinking { id, content } => {
                         trace!("[Spawn] Subagent {} thinking: {}", id, content);
+                    }
+                    SubagentEvent::Content { id, content } => {
+                        trace!("[Spawn] Subagent {} content: {} bytes", id, content.len());
+                    }
+                    SubagentEvent::Iteration { id, iteration } => {
+                        info!("[Spawn] Subagent {} iteration {} completed", id, iteration);
+                        at_line_start = true;
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
                         trace!("[Spawn] Subagent {} tool: {} started", id, tool_name);
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
                         trace!("[Spawn] Subagent {} tool: {} done", id, tool_name);
+                        at_line_start = true;
                     }
                     SubagentEvent::Completed { id, result } => {
                         info!(
@@ -221,48 +318,86 @@ impl Tool for SpawnTool {
                             id,
                             result.model.as_deref().unwrap_or("unknown")
                         );
+                        buffer.completed = true;
                     }
                     SubagentEvent::Error { id, error } => {
                         warn!("[Spawn] Subagent {} error: {}", id, error);
+                        buffer.completed = true;
                     }
                 }
 
-                // Forward event to WebSocket/channel if session key is available
-                if let Some(ref key) = session_key {
+                // Buffer WebSocket message (don't send immediately)
+                if session_key.is_some() {
                     let ws_msg = match &event {
                         SubagentEvent::Thinking { content, .. } => {
-                            Some(WebSocketMessage::thinking(format!("[Spawn] {}", content)))
+                            // Only add prefix at line start to avoid repeating for every char
+                            let msg = if at_line_start || content.starts_with('\n') {
+                                format!("[Subagent] {}", content.trim_start())
+                            } else {
+                                content.clone()
+                            };
+                            // Update line start state based on content
+                            at_line_start = content.ends_with('\n');
+                            Some(WebSocketMessage::thinking(msg))
                         }
+                        SubagentEvent::Content { content, .. } => {
+                            // Only add prefix at line start
+                            let msg = if at_line_start || content.starts_with('\n') {
+                                format!("[Subagent] {}", content.trim_start())
+                            } else {
+                                content.clone()
+                            };
+                            // Update line start state based on content
+                            at_line_start = content.ends_with('\n');
+                            Some(WebSocketMessage::content(msg))
+                        }
+                        SubagentEvent::Iteration { iteration, .. } => Some(WebSocketMessage::text(
+                            format!("[Subagent] Iteration {} completed", iteration),
+                        )),
                         SubagentEvent::ToolStart {
                             tool_name,
                             arguments,
                             ..
                         } => Some(WebSocketMessage::tool_start(
-                            format!("[Spawn] {}", tool_name),
+                            format!("[Subagent] {}", tool_name),
                             arguments.clone(),
                         )),
                         SubagentEvent::ToolEnd {
                             tool_name, output, ..
                         } => Some(WebSocketMessage::tool_end(
-                            format!("[Spawn] {}", tool_name),
+                            format!("[Subagent] {}", tool_name),
                             Some(output.clone()),
                         )),
-                        SubagentEvent::Error { error, .. } => {
-                            Some(WebSocketMessage::text(format!("[Spawn Error] {}", error)))
-                        }
+                        SubagentEvent::Error { error, .. } => Some(WebSocketMessage::text(
+                            format!("[Subagent Error] {}", error),
+                        )),
                         _ => None, // Started, Completed - don't send to WS
                     };
 
                     if let Some(msg) = ws_msg {
-                        let outbound = OutboundMessage::with_ws_message(
-                            key.channel.clone(),
-                            &key.chat_id,
-                            msg,
-                        );
-                        if let Err(e) = outbound_tx.try_send(outbound) {
-                            warn!("[Spawn] Failed to send event to outbound channel: {}", e);
+                        buffer.messages.push(msg);
+                    }
+                }
+
+                // When subagent completes, flush all buffered messages in ordered format
+                if buffer.completed {
+                    if let Some(ref key) = session_key {
+                        // Use flush_ordered to ensure Thinking messages come before Content
+                        for msg in buffer.flush_ordered() {
+                            let outbound = OutboundMessage::with_ws_message(
+                                key.channel.clone(),
+                                &key.chat_id,
+                                msg,
+                            );
+                            if let Err(e) = outbound_tx.try_send(outbound) {
+                                warn!(
+                                    "[Spawn] Failed to send buffered event to outbound channel: {}",
+                                    e
+                                );
+                            }
                         }
                     }
+                    buffer.completed = false;
                 }
             }
         });

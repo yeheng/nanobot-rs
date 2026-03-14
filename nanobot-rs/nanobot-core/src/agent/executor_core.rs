@@ -276,11 +276,22 @@ impl<'a> AgentExecutor<'a> {
         // Get response based on streaming mode
         let response = if let Some(tx) = event_tx {
             // Streaming mode: forward events to channel
+            debug!("[Executor] Starting streaming mode, creating event stream");
             let (mut event_stream, response_future) = stream::stream_events(stream_result);
 
+            let mut event_count = 0usize;
+            debug!("[Executor] Waiting for events from stream...");
             while let Some(event) = event_stream.next().await {
+                event_count += 1;
+                if event_count == 1 {
+                    debug!("[Executor] Received first event from LLM stream");
+                }
                 let _ = tx.send(event).await;
             }
+            debug!(
+                "[Executor] Event stream ended, total events: {}, awaiting response future",
+                event_count
+            );
 
             response_future.await?
         } else {

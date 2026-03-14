@@ -1,4 +1,8 @@
 //! Subagent manager for background task execution
+//!
+//! This module provides a Builder pattern API for spawning subagent tasks.
+//! The `SubagentTaskBuilder` consolidates all the scattered `submit_*` methods
+//! into a single, fluent API.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +45,378 @@ pub struct SubagentManager {
     tools: Arc<ToolRegistry>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     /// Optional session key for WebSocket streaming (set per-request)
-    session_key: Option<SessionKey>,
+    /// Uses Arc<RwLock> to allow dynamic updates per request
+    session_key: Arc<tokio::sync::RwLock<Option<SessionKey>>>,
+}
+
+/// Builder for configuring and spawning subagent tasks.
+///
+/// This replaces the scattered `submit_*` methods with a single fluent API.
+/// All optional parameters are configured via builder methods, then `spawn()`
+/// executes the task.
+///
+/// # Example
+///
+/// ```ignore
+/// let result = manager.task("my-task-id", "Analyze the codebase")
+///     .with_provider(custom_provider)
+///     .with_config(AgentConfig { model: "gpt-4".into(), ..Default::default() })
+///     .with_streaming(event_tx)
+///     .spawn(result_tx)
+///     .await?;
+/// ```
+pub struct SubagentTaskBuilder<'a> {
+    manager: &'a SubagentManager,
+    /// Unique identifier for this subagent task
+    subagent_id: String,
+    /// The task prompt to execute
+    task: String,
+    /// Optional custom provider (uses manager's default if None)
+    provider: Option<Arc<dyn LlmProvider>>,
+    /// Optional agent configuration (uses default if None)
+    agent_config: Option<AgentConfig>,
+    /// Optional event channel for streaming updates
+    event_tx: Option<mpsc::Sender<SubagentEvent>>,
+    /// Optional custom system prompt (uses minimal bootstrap if None)
+    system_prompt: Option<String>,
+}
+
+impl<'a> SubagentTaskBuilder<'a> {
+    /// Create a new task builder with required parameters.
+    pub fn new(manager: &'a SubagentManager, subagent_id: String, task: String) -> Self {
+        Self {
+            manager,
+            subagent_id,
+            task,
+            provider: None,
+            agent_config: None,
+            event_tx: None,
+            system_prompt: None,
+        }
+    }
+
+    /// Set a custom LLM provider for this task.
+    pub fn with_provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Set custom agent configuration (model, temperature, etc.).
+    pub fn with_config(mut self, config: AgentConfig) -> Self {
+        self.agent_config = Some(config);
+        self
+    }
+
+    /// Enable streaming events via the provided channel.
+    pub fn with_streaming(mut self, event_tx: mpsc::Sender<SubagentEvent>) -> Self {
+        self.event_tx = Some(event_tx);
+        self
+    }
+
+    /// Set a custom system prompt (uses minimal bootstrap if not set).
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        self.system_prompt = Some(prompt);
+        self
+    }
+
+    /// Spawn the subagent task and return its ID.
+    ///
+    /// The task runs in the background and sends its result to `result_tx`
+    /// when complete. If streaming is enabled, events are sent to `event_tx`.
+    #[instrument(name = "subagent.spawn", skip_all)]
+    pub async fn spawn(self, result_tx: mpsc::Sender<SubagentResult>) -> anyhow::Result<String> {
+        let provider = self
+            .provider
+            .unwrap_or_else(|| self.manager.provider.clone());
+        let workspace = self.manager.workspace.clone();
+        let tools = self.manager.tools.clone();
+        let task_clone = self.task.clone();
+        let id_clone = self.subagent_id.clone();
+
+        let agent_config = self.agent_config.unwrap_or_else(|| AgentConfig {
+            model: provider.default_model().to_string(),
+            max_iterations: 10,
+            ..Default::default()
+        });
+
+        let event_tx = self.event_tx;
+        let system_prompt_override = self.system_prompt;
+
+        tokio::spawn(async move {
+            info!(
+                "[Subagent {}] Task started with model '{}': {}",
+                &self.subagent_id, &agent_config.model, &self.task
+            );
+
+            // Send started event
+            if let Some(ref tx) = event_tx {
+                let _ = tx.try_send(SubagentEvent::Started {
+                    id: self.subagent_id.clone(),
+                    task: task_clone.clone(),
+                });
+            }
+
+            // Helper to send error result
+            let model_name = agent_config.model.clone();
+            let send_error = |error_msg: &str, model: &str| -> AgentResponse {
+                AgentResponse {
+                    content: format!("Error: {}", error_msg),
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(model.to_string()),
+                }
+            };
+
+            // Helper to send error event
+            let send_error_event = |tx: &mpsc::Sender<SubagentEvent>, id: &str, error: &str| {
+                let _ = tx.try_send(SubagentEvent::Error {
+                    id: id.to_string(),
+                    error: error.to_string(),
+                });
+            };
+
+            let mut agent =
+                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            "[Subagent {}] Failed to initialize: {}",
+                            self.subagent_id, e
+                        );
+                        if let Some(ref tx) = event_tx {
+                            send_error_event(
+                                tx,
+                                &self.subagent_id,
+                                &format!("Agent initialization failed: {}", e),
+                            );
+                        }
+                        let _ = result_tx
+                            .send(SubagentResult {
+                                id: self.subagent_id.clone(),
+                                task: task_clone.clone(),
+                                response: send_error(
+                                    &format!("Agent initialization failed: {}", e),
+                                    &model_name,
+                                ),
+                                model: Some(model_name.clone()),
+                            })
+                            .await;
+                        return;
+                    }
+                };
+
+            let system_prompt = match system_prompt_override {
+                Some(p) => p,
+                None => {
+                    match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
+                        .await
+                    {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(
+                                "[Subagent {}] Failed to load system prompt: {}",
+                                self.subagent_id, e
+                            );
+                            if let Some(ref tx) = event_tx {
+                                send_error_event(
+                                    tx,
+                                    &self.subagent_id,
+                                    &format!("System prompt load failed: {}", e),
+                                );
+                            }
+                            let _ = result_tx
+                                .send(SubagentResult {
+                                    id: self.subagent_id.clone(),
+                                    task: task_clone.clone(),
+                                    response: send_error(
+                                        &format!("System prompt load failed: {}", e),
+                                        &model_name,
+                                    ),
+                                    model: Some(model_name.clone()),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+                }
+            };
+            agent.set_system_prompt(system_prompt);
+
+            let session_key = SessionKey::new(crate::bus::ChannelType::Cli, &self.subagent_id);
+            let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
+
+            // Use streaming if event_tx is provided
+            let response = if let Some(ref tx) = event_tx {
+                let tx_clone = tx.clone();
+                let id_clone = self.subagent_id.clone();
+                let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+                let result = tokio::time::timeout(
+                    timeout_duration,
+                    agent.process_direct_streaming(&self.task, &session_key, move |event| {
+                        match event {
+                            StreamEvent::Content(content) => {
+                                // Forward LLM output content to main agent
+                                let _ = tx_clone.try_send(SubagentEvent::Content {
+                                    id: id_clone.clone(),
+                                    content,
+                                });
+                            }
+                            StreamEvent::Reasoning(content) => {
+                                let _ = tx_clone.try_send(SubagentEvent::Thinking {
+                                    id: id_clone.clone(),
+                                    content,
+                                });
+                            }
+                            StreamEvent::ToolStart { name, arguments } => {
+                                let _ = tx_clone.try_send(SubagentEvent::ToolStart {
+                                    id: id_clone.clone(),
+                                    tool_name: name,
+                                    arguments,
+                                });
+                            }
+                            StreamEvent::ToolEnd { name, output } => {
+                                let _ = tx_clone.try_send(SubagentEvent::ToolEnd {
+                                    id: id_clone.clone(),
+                                    tool_name: name,
+                                    output,
+                                });
+                            }
+                            StreamEvent::Done => {
+                                // Track iteration completion for multi-turn conversations
+                                let iter = iteration_counter
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    + 1;
+                                let _ = tx_clone.try_send(SubagentEvent::Iteration {
+                                    id: id_clone.clone(),
+                                    iteration: iter,
+                                });
+                            }
+                            StreamEvent::TokenStats { .. } => {
+                                // Token stats can be ignored for subagent events
+                            }
+                        }
+                    }),
+                )
+                .await;
+
+                match result {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(e)) => {
+                        warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
+                        send_error_event(
+                            tx,
+                            &self.subagent_id,
+                            &format!("Execution failed: {}", e),
+                        );
+                        let _ = result_tx
+                            .send(SubagentResult {
+                                id: self.subagent_id.clone(),
+                                task: task_clone.clone(),
+                                response: send_error(
+                                    &format!("Execution failed: {}", e),
+                                    &model_name,
+                                ),
+                                model: Some(model_name.clone()),
+                            })
+                            .await;
+                        return;
+                    }
+                    Err(_) => {
+                        warn!(
+                            "[Subagent {}] Timed out after {:?}",
+                            self.subagent_id, timeout_duration
+                        );
+                        send_error_event(
+                            tx,
+                            &self.subagent_id,
+                            &format!("Timed out after {:?}", timeout_duration),
+                        );
+                        let _ = result_tx
+                            .send(SubagentResult {
+                                id: self.subagent_id.clone(),
+                                task: task_clone.clone(),
+                                response: send_error(
+                                    &format!("Timed out after {:?}", timeout_duration),
+                                    &model_name,
+                                ),
+                                model: Some(model_name.clone()),
+                            })
+                            .await;
+                        return;
+                    }
+                }
+            } else {
+                // Non-streaming path
+                let result = tokio::time::timeout(
+                    timeout_duration,
+                    agent.process_direct(&self.task, &session_key),
+                )
+                .await;
+
+                match result {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(e)) => {
+                        warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
+                        let _ = result_tx
+                            .send(SubagentResult {
+                                id: self.subagent_id.clone(),
+                                task: task_clone.clone(),
+                                response: send_error(
+                                    &format!("Execution failed: {}", e),
+                                    &model_name,
+                                ),
+                                model: Some(model_name.clone()),
+                            })
+                            .await;
+                        return;
+                    }
+                    Err(_) => {
+                        warn!(
+                            "[Subagent {}] Timed out after {:?}",
+                            self.subagent_id, timeout_duration
+                        );
+                        let _ = result_tx
+                            .send(SubagentResult {
+                                id: self.subagent_id.clone(),
+                                task: task_clone.clone(),
+                                response: send_error(
+                                    &format!("Timed out after {:?}", timeout_duration),
+                                    &model_name,
+                                ),
+                                model: Some(model_name.clone()),
+                            })
+                            .await;
+                        return;
+                    }
+                }
+            };
+
+            let subagent_result = SubagentResult {
+                id: self.subagent_id.clone(),
+                task: task_clone,
+                response: response.clone(),
+                model: Some(model_name),
+            };
+
+            // Send completed event
+            if let Some(ref tx) = event_tx {
+                let _ = tx.try_send(SubagentEvent::Completed {
+                    id: self.subagent_id.clone(),
+                    result: subagent_result.clone(),
+                });
+            }
+
+            if let Err(e) = result_tx.send(subagent_result).await {
+                warn!(
+                    "[Subagent {}] Failed to send result: {}",
+                    self.subagent_id, e
+                );
+            }
+        });
+
+        Ok(id_clone)
+    }
 }
 
 impl SubagentManager {
@@ -56,19 +431,28 @@ impl SubagentManager {
             workspace,
             tools,
             outbound_tx,
-            session_key: None,
+            session_key: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
-    /// Create a SubagentManager with a specific session key for WebSocket streaming
-    pub fn with_session_key(&self, session_key: SessionKey) -> Self {
-        Self {
-            provider: self.provider.clone(),
-            workspace: self.workspace.clone(),
-            tools: self.tools.clone(),
-            outbound_tx: self.outbound_tx.clone(),
-            session_key: Some(session_key),
-        }
+    /// Set the session key for the current request context.
+    ///
+    /// This should be called at the start of each request to enable
+    /// WebSocket streaming for subagent events.
+    pub async fn set_session_key(&self, session_key: SessionKey) {
+        let mut guard = self.session_key.write().await;
+        *guard = Some(session_key);
+    }
+
+    /// Clear the session key (call after request completes)
+    pub async fn clear_session_key(&self) {
+        let mut guard = self.session_key.write().await;
+        *guard = None;
+    }
+
+    /// Get the current session key
+    pub async fn get_session_key(&self) -> Option<SessionKey> {
+        self.session_key.read().await.clone()
     }
 
     /// Get a clone of the outbound sender for external use
@@ -76,14 +460,27 @@ impl SubagentManager {
         self.outbound_tx.clone()
     }
 
-    /// Get the current session key (if set)
-    pub fn session_key(&self) -> Option<&SessionKey> {
-        self.session_key.as_ref()
-    }
-
-    /// Check if WebSocket streaming is enabled
-    pub fn is_streaming_enabled(&self) -> bool {
-        self.session_key.is_some()
+    /// Create a task builder for fluent subagent configuration.
+    ///
+    /// This is the preferred way to spawn subagent tasks, replacing all
+    /// the scattered `submit_*` methods.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// manager.task("task-1", "Analyze the code")
+    ///     .with_provider(custom_provider)
+    ///     .with_config(config)
+    ///     .with_streaming(event_tx)
+    ///     .spawn(result_tx)
+    ///     .await?;
+    /// ```
+    pub fn task(
+        &self,
+        subagent_id: impl Into<String>,
+        task: impl Into<String>,
+    ) -> SubagentTaskBuilder<'_> {
+        SubagentTaskBuilder::new(self, subagent_id.into(), task.into())
     }
 
     #[instrument(name = "subagent.submit", skip_all)]
@@ -344,322 +741,5 @@ impl SubagentManager {
     /// Uses try_send to avoid blocking if the channel is full.
     pub fn try_send_ws_message(&self, msg: OutboundMessage) -> bool {
         self.outbound_tx.try_send(msg).is_ok()
-    }
-
-    /// Submit a task with tracking support for parallel coordination.
-    ///
-    /// Returns a unique subagent ID that can be used to retrieve results later.
-    /// The result will be sent to the provided result_tx channel when complete.
-    #[instrument(name = "subagent.submit_tracked", skip_all)]
-    pub async fn submit_tracked(
-        &self,
-        subagent_id: String,
-        task: String,
-        result_tx: mpsc::Sender<SubagentResult>,
-    ) -> anyhow::Result<String> {
-        self.submit_tracked_impl(subagent_id, task, result_tx, None, None, None)
-            .await
-    }
-
-    /// Submit a task with custom model and provider configuration.
-    ///
-    /// Allows specifying a different model/provider for this specific subagent execution.
-    #[instrument(name = "subagent.submit_tracked_with_config", skip_all)]
-    pub async fn submit_tracked_with_config(
-        &self,
-        subagent_id: String,
-        task: String,
-        result_tx: mpsc::Sender<SubagentResult>,
-        provider: Option<Arc<dyn LlmProvider>>,
-        agent_config: Option<AgentConfig>,
-    ) -> anyhow::Result<String> {
-        self.submit_tracked_impl(subagent_id, task, result_tx, provider, agent_config, None)
-            .await
-    }
-
-    /// Submit a task with streaming events support.
-    ///
-    /// This method sends real-time events (thinking, tool calls) through the event_tx channel.
-    #[instrument(name = "subagent.submit_tracked_streaming", skip_all)]
-    pub async fn submit_tracked_streaming(
-        &self,
-        subagent_id: String,
-        task: String,
-        result_tx: mpsc::Sender<SubagentResult>,
-        event_tx: mpsc::Sender<SubagentEvent>,
-        provider: Option<Arc<dyn LlmProvider>>,
-        agent_config: Option<AgentConfig>,
-    ) -> anyhow::Result<String> {
-        self.submit_tracked_impl(
-            subagent_id,
-            task,
-            result_tx,
-            provider,
-            agent_config,
-            Some(event_tx),
-        )
-        .await
-    }
-
-    /// Internal implementation with optional streaming support.
-    #[instrument(name = "subagent.submit_tracked_impl", skip_all)]
-    async fn submit_tracked_impl(
-        &self,
-        subagent_id: String,
-        task: String,
-        result_tx: mpsc::Sender<SubagentResult>,
-        provider: Option<Arc<dyn LlmProvider>>,
-        agent_config: Option<AgentConfig>,
-        event_tx: Option<mpsc::Sender<SubagentEvent>>,
-    ) -> anyhow::Result<String> {
-        let provider = provider.unwrap_or_else(|| self.provider.clone());
-        let workspace = self.workspace.clone();
-        let tools = self.tools.clone();
-        let task_clone = task.clone();
-        let id_clone = subagent_id.clone();
-
-        let agent_config = agent_config.unwrap_or_else(|| AgentConfig {
-            model: provider.default_model().to_string(),
-            max_iterations: 10,
-            ..Default::default()
-        });
-
-        tokio::spawn(async move {
-            info!(
-                "[Subagent {}] Task started with model '{}': {}",
-                &subagent_id, &agent_config.model, &task
-            );
-
-            // Send started event
-            if let Some(ref tx) = event_tx {
-                let _ = tx.try_send(SubagentEvent::Started {
-                    id: subagent_id.clone(),
-                    task: task_clone.clone(),
-                });
-            }
-
-            // Helper to send error result
-            let model_name = agent_config.model.clone();
-            let send_error = |error_msg: &str, model: &str| -> AgentResponse {
-                AgentResponse {
-                    content: format!("Error: {}", error_msg),
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(model.to_string()),
-                }
-            };
-
-            // Helper to send error event
-            let send_error_event = |tx: &mpsc::Sender<SubagentEvent>, id: &str, error: &str| {
-                let _ = tx.try_send(SubagentEvent::Error {
-                    id: id.to_string(),
-                    error: error.to_string(),
-                });
-            };
-
-            let mut agent =
-                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!("[Subagent {}] Failed to initialize: {}", subagent_id, e);
-                        if let Some(ref tx) = event_tx {
-                            send_error_event(
-                                tx,
-                                &subagent_id,
-                                &format!("Agent initialization failed: {}", e),
-                            );
-                        }
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Agent initialization failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                };
-
-            let system_prompt =
-                match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!(
-                            "[Subagent {}] Failed to load system prompt: {}",
-                            subagent_id, e
-                        );
-                        if let Some(ref tx) = event_tx {
-                            send_error_event(
-                                tx,
-                                &subagent_id,
-                                &format!("System prompt load failed: {}", e),
-                            );
-                        }
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("System prompt load failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                };
-            agent.set_system_prompt(system_prompt);
-
-            let session_key = SessionKey::new(crate::bus::ChannelType::Cli, &subagent_id);
-            let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
-
-            // Use streaming if event_tx is provided
-            let response = if let Some(ref tx) = event_tx {
-                let tx_clone = tx.clone();
-                let id_clone = subagent_id.clone();
-
-                let result = tokio::time::timeout(
-                    timeout_duration,
-                    agent.process_direct_streaming(&task, &session_key, move |event| match event {
-                        StreamEvent::Reasoning(content) => {
-                            let _ = tx_clone.try_send(SubagentEvent::Thinking {
-                                id: id_clone.clone(),
-                                content,
-                            });
-                        }
-                        StreamEvent::ToolStart { name, arguments } => {
-                            let _ = tx_clone.try_send(SubagentEvent::ToolStart {
-                                id: id_clone.clone(),
-                                tool_name: name,
-                                arguments,
-                            });
-                        }
-                        StreamEvent::ToolEnd { name, output } => {
-                            let _ = tx_clone.try_send(SubagentEvent::ToolEnd {
-                                id: id_clone.clone(),
-                                tool_name: name,
-                                output,
-                            });
-                        }
-                        _ => {}
-                    }),
-                )
-                .await;
-
-                match result {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(e)) => {
-                        warn!("[Subagent {}] Execution failed: {}", subagent_id, e);
-                        send_error_event(tx, &subagent_id, &format!("Execution failed: {}", e));
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Execution failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                    Err(_) => {
-                        warn!(
-                            "[Subagent {}] Timed out after {:?}",
-                            subagent_id, timeout_duration
-                        );
-                        send_error_event(
-                            tx,
-                            &subagent_id,
-                            &format!("Timed out after {:?}", timeout_duration),
-                        );
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Timed out after {:?}", timeout_duration),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                }
-            } else {
-                // Non-streaming path
-                let result = tokio::time::timeout(
-                    timeout_duration,
-                    agent.process_direct(&task, &session_key),
-                )
-                .await;
-
-                match result {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(e)) => {
-                        warn!("[Subagent {}] Execution failed: {}", subagent_id, e);
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Execution failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                    Err(_) => {
-                        warn!(
-                            "[Subagent {}] Timed out after {:?}",
-                            subagent_id, timeout_duration
-                        );
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Timed out after {:?}", timeout_duration),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                }
-            };
-
-            let subagent_result = SubagentResult {
-                id: subagent_id.clone(),
-                task: task_clone,
-                response: response.clone(),
-                model: Some(model_name),
-            };
-
-            // Send completed event
-            if let Some(ref tx) = event_tx {
-                let _ = tx.try_send(SubagentEvent::Completed {
-                    id: subagent_id.clone(),
-                    result: subagent_result.clone(),
-                });
-            }
-
-            if let Err(e) = result_tx.send(subagent_result).await {
-                warn!("[Subagent {}] Failed to send result: {}", subagent_id, e);
-            }
-        });
-
-        Ok(id_clone)
     }
 }

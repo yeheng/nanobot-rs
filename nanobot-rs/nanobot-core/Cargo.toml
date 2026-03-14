@@ -18,6 +18,8 @@ wecom = ["sha1", "aes", "cbc", "quick-xml"]
 webhook = ["axum", "tower", "tower-http"]
 # MCP WebSocket transport support
 mcp-websocket = ["tokio-tungstenite"]
+# Smart model selection based on task content analysis
+smart-model-selection = []
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook", "mcp-websocket"]
 
 [dependencies]

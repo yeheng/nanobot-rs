@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use futures::stream::Stream;
 use futures::StreamExt;
+use tracing::{debug, trace};
 
 use crate::providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};
 
@@ -112,56 +113,86 @@ impl Default for ToolCallAccumulator {
 
 /// Convert LLM stream to event stream with backpressure support.
 ///
-/// Returns (event_stream, final_response_future).
+/// Returns (event_stream, final_response_handle).
 ///
-/// **IMPORTANT**: The event_stream MUST be consumed (e.g., in a separate task)
-/// to prevent channel deadlock. If you don't need streaming events,
-/// use `collect_stream_response()` instead.
+/// The internal producer task is spawned immediately to consume the LLM stream
+/// and send events to the channel. The event_stream receives these events,
+/// and final_response_handle can be awaited to get the complete response.
 pub fn stream_events(
-    mut llm_stream: crate::providers::ChatStream,
+    llm_stream: crate::providers::ChatStream,
 ) -> (
     impl Stream<Item = StreamEvent>,
     impl std::future::Future<Output = Result<ChatResponse>>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(32);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel::<Result<ChatResponse>>();
 
-    let response_future = async move {
+    // Spawn the producer task immediately to consume the LLM stream
+    tokio::spawn(async move {
+        debug!("[StreamEvents] Producer task started, consuming LLM stream");
+        let mut llm_stream = llm_stream;
         let mut content = String::new();
         let mut reasoning_content = String::new();
         let mut tool_acc = ToolCallAccumulator::new();
         let mut accumulated_usage = None;
+        let mut chunk_count = 0usize;
 
         while let Some(chunk_result) = llm_stream.next().await {
-            let chunk = chunk_result?;
+            match chunk_result {
+                Ok(chunk) => {
+                    chunk_count += 1;
+                    if chunk_count == 1 {
+                        debug!("[StreamEvents] Received first chunk from LLM");
+                    }
+                    trace!(
+                        "[StreamEvents] Chunk {}: content={:?}, tool_calls={}",
+                        chunk_count,
+                        chunk.delta.content,
+                        chunk.delta.tool_calls.len()
+                    );
 
-            if let Some(ref text) = chunk.delta.content {
-                if !text.is_empty() {
-                    content.push_str(text);
-                    // Use try_send to avoid blocking if receiver is not being consumed
-                    // If channel is full or closed, we just skip sending the event
-                    let _ = tx.try_send(StreamEvent::Content(text.clone()));
+                    if let Some(ref text) = chunk.delta.content {
+                        if !text.is_empty() {
+                            content.push_str(text);
+                            // Use try_send to avoid blocking if receiver is not being consumed
+                            // If channel is full or closed, we just skip sending the event
+                            let _ = tx.try_send(StreamEvent::Content(text.clone()));
+                        }
+                    }
+
+                    if let Some(ref reasoning) = chunk.delta.reasoning_content {
+                        if !reasoning.is_empty() {
+                            reasoning_content.push_str(reasoning);
+                            let _ = tx.try_send(StreamEvent::Reasoning(reasoning.clone()));
+                        }
+                    }
+
+                    for tc_delta in &chunk.delta.tool_calls {
+                        tool_acc.feed(tc_delta);
+                    }
+
+                    if let Some(ref usage) = chunk.usage {
+                        accumulated_usage = Some(usage.clone());
+                    }
                 }
-            }
-
-            if let Some(ref reasoning) = chunk.delta.reasoning_content {
-                if !reasoning.is_empty() {
-                    reasoning_content.push_str(reasoning);
-                    let _ = tx.try_send(StreamEvent::Reasoning(reasoning.clone()));
+                Err(e) => {
+                    debug!("[StreamEvents] Error in stream: {}", e);
+                    let _ = response_tx.send(Err(e));
+                    return;
                 }
-            }
-
-            for tc_delta in &chunk.delta.tool_calls {
-                tool_acc.feed(tc_delta);
-            }
-
-            if let Some(ref usage) = chunk.usage {
-                accumulated_usage = Some(usage.clone());
             }
         }
 
-        let _ = tx.try_send(StreamEvent::Done);
+        debug!(
+            "[StreamEvents] Stream completed, received {} chunks, content length: {}",
+            chunk_count,
+            content.len()
+        );
+        // NOTE: Do NOT send Done here! Done should only be sent when the entire
+        // agent loop completes (no more tool calls). The executor_core.rs is
+        // responsible for sending Done at the right time.
 
-        Ok(ChatResponse {
+        let response = ChatResponse {
             content: if content.is_empty() {
                 None
             } else {
@@ -174,13 +205,19 @@ pub fn stream_events(
                 Some(reasoning_content)
             },
             usage: accumulated_usage,
-        })
+        };
+
+        let _ = response_tx.send(Ok(response));
+    });
+
+    let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let response_future = async move {
+        response_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("Producer task died"))?
     };
 
-    (
-        tokio_stream::wrappers::ReceiverStream::new(rx),
-        response_future,
-    )
+    (event_stream, response_future)
 }
 
 /// Collect LLM stream into a response without emitting events.

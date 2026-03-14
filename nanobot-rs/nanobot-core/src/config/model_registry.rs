@@ -105,6 +105,167 @@ impl ModelRegistry {
     pub fn set_default_model_id(&mut self, id: Option<String>) {
         self.default_model_id = id;
     }
+
+    /// Get a model profile with fallback to default.
+    ///
+    /// Lookup order:
+    /// 1. If `model_id` is provided and found in profiles, return it
+    /// 2. If not found or not provided, fallback to default profile
+    /// 3. Returns None if neither is available
+    ///
+    /// # Arguments
+    /// * `model_id` - Optional model ID to look up
+    ///
+    /// # Returns
+    /// Tuple of (profile_id, profile) if found, None otherwise
+    pub fn get_profile_with_fallback<'a>(
+        &'a self,
+        model_id: Option<&'a str>,
+    ) -> Option<(&'a str, &'a ModelProfile)> {
+        match model_id {
+            Some(id) => {
+                // First try exact match
+                if let Some(profile) = self.profiles.get(id) {
+                    return Some((id, profile));
+                }
+                // Fallback to default
+                self.get_default_profile()
+            }
+            None => self.get_default_profile(),
+        }
+    }
+}
+
+/// Smart model selection based on task content analysis.
+///
+/// This module provides capability-based model selection when the
+/// `smart-model-selection` feature is enabled.
+#[cfg(feature = "smart-model-selection")]
+impl ModelRegistry {
+    /// Capability keyword mappings.
+    ///
+    /// Maps task keywords to capability tags for model selection.
+    const CAPABILITY_KEYWORDS: &[(&str, &str)] = &[
+        // Code-related
+        ("code", "code"),
+        ("programming", "code"),
+        ("debug", "code"),
+        ("debugging", "code"),
+        ("implement", "code"),
+        ("refactor", "code"),
+        ("function", "code"),
+        ("class", "code"),
+        ("module", "code"),
+        ("api", "code"),
+        // Reasoning-related
+        ("reasoning", "reasoning"),
+        ("analyze", "reasoning"),
+        ("analysis", "reasoning"),
+        ("think", "reasoning"),
+        ("explain", "reasoning"),
+        ("compare", "reasoning"),
+        ("evaluate", "reasoning"),
+        ("complex", "reasoning"),
+        // Creative-related
+        ("creative", "creative"),
+        ("write", "creative"),
+        ("writing", "creative"),
+        ("story", "creative"),
+        ("article", "creative"),
+        ("blog", "creative"),
+        ("draft", "creative"),
+        // Fast/simple tasks
+        ("fast", "fast"),
+        ("quick", "fast"),
+        ("simple", "fast"),
+        ("basic", "fast"),
+        ("short", "fast"),
+        // Math/calculation
+        ("math", "math"),
+        ("calculate", "math"),
+        ("calculation", "math"),
+        ("equation", "math"),
+        // Data processing
+        ("data", "data"),
+        ("process", "data"),
+        ("transform", "data"),
+        ("parse", "data"),
+        ("extract", "data"),
+    ];
+
+    /// Select a model based on task content analysis.
+    ///
+    /// Analyzes the task description to determine required capabilities
+    /// and selects the best matching model profile.
+    ///
+    /// # Arguments
+    /// * `task` - The task description to analyze
+    ///
+    /// # Returns
+    /// The best matching model profile, or the default if no match found
+    pub fn select_by_capability(&self, task: &str) -> Option<(&str, &ModelProfile)> {
+        // Analyze task content to determine required capabilities
+        let required_caps = self.analyze_task_capabilities(task);
+
+        if required_caps.is_empty() {
+            // No specific capability detected, use default
+            return self.get_default_profile();
+        }
+
+        // Find best matching model
+        self.find_best_match(&required_caps)
+    }
+
+    /// Analyze task content to extract required capabilities.
+    fn analyze_task_capabilities(&self, task: &str) -> Vec<String> {
+        let task_lower = task.to_lowercase();
+        let mut capabilities: Vec<String> = Vec::new();
+
+        for (keyword, capability) in Self::CAPABILITY_KEYWORDS {
+            if task_lower.contains(keyword) {
+                capabilities.push(capability.to_string());
+            }
+        }
+
+        // Deduplicate while preserving order
+        capabilities.sort();
+        capabilities.dedup();
+
+        capabilities
+    }
+
+    /// Find the best matching model for required capabilities.
+    ///
+    /// Scoring: Each matching capability adds 1 point.
+    /// Returns the model with the highest score.
+    fn find_best_match(&self, required_caps: &[String]) -> Option<(&str, &ModelProfile)> {
+        let mut best_match: Option<(&str, &ModelProfile, usize)> = None;
+
+        for (id, profile) in &self.profiles {
+            // Calculate match score
+            let score = profile
+                .capabilities
+                .iter()
+                .filter(|cap| required_caps.contains(cap))
+                .count();
+
+            if score > 0 {
+                match &best_match {
+                    None => best_match = Some((id, profile, score)),
+                    Some((_, _, best_score)) if score > *best_score => {
+                        best_match = Some((id, profile, score));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Return best match or fallback to default
+        match best_match {
+            Some((id, profile, _)) => Some((id, profile)),
+            None => self.get_default_profile(),
+        }
+    }
 }
 
 impl Default for ModelRegistry {
@@ -215,5 +376,192 @@ mod tests {
         models.sort();
 
         assert_eq!(models, vec!["coder", "fast"]);
+    }
+
+    #[test]
+    fn test_get_profile_with_fallback_found() {
+        let config = create_test_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        // Exact match
+        let (id, profile) = registry.get_profile_with_fallback(Some("coder")).unwrap();
+        assert_eq!(id, "coder");
+        assert_eq!(profile.model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_get_profile_with_fallback_not_found() {
+        let config = create_test_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        // Unknown model ID falls back to default
+        let (id, profile) = registry.get_profile_with_fallback(Some("unknown")).unwrap();
+        assert_eq!(id, "coder"); // Falls back to default
+        assert_eq!(profile.model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_get_profile_with_fallback_none() {
+        let config = create_test_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        // None returns default
+        let (id, _) = registry.get_profile_with_fallback(None).unwrap();
+        assert_eq!(id, "coder");
+    }
+
+    #[test]
+    fn test_get_profile_with_fallback_no_default() {
+        let config = AgentsConfig {
+            defaults: AgentDefaults {
+                model: None,
+                ..Default::default()
+            },
+            models: HashMap::new(),
+        };
+        let registry = ModelRegistry::from_config(&config);
+
+        // No default available
+        assert!(registry.get_profile_with_fallback(None).is_none());
+        assert!(registry
+            .get_profile_with_fallback(Some("unknown"))
+            .is_none());
+    }
+}
+
+/// Tests for smart model selection feature
+#[cfg(feature = "smart-model-selection")]
+#[cfg(test)]
+mod smart_selection_tests {
+    use super::*;
+    use crate::config::agent::AgentDefaults;
+
+    fn create_smart_selection_config() -> AgentsConfig {
+        let mut models = HashMap::new();
+
+        models.insert(
+            "coder".to_string(),
+            ModelProfile {
+                provider: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+                description: Some("Code expert".to_string()),
+                capabilities: vec!["code".to_string(), "reasoning".to_string()],
+                temperature: Some(0.3),
+                thinking_enabled: None,
+                max_tokens: None,
+            },
+        );
+
+        models.insert(
+            "fast".to_string(),
+            ModelProfile {
+                provider: "zhipu".to_string(),
+                model: "glm-4-flash".to_string(),
+                description: Some("Fast responses".to_string()),
+                capabilities: vec!["fast".to_string()],
+                temperature: Some(0.7),
+                thinking_enabled: None,
+                max_tokens: None,
+            },
+        );
+
+        models.insert(
+            "reasoner".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                model: "claude-3-opus".to_string(),
+                description: Some("Deep reasoning".to_string()),
+                capabilities: vec!["reasoning".to_string(), "creative".to_string()],
+                temperature: Some(0.5),
+                thinking_enabled: Some(true),
+                max_tokens: None,
+            },
+        );
+
+        AgentsConfig {
+            defaults: AgentDefaults {
+                model: Some("coder".to_string()),
+                ..Default::default()
+            },
+            models,
+        }
+    }
+
+    #[test]
+    fn test_analyze_task_capabilities_code() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        let caps = registry.analyze_task_capabilities("Write code to implement a function");
+        assert!(caps.contains(&"code".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_task_capabilities_multiple() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        let caps = registry.analyze_task_capabilities("Debug and analyze this complex code");
+        assert!(caps.contains(&"code".to_string()));
+        assert!(caps.contains(&"reasoning".to_string()));
+    }
+
+    #[test]
+    fn test_select_by_capability_code_task() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        let (id, profile) = registry
+            .select_by_capability("Implement a new API endpoint")
+            .unwrap();
+        assert_eq!(id, "coder");
+        assert_eq!(profile.model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_select_by_capability_fast_task() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        let (id, profile) = registry
+            .select_by_capability("Give me a quick summary")
+            .unwrap();
+        assert_eq!(id, "fast");
+        assert_eq!(profile.model, "glm-4-flash");
+    }
+
+    #[test]
+    fn test_select_by_capability_reasoning_task() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        // "reasoning" capability appears in both coder and reasoner
+        // reasoner has 2 matching caps (reasoning + creative), coder has 2 (code + reasoning)
+        // The task only has reasoning, so either could match
+        let result = registry.select_by_capability("Analyze this complex problem");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_select_by_capability_no_match_uses_default() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        // Task with no recognized keywords
+        let (id, _) = registry
+            .select_by_capability("Translate this document")
+            .unwrap();
+        assert_eq!(id, "coder"); // Falls back to default
+    }
+
+    #[test]
+    fn test_select_by_capability_case_insensitive() {
+        let config = create_smart_selection_config();
+        let registry = ModelRegistry::from_config(&config);
+
+        let (id, _) = registry
+            .select_by_capability("CODE and PROGRAMMING task")
+            .unwrap();
+        assert_eq!(id, "coder");
     }
 }

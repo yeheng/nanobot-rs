@@ -16,6 +16,56 @@ use crate::bus::events::{OutboundMessage, WebSocketMessage};
 use crate::config::ModelRegistry;
 use crate::providers::ProviderRegistry;
 
+/// Buffered events for a single subagent
+struct BufferedEvents {
+    /// Collected WebSocket messages
+    messages: Vec<WebSocketMessage>,
+    /// Whether the subagent has completed
+    completed: bool,
+}
+
+impl BufferedEvents {
+    /// Flush messages in a user-friendly order:
+    /// 1. All Thinking messages first
+    /// 2. ToolStart/ToolEnd (if any, in original order relative to each other)
+    /// 3. All Content messages last
+    ///
+    /// This ensures the UI shows the thinking process before the response content,
+    /// avoiding the interleaved display issue.
+    fn flush_ordered(&mut self) -> Vec<WebSocketMessage> {
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+
+        let mut thinking_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut tool_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut content_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut other_msgs: Vec<WebSocketMessage> = Vec::new();
+
+        for msg in self.messages.drain(..) {
+            match &msg {
+                WebSocketMessage::Thinking { .. } => thinking_msgs.push(msg),
+                WebSocketMessage::ToolStart { .. } | WebSocketMessage::ToolEnd { .. } => {
+                    tool_msgs.push(msg)
+                }
+                WebSocketMessage::Content { .. } => content_msgs.push(msg),
+                _ => other_msgs.push(msg),
+            }
+        }
+
+        // Concatenate: Thinking -> Tools -> Content -> Other
+        let mut result = Vec::with_capacity(
+            thinking_msgs.len() + tool_msgs.len() + content_msgs.len() + other_msgs.len(),
+        );
+        result.append(&mut thinking_msgs);
+        result.append(&mut tool_msgs);
+        result.append(&mut content_msgs);
+        result.append(&mut other_msgs);
+
+        result
+    }
+}
+
 pub struct SpawnParallelTool {
     manager: Option<Arc<SubagentManager>>,
     model_registry: Option<Arc<ModelRegistry>>,
@@ -54,6 +104,43 @@ impl SpawnParallelTool {
             manager: Some(manager),
             model_registry: Some(model_registry),
             provider_registry: Some(provider_registry),
+        }
+    }
+
+    /// Select model based on model_id with fallback and optional smart selection.
+    ///
+    /// Selection logic:
+    /// 1. If model_id is provided, try exact match first
+    /// 2. If not found, fallback to default model
+    /// 3. If no model_id and smart-model-selection feature is enabled,
+    ///    analyze task content and select by capability
+    /// 4. Otherwise use default model
+    /// 5. Return None if no model profile matches (use manager default)
+    fn select_model<'a>(
+        &'a self,
+        model_id: &'a Option<String>,
+        _task: &str,
+    ) -> Option<(&'a str, &'a crate::config::ModelProfile)> {
+        let model_registry = self.model_registry.as_ref()?;
+
+        match model_id {
+            Some(id) => {
+                // Try exact match with fallback to default
+                model_registry.get_profile_with_fallback(Some(id))
+            }
+            None => {
+                // No model_id specified
+                #[cfg(feature = "smart-model-selection")]
+                {
+                    // Smart selection based on task content
+                    model_registry.select_by_capability(_task)
+                }
+                #[cfg(not(feature = "smart-model-selection"))]
+                {
+                    // Use default model
+                    model_registry.get_profile_with_fallback(None)
+                }
+            }
         }
     }
 }
@@ -210,23 +297,19 @@ impl Tool for SpawnParallelTool {
             let subagent_id = SubagentTracker::generate_id();
             // Record mapping for [Task N] labeling in WebSocket messages
             task_id_map.insert(subagent_id.clone(), idx + 1); // 1-indexed for user display
-            let task = spec.task;
+            let task = spec.task.clone();
             // Clone sender inside the loop - each task gets its own sender
             // The original sender will be dropped after all futures are created
             let result_tx = result_tx.clone();
             let event_tx_clone = event_tx.clone();
 
-            if let Some(model_id) = spec.model_id {
-                // Model switching requested
-                let model_registry = self.model_registry.as_ref().ok_or_else(|| {
-                    ToolError::ExecutionError("Model registry not available".to_string())
-                })?;
+            // Model selection with fallback and optional smart selection
+            let selected_model = self.select_model(&spec.model_id, &task);
+
+            if let Some((profile_id, profile)) = selected_model {
+                // Model profile found
                 let provider_registry = self.provider_registry.as_ref().ok_or_else(|| {
                     ToolError::ExecutionError("Provider registry not available".to_string())
-                })?;
-
-                let profile = model_registry.get_profile(&model_id).ok_or_else(|| {
-                    ToolError::ExecutionError(format!("Model profile not found: {}", model_id))
                 })?;
 
                 let provider = provider_registry
@@ -243,33 +326,37 @@ impl Tool for SpawnParallelTool {
                     ..Default::default()
                 };
 
-                // Create boxed future for this spawn with streaming
+                info!(
+                    "[SpawnParallel] Task {}: Using model profile '{}' (model: {})",
+                    idx + 1,
+                    profile_id,
+                    profile.model
+                );
+
+                // Create boxed future using Builder pattern
                 let manager = manager.clone();
                 spawn_futures.push(Box::pin(async move {
                     manager
-                        .submit_tracked_streaming(
-                            subagent_id,
-                            task,
-                            result_tx,
-                            event_tx_clone,
-                            Some(provider),
-                            Some(agent_config),
-                        )
+                        .task(subagent_id, task)
+                        .with_provider(provider)
+                        .with_config(agent_config)
+                        .with_streaming(event_tx_clone)
+                        .spawn(result_tx)
                         .await
                 }));
             } else {
-                // Use default model - also use streaming
+                // No model profile matched, use default provider
+                info!(
+                    "[SpawnParallel] Task {}: Using default provider (no model profile matched)",
+                    idx + 1
+                );
+
                 let manager = manager.clone();
                 spawn_futures.push(Box::pin(async move {
                     manager
-                        .submit_tracked_streaming(
-                            subagent_id,
-                            task,
-                            result_tx,
-                            event_tx_clone,
-                            None,
-                            None,
-                        )
+                        .task(subagent_id, task)
+                        .with_streaming(event_tx_clone)
+                        .spawn(result_tx)
                         .await
                 }));
             }
@@ -295,10 +382,16 @@ impl Tool for SpawnParallelTool {
 
         // Get outbound channel and session key from manager for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
-        let session_key = manager.session_key().cloned();
+        let session_key = manager.get_session_key().await;
 
         // Spawn a background task to collect events and forward to WebSocket/channel
         // Move task_id_map into the task for [Task N] labeling
+        // Track whether each subagent is at the start of a new line (for prefix insertion)
+        let mut subagent_at_line_start: HashMap<String, bool> = HashMap::new();
+
+        // Buffer events per subagent - key is subagent ID
+        let mut subagent_buffers: HashMap<String, BufferedEvents> = HashMap::new();
+
         tokio::spawn(async move {
             // Direct ownership - no lock needed
             while let Some(event) = event_rx.recv().await {
@@ -306,6 +399,8 @@ impl Tool for SpawnParallelTool {
                 let subagent_id = match &event {
                     SubagentEvent::Started { id, .. } => id,
                     SubagentEvent::Thinking { id, .. } => id,
+                    SubagentEvent::Content { id, .. } => id,
+                    SubagentEvent::Iteration { id, .. } => id,
                     SubagentEvent::ToolStart { id, .. } => id,
                     SubagentEvent::ToolEnd { id, .. } => id,
                     SubagentEvent::Completed { id, .. } => id,
@@ -322,15 +417,43 @@ impl Tool for SpawnParallelTool {
                 match &event {
                     SubagentEvent::Started { id, task } => {
                         info!("{} Started: {} (ID: {})", task_label, task, id);
+                        // Initialize line start state for new subagent
+                        subagent_at_line_start.insert(id.clone(), true);
+                        // Initialize buffer for this subagent
+                        subagent_buffers.insert(
+                            id.clone(),
+                            BufferedEvents {
+                                messages: Vec::new(),
+                                completed: false,
+                            },
+                        );
                     }
                     SubagentEvent::Thinking { id, content } => {
                         trace!("{} Thinking: {} (ID: {})", task_label, content, id);
+                    }
+                    SubagentEvent::Content { id, content } => {
+                        trace!(
+                            "{} Content: {} bytes (ID: {})",
+                            task_label,
+                            content.len(),
+                            id
+                        );
+                    }
+                    SubagentEvent::Iteration { id, iteration } => {
+                        info!(
+                            "{} Iteration {} completed (ID: {})",
+                            task_label, iteration, id
+                        );
+                        // After iteration, we're at line start
+                        subagent_at_line_start.insert(id.clone(), true);
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
                         trace!("{} Tool: {} started (ID: {})", task_label, tool_name, id);
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
                         trace!("{} Tool: {} done (ID: {})", task_label, tool_name, id);
+                        // After tool end, we're at line start
+                        subagent_at_line_start.insert(id.clone(), true);
                     }
                     SubagentEvent::Completed { id, result } => {
                         info!(
@@ -339,18 +462,50 @@ impl Tool for SpawnParallelTool {
                             result.model.as_deref().unwrap_or("unknown"),
                             id
                         );
+                        // Mark this subagent as completed
+                        if let Some(buf) = subagent_buffers.get_mut(id) {
+                            buf.completed = true;
+                        }
                     }
                     SubagentEvent::Error { id, error } => {
                         warn!("{} Error: {} (ID: {})", task_label, error, id);
+                        // Mark this subagent as completed (with error)
+                        if let Some(buf) = subagent_buffers.get_mut(id) {
+                            buf.completed = true;
+                        }
                     }
                 }
 
-                // Forward event to WebSocket/channel if session key is available
-                if let Some(ref key) = session_key {
+                // Buffer WebSocket message (don't send immediately)
+                if session_key.is_some() {
                     let ws_msg = match &event {
-                        SubagentEvent::Thinking { content, .. } => Some(
-                            WebSocketMessage::thinking(format!("{} {}", task_label, content)),
-                        ),
+                        SubagentEvent::Thinking { id, content } => {
+                            // Only add prefix at line start to avoid repeating for every char
+                            let at_start = subagent_at_line_start.get(id).copied().unwrap_or(true);
+                            let msg = if at_start || content.starts_with('\n') {
+                                format!("{} {}", task_label, content.trim_start())
+                            } else {
+                                content.clone()
+                            };
+                            // Update line start state based on content
+                            subagent_at_line_start.insert(id.clone(), content.ends_with('\n'));
+                            Some(WebSocketMessage::thinking(msg))
+                        }
+                        SubagentEvent::Content { id, content } => {
+                            // Only add prefix at line start
+                            let at_start = subagent_at_line_start.get(id).copied().unwrap_or(true);
+                            let msg = if at_start || content.starts_with('\n') {
+                                format!("{} {}", task_label, content.trim_start())
+                            } else {
+                                content.clone()
+                            };
+                            // Update line start state based on content
+                            subagent_at_line_start.insert(id.clone(), content.ends_with('\n'));
+                            Some(WebSocketMessage::content(msg))
+                        }
+                        SubagentEvent::Iteration { iteration, .. } => Some(WebSocketMessage::text(
+                            format!("{} Iteration {} completed", task_label, iteration),
+                        )),
                         SubagentEvent::ToolStart {
                             tool_name,
                             arguments,
@@ -371,15 +526,35 @@ impl Tool for SpawnParallelTool {
                         _ => None, // Started, Completed - don't send to WS
                     };
 
+                    // Add message to the subagent's buffer
                     if let Some(msg) = ws_msg {
-                        let outbound = OutboundMessage::with_ws_message(
-                            key.channel.clone(),
-                            &key.chat_id,
-                            msg,
-                        );
-                        // Use try_send to avoid blocking the event loop
-                        if let Err(e) = outbound_tx.try_send(outbound) {
-                            warn!("Failed to send subagent event to outbound channel: {}", e);
+                        if let Some(buf) = subagent_buffers.get_mut(subagent_id) {
+                            buf.messages.push(msg);
+                        }
+                    }
+                }
+
+                // Check if this subagent has completed and flush its buffer
+                if let Some(ref key) = session_key {
+                    if let Some(buf) = subagent_buffers.get_mut(subagent_id) {
+                        if buf.completed {
+                            // Flush all buffered messages for this subagent in ordered format
+                            // Use flush_ordered to ensure Thinking messages come before Content
+                            for msg in buf.flush_ordered() {
+                                let outbound = OutboundMessage::with_ws_message(
+                                    key.channel.clone(),
+                                    &key.chat_id,
+                                    msg,
+                                );
+                                // Use try_send to avoid blocking the event loop
+                                if let Err(e) = outbound_tx.try_send(outbound) {
+                                    warn!(
+                                        "Failed to send subagent event to outbound channel: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            buf.completed = false;
                         }
                     }
                 }

@@ -39,6 +39,10 @@ pub enum SubagentEvent {
     Started { id: String, task: String },
     /// Thinking/reasoning content (incremental)
     Thinking { id: String, content: String },
+    /// LLM output content (incremental) - actual response text
+    Content { id: String, content: String },
+    /// Subagent iteration completed (useful for tracking multi-turn conversations)
+    Iteration { id: String, iteration: u32 },
     /// Tool call started
     ToolStart {
         id: String,

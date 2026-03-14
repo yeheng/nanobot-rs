@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
-use crate::agent::AgentLoop;
+use crate::agent::{AgentLoop, SubagentManager};
 use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey};
 use crate::channels::OutboundSenderRegistry;
 
@@ -94,6 +94,7 @@ pub async fn run_session_actor(
     mut rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
+    subagent_manager: Option<Arc<SubagentManager>>,
 ) {
     let session_key_str = session_key.to_string();
     tracing::info!("Session Actor [{}] spawned", session_key_str);
@@ -112,8 +113,22 @@ pub async fn run_session_actor(
             }
         };
 
-        if let Err(e) = process_session_message(msg, &session_key, &agent, &outbound_tx).await {
-            tracing::error!("Session [{}] error: {}", session_key_str, e);
+        // Set session key on SubagentManager before processing (for WebSocket streaming)
+        if let Some(ref manager) = subagent_manager {
+            manager.set_session_key(session_key.clone()).await;
+        }
+
+        // Process message and handle result immediately (avoid holding non-Send across await)
+        match process_session_message(msg, &session_key, &agent, &outbound_tx).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("Session [{}] error: {}", session_key_str, e);
+            }
+        }
+
+        // Clear session key after processing
+        if let Some(ref manager) = subagent_manager {
+            manager.clear_session_key().await;
         }
     }
 }
@@ -142,19 +157,45 @@ async fn process_websocket_message(
     agent: &Arc<AgentLoop>,
     outbound_tx: &mpsc::Sender<OutboundMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use tracing::{debug, info};
+
     let channel = msg.channel.clone();
     let chat_id = msg.chat_id.clone();
     let ob_tx = outbound_tx.clone();
+    let session_key_str = session_key.to_string();
+    // Clone for use inside the closure
+    let session_key_str_for_closure = session_key_str.clone();
 
-    agent
+    info!(
+        "[WebSocket] Processing message for session: {}",
+        session_key_str
+    );
+
+    let mut event_count = 0usize;
+    let result = agent
         .process_direct_streaming(&msg.content, session_key, move |event| {
+            event_count += 1;
+            if event_count == 1 {
+                debug!(
+                    "[WebSocket] First event received for session: {}",
+                    session_key_str_for_closure
+                );
+            }
             if let Some(ws_msg) = stream_event_to_ws_message(event) {
                 let outbound_msg =
                     OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
-                let _ = ob_tx.try_send(outbound_msg);
+                if let Err(e) = ob_tx.try_send(outbound_msg) {
+                    tracing::warn!("[WebSocket] Failed to send outbound message: {}", e);
+                }
             }
         })
-        .await?;
+        .await;
+
+    info!(
+        "[WebSocket] Streaming completed for session: {}, total events: {}",
+        session_key_str, event_count
+    );
+    result?;
 
     Ok(())
 }
@@ -218,6 +259,7 @@ pub async fn run_router_actor(
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
+    subagent_manager: Option<Arc<SubagentManager>>,
 ) {
     tracing::info!("Router Actor started");
     let mut sessions: HashMap<SessionKey, mpsc::Sender<InboundMessage>> = HashMap::new();
@@ -239,8 +281,15 @@ pub async fn run_router_actor(
             let ob_tx = outbound_tx.clone();
             let agent_clone = agent.clone();
             let session_key = key.clone();
+            let manager_clone = subagent_manager.clone();
 
-            tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));
+            tokio::spawn(run_session_actor(
+                session_key,
+                rx,
+                ob_tx,
+                agent_clone,
+                manager_clone,
+            ));
 
             // Send to the freshly created channel (guaranteed to succeed)
             if let Err(e) = tx.send(msg).await {
