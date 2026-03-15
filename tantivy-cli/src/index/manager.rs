@@ -102,6 +102,29 @@ impl IndexManager {
     pub fn index_path(&self, name: &str) -> PathBuf {
         self.base_path.join("indexes").join(name)
     }
+
+    /// Get the indexes directory path.
+    pub fn index_dir(&self) -> PathBuf {
+        self.base_path.join("indexes")
+    }
+
+    /// Unload an index from memory (remove from DashMap).
+    /// The index files remain on disk.
+    pub fn unload_index(&self, name: &str) -> Result<()> {
+        if self.indexes.remove(name).is_some() {
+            info!("Unloaded index: {}", name);
+        }
+        Ok(())
+    }
+
+    /// Load an index by name (public wrapper for the private load_index).
+    pub fn load_index_by_name(&self, name: &str) -> Result<()> {
+        let metadata_path = self.index_path(name).join("metadata.json");
+        if !metadata_path.exists() {
+            return Err(Error::IndexNotFound(name.to_string()));
+        }
+        self.load_index(name, &metadata_path)
+    }
 }
 
 /// Index statistics.
@@ -252,75 +275,27 @@ impl IndexManager {
     /// Returns a JobId for tracking the operation.
     /// Use `job_registry().get_job(job_id)` to check status.
     pub fn add_document(&self, index_name: &str, document: Document) -> Result<JobId> {
-        let state = self.get_index(index_name)?;
-        let index_name_owned = index_name.to_string();
-
-        // Create job entry
+        // Create job entry for API compatibility
         let job_id = self
             .job_registry
-            .create_job(JobType::BulkImport, Some(index_name_owned.clone()));
+            .create_job(JobType::BulkImport, Some(index_name.to_string()));
 
-        // Get the current tokio runtime handle
-        let rt_handle = tokio::runtime::Handle::current();
+        // Execute synchronously - CLI doesn't need async job queue
+        self.job_registry.start_job(&job_id);
 
-        let job_id_clone = job_id.clone();
-        let job_registry = self.job_registry.clone();
-
-        rt_handle.spawn(async move {
-            job_registry.start_job(&job_id_clone);
-
-            let id = document.id.clone();
-            let expires_at_ts = document
-                .expires_at
-                .map(|t| t.timestamp())
-                .unwrap_or(i64::MAX);
-            let field_values: Vec<(String, serde_json::Value)> =
-                document.fields.into_iter().collect();
-
-            // Acquire write lock for the operation
-            let result = state.ensure_writer();
-            if let Err(e) = result {
-                job_registry.fail_job(&job_id_clone, e.to_string());
-                return;
+        let id = document.id.clone();
+        match self.add_document_sync(index_name, document) {
+            Ok(_) => {
+                debug!("Added document {} to index {}", id, index_name);
+                self.job_registry.complete_job(
+                    &job_id,
+                    format!("Document '{}' added successfully", id),
+                );
             }
-
-            let mut guard = state.writer.write();
-            let writer = match guard.as_mut() {
-                Some(w) => w,
-                None => {
-                    job_registry.fail_job(&job_id_clone, "Writer not initialized".to_string());
-                    return;
-                }
-            };
-
-            // Delete existing document with same ID
-            let delete_term = Term::from_field_text(state.id_field, &id);
-            writer.delete_term(delete_term);
-
-            // Build new document
-            let mut doc = TantivyDocument::new();
-            doc.add_text(state.id_field, &id);
-            doc.add_i64(state.expires_at_field, expires_at_ts);
-
-            for (field_name, value) in field_values {
-                if let Some(tantivy_field) = state.field_map.get(&field_name) {
-                    let _ = add_field_value(&mut doc, *tantivy_field, &value);
-                }
+            Err(e) => {
+                self.job_registry.fail_job(&job_id, e.to_string());
             }
-
-            match writer.add_document(doc) {
-                Ok(_) => {
-                    debug!("Added document {} to index {}", id, index_name_owned);
-                    job_registry.complete_job(
-                        &job_id_clone,
-                        format!("Document '{}' added successfully", id),
-                    );
-                }
-                Err(e) => {
-                    job_registry.fail_job(&job_id_clone, e.to_string());
-                }
-            }
-        });
+        }
 
         Ok(job_id)
     }
@@ -372,111 +347,92 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Delete a document from an index as a background job.
+    /// Delete a document from an index (synchronous execution).
     ///
-    /// Returns a JobId for tracking the operation.
+    /// Returns a JobId for API compatibility, but executes synchronously.
     pub fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<JobId> {
-        let state = self.get_index(index_name)?;
-        let index_name_owned = index_name.to_string();
-
         let job_id = self.job_registry.create_job(
             JobType::Custom("delete_document".to_string()),
-            Some(index_name_owned.clone()),
+            Some(index_name.to_string()),
         );
 
-        let rt_handle = tokio::runtime::Handle::current();
-        let job_id_clone = job_id.clone();
-        let job_registry = self.job_registry.clone();
-        let doc_id_owned = doc_id.to_string();
+        self.job_registry.start_job(&job_id);
 
-        rt_handle.spawn(async move {
-            job_registry.start_job(&job_id_clone);
-
-            let result = state.ensure_writer();
-            if let Err(e) = result {
-                job_registry.fail_job(&job_id_clone, e.to_string());
-                return;
+        match self.delete_document_sync(index_name, doc_id) {
+            Ok(_) => {
+                self.job_registry.complete_job(
+                    &job_id,
+                    format!("Document '{}' deleted successfully", doc_id),
+                );
             }
-
-            let mut guard = state.writer.write();
-            match guard.as_mut() {
-                Some(writer) => {
-                    let delete_term = Term::from_field_text(state.id_field, &doc_id_owned);
-                    writer.delete_term(delete_term);
-                    debug!(
-                        "Deleted document {} from index {}",
-                        doc_id_owned, index_name_owned
-                    );
-                    job_registry.complete_job(
-                        &job_id_clone,
-                        format!("Document '{}' deleted successfully", doc_id_owned),
-                    );
-                }
-                None => {
-                    job_registry.fail_job(&job_id_clone, "Writer not initialized".to_string());
-                }
+            Err(e) => {
+                self.job_registry.fail_job(&job_id, e.to_string());
             }
-        });
+        }
 
         Ok(job_id)
     }
 
-    /// Commit changes to an index as a background job.
-    ///
-    /// Returns a JobId for tracking the operation.
-    pub fn commit(&self, index_name: &str) -> Result<JobId> {
+    /// Delete a document synchronously (internal implementation).
+    fn delete_document_sync(&self, index_name: &str, doc_id: &str) -> Result<()> {
         let state = self.get_index(index_name)?;
-        let index_name_owned = index_name.to_string();
 
+        state.ensure_writer()?;
+
+        let mut guard = state.writer.write();
+        let writer = guard
+            .as_mut()
+            .ok_or(Error::WriterNotInitialized)?;
+
+        let delete_term = Term::from_field_text(state.id_field, doc_id);
+        writer.delete_term(delete_term);
+        debug!("Deleted document {} from index {}", doc_id, index_name);
+
+        Ok(())
+    }
+
+    /// Commit changes to an index (synchronous execution).
+    ///
+    /// Returns a JobId for API compatibility, but executes synchronously.
+    pub fn commit(&self, index_name: &str) -> Result<JobId> {
         let job_id = self.job_registry.create_job(
             JobType::Custom("commit".to_string()),
-            Some(index_name_owned.clone()),
+            Some(index_name.to_string()),
         );
 
-        let rt_handle = tokio::runtime::Handle::current();
-        let job_id_clone = job_id.clone();
-        let job_registry = self.job_registry.clone();
+        self.job_registry.start_job(&job_id);
 
-        rt_handle.spawn(async move {
-            job_registry.start_job(&job_id_clone);
-
-            let result = state.ensure_writer();
-            if let Err(e) = result {
-                job_registry.fail_job(&job_id_clone, e.to_string());
-                return;
+        match self.commit_sync(index_name) {
+            Ok(_) => {
+                self.job_registry.complete_job(
+                    &job_id,
+                    format!("Index '{}' committed successfully", index_name),
+                );
             }
-
-            let mut guard = state.writer.write();
-            match guard.as_mut() {
-                Some(writer) => {
-                    match writer.commit() {
-                        Ok(_) => {
-                            // Reload reader after commit
-                            if let Err(e) = state.reader.reload() {
-                                job_registry.fail_job(
-                                    &job_id_clone,
-                                    format!("Commit succeeded but reader reload failed: {}", e),
-                                );
-                                return;
-                            }
-                            info!("Committed index {}", index_name_owned);
-                            job_registry.complete_job(
-                                &job_id_clone,
-                                format!("Index '{}' committed successfully", index_name_owned),
-                            );
-                        }
-                        Err(e) => {
-                            job_registry.fail_job(&job_id_clone, e.to_string());
-                        }
-                    }
-                }
-                None => {
-                    job_registry.fail_job(&job_id_clone, "Writer not initialized".to_string());
-                }
+            Err(e) => {
+                self.job_registry.fail_job(&job_id, e.to_string());
             }
-        });
+        }
 
         Ok(job_id)
+    }
+
+    /// Commit changes synchronously (internal implementation).
+    fn commit_sync(&self, index_name: &str) -> Result<()> {
+        let state = self.get_index(index_name)?;
+
+        state.ensure_writer()?;
+
+        let mut guard = state.writer.write();
+        let writer = guard
+            .as_mut()
+            .ok_or(Error::WriterNotInitialized)?;
+
+        writer.commit()?;
+        state.reader.reload()?;
+        info!("Committed index {}", index_name);
+
+        Ok(())
     }
 
     /// Search an index.

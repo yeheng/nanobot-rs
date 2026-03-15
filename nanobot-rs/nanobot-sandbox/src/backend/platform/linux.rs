@@ -117,7 +117,10 @@ impl LinuxBwrapBackend {
         // Working directory inside sandbox
         command.arg("--chdir").arg(working_dir);
 
-        // The actual command
+        // The actual command - execute via bash
+        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
+        // and check_dangerous_patterns() in the CommandBuilder.
+        // The bwrap sandbox isolation provides additional defense-in-depth.
         command.arg("bash").arg("-c").arg(cmd);
 
         debug!("bwrap command: {:?}", command);

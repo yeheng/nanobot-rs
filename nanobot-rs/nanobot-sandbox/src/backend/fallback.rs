@@ -64,6 +64,10 @@ impl SandboxBackend for FallbackBackend {
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
         let mut command = Command::new("bash");
+        // Use bash -c with the command string.
+        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
+        // and check_dangerous_patterns() in the CommandBuilder.
+        // The sandbox isolation (bwrap/sandbox-exec) provides additional defense.
         command
             .arg("-c")
             .arg(&prefixed_cmd)

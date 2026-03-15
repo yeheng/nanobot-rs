@@ -1,19 +1,23 @@
 //! Audit log implementation
 //!
 //! Provides file-based audit logging with rotation support.
+//! Uses a buffered writer for efficient I/O performance.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
+use tokio::fs::{self, File, OpenOptions};
+use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use super::AuditEvent;
 use crate::config::AuditConfig;
 use crate::error::{Result, SandboxError};
 
-/// Audit log writer
+/// Audit log writer with buffered I/O.
+///
+/// Uses a BufWriter to minimize system calls during write operations.
+/// The writer is held open across multiple write calls for efficiency.
 pub struct AuditLog {
     /// Log file path
     path: PathBuf,
@@ -21,8 +25,10 @@ pub struct AuditLog {
     max_size_bytes: u64,
     /// Whether to log command output
     log_output: bool,
-    /// Current file size
-    current_size: Arc<RwLock<u64>>,
+    /// Buffered writer with file handle (kept open)
+    writer: Arc<Mutex<Option<BufWriter<File>>>>,
+    /// Current file size for rotation tracking
+    current_size: Arc<Mutex<u64>>,
 }
 
 impl AuditLog {
@@ -41,7 +47,8 @@ impl AuditLog {
             path,
             max_size_bytes,
             log_output: config.log_output,
-            current_size: Arc::new(RwLock::new(0)),
+            writer: Arc::new(Mutex::new(None)),
+            current_size: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -51,7 +58,8 @@ impl AuditLog {
             path: path.into(),
             max_size_bytes: 100 * 1024 * 1024, // 100 MB default
             log_output: false,
-            current_size: Arc::new(RwLock::new(0)),
+            writer: Arc::new(Mutex::new(None)),
+            current_size: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -73,45 +81,74 @@ impl AuditLog {
             0
         };
 
-        *self.current_size.write().await = size;
+        *self.current_size.lock().await = size;
         debug!("Audit log initialized: {:?} ({} bytes)", self.path, size);
         Ok(())
     }
 
-    /// Write an event to the log
-    pub async fn write(&self, event: &AuditEvent) -> Result<()> {
-        let mut file = OpenOptions::new()
+    /// Get or create the buffered writer.
+    async fn get_writer(&self) -> Result<tokio::io::BufWriter<File>> {
+        let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .await
             .map_err(|e| SandboxError::AuditError(format!("Failed to open log file: {}", e)))?;
 
+        Ok(BufWriter::new(file))
+    }
+
+    /// Write an event to the log
+    pub async fn write(&self, event: &AuditEvent) -> Result<()> {
         // Serialize event
         let mut line = serde_json::to_string(event)
             .map_err(|e| SandboxError::AuditError(format!("Failed to serialize event: {}", e)))?;
         line.push('\n');
 
-        // Check for rotation
         let line_len = line.len() as u64;
-        let mut current_size = self.current_size.write().await;
-        if *current_size + line_len > self.max_size_bytes {
-            drop(current_size);
-            self.rotate().await?;
-            current_size = self.current_size.write().await;
-            *current_size = 0;
+
+        // Check for rotation (with current_size lock held briefly)
+        {
+            let mut current_size = self.current_size.lock().await;
+            if *current_size + line_len > self.max_size_bytes {
+                // Need to rotate - drop writer first
+                {
+                    let mut writer_guard = self.writer.lock().await;
+                    *writer_guard = None; // Close the writer
+                }
+                self.rotate().await?;
+                *current_size = 0;
+            }
         }
 
-        // Write to file
-        file.write_all(line.as_bytes())
-            .await
-            .map_err(|e| SandboxError::AuditError(format!("Failed to write to log: {}", e)))?;
+        // Write using buffered writer
+        {
+            let mut writer_guard = self.writer.lock().await;
 
-        file.flush()
-            .await
-            .map_err(|e| SandboxError::AuditError(format!("Failed to flush log: {}", e)))?;
+            // Lazily initialize writer if needed
+            if writer_guard.is_none() {
+                *writer_guard = Some(self.get_writer().await?);
+            }
 
-        *current_size += line_len;
+            let writer = writer_guard.as_mut().unwrap();
+            writer
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| SandboxError::AuditError(format!("Failed to write to log: {}", e)))?;
+
+            // Flush to ensure data is persisted
+            writer
+                .flush()
+                .await
+                .map_err(|e| SandboxError::AuditError(format!("Failed to flush log: {}", e)))?;
+        }
+
+        // Update size tracking
+        {
+            let mut current_size = self.current_size.lock().await;
+            *current_size += line_len;
+        }
+
         Ok(())
     }
 

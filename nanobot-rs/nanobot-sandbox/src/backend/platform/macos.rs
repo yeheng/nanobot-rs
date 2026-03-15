@@ -105,6 +105,9 @@ impl MacOsSandboxBackend {
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
         let mut command = Command::new("sandbox-exec");
+        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
+        // and check_dangerous_patterns() in the CommandBuilder.
+        // The sandbox-exec isolation provides additional defense-in-depth.
         command
             .arg("-p")
             .arg(profile)

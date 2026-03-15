@@ -486,34 +486,34 @@ async fn execute_doc_command(
     Ok(())
 }
 
-/// Wait for a job to complete with timeout
+/// Wait for a job to complete with timeout.
+///
+/// Since jobs now execute synchronously, this function simply verifies
+/// the job status is immediately available.
 async fn wait_for_job_completion(
     manager: &IndexManager,
     job_id: &str,
-    timeout_secs: u64,
+    _timeout_secs: u64,
 ) -> tantivy_cli::Result<()> {
-    use tokio::time::{sleep, Duration};
-
-    let start = std::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_secs(timeout_secs) {
-        if let Some(job) = manager.job_registry().get_job(job_id) {
-            match job.status {
-                tantivy_cli::maintenance::JobStatus::Completed => return Ok(()),
-                tantivy_cli::maintenance::JobStatus::Failed => {
-                    return Err(tantivy_cli::Error::ParseError(
-                        job.error.unwrap_or_else(|| "Job failed".to_string())
-                    ));
-                }
-                _ => {
-                    sleep(Duration::from_millis(100)).await;
-                }
+    // Jobs execute synchronously, so status should be immediately available
+    if let Some(job) = manager.job_registry().get_job(job_id) {
+        match job.status {
+            tantivy_cli::maintenance::JobStatus::Completed => return Ok(()),
+            tantivy_cli::maintenance::JobStatus::Failed => {
+                return Err(tantivy_cli::Error::ParseError(
+                    job.error.unwrap_or_else(|| "Job failed".to_string())
+                ));
             }
-        } else {
-            return Err(tantivy_cli::Error::ParseError("Job not found".to_string()));
+            _ => {
+                // Job is still pending - this shouldn't happen with sync execution
+                return Err(tantivy_cli::Error::ParseError(
+                    "Job is still pending - this indicates a bug in sync execution".to_string()
+                ));
+            }
         }
+    } else {
+        return Err(tantivy_cli::Error::ParseError("Job not found".to_string()));
     }
-
-    Err(tantivy_cli::Error::ParseError("Job completion timeout".to_string()))
 }
 
 async fn execute_search_command(
