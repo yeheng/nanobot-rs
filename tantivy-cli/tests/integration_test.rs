@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use std::thread;
 
-use tantivy_mcp::index::{FieldDef, FieldType, IndexManager};
-use tantivy_mcp::maintenance::JobRegistry;
+use tantivy_cli::index::{FieldDef, FieldType, IndexManager};
+use tantivy_cli::maintenance::JobRegistry;
 
 /// Test basic index operations.
 #[test]
@@ -128,7 +128,7 @@ async fn test_document_operations() {
         .expect("Failed to create index");
 
     // Add document (returns JobId)
-    let doc = tantivy_mcp::index::Document::new(
+    let doc = tantivy_cli::index::Document::new(
         "doc1".to_string(),
         serde_json::json!({
             "text": "Hello world"
@@ -203,7 +203,7 @@ async fn test_compact() {
 
     // Add and delete some documents
     for i in 0..10 {
-        let doc = tantivy_mcp::index::Document::new(
+        let doc = tantivy_cli::index::Document::new(
             format!("doc{}", i),
             serde_json::json!({
                 "text": format!("Document {}", i)
@@ -255,7 +255,7 @@ async fn test_compact() {
 
 /// Helper function to wait for a job to complete.
 fn wait_for_job(job_registry: &Arc<JobRegistry>, job_id: &str, timeout: std::time::Duration) {
-    use tantivy_mcp::maintenance::JobStatus;
+    use tantivy_cli::maintenance::JobStatus;
     let start = std::time::Instant::now();
     loop {
         if let Some(job) = job_registry.get_job(job_id) {

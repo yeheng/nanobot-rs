@@ -64,7 +64,7 @@ impl Default for WindowsFallbackBackend {
 #[async_trait]
 impl SandboxBackend for WindowsFallbackBackend {
     fn name(&self) -> &str {
-        "fallback"  // Changed from "job-objects" to be honest about capabilities
+        "fallback" // Changed from "job-objects" to be honest about capabilities
     }
 
     async fn is_available(&self) -> bool {

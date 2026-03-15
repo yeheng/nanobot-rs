@@ -136,7 +136,7 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         match platform {
             Platform::Linux => "bwrap",
             Platform::MacOS => "sandbox-exec",
-            Platform::Windows => "fallback",  // Windows has no real sandbox
+            Platform::Windows => "fallback", // Windows has no real sandbox
         }
     } else {
         &backend_name
@@ -171,7 +171,7 @@ pub fn available_backends() -> Vec<&'static str> {
     backends.push("sandbox-exec");
 
     #[cfg(target_os = "windows")]
-    backends.push("windows-fallback");  // NOT a real sandbox, just cmd.exe
+    backends.push("windows-fallback"); // NOT a real sandbox, just cmd.exe
 
     backends
 }

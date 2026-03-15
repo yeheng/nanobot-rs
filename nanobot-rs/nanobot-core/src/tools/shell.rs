@@ -49,7 +49,11 @@ impl ExecTool {
     ) -> Self {
         let working_dir = working_dir.into();
         // Ensure timeout is at least 1 second to avoid immediate timeout
-        let timeout_secs = if config.timeout == 0 { 120 } else { config.timeout };
+        let timeout_secs = if config.timeout == 0 {
+            120
+        } else {
+            config.timeout
+        };
         let timeout = Duration::from_secs(timeout_secs);
 
         // Convert nanobot-core config to nanobot-sandbox config
@@ -227,9 +231,7 @@ impl Tool for ExecTool {
         } else {
             Ok(format!(
                 "Command exited with code {:?}\nStdout:\n{}\nStderr:\n{}",
-                result.exit_code,
-                result.stdout,
-                result.stderr
+                result.exit_code, result.stdout, result.stderr
             ))
         }
     }
@@ -239,10 +241,7 @@ impl Tool for ExecTool {
 ///
 /// This function maps the core configuration types to the sandbox configuration,
 /// handling differences in field names and structure.
-fn build_sandbox_config(
-    config: &ExecToolConfig,
-    workspace: &PathBuf,
-) -> SandboxExecutorConfig {
+fn build_sandbox_config(config: &ExecToolConfig, workspace: &PathBuf) -> SandboxExecutorConfig {
     use nanobot_sandbox::config::{
         ApprovalConfig, AuditConfig, CommandPolicyConfig as SandboxPolicyConfig,
         ResourceLimitsConfig as SandboxLimitsConfig,
@@ -362,7 +361,11 @@ mod tests {
 
         for cmd in injection_attempts {
             let result = rt.block_on(tool.execute(serde_json::json!({"command": cmd})));
-            assert!(result.is_err(), "Command '{}' should have been blocked", cmd);
+            assert!(
+                result.is_err(),
+                "Command '{}' should have been blocked",
+                cmd
+            );
             assert!(
                 result.unwrap_err().to_string().contains("unsafe pattern"),
                 "Command '{}' should have been blocked as unsafe",
