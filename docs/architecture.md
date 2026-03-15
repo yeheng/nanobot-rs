@@ -21,6 +21,7 @@ nanobot-rs/                    (Cargo workspace)
 │       ├── hooks/             外部 Shell Hook 系统
 │       ├── mcp/               MCP 协议 (client, manager, tool, types)
 │       ├── memory/            存储层 (MemoryStore trait + SQLite FTS5)
+│       ├── pipeline/          多 Agent 协作管线 (三省六部, opt-in) → 详见 pipeline.md
 │       ├── providers/         LLM 提供商 (OpenAI 兼容 + Gemini + Copilot)
 │       ├── search/            搜索类型定义 (SearchQuery, SearchResult)
 │       ├── session/           会话管理 (SQLite 后端)
