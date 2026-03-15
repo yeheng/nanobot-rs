@@ -67,6 +67,10 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             api_base: None,
             supports_thinking: None,
             client_id,
+            models: Default::default(),
+            default_currency: Some("USD".to_string()),
+            provider_type: nanobot_core::config::ProviderType::Builtin,
+            api_compatibility: nanobot_core::config::ApiCompatibility::Openai,
         },
     );
 

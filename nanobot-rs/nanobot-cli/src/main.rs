@@ -12,7 +12,9 @@ mod cli;
 mod commands;
 mod provider;
 
-use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, SearchCommands};
+use cli::{
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, SearchCommands, VaultCommands,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,6 +67,22 @@ async fn main() -> Result<()> {
             SearchCommands::Update { r#type } => commands::cmd_search_update(&r#type).await,
             SearchCommands::Status => commands::cmd_search_status().await,
         },
+        Some(Commands::Stats) => commands::cmd_stats().await,
+        Some(Commands::Vault { command }) => match command {
+            VaultCommands::List => commands::cmd_vault_list().await,
+            VaultCommands::Set {
+                key,
+                value,
+                description,
+            } => commands::cmd_vault_set(key, value, description).await,
+            VaultCommands::Get { key } => commands::cmd_vault_get(key).await,
+            VaultCommands::Delete { key, force } => commands::cmd_vault_delete(key, force).await,
+            VaultCommands::Show { key, show_value } => {
+                commands::cmd_vault_show(key, show_value).await
+            }
+            VaultCommands::Import { file, merge } => commands::cmd_vault_import(file, merge).await,
+            VaultCommands::Export { file } => commands::cmd_vault_export(file).await,
+        },
         None => {
             // No command - show help
             println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
@@ -77,7 +95,9 @@ async fn main() -> Result<()> {
             println!("  gateway   Start the gateway");
             println!("  auth      Authentication commands");
             println!("  cron      Manage scheduled tasks");
-            println!("  search    Manage search indexes\n");
+            println!("  search    Manage search indexes");
+            println!("  stats     Show session token usage and cost statistics");
+            println!("  vault     Manage vault secrets\n");
             println!("Run 'nanobot --help' for more information.");
             Ok(())
         }

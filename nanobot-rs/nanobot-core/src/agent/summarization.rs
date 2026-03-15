@@ -130,30 +130,13 @@ impl SummarizationService {
 /// entity extraction, etc.) from the agent loop.  The `AgentLoop` calls this
 /// hook after history truncation; the returned summary is injected into the
 /// prompt by `ContextBuilder`.
-#[async_trait::async_trait]
-pub trait ContextCompressionHook: Send + Sync {
-    /// Compress evicted messages into an optional summary string.
-    ///
-    /// * If `evicted_messages` is non-empty, generate a new summary that
-    ///   incorporates them (and any previously persisted summary).
-    /// * If `evicted_messages` is empty, return the existing persisted
-    ///   summary (if any).
-    async fn compress(
-        &self,
-        session_key: &str,
-        evicted_messages: &[SessionMessage],
-    ) -> anyhow::Result<Option<String>>;
-}
-
-#[async_trait::async_trait]
-impl ContextCompressionHook for SummarizationService {
-    async fn compress(
+impl SummarizationService {
+    pub async fn compress(
         &self,
         session_key: &str,
         evicted_messages: &[SessionMessage],
     ) -> anyhow::Result<Option<String>> {
         if !evicted_messages.is_empty() {
-            // Evicted messages exist — generate/update summary
             let existing_summary = self.load_summary(session_key).await;
             match self
                 .summarize(session_key, evicted_messages, &existing_summary)
@@ -169,7 +152,6 @@ impl ContextCompressionHook for SummarizationService {
                 }
             }
         } else {
-            // No evictions — just load any existing summary
             Ok(self.load_summary(session_key).await)
         }
     }

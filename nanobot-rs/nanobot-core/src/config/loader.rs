@@ -1,12 +1,28 @@
 //! Configuration loader
+//!
+//! Provides loading configuration from YAML files with support for:
+//! - Environment variable overrides
+//! - Vault placeholder resolution (`{{vault:key}}`)
+//!
+//! # Vault Integration
+//!
+//! When configuration values contain `{{vault:key}}` placeholders, the loader
+//! automatically resolves them by fetching values from the vault store.
+//! This requires:
+//! 1. `NANOBOT_VAULT_PASSWORD` environment variable to be set
+//! 2. Vault to be unlocked (via `unlock()`)
+//!
+//! If either condition is not met, the placeholder is left unresolved and a warning is logged.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use tokio::fs;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
+use super::resolver::{VaultPlaceholderResolve, VAULT_PASSWORD_ENV};
 use super::schema::Config;
+use crate::vault::VaultStore;
 
 /// Get the nanobot config directory
 pub fn config_dir() -> PathBuf {
@@ -49,6 +65,9 @@ impl ConfigLoader {
     }
 
     /// Load configuration from file
+    ///
+    /// This method also resolves vault placeholders (`{{vault:key}}`) if
+    /// the vault password is available via `NANOBOT_VAULT_PASSWORD` environment variable.
     pub async fn load(&self) -> Result<Config> {
         let path = self.config_path();
 
@@ -67,8 +86,58 @@ impl ConfigLoader {
         // Apply environment variable overrides
         self.apply_env_overrides(&mut config);
 
+        // Resolve vault placeholders
+        self.resolve_vault_placeholders(&mut config);
+
         debug!("Loaded config from {:?}", path);
         Ok(config)
+    }
+
+    /// Resolve vault placeholders in configuration
+    ///
+    /// This method attempts to resolve `{{vault:key}}` placeholders by:
+    /// 1. Checking for `NANOBOT_VAULT_PASSWORD` environment variable
+    /// 2. Loading and unlocking the vault
+    /// 3. Resolving all placeholders in the configuration
+    fn resolve_vault_placeholders(&self, config: &mut Config) {
+        // Check if vault password is available
+        let password = match std::env::var(VAULT_PASSWORD_ENV) {
+            Ok(p) if !p.is_empty() => Some(p),
+            _ => None,
+        };
+
+        let Some(password) = password else {
+            debug!("No vault password found, skipping placeholder resolution");
+            return;
+        };
+
+        // Load vault store
+        let mut store = match VaultStore::new() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to load vault store: {}", e);
+                return;
+            }
+        };
+
+        // Unlock vault
+        if let Err(e) = store.unlock(&password) {
+            warn!("Failed to unlock vault: {}", e);
+            return;
+        }
+
+        // Resolve placeholders
+        let unresolved = config.resolve_placeholders(&store);
+
+        if !unresolved.is_empty() {
+            warn!(
+                "Failed to resolve {} vault placeholders: {:?}",
+                unresolved.len(),
+                unresolved
+            );
+        } else {
+            debug!("All vault placeholders resolved successfully");
+        }
     }
 
     /// Apply environment variable overrides

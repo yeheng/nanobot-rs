@@ -1,51 +1,35 @@
 //! Search index management commands.
+//!
+//! Note: The built-in Tantivy search has been moved to a standalone MCP server.
+//! Use `tantivy-mcp` for advanced full-text search functionality.
 
 use anyhow::Result;
 use nanobot_core::config::config_dir;
-use nanobot_core::memory::SqliteStore;
-use nanobot_core::search::tantivy::{open_history_index, open_memory_index};
 
 /// Rebuild search indexes.
-pub async fn cmd_search_rebuild(index_type: &str) -> Result<()> {
-    let config_dir = config_dir();
-
-    match index_type {
-        "memory" => rebuild_memory_index(&config_dir).await?,
-        "history" => rebuild_history_index(&config_dir).await?,
-        "all" => {
-            rebuild_memory_index(&config_dir).await?;
-            rebuild_history_index(&config_dir).await?;
-        }
-        _ => {
-            anyhow::bail!(
-                "Unknown index type: {}. Use 'memory', 'history', or 'all'.",
-                index_type
-            );
-        }
-    }
-
+///
+/// Note: This functionality has been moved to the standalone `tantivy-mcp` server.
+pub async fn cmd_search_rebuild(_index_type: &str) -> Result<()> {
+    println!("⚠️  Built-in search index management has been deprecated.");
+    println!();
+    println!("For advanced full-text search, use the standalone tantivy-mcp server:");
+    println!("  https://github.com/yeheng/nanobot/tree/main/tantivy-mcp");
+    println!();
+    println!("The tantivy-mcp server provides:");
+    println!("  • JSON document indexing with dynamic schemas");
+    println!("  • Full-text search with Tantivy");
+    println!("  • MCP protocol support for Claude Code and other clients");
     Ok(())
 }
 
 /// Incrementally update search indexes.
-pub async fn cmd_search_update(index_type: &str) -> Result<()> {
-    let config_dir = config_dir();
-
-    match index_type {
-        "memory" => update_memory_index(&config_dir).await?,
-        "history" => update_history_index(&config_dir).await?,
-        "all" => {
-            update_memory_index(&config_dir).await?;
-            update_history_index(&config_dir).await?;
-        }
-        _ => {
-            anyhow::bail!(
-                "Unknown index type: {}. Use 'memory', 'history', or 'all'.",
-                index_type
-            );
-        }
-    }
-
+///
+/// Note: This functionality has been moved to the standalone `tantivy-mcp` server.
+pub async fn cmd_search_update(_index_type: &str) -> Result<()> {
+    println!("⚠️  Built-in search index management has been deprecated.");
+    println!();
+    println!("For advanced full-text search, use the standalone tantivy-mcp server:");
+    println!("  https://github.com/yeheng/nanobot/tree/main/tantivy-mcp");
     Ok(())
 }
 
@@ -53,24 +37,13 @@ pub async fn cmd_search_update(index_type: &str) -> Result<()> {
 pub async fn cmd_search_status() -> Result<()> {
     let config_dir = config_dir();
 
-    // Memory index status
-    let memory_index_path = config_dir.join("tantivy-index").join("memory");
-    let memory_dir = config_dir.join("memory");
-
     println!("📊 Search Index Status\n");
 
-    // Memory index
+    // Memory index path info
+    let memory_index_path = config_dir.join("tantivy-index").join("memory");
     print!("  📁 Memory Index: ");
     if memory_index_path.exists() {
-        match open_memory_index(&memory_index_path, &memory_dir) {
-            Ok((reader, _)) => {
-                let num_docs = reader.num_docs();
-                println!("✅ {} documents indexed", num_docs);
-            }
-            Err(e) => {
-                println!("⚠️  Error: {}", e);
-            }
-        }
+        println!("✅ Directory exists (legacy)");
     } else {
         println!("❌ Not initialized");
     }
@@ -79,20 +52,13 @@ pub async fn cmd_search_status() -> Result<()> {
     let history_index_path = config_dir.join("tantivy-index").join("history");
     print!("  💬 History Index: ");
     if history_index_path.exists() {
-        match open_history_index(&history_index_path) {
-            Ok((reader, _)) => {
-                let num_docs = reader.num_docs();
-                println!("✅ {} messages indexed", num_docs);
-            }
-            Err(e) => {
-                println!("⚠️  Error: {}", e);
-            }
-        }
+        println!("✅ Directory exists (legacy)");
     } else {
         println!("❌ Not initialized");
     }
 
     // Memory files count
+    let memory_dir = config_dir.join("memory");
     if memory_dir.exists() {
         let file_count = std::fs::read_dir(&memory_dir)
             .map(|entries| {
@@ -116,63 +82,9 @@ pub async fn cmd_search_status() -> Result<()> {
         println!("  🗄️  Database: Not found");
     }
 
-    Ok(())
-}
+    println!();
+    println!("💡 Note: Built-in Tantivy search has been moved to tantivy-mcp.");
+    println!("   For advanced full-text search, use the standalone tantivy-mcp server.");
 
-async fn rebuild_memory_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("memory");
-    let memory_dir = config_dir.join("memory");
-
-    println!("🔄 Rebuilding memory index...");
-
-    let (_, mut writer) = open_memory_index(&index_path, &memory_dir)?;
-    let count = writer.rebuild().await?;
-
-    println!("✅ Memory index rebuilt: {} documents indexed", count);
-    Ok(())
-}
-
-async fn rebuild_history_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("history");
-
-    println!("🔄 Rebuilding history index...");
-
-    let db = SqliteStore::new().await?;
-    let (_, mut writer) = open_history_index(&index_path)?;
-    let count = writer.rebuild_from_db(&db).await?;
-
-    println!("✅ History index rebuilt: {} messages indexed", count);
-    Ok(())
-}
-
-async fn update_memory_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("memory");
-    let memory_dir = config_dir.join("memory");
-
-    println!("🔄 Updating memory index...");
-
-    let (_, mut writer) = open_memory_index(&index_path, &memory_dir)?;
-    let stats = writer.incremental_update().await?;
-
-    println!(
-        "✅ Memory index updated: {} added, {} updated, {} removed",
-        stats.added, stats.updated, stats.removed
-    );
-    Ok(())
-}
-
-async fn update_history_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("history");
-
-    println!("🔄 Updating history index...");
-
-    let db = SqliteStore::new().await?;
-    let (_, mut writer) = open_history_index(&index_path)?;
-    let stats = writer.incremental_update(&db).await?;
-
-    println!(
-        "✅ History index updated: {} added, {} removed",
-        stats.added, stats.removed
-    );
     Ok(())
 }

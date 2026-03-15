@@ -256,11 +256,7 @@ impl CopilotOAuth {
         if !trimmed.starts_with('{') {
             return Err(OAuthError::JsonError(format!(
                 "Expected JSON response, got: {}",
-                if trimmed.len() > 200 {
-                    &trimmed[..200]
-                } else {
-                    trimmed
-                }
+                trimmed
             )));
         }
 

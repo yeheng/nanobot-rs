@@ -1,0 +1,134 @@
+# Nanobot Configuration Example
+# This file demonstrates the dynamic LLM model switching feature
+
+# Provider configurations
+providers:
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    api_base: "https://api.openai.com/v1"
+
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    api_base: "https://api.anthropic.com/v1"
+
+  zhipu:
+    api_key: "${ZHIPU_API_KEY}"
+    api_base: "https://open.bigmodel.cn/api/paas/v4"
+
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"
+    api_base: "https://api.deepseek.com/v1"
+
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    api_base: "https://openrouter.ai/api/v1"
+
+  ollama:
+    # Local provider - no API key needed
+    api_base: "http://localhost:11434/v1"
+
+# Agent configuration with model profiles
+agents:
+  defaults:
+    # Default model (format: provider/model)
+    model: "zhipu/glm-5"
+    max_iterations: 20
+    temperature: 0.7
+    max_tokens: 4096
+    memory_window: 10
+    thinking_enabled: false
+    streaming: true
+
+  # Model profiles for dynamic switching
+  # The LLM can use the switch_model tool to delegate tasks to these models
+  models:
+    # Default model for general tasks
+    default:
+      provider: "zhipu"
+      model: "glm-5"
+      description: "General-purpose model for everyday tasks. Good balance of speed and quality."
+      capabilities: ["general", "chat"]
+      temperature: 0.7
+
+    # Fast model for quick responses
+    fast:
+      provider: "zhipu"
+      model: "glm-4-flash"
+      description: "Fast responses for simple queries and quick tasks"
+      capabilities: ["fast", "chat"]
+      temperature: 0.7
+      max_tokens: 2048
+
+    # Code expert model
+    coder:
+      provider: "deepseek"
+      model: "deepseek-coder"
+      description: "Specialized for code generation, refactoring, and debugging"
+      capabilities: ["code", "reasoning"]
+      temperature: 0.3
+      thinking_enabled: true
+
+    # Reasoning model for complex analysis
+    reasoner:
+      provider: "openai"
+      model: "o1-mini"
+      description: "Advanced reasoning for complex problems, math, and logic"
+      capabilities: ["reasoning", "math", "analysis"]
+      temperature: 0.7
+      thinking_enabled: true
+      max_tokens: 8192
+
+    # Creative model for writing and content
+    creative:
+      provider: "anthropic"
+      model: "claude-sonnet-4-20250514"
+      description: "Creative writing, content generation, and nuanced communication"
+      capabilities: ["creative", "writing", "communication"]
+      temperature: 0.9
+
+    # Research model with extended context
+    researcher:
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4"
+      description: "Deep research and analysis with extended context window"
+      capabilities: ["research", "analysis", "long-context"]
+      temperature: 0.5
+      max_tokens: 16384
+
+    # Local model for privacy-sensitive tasks
+    local:
+      provider: "ollama"
+      model: "llama3"
+      description: "Local model for privacy-sensitive tasks. No data leaves your machine."
+      capabilities: ["local", "private"]
+      temperature: 0.7
+
+# Channel configurations (optional)
+channels:
+  telegram:
+    enabled: false
+    token: ""
+    allow_from: []
+
+  discord:
+    enabled: false
+    token: ""
+    allow_from: []
+
+  slack:
+    enabled: false
+    bot_token: ""
+    app_token: ""
+    allow_from: []
+
+# Tool configurations
+tools:
+  restrict_to_workspace: false
+  web:
+    user_agent: "Mozilla/5.0"
+    timeout_seconds: 30
+  exec:
+    enabled: true
+    timeout_seconds: 60
+  history_search_limit: 50
+  mcp_servers: []

@@ -1,10 +1,15 @@
 //! Placeholder scanner for detecting {{vault:key}} patterns
+//!
+//! Uses a lightweight byte-slice cursor instead of regex — the pattern
+//! has a fixed prefix (`{{vault:`) and suffix (`}}`), making a full regex
+//! engine unnecessary.
 
-use regex::Regex;
 use std::collections::HashSet;
 
-/// Placeholder pattern: {{vault:key_name}}
-pub const PLACEHOLDER_PATTERN: &str = r"\{\{vault:([a-zA-Z0-9_]+)\}\}";
+/// Fixed prefix for vault placeholders
+const PREFIX: &str = "{{vault:";
+/// Fixed suffix for vault placeholders
+const SUFFIX: &str = "}}";
 
 /// A scanned placeholder
 #[derive(Debug, Clone)]
@@ -23,20 +28,47 @@ pub struct Placeholder {
 ///
 /// Returns a list of all placeholders found in the text.
 pub fn scan_placeholders(text: &str) -> Vec<Placeholder> {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
+    let mut results = Vec::new();
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
 
-    re.captures_iter(text)
-        .filter_map(|cap| {
-            let full = cap.get(0)?;
-            let key = cap.get(1)?;
-            Some(Placeholder {
-                key: key.as_str().to_string(),
-                full_match: full.as_str().to_string(),
-                start: full.start(),
-                end: full.end(),
-            })
-        })
-        .collect()
+    while cursor < bytes.len() {
+        // Jump to next potential match
+        let remaining = &text[cursor..];
+        let Some(offset) = remaining.find(PREFIX) else {
+            break;
+        };
+        let start = cursor + offset;
+        let key_start = start + PREFIX.len();
+
+        // Scan key characters: [a-zA-Z0-9_]+
+        let mut key_end = key_start;
+        while key_end < bytes.len() {
+            let b = bytes[key_end];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                key_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Key must be non-empty and followed by "}}"
+        if key_end > key_start && text[key_end..].starts_with(SUFFIX) {
+            let end = key_end + SUFFIX.len();
+            results.push(Placeholder {
+                key: text[key_start..key_end].to_string(),
+                full_match: text[start..end].to_string(),
+                start,
+                end,
+            });
+            cursor = end;
+        } else {
+            // Not a valid match — advance past the prefix to avoid infinite loop
+            cursor = key_start;
+        }
+    }
+
+    results
 }
 
 /// Extract all unique keys from text
@@ -51,22 +83,61 @@ pub fn replace_placeholders(
     text: &str,
     replacements: &std::collections::HashMap<String, String>,
 ) -> String {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
+    let placeholders = scan_placeholders(text);
+    if placeholders.is_empty() {
+        return text.to_string();
+    }
 
-    re.replace_all(text, |cap: &regex::Captures| -> String {
-        let key = &cap[1];
-        replacements
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
-    })
-    .to_string()
+    let mut result = String::with_capacity(text.len());
+    let mut last_end = 0;
+
+    for p in &placeholders {
+        // Copy text before this placeholder
+        result.push_str(&text[last_end..p.start]);
+        // Replace or keep original
+        if let Some(value) = replacements.get(&p.key) {
+            result.push_str(value);
+        } else {
+            result.push_str(&p.full_match);
+        }
+        last_end = p.end;
+    }
+    // Copy remaining text
+    result.push_str(&text[last_end..]);
+
+    result
 }
 
 /// Check if text contains any placeholders
 pub fn contains_placeholders(text: &str) -> bool {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
-    re.is_match(text)
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
+
+    while cursor < bytes.len() {
+        let remaining = &text[cursor..];
+        let Some(offset) = remaining.find(PREFIX) else {
+            return false;
+        };
+        let key_start = cursor + offset + PREFIX.len();
+
+        // Check for at least one valid key character
+        let mut key_end = key_start;
+        while key_end < bytes.len() {
+            let b = bytes[key_end];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                key_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        if key_end > key_start && text[key_end..].starts_with(SUFFIX) {
+            return true;
+        }
+        cursor = key_start;
+    }
+
+    false
 }
 
 #[cfg(test)]

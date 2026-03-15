@@ -8,8 +8,8 @@ use crate::error::McpError;
 
 /// MCP manager for multiple servers
 pub struct McpManager {
-    /// Clients stored directly, wrapped in Arc when accessed for concurrent use
     clients: HashMap<String, McpClient>,
+    configs: HashMap<String, McpServerConfig>,
 }
 
 impl McpManager {
@@ -17,20 +17,29 @@ impl McpManager {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
+            configs: HashMap::new(),
         }
     }
 
     /// Add a server
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {
-        let client = McpClient::new(name.clone(), config);
+        let client = McpClient::new(name.clone(), config.clone());
+        self.configs.insert(name.clone(), config);
         self.clients.insert(name, client);
     }
 
     /// Start all servers
     pub async fn start_all(&mut self) -> Result<(), McpError> {
-        for (name, client) in &mut self.clients {
-            if let Err(e) = client.start().await {
-                warn!("Failed to start MCP server {}: {}", name, e);
+        let configs: Vec<_> = self
+            .configs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (name, config) in configs {
+            if let Some(client) = self.clients.get_mut(&name) {
+                if let Err(e) = client.start(config).await {
+                    warn!("Failed to start MCP server {}: {}", name, e);
+                }
             }
         }
         Ok(())

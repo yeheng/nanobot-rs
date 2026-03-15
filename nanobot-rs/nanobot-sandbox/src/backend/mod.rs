@@ -1,0 +1,177 @@
+//! Sandbox backend abstraction
+//!
+//! Provides a trait-based abstraction for different sandbox backends,
+//! supporting multiple platforms and isolation levels.
+
+mod fallback;
+mod platform;
+
+pub use fallback::FallbackBackend;
+pub use platform::*;
+
+use std::path::Path;
+use std::process::Command;
+
+use async_trait::async_trait;
+
+use crate::config::SandboxConfig;
+use crate::error::Result;
+
+/// Platform enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Platform {
+    /// Linux
+    Linux,
+    /// macOS
+    MacOS,
+    /// Windows
+    Windows,
+}
+
+impl Platform {
+    /// Get the current platform
+    pub fn current() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Platform::Linux
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Platform::MacOS
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Platform::Windows
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            panic!("Unsupported platform")
+        }
+    }
+
+    /// Get platform name as string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Platform::Linux => "linux",
+            Platform::MacOS => "macos",
+            Platform::Windows => "windows",
+        }
+    }
+}
+
+/// Execution result from sandbox backend
+#[derive(Debug, Clone)]
+pub struct ExecutionResult {
+    /// Exit code (None if killed by signal)
+    pub exit_code: Option<i32>,
+    /// Standard output
+    pub stdout: String,
+    /// Standard error
+    pub stderr: String,
+    /// Whether the command was killed due to timeout
+    pub timed_out: bool,
+    /// Whether the command was killed due to resource limits
+    pub resource_exceeded: bool,
+}
+
+impl ExecutionResult {
+    /// Check if execution was successful
+    pub fn success(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+
+    /// Get combined output
+    pub fn output(&self) -> String {
+        if self.stderr.is_empty() {
+            self.stdout.clone()
+        } else {
+            format!("{}\n{}", self.stdout, self.stderr)
+        }
+    }
+}
+
+/// Sandbox backend trait
+///
+/// Defines the interface for sandbox execution backends.
+/// Each backend implements platform-specific isolation mechanisms.
+#[async_trait]
+pub trait SandboxBackend: Send + Sync {
+    /// Get the backend name
+    fn name(&self) -> &str;
+
+    /// Check if the backend is available on this system
+    async fn is_available(&self) -> bool;
+
+    /// Get supported platforms
+    fn supported_platforms(&self) -> &[Platform];
+
+    /// Build a Command for execution
+    fn build_command(
+        &self,
+        cmd: &str,
+        working_dir: &Path,
+        config: &SandboxConfig,
+    ) -> Result<Command>;
+
+    /// Execute a command in the sandbox
+    async fn execute(
+        &self,
+        cmd: &str,
+        working_dir: &Path,
+        config: &SandboxConfig,
+    ) -> Result<ExecutionResult>;
+}
+
+/// Create the appropriate sandbox backend based on configuration and platform.
+pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
+    if !config.enabled {
+        return Box::new(FallbackBackend::new());
+    }
+
+    let platform = Platform::current();
+    let backend_name = config.backend.to_lowercase();
+
+    // Handle "auto" backend selection
+    let backend_name = if backend_name == "auto" {
+        match platform {
+            Platform::Linux => "bwrap",
+            Platform::MacOS => "sandbox-exec",
+            Platform::Windows => "fallback", // Windows has no real sandbox
+        }
+    } else {
+        &backend_name
+    };
+
+    match backend_name {
+        "fallback" => Box::new(FallbackBackend::new()),
+        #[cfg(target_os = "linux")]
+        "bwrap" => Box::new(LinuxBwrapBackend::new()),
+        #[cfg(target_os = "macos")]
+        "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
+        #[cfg(target_os = "windows")]
+        "job-objects" | "windows-fallback" => Box::new(WindowsFallbackBackend::new()),
+        _ => {
+            tracing::warn!(
+                "Unknown backend '{}', falling back to unsandboxed execution",
+                backend_name
+            );
+            Box::new(FallbackBackend::new())
+        }
+    }
+}
+
+/// Get list of available backends on current platform
+pub fn available_backends() -> Vec<&'static str> {
+    let mut backends = vec!["fallback"];
+
+    #[cfg(target_os = "linux")]
+    backends.push("bwrap");
+
+    #[cfg(target_os = "macos")]
+    backends.push("sandbox-exec");
+
+    #[cfg(target_os = "windows")]
+    backends.push("windows-fallback"); // NOT a real sandbox, just cmd.exe
+
+    backends
+}

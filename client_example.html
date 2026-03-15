@@ -1,476 +1,87 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nanobot AI Chat</title>
-    <!-- Include Marked.js for Markdown parsing -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <title>Nanobot Web Client</title>
     <style>
-        :root {
-            --bg-color: #0f172a;
-            --chat-bg: #1e293b;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --accent: #3b82f6;
-            --accent-hover: #60a5fa;
-            --user-msg: #3b82f6;
-            --bot-msg: #334155;
-            --border-color: #334155;
-            --sys-msg: #64748b;
-        }
-
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
+            font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            text-align: center;
+            padding: 50px 20px;
+            background: #0f172a;
+            color: #f8fafc;
+            line-height: 1.6;
             margin: 0;
-            padding: 0;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
-            background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 70%);
         }
 
-        .chat-container {
-            width: 100%;
-            max-width: 900px;
-            height: 90vh;
-            background-color: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+        .box {
+            padding: 40px;
+            background: #1e293b;
             border-radius: 16px;
+            display: inline-block;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            max-width: 600px;
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        .header {
-            padding: 20px 24px;
-            background-color: rgba(30, 41, 59, 0.8);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header h1 {
-            margin: 0;
-            font-size: 1.25rem;
-            font-weight: 600;
-            letter-spacing: -0.025em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .header h1::before {
-            content: '';
-            display: block;
-            width: 24px;
-            height: 24px;
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            border-radius: 6px;
-        }
-
-        .status {
-            display: flex;
-            align-items: center;
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: var(--text-muted);
-            background: rgba(0,0,0,0.2);
-            padding: 6px 12px;
-            border-radius: 20px;
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 8px;
-            background-color: #ef4444; /* red for disconnected */
-            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-            transition: all 0.3s ease;
-        }
-
-        .status-dot.connected {
-            background-color: #10b981; /* green for connected */
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
-        }
-
-        .chat-box {
-            flex: 1;
-            padding: 24px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            scroll-behavior: smooth;
-        }
-
-        /* custom scrollbar */
-        .chat-box::-webkit-scrollbar {
-            width: 8px;
-        }
-        .chat-box::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        .chat-box::-webkit-scrollbar-thumb {
-            background-color: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-        }
-
-        .message-wrapper {
-            display: flex;
-            flex-direction: column;
-            max-width: 85%;
-            animation: fadeIn 0.3s ease forwards;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .message-wrapper.user {
-            align-self: flex-end;
-        }
-
-        .message-wrapper.bot {
-            align-self: flex-start;
-        }
-        
-        .message-wrapper.system {
-            align-self: center;
-            max-width: 95%;
-            font-size: 0.8rem;
-            color: var(--sys-msg);
-            text-align: center;
-            background: rgba(0,0,0,0.15);
-            padding: 4px 12px;
-            border-radius: 12px;
-        }
-
-        .message-label {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-            margin-left: 4px;
-            margin-right: 4px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        
-        .user .message-label {
-            justify-content: flex-end;
-        }
-
-        .message {
-            padding: 14px 18px;
-            border-radius: 18px;
-            font-size: 0.95rem;
-            line-height: 1.6;
-            word-wrap: break-word;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            overflow-x: auto;
-        }
-
-        .message.user {
-            background: linear-gradient(135deg, #3b82f6, #2563eb);
-            color: #ffffff;
-            border-bottom-right-radius: 4px;
-        }
-
-        .message.bot {
-            background-color: var(--bot-msg);
-            color: var(--text-main);
-            border-bottom-left-radius: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        /* Markdown Styles inside bot messages */
-        .markdown-body p { margin: 0 0 12px 0; }
-        .markdown-body p:last-child { margin-bottom: 0; }
-        .markdown-body a { color: #60a5fa; text-decoration: none; }
-        .markdown-body a:hover { text-decoration: underline; }
-        .markdown-body ul, .markdown-body ol { margin: 0 0 12px 20px; padding: 0; }
-        .markdown-body li { margin-bottom: 4px; }
-        .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { 
-            margin: 16px 0 8px 0; 
-            font-weight: 600; 
-            color: #ffffff;
-        }
-        .markdown-body h1:first-child, .markdown-body h2:first-child, .markdown-body h3:first-child {
+        h1 {
             margin-top: 0;
-        }
-        
-        .markdown-body pre {
-            background-color: #0f172a;
-            padding: 12px;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 12px 0;
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
-        .markdown-body code {
-            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-            background-color: rgba(0,0,0,0.3);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.85em;
-            color: #e2e8f0;
-        }
-
-        .markdown-body pre code {
-            background-color: transparent;
-            padding: 0;
-            font-size: 0.85em;
-            color: #e2e8f0;
-        }
-        
-        .markdown-body blockquote {
-            margin: 0 0 12px 0;
-            padding-left: 12px;
-            border-left: 4px solid var(--accent);
-            color: var(--text-muted);
-            font-style: italic;
-        }
-        
-        /* Table Styles for Markdown */
-        .markdown-body table {
-            border-collapse: collapse;
-            width: 100%;
-            margin: 12px 0;
-        }
-        .markdown-body th, .markdown-body td {
-            border: 1px solid rgba(255,255,255,0.1);
-            padding: 8px 12px;
-            text-align: left;
-        }
-        .markdown-body th {
-            background-color: rgba(255,255,255,0.05);
-            font-weight: 600;
-        }
-
-        .input-area {
-            padding: 20px 24px;
-            background-color: rgba(30, 41, 59, 0.8);
-            border-top: 1px solid rgba(255, 255, 255, 0.05);
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
-        .input-area input {
-            flex: 1;
-            padding: 16px 20px;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            background-color: rgba(15, 23, 42, 0.6);
-            color: var(--text-main);
-            font-size: 1rem;
-            transition: all 0.3s;
-            outline: none;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .input-area input:focus {
-            border-color: var(--accent);
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1), 0 0 0 2px rgba(59, 130, 246, 0.2);
-            background-color: rgba(15, 23, 42, 0.8);
-        }
-        
-        .input-area input::placeholder {
-            color: #64748b;
-        }
-
-        .input-area button {
-            padding: 0 24px;
-            height: 52px;
-            border-radius: 12px;
-            border: none;
+        .btn {
+            display: inline-block;
+            padding: 12px 28px;
             background: linear-gradient(135deg, #3b82f6, #2563eb);
             color: white;
+            text-decoration: none;
+            border-radius: 12px;
             font-weight: 600;
-            font-size: 1rem;
-            cursor: pointer;
+            margin-top: 24px;
             transition: all 0.2s;
             box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        
-        .input-area button::after {
-            content: '→';
-            font-size: 1.2rem;
-            transition: transform 0.2s;
         }
 
-        .input-area button:hover {
-            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+        .btn:hover {
+            transform: translateY(-2px);
             box-shadow: 0 6px 8px -1px rgba(59, 130, 246, 0.4);
         }
-        
-        .input-area button:hover::after {
-            transform: translateX(4px);
-        }
 
-        .input-area button:active {
-            transform: translateY(1px);
-            box-shadow: 0 2px 4px -1px rgba(59, 130, 246, 0.3);
-        }
-        
-        @media (max-width: 768px) {
-            .chat-container {
-                height: 100vh;
-                border-radius: 0;
-                border: none;
-            }
+        code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            color: #e2e8f0;
         }
     </style>
 </head>
+
 <body>
-
-<div class="chat-container">
-    <div class="header">
-        <h1>Nanobot AI</h1>
-        <div class="status">
-            <div class="status-dot" id="status-dot"></div>
-            <span id="status-text">Disconnected</span>
-        </div>
+    <div class="box">
+        <h1>Welcome to Nanobot</h1>
+        <p>The web client has been completely rewritten into a feature-rich Vue 3 application! 🎉</p>
+        <p style="color: #94a3b8; text-align: left; margin: 20px 0;">New features include:</p>
+        <ul style="text-align: left; color: #94a3b8; margin-bottom: 30px;">
+            <li><b>History Logging</b>: Seamless saving and restoration of past conversations.</li>
+            <li><b>Multi-Window & Multi-User</b>: Create discrete sessions that run in parallel.</li>
+            <li><b>Rich Interaction</b>: Markdown support, elegant collapsible Thinking UI, and structured Tool Call
+                responses.</li>
+        </ul>
+        <hr style="border:0; border-top:1px solid rgba(255,255,255,0.1); margin: 20px 0;">
+        <h3 style="margin-bottom: 10px;">How to start the new client:</h3>
+        <code>cd web && npm install && npm run dev</code>
+        <br>
+        <a href="http://localhost:5173" class="btn" target="_blank">Open New Client App -></a>
     </div>
-    
-    <div class="chat-box" id="chat">
-        <!-- Messages will appear here -->
-    </div>
-    
-    <div class="input-area">
-        <input type="text" id="input" placeholder="Type a message..." autocomplete="off">
-        <button onclick="sendMessage()">Send</button>
-    </div>
-</div>
-
-<script>
-    const chat = document.getElementById('chat');
-    const statusText = document.getElementById('status-text');
-    const statusDot = document.getElementById('status-dot');
-    const input = document.getElementById('input');
-    let ws;
-
-    // Configure marked to use standard options with GFM
-    marked.setOptions({
-        breaks: true,
-        gfm: true
-    });
-
-    function updateStatus(connected) {
-        if (connected) {
-            statusText.innerText = 'Connected';
-            statusDot.classList.add('connected');
-        } else {
-            statusText.innerText = 'Disconnected';
-            statusDot.classList.remove('connected');
-        }
-    }
-
-    function connect() {
-        ws = new WebSocket('ws://localhost:3000/ws');
-
-        ws.onopen = () => {
-            updateStatus(true);
-            appendSystemMessage('Connected to Nanobot Gateway');
-        };
-
-        ws.onmessage = (event) => {
-            // Render markdown to HTML for bot messages
-            try {
-                const htmlContent = marked.parse(event.data);
-                appendMessage(htmlContent, 'bot', 'Nanobot');
-            } catch (e) {
-                console.error("Markdown parsing error:", e);
-                appendMessage(event.data, 'bot', 'Nanobot', false);
-            }
-        };
-
-        ws.onclose = () => {
-            updateStatus(false);
-            appendSystemMessage('Connection closed. Reconnecting in 3 seconds...');
-            setTimeout(connect, 3000);
-        };
-
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            updateStatus(false);
-        };
-    }
-
-    function sendMessage() {
-        const text = input.value.trim();
-        if (text && ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(text);
-            // Escape user input to prevent XSS in user bubble
-            const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            appendMessage(escapedText, 'user', 'You', false);
-            input.value = '';
-        }
-    }
-
-    function appendSystemMessage(text) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'message-wrapper system';
-        wrapper.innerText = text;
-        chat.appendChild(wrapper);
-        scrollToBottom();
-    }
-
-    function appendMessage(content, type, senderName, isHtml = true) {
-        const wrapper = document.createElement('div');
-        wrapper.className = `message-wrapper ${type}`;
-        
-        // Add sender label
-        const label = document.createElement('div');
-        label.className = 'message-label';
-        label.innerText = senderName;
-        wrapper.appendChild(label);
-        
-        // Add message content
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${type} ${type === 'bot' ? 'markdown-body' : ''}`;
-        
-        if (isHtml) {
-            messageDiv.innerHTML = content;
-        } else {
-            messageDiv.innerText = content;
-        }
-        
-        wrapper.appendChild(messageDiv);
-        chat.appendChild(wrapper);
-        scrollToBottom();
-    }
-
-    function scrollToBottom() {
-        chat.scrollTop = chat.scrollHeight;
-    }
-
-    input.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
-    });
-    
-    // Auto-focus input on page load
-    input.focus();
-
-    // Initial connection
-    connect();
-</script>
-
 </body>
+
 </html>

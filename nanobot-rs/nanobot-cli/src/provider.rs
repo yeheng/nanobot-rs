@@ -16,36 +16,51 @@ pub struct ProviderInfo {
     pub provider_name: String,
     /// Whether this provider supports thinking/reasoning mode
     pub supports_thinking: bool,
+    /// Pricing configuration (if configured)
+    pub pricing: Option<(f64, f64, String)>, // (input_price, output_price, currency)
 }
 
 /// Build a provider instance from its name and config.
+///
+/// # Errors
+///
+/// Returns an error if the provider configuration is invalid (e.g., unknown provider
+/// without api_base).
 pub fn build_provider(
     name: &str,
     api_key: &str,
     provider_config: &nanobot_core::config::ProviderConfig,
     model: &str,
-) -> Arc<dyn LlmProvider> {
+) -> Result<Arc<dyn LlmProvider>> {
     match name {
         // MiniMax requires special handling for group_id header
-        "minimax" => Arc::new(OpenAICompatibleProvider::minimax(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-            None,
-        )),
+        "minimax" => {
+            let provider = OpenAICompatibleProvider::minimax(
+                api_key,
+                provider_config.api_base.clone(),
+                model,
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create MiniMax provider: {}", e))?;
+            Ok(Arc::new(provider))
+        }
         // GitHub Copilot requires special handling for OAuth token management
-        "copilot" => Arc::new(nanobot_core::providers::CopilotProvider::new(
+        "copilot" => Ok(Arc::new(nanobot_core::providers::CopilotProvider::new(
             api_key,
             provider_config.api_base.clone(),
             Some(model.to_string()),
-        )),
+        ))),
         // All other providers use the generic from_name constructor
-        _ => Arc::new(OpenAICompatibleProvider::from_name(
-            name,
-            api_key,
-            provider_config.api_base.clone(),
-            Some(model.to_string()),
-        )),
+        _ => {
+            let provider = OpenAICompatibleProvider::from_name(
+                name,
+                api_key,
+                provider_config.api_base.clone(),
+                Some(model.to_string()),
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create provider '{}': {}", name, e))?;
+            Ok(Arc::new(provider))
+        }
     }
 }
 
@@ -162,13 +177,23 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         spec.model().to_string()
     };
 
-    let provider = build_provider(&provider_name, api_key, provider_config, &model);
+    let provider = build_provider(&provider_name, api_key, provider_config, &model)?;
     let supports_thinking = provider_config.supports_thinking();
+
+    // Get pricing configuration if available (model-level overrides provider-level)
+    let pricing = provider_config.get_pricing_for_model(&model).map(|p| {
+        (
+            p.price_input_per_million,
+            p.price_output_per_million,
+            p.currency,
+        )
+    });
 
     Ok(ProviderInfo {
         provider,
         model,
         provider_name,
         supports_thinking,
+        pricing,
     })
 }

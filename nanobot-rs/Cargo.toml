@@ -13,6 +13,7 @@ resolver = "2"
 members = [
     "nanobot-core",
     "nanobot-cli",
+    "nanobot-sandbox",
 ]
 
 [workspace.dependencies]
@@ -77,6 +78,7 @@ rustls-native-certs = "0.8"
 
 # Internal crates
 nanobot-core = { path = "nanobot-core" }
+nanobot-sandbox = { path = "nanobot-sandbox" }
 
 # Markdown rendering
 termimad = "0.34.1"
@@ -92,3 +94,9 @@ colored = "3"
 # REPL
 reedline = "0.45"
 nu-ansi-term = "0.50"
+
+# Interactive CLI
+dialoguer = "0.11"
+
+# Concurrent data structures
+dashmap = "6"

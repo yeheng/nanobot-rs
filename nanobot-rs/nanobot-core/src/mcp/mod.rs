@@ -17,36 +17,92 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 /// Start all configured MCP servers and return bridge tools for registration.
-///
-/// This function:
-/// 1. Parses MCP server configs from the config schema
-/// 2. Starts all servers via `McpManager`
-/// 3. Returns a list of `Box<dyn Tool>` adapters ready for `ToolRegistry::register()`
 pub async fn start_mcp_servers(
-    configs: &std::collections::HashMap<String, crate::config::McpServerConfig>,
+    config: &crate::config::ToolsConfig,
 ) -> (Arc<McpManager>, Vec<Box<dyn Tool>>) {
     let mut manager = McpManager::new();
 
-    for (name, cfg) in configs {
-        if let Some(command) = &cfg.command {
-            let mcp_cfg = McpServerConfig {
+    // New grouped format: stdio servers
+    for (name, cfg) in &config.mcp.stdio {
+        let transport = types::McpTransport::Stdio {
+            command: cfg.command.clone(),
+            args: cfg.args.clone(),
+            env: cfg.env.clone(),
+        };
+        manager.add_server(name.clone(), McpServerConfig { transport });
+    }
+
+    // New grouped format: remote servers
+    for (name, cfg) in &config.mcp.remote {
+        let transport = match cfg {
+            crate::config::RemoteMcpConfig::Simple { url } => types::McpTransport::Http {
+                url: url.clone(),
+                auth: types::McpAuth::default(),
+                timeout: 30,
+            },
+            crate::config::RemoteMcpConfig::Enhanced {
+                transport,
+                auth,
+                timeout,
+                ..
+            } => {
+                let mcp_auth = types::McpAuth {
+                    api_key: auth.api_key.clone(),
+                    bearer_token: auth.bearer_token.clone(),
+                    headers: auth.headers.clone(),
+                };
+                match transport {
+                    crate::config::RemoteTransportConfig::Http { url } => {
+                        types::McpTransport::Http {
+                            url: url.clone(),
+                            auth: mcp_auth,
+                            timeout: *timeout,
+                        }
+                    }
+                    crate::config::RemoteTransportConfig::Sse { url } => types::McpTransport::Sse {
+                        url: url.clone(),
+                        auth: mcp_auth,
+                        timeout: *timeout,
+                    },
+                    crate::config::RemoteTransportConfig::WebSocket { url } => {
+                        types::McpTransport::WebSocket {
+                            url: url.clone(),
+                            auth: mcp_auth,
+                            timeout: *timeout,
+                        }
+                    }
+                }
+            }
+        };
+        manager.add_server(name.clone(), McpServerConfig { transport });
+    }
+
+    // Legacy flat format (backward compatibility)
+    for (name, cfg) in &config.mcp_servers {
+        let transport = if let Some(url) = &cfg.url {
+            types::McpTransport::Http {
+                url: url.clone(),
+                auth: types::McpAuth::default(),
+                timeout: 30,
+            }
+        } else if let Some(command) = &cfg.command {
+            types::McpTransport::Stdio {
                 command: command.clone(),
                 args: cfg.args.clone().unwrap_or_default(),
                 env: None,
-            };
-            manager.add_server(name.clone(), mcp_cfg);
+            }
         } else {
-            warn!("MCP server '{}' has no command configured, skipping", name);
-        }
+            warn!("MCP server '{}' has no command or url, skipping", name);
+            continue;
+        };
+        manager.add_server(name.clone(), McpServerConfig { transport });
     }
 
     if let Err(e) = manager.start_all().await {
         warn!("Error starting MCP servers: {}", e);
     }
 
-    // Collect tool metadata before wrapping manager
     let tool_info: Vec<(String, McpTool)> = manager.get_all_tools().await;
-
     let manager = Arc::new(manager);
 
     let tools: Vec<Box<dyn Tool>> = tool_info
@@ -60,11 +116,6 @@ pub async fn start_mcp_servers(
         })
         .collect();
 
-    info!(
-        "MCP bridge: {} tools ready from {} servers",
-        tools.len(),
-        configs.len()
-    );
-
+    info!("MCP bridge: {} tools ready", tools.len());
     (manager, tools)
 }

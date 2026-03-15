@@ -98,13 +98,6 @@ impl<'a> ToolExecutor<'a> {
         }
     }
 
-    /// Execute a batch of tool calls concurrently and return all results.
-    #[instrument(name = "executor.execute_batch", skip_all, fields(count = tool_calls.len()))]
-    pub async fn execute_batch(&self, tool_calls: &[ToolCall]) -> Vec<ToolCallResult> {
-        let futures = tool_calls.iter().map(|tc| self.execute_one(tc));
-        futures_util::future::join_all(futures).await
-    }
-
     /// Execute a single tool call by name and raw arguments (convenience method).
     pub async fn execute_raw(&self, name: &str, args: Value) -> String {
         let start = Instant::now();
@@ -224,22 +217,6 @@ mod tests {
         let result = executor.execute_one(&tc).await;
 
         assert!(result.output.starts_with("Error:"));
-    }
-
-    #[tokio::test]
-    async fn test_execute_batch() {
-        let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
-
-        let calls = vec![
-            ToolCall::new("c1", "echo", serde_json::json!({"a": 1})),
-            ToolCall::new("c2", "fail", serde_json::json!({})),
-        ];
-        let results = executor.execute_batch(&calls).await;
-
-        assert_eq!(results.len(), 2);
-        assert!(results[0].output.contains("1"));
-        assert!(results[1].output.starts_with("Error:"));
     }
 
     #[tokio::test]

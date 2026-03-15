@@ -1,7 +1,24 @@
 //! Channel integrations
+//!
+//! This module provides channel abstractions for message routing:
+//! - `base`: Core Channel trait for inbound channels
+//! - `middleware`: Rate limiting, auth, and logging utilities
+//! - `outbound`: Registry-based outbound message routing (preferred)
+//!
+//! # Outbound Routing
+//!
+//! Use `OutboundSenderRegistry` for extensible outbound message routing.
+//! The legacy `send_outbound` function is deprecated.
+//!
+//! ```ignore
+//! let registry = OutboundSenderRegistry::from_config(&config.channels);
+//! registry.register_custom("sms".to_string(), Arc::new(MySmsSender::new()));
+//! registry.send(msg).await?;
+//! ```
 
 pub mod base;
 pub mod middleware;
+pub mod outbound;
 
 #[cfg(feature = "telegram")]
 pub mod telegram;
@@ -31,6 +48,7 @@ pub use base::Channel;
 pub use middleware::{
     log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
 };
+pub use outbound::{OutboundSender, OutboundSenderRegistry};
 
 use crate::bus::events::OutboundMessage;
 use crate::config::ChannelsConfig;
@@ -38,7 +56,14 @@ use crate::error::ChannelError as CoreChannelError;
 
 /// Send an outbound message using the appropriate channel based on message.channel.
 ///
-/// This is the single entry point for all outbound message sending.
+/// **Deprecated**: Use `OutboundSenderRegistry` instead for better extensibility.
+///
+/// This function is kept for backward compatibility. New code should use:
+/// ```ignore
+/// let registry = OutboundSenderRegistry::from_config(config);
+/// registry.send(msg).await?;
+/// ```
+///
 /// Routes to the appropriate channel's stateless send function.
 #[allow(unused_variables)]
 pub async fn send_outbound(

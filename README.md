@@ -311,3 +311,103 @@ nanobot gateway
 | Markdown 渲染 | termimad |
 | 终端颜色 | colored |
 | Cron 解析 | cron 0.15 |
+
+---
+
+## 动态模型切换
+
+Nanobot-RS 支持在运行时动态切换 LLM 模型。主 Agent 作为编排者，可以将特定任务委托给专门优化的子模型执行。
+
+### 配置模型档案
+
+在 `config.yaml` 中定义多个模型档案:
+
+```yaml
+agents:
+  defaults:
+    model: "zhipu/glm-5"  # 默认模型
+
+  # 模型档案配置
+  models:
+    # 通用模型
+    default:
+      provider: "zhipu"
+      model: "glm-5"
+      description: "通用模型，平衡速度与质量"
+      capabilities: ["general", "chat"]
+      temperature: 0.7
+
+    # 快速响应模型
+    fast:
+      provider: "zhipu"
+      model: "glm-4-flash"
+      description: "快速响应简单查询"
+      capabilities: ["fast", "chat"]
+      temperature: 0.7
+
+    # 代码专家模型
+    coder:
+      provider: "deepseek"
+      model: "deepseek-coder"
+      description: "专门用于代码生成、重构和调试"
+      capabilities: ["code", "reasoning"]
+      temperature: 0.3
+      thinking_enabled: true
+
+    # 推理模型
+    reasoner:
+      provider: "openai"
+      model: "o1-mini"
+      description: "复杂问题推理、数学和逻辑分析"
+      capabilities: ["reasoning", "math", "analysis"]
+      thinking_enabled: true
+
+    # 创意写作模型
+    creative:
+      provider: "anthropic"
+      model: "claude-sonnet-4-20250514"
+      description: "创意写作、内容生成"
+      capabilities: ["creative", "writing"]
+      temperature: 0.9
+```
+
+### 能力标签
+
+使用能力标签帮助 LLM 选择合适的模型:
+
+| 标签 | 用途 |
+|------|------|
+| `code` | 代码生成、重构、调试 |
+| `reasoning` | 复杂逻辑推理 |
+| `creative` | 创意写作、内容生成 |
+| `fast` | 快速响应简单任务 |
+| `math` | 数学计算 |
+| `research` | 深度研究和分析 |
+| `local` | 本地模型，隐私保护 |
+
+### 使用示例
+
+LLM 会根据任务类型自动选择合适的模型:
+
+```json
+// 用户: "帮我重构这个函数，使其更高效"
+// LLM 调用 switch_model 工具:
+{
+  "model_id": "coder",
+  "task": "重构用户提供的函数，优化性能",
+  "context": "原函数在 src/lib.rs 第 42 行"
+}
+```
+
+### 工作原理
+
+1. **主 Agent**: 负责理解用户意图、编排任务
+2. **switch_model 工具**: LLM 可调用的工具，用于切换到专门模型
+3. **Subagent**: 在隔离环境中以目标模型执行任务
+4. **结果返回**: 子 Agent 的结果返回给主 Agent 继续处理
+
+这种架构允许:
+- 使用便宜的快速模型处理简单任务
+- 将复杂任务委托给专门优化的模型
+- 主 Agent 保持轻量，专注于编排
+- 灵活组合不同提供商的模型

@@ -23,9 +23,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
-use crate::agent::AgentLoop;
+use crate::agent::{AgentLoop, SubagentManager};
 use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey};
-use crate::config::ChannelsConfig;
+use crate::channels::OutboundSenderRegistry;
 
 // ── Outbound Actor ──────────────────────────────────────────
 
@@ -33,9 +33,12 @@ use crate::config::ChannelsConfig;
 ///
 /// Even if Telegram's API blocks for 30 seconds, this never blocks
 /// the core AgentLoop or upstream session actors.
+///
+/// Uses `OutboundSenderRegistry` for extensible routing, supporting
+/// both built-in channels and custom channels registered at runtime.
 pub async fn run_outbound_actor(
     mut rx: mpsc::Receiver<OutboundMessage>,
-    config: Arc<ChannelsConfig>,
+    registry: Arc<OutboundSenderRegistry>,
     #[cfg(feature = "webhook")] websocket_manager: Option<
         Arc<crate::channels::websocket::WebSocketManager>,
     >,
@@ -46,15 +49,19 @@ pub async fn run_outbound_actor(
         if let crate::bus::events::ChannelType::WebSocket = msg.channel {
             if let Some(ref manager) = websocket_manager {
                 manager.send(msg).await;
+            } else {
+                tracing::warn!(
+                    "Outbound Actor: websocket_manager is None, cannot send WebSocket message"
+                );
             }
             continue;
         }
 
-        let cfg = config.clone();
+        let reg = registry.clone();
         // Fire-and-forget: each send runs in its own task,
         // eliminating Head-of-Line Blocking across messages.
         tokio::spawn(async move {
-            if let Err(e) = crate::channels::send_outbound(&cfg, msg).await {
+            if let Err(e) = reg.send(msg).await {
                 tracing::error!("Outbound delivery failed: {}", e);
             }
         });
@@ -73,55 +80,178 @@ pub async fn run_outbound_actor(
 /// SummarizationService across sessions.
 ///
 /// Self-destructs after `idle_timeout` of inactivity, freeing memory.
+///
+/// ## WebSocket Streaming
+///
+/// For WebSocket channels, this actor sends real-time streaming events:
+/// - `thinking`: LLM reasoning content
+/// - `tool_start`: Tool call initiated
+/// - `tool_end`: Tool execution completed
+/// - `content`: Streaming text content
+/// - `done`: Stream completed
 pub async fn run_session_actor(
     session_key: SessionKey,
     mut rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
+    subagent_manager: Option<Arc<SubagentManager>>,
+    idle_timeout: Duration,
 ) {
     let session_key_str = session_key.to_string();
-    tracing::debug!("Session Actor [{}] spawned", session_key_str);
-    let idle_timeout = Duration::from_secs(3600); // 1 hour idle → self-destruct
+    tracing::info!("Session Actor [{}] spawned", session_key_str);
 
     loop {
-        match timeout(idle_timeout, rx.recv()).await {
-            Ok(Some(msg)) => {
-                // Serial processing: no locks needed, only one message at a time.
-                match agent.process_direct(&msg.content, &session_key).await {
-                    Ok(response) => {
-                        // Forward to Outbound Actor — returns immediately, no network wait.
-                        let outbound_msg = OutboundMessage {
-                            channel: msg.channel,
-                            chat_id: msg.chat_id,
-                            content: response.content,
-                            metadata: None,
-                            trace_id: msg.trace_id,
-                        };
-                        if let Err(e) = outbound_tx.send(outbound_msg).await {
-                            tracing::error!(
-                                "Session [{}] failed to send to outbound: {}",
-                                session_key_str,
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Agent error in session [{}]: {}", session_key_str, e);
-                    }
-                }
-            }
+        let msg = match timeout(idle_timeout, rx.recv()).await {
+            Ok(Some(msg)) => msg,
             Ok(None) => {
-                // Channel closed (gateway shutting down)
-                tracing::debug!("Session [{}] channel closed", session_key_str);
+                tracing::info!("Session [{}] channel closed", session_key_str);
                 break;
             }
             Err(_) => {
-                // Idle timeout — GC this actor to prevent memory leaks.
                 tracing::info!("Session [{}] idle timeout, GC-ing actor", session_key_str);
                 break;
             }
+        };
+
+        // Set session key on SubagentManager before processing (for WebSocket streaming)
+        if let Some(ref manager) = subagent_manager {
+            manager.set_session_key(session_key.clone());
+        }
+
+        // Process message and handle result immediately (avoid holding non-Send across await)
+        match process_session_message(
+            msg,
+            &session_key,
+            &agent,
+            &outbound_tx,
+            subagent_manager.as_ref().map(|m| m.as_ref()),
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("Session [{}] error: {}", session_key_str, e);
+            }
+        }
+
+        // Clear session key after processing
+        if let Some(ref manager) = subagent_manager {
+            manager.clear_session_key();
         }
     }
+}
+
+async fn process_session_message(
+    msg: InboundMessage,
+    session_key: &SessionKey,
+    agent: &Arc<AgentLoop>,
+    outbound_tx: &mpsc::Sender<OutboundMessage>,
+    subagent_manager: Option<&SubagentManager>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Route based on channel capability (streaming support)
+    if msg.channel.supports_streaming() {
+        process_streaming_message(msg, session_key, agent, outbound_tx, subagent_manager).await
+    } else {
+        process_regular_message(msg, session_key, agent, outbound_tx, subagent_manager).await
+    }
+}
+
+/// Process message with real-time streaming (for channels that support it).
+///
+/// Streaming channels receive incremental LLM output and forward events
+/// to the client in real-time (thinking, content, tool events).
+async fn process_streaming_message(
+    msg: InboundMessage,
+    session_key: &SessionKey,
+    agent: &Arc<AgentLoop>,
+    outbound_tx: &mpsc::Sender<OutboundMessage>,
+    _subagent_manager: Option<&SubagentManager>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tracing::{debug, info};
+
+    let channel = msg.channel.clone();
+    let chat_id = msg.chat_id.clone();
+    let ob_tx = outbound_tx.clone();
+    let session_key_str = session_key.to_string();
+    let session_key_str_for_closure = session_key_str.clone();
+
+    info!(
+        "[Streaming] Processing message for session: {}",
+        session_key_str
+    );
+
+    let mut event_count = 0usize;
+    let result = agent
+        .process_direct_streaming(&msg.content, session_key, move |event| {
+            event_count += 1;
+            if event_count == 1 {
+                debug!(
+                    "[Streaming] First event received for session: {}",
+                    session_key_str_for_closure
+                );
+            }
+            if let Some(ws_msg) = stream_event_to_ws_message(event) {
+                let outbound_msg =
+                    OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
+                if let Err(e) = ob_tx.try_send(outbound_msg) {
+                    tracing::warn!("[Streaming] Failed to send outbound message: {}", e);
+                }
+            }
+        })
+        .await;
+
+    info!(
+        "[Streaming] Streaming completed for session: {}, total events: {}",
+        session_key_str, event_count
+    );
+    result?;
+
+    Ok(())
+}
+
+/// Convert a StreamEvent to a WebSocketMessage.
+///
+/// Returns None for events that should not be forwarded (e.g., TokenStats).
+fn stream_event_to_ws_message(
+    event: crate::agent::stream::StreamEvent,
+) -> Option<crate::bus::events::WebSocketMessage> {
+    use crate::agent::stream::StreamEvent;
+    use crate::bus::events::WebSocketMessage;
+
+    match event {
+        StreamEvent::Content(content) => Some(WebSocketMessage::content(content)),
+        StreamEvent::Reasoning(content) => Some(WebSocketMessage::thinking(content)),
+        StreamEvent::ToolStart { name, arguments } => {
+            Some(WebSocketMessage::tool_start(name, arguments))
+        }
+        StreamEvent::ToolEnd { name, output } => {
+            Some(WebSocketMessage::tool_end(name, Some(output)))
+        }
+        StreamEvent::Done => Some(WebSocketMessage::done()),
+        StreamEvent::TokenStats { .. } => None,
+    }
+}
+
+async fn process_regular_message(
+    msg: InboundMessage,
+    session_key: &SessionKey,
+    agent: &Arc<AgentLoop>,
+    outbound_tx: &mpsc::Sender<OutboundMessage>,
+    _subagent_manager: Option<&SubagentManager>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = agent.process_direct(&msg.content, session_key).await?;
+
+    let outbound_msg = OutboundMessage {
+        channel: msg.channel,
+        chat_id: msg.chat_id,
+        content: response.content,
+        metadata: None,
+        trace_id: msg.trace_id,
+        ws_message: None,
+    };
+
+    outbound_tx.send(outbound_msg).await?;
+    Ok(())
 }
 
 // ── Router Actor ────────────────────────────────────────────
@@ -141,21 +271,20 @@ pub async fn run_router_actor(
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
+    subagent_manager: Option<Arc<SubagentManager>>,
 ) {
     tracing::info!("Router Actor started");
-    // Plain HashMap — only this task touches it. No locks, no DashMap.
-    let mut sessions: HashMap<String, mpsc::Sender<InboundMessage>> = HashMap::new();
+    let mut sessions: HashMap<SessionKey, mpsc::Sender<InboundMessage>> = HashMap::new();
 
     while let Some(msg) = inbound_rx.recv().await {
-        let key = msg.session_key().to_string();
+        let key = msg.session_key().clone();
 
         let mut needs_respawn = true;
         if let Some(tx) = sessions.get(&key) {
-            // Try to send. If Err, the session actor has already self-destructed.
             if tx.send(msg.clone()).await.is_ok() {
                 needs_respawn = false;
             } else {
-                tracing::debug!("Session [{}] channel dead, respawning...", key);
+                tracing::info!("Session [{}] channel dead, respawning...", key);
             }
         }
 
@@ -163,10 +292,17 @@ pub async fn run_router_actor(
             let (tx, rx) = mpsc::channel(32);
             let ob_tx = outbound_tx.clone();
             let agent_clone = agent.clone();
-            let session_key = SessionKey::from(key.clone());
+            let session_key = key.clone();
+            let manager_clone = subagent_manager.clone();
 
-            // Spawn a new session actor
-            tokio::spawn(run_session_actor(session_key, rx, ob_tx, agent_clone));
+            tokio::spawn(run_session_actor(
+                session_key,
+                rx,
+                ob_tx,
+                agent_clone,
+                manager_clone,
+                Duration::from_secs(3600), // Default: 1 hour (should be configurable)
+            ));
 
             // Send to the freshly created channel (guaranteed to succeed)
             if let Err(e) = tx.send(msg).await {

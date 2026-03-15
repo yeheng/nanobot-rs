@@ -55,6 +55,9 @@ dirs.workspace = true
 # Terminal
 colored.workspace = true
 
+# Interactive CLI
+dialoguer.workspace = true
+
 # REPL
 reedline.workspace = true
 nu-ansi-term.workspace = true
@@ -79,3 +82,6 @@ axum = { workspace = true, features = ["ws"] }
 
 # Archive extraction (for workspace template downloads)
 tempfile = "3"
+
+# SQLite (for search commands)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

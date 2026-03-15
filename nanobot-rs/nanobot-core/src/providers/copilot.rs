@@ -180,7 +180,7 @@ impl LlmProvider for CopilotProvider {
             stream: false,
         };
 
-        debug!(
+        tracing::trace!(
             "[copilot] POST {} | request body:\n{}",
             url,
             serde_json::to_string(&openai_request)
@@ -251,7 +251,7 @@ impl LlmProvider for CopilotProvider {
             stream: true,
         };
 
-        debug!(
+        tracing::trace!(
             "[copilot] POST {} (stream) | request body:\n{}",
             url,
             serde_json::to_string(&openai_request)
@@ -310,6 +310,7 @@ fn parse_copilot_response(body: &str) -> anyhow::Result<ChatResponse> {
         content: choice.message.content,
         tool_calls,
         reasoning_content: None, // Copilot doesn't support reasoning_content
+        usage: None,
     })
 }
 

@@ -2,8 +2,11 @@
 //!
 //! **Security model**: Defense in depth with three layers:
 //! 1. **Command policy** (advisory): Allowlist/denylist to catch accidental misuse
-//! 2. **Sandbox** (OS-level): bwrap namespace isolation on Linux, ulimit fallback
+//! 2. **Sandbox** (OS-level): bwrap namespace isolation on Linux, sandbox-exec on macOS
 //! 3. **Resource limits**: Memory, CPU time, output size, wall-clock timeout
+//!
+//! This module delegates to `nanobot-sandbox` for all sandbox execution,
+//! eliminating code duplication and ensuring consistent security behavior.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,24 +17,27 @@ use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use super::base::simple_schema;
-use super::command_policy::{CommandPolicy, PolicyVerdict};
-use super::resource_limits::ResourceLimits;
-use super::sandbox::{self, SandboxExecutor};
 use super::{Tool, ToolError, ToolResult};
 use crate::config::ExecToolConfig;
+
+// Re-export types from nanobot-sandbox for external use
+pub use nanobot_sandbox::ProcessManager;
+// Use alias to avoid name conflict with core's SandboxConfig
+pub use nanobot_sandbox::SandboxConfig as SandboxExecutorConfig;
 
 /// Dangerous patterns that could indicate command injection attempts
 const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", ">", ">>", "|", "\n", "\r"];
 
 /// Shell execution tool with optional sandboxing.
+///
+/// Uses `nanobot-sandbox::ProcessManager` for command execution,
+/// providing consistent sandbox behavior across all platforms.
 pub struct ExecTool {
     working_dir: PathBuf,
     timeout: Duration,
     restrict_to_workspace: bool,
     enabled: bool,
-    policy: CommandPolicy,
-    sandbox: SandboxExecutor,
-    limits: ResourceLimits,
+    process_manager: ProcessManager,
 }
 
 impl ExecTool {
@@ -49,13 +55,20 @@ impl ExecTool {
             config.timeout
         };
         let timeout = Duration::from_secs(timeout_secs);
-        let policy = CommandPolicy::new(&config.policy);
-        let limits = ResourceLimits::from_config(&config.limits);
-        let sandbox_provider = sandbox::create_provider(&working_dir, &config.sandbox);
+
+        // Convert nanobot-core config to nanobot-sandbox config
+        let sandbox_config = build_sandbox_config(config, &working_dir);
+
+        // Create process manager with the sandbox configuration
+        let process_manager = ProcessManager::new(sandbox_config).with_timeout(timeout);
 
         info!(
             "ExecTool initialized: sandbox={}, working_dir={:?}, timeout={}s{}",
-            sandbox_provider.name(),
+            if process_manager.is_sandboxed() {
+                process_manager.backend_name()
+            } else {
+                "disabled"
+            },
             working_dir,
             timeout_secs,
             if config.timeout == 0 {
@@ -70,9 +83,7 @@ impl ExecTool {
             timeout,
             restrict_to_workspace,
             enabled: true,
-            policy,
-            sandbox: sandbox_provider,
-            limits,
+            process_manager,
         }
     }
 
@@ -83,14 +94,15 @@ impl ExecTool {
         restrict_to_workspace: bool,
     ) -> Self {
         let working_dir = working_dir.into();
+        let sandbox_config = SandboxExecutorConfig::fallback();
+        let process_manager = ProcessManager::new(sandbox_config).with_timeout(timeout);
+
         Self {
-            policy: CommandPolicy::new(&Default::default()),
-            sandbox: SandboxExecutor::Fallback(super::sandbox::FallbackExecutor),
-            limits: ResourceLimits::default(),
             working_dir,
             timeout,
             restrict_to_workspace,
             enabled: true,
+            process_manager,
         }
     }
 
@@ -188,18 +200,7 @@ impl Tool for ExecTool {
         // Step 0: Command injection validation
         self.validate_command(&args.command)?;
 
-        // Step 1: Command policy check (advisory)
-        match self.policy.check(&args.command) {
-            PolicyVerdict::Allow => {}
-            PolicyVerdict::Deny(reason) => {
-                return Err(ToolError::ExecutionError(format!(
-                    "Command denied by policy: {}",
-                    reason
-                )));
-            }
-        }
-
-        // Step 2: Workspace containment (best-effort, uses canonicalize)
+        // Step 1: Workspace containment (best-effort, uses canonicalize)
         if let Err(reason) = self.validate_workspace_access() {
             warn!("Workspace validation failed: {} ({})", args.command, reason);
             return Err(ToolError::ExecutionError(reason));
@@ -207,59 +208,69 @@ impl Tool for ExecTool {
 
         debug!(
             "Executing command via {}: {} ({:?})",
-            self.sandbox.name(),
+            self.process_manager.backend_name(),
             args.command,
             args.description
         );
 
-        // Step 3: Build sandboxed command
-        let command_str = args.command;
-        let working_dir = self.working_dir.clone();
-        let mut cmd = self
-            .sandbox
-            .build_command(&command_str, &working_dir, &self.limits);
-        let max_output = self.limits.max_output_bytes;
-        let timeout = self.timeout;
+        // Step 2: Execute via nanobot-sandbox ProcessManager
+        let result = self
+            .process_manager
+            .execute_with_timeout(&args.command, &self.working_dir, self.timeout)
+            .await
+            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
-        // Step 4: Execute with wall-clock timeout
-        let result = tokio::task::spawn_blocking(move || {
-            let output = cmd.output().map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to execute command: {}", e))
-            })?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            let raw_output = if output.status.success() {
-                stdout.to_string()
-            } else {
-                format!(
-                    "Command exited with code {:?}\nStdout:\n{}\nStderr:\n{}",
-                    output.status.code(),
-                    stdout,
-                    stderr
-                )
-            };
-
-            // Step 5: Truncate output if needed
-            let limits = ResourceLimits {
-                max_memory_bytes: 0,
-                max_cpu_secs: 0,
-                max_output_bytes: max_output,
-            };
-            Ok(limits.truncate_output(&raw_output))
-        });
-
-        // Enforce wall-clock timeout
-        match tokio::time::timeout(timeout, result).await {
-            Ok(join_result) => {
-                join_result.map_err(|e| ToolError::ExecutionError(format!("Task error: {}", e)))?
-            }
-            Err(_) => Err(ToolError::ExecutionError(format!(
+        // Step 3: Format output
+        if result.is_success() {
+            Ok(result.stdout)
+        } else if result.timed_out {
+            Err(ToolError::ExecutionError(format!(
                 "Command timed out after {} seconds",
-                timeout.as_secs()
-            ))),
+                self.timeout.as_secs()
+            )))
+        } else {
+            Ok(format!(
+                "Command exited with code {:?}\nStdout:\n{}\nStderr:\n{}",
+                result.exit_code, result.stdout, result.stderr
+            ))
         }
+    }
+}
+
+/// Build a nanobot-sandbox SandboxConfig from nanobot-core ExecToolConfig.
+///
+/// This function maps the core configuration types to the sandbox configuration,
+/// handling differences in field names and structure.
+fn build_sandbox_config(config: &ExecToolConfig, workspace: &PathBuf) -> SandboxExecutorConfig {
+    use nanobot_sandbox::config::{
+        ApprovalConfig, AuditConfig, CommandPolicyConfig as SandboxPolicyConfig,
+        ResourceLimitsConfig as SandboxLimitsConfig,
+    };
+
+    // Build resource limits
+    let limits = SandboxLimitsConfig {
+        max_memory_mb: config.limits.max_memory_mb,
+        max_cpu_secs: config.limits.max_cpu_secs,
+        max_output_bytes: config.limits.max_output_bytes,
+        ..Default::default()
+    };
+
+    // Build command policy
+    let policy = SandboxPolicyConfig {
+        allowlist: config.policy.allowlist.clone(),
+        denylist: config.policy.denylist.clone(),
+    };
+
+    // Build full sandbox config
+    SandboxExecutorConfig {
+        enabled: config.sandbox.enabled,
+        backend: config.sandbox.backend.clone(),
+        tmp_size_mb: config.sandbox.tmp_size_mb,
+        workspace: Some(workspace.clone()),
+        limits,
+        policy,
+        approval: ApprovalConfig::default(),
+        audit: AuditConfig::default(),
     }
 }
 
@@ -332,24 +343,34 @@ mod tests {
     }
 
     #[test]
-    fn test_output_truncation() {
-        let config = ExecToolConfig {
-            timeout: 60,
-            limits: crate::config::ResourceLimitsConfig {
-                max_memory_mb: 512,
-                max_cpu_secs: 60,
-                max_output_bytes: 20,
-            },
-            ..Default::default()
-        };
-        // Use echo which is more portable than python3
-        let tool = ExecTool::from_config("/tmp", &config, false);
+    fn test_command_injection_blocked() {
+        let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(serde_json::json!({
-            "command": "echo 'aaaaaaaaaabbbbbbbbbbccccccccccdddddddddd'"
-        })));
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("[OUTPUT TRUNCATED"));
+
+        // Test various injection patterns
+        let injection_attempts = vec![
+            "echo hello && cat /etc/passwd",
+            "echo hello; cat /etc/passwd",
+            "echo hello || cat /etc/passwd",
+            "echo `cat /etc/passwd`",
+            "echo $(cat /etc/passwd)",
+            "echo ${PATH}",
+            "echo hello > /tmp/file",
+            "echo hello | cat",
+        ];
+
+        for cmd in injection_attempts {
+            let result = rt.block_on(tool.execute(serde_json::json!({"command": cmd})));
+            assert!(
+                result.is_err(),
+                "Command '{}' should have been blocked",
+                cmd
+            );
+            assert!(
+                result.unwrap_err().to_string().contains("unsafe pattern"),
+                "Command '{}' should have been blocked as unsafe",
+                cmd
+            );
+        }
     }
 }

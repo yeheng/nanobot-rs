@@ -60,18 +60,23 @@ pub struct ToolMetadata {
 /// Helper to create a simple JSON schema for tool parameters.
 ///
 /// Each entry is `(name, type, required, description)`.
+///
+/// Supported type formats:
+/// - `"string"`, `"integer"`, `"number"`, `"boolean"` - basic types
+/// - `"array"` - array of strings (default element type)
+/// - `"array<T>"` - array with specific element type (e.g., `"array<integer>"`)
+/// - `"object"` - generic object (no nested properties defined)
+///
+/// Note: OpenAI/GPT API requires `items` field for array types.
+/// This function automatically adds `{"type": "string"}` as default items schema.
 pub fn simple_schema(properties: &[(&str, &str, bool, &str)]) -> Value {
     let mut props = serde_json::Map::new();
     let mut required = Vec::new();
 
     for (name, type_desc, is_required, description) in properties {
-        props.insert(
-            name.to_string(),
-            serde_json::json!({
-                "type": type_desc,
-                "description": description
-            }),
-        );
+        let prop = build_property_schema(type_desc, description);
+        props.insert(name.to_string(), Value::Object(prop));
+
         if *is_required {
             required.push(name.to_string());
         }
@@ -82,4 +87,31 @@ pub fn simple_schema(properties: &[(&str, &str, bool, &str)]) -> Value {
         "properties": props,
         "required": required
     })
+}
+
+/// Build a property schema from type descriptor and description.
+fn build_property_schema(type_desc: &str, description: &str) -> serde_json::Map<String, Value> {
+    let mut prop = serde_json::Map::new();
+
+    // Handle array types with optional element type: "array" or "array<T>"
+    if type_desc == "array" {
+        prop.insert("type".to_string(), Value::String("array".to_string()));
+        prop.insert("items".to_string(), serde_json::json!({"type": "string"}));
+    } else if let Some(inner) = type_desc
+        .strip_prefix("array<")
+        .and_then(|s| s.strip_suffix('>'))
+    {
+        prop.insert("type".to_string(), Value::String("array".to_string()));
+        prop.insert("items".to_string(), serde_json::json!({"type": inner}));
+    } else {
+        // For all other types, use type as-is
+        prop.insert("type".to_string(), Value::String(type_desc.to_string()));
+    }
+
+    prop.insert(
+        "description".to_string(),
+        Value::String(description.to_string()),
+    );
+
+    prop
 }

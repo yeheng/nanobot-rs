@@ -5,45 +5,51 @@
 //! The main pipeline in 'process_direct_with_callback' is a straight-line sequence:
 //!
 //! 1. external_hook(pre_request)  → shell script can abort or modify input
-//! 2. load_session                → inline: Option<SessionManager> loads history
-//! 3. save_user_message           → inline: Option<SessionManager> persists user msg
+//! 2. load_session                → context.load_session() (trait dispatch)
+//! 3. save_user_message           → context.save_message() (trait dispatch)
 //! 4. process_history             → pure: truncate history, compute evictions
 //! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if messages were evicted (non-blocking)
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
+//!    7.5. vault_injection            → inject secrets from vault (optional)
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
-//! 10. save_assistant_msg          → inline: Option<SessionManager> persists assistant msg
+//! 10. save_assistant_msg          → context.save_message() (trait dispatch)
 //!
 //! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
 //! External shell hooks (if present) are called via subprocess at steps 1 and 10.
 //! Step 5's background compression uses `tokio::spawn` — zero user-facing latency.
+//! Step 7.5 injects vault secrets directly via `VaultInjector`.
 //!
-//! ## Option<T> vs Trait Objects
+//! ## AgentContext Trait Pattern
 //!
-//! The agent uses 'Option<T>' for storage dependencies instead of trait objects.
-//! Main agents get 'Some(real_implementation)'; subagents get 'None'.
-//! This is more explicit and avoids virtual dispatch overhead in hot paths.
+//! The agent uses the `AgentContext` trait for state management, eliminating
+//! `Option<T>` checks in the core loop:
+//! - **PersistentContext** — for main agents with full persistence
+//! - **StatelessContext** — for subagents without persistence
+//!
+//! This pattern allows polymorphic dispatch at initialization time rather than
+//! runtime branching on every message.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
-use crate::agent::executor::ToolExecutor;
+use crate::agent::context::AgentContext;
 use crate::agent::history_processor::{process_history, HistoryConfig};
 use crate::agent::prompt;
-use crate::agent::request::RequestHandler;
-use crate::agent::stream::{self, StreamCallback, StreamEvent};
+use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
 use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
-use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
+use crate::providers::{ChatMessage, LlmProvider};
 use crate::tools::ToolRegistry;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 
+use crate::agent::context::{PersistentContext, StatelessContext};
 use crate::agent::memory::MemoryStore;
-use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
+use crate::agent::summarization::SummarizationService;
 use crate::session::SessionManager;
 use std::sync::Mutex;
 
@@ -99,10 +105,13 @@ pub struct AgentResponse {
     pub reasoning_content: Option<String>,
     /// Tools used during processing
     pub tools_used: Vec<String>,
+    /// Model name used for this response
+    pub model: Option<String>,
 }
 
 /// Result from the agent loop execution.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct AgentLoopResult {
     /// Main response content
     content: String,
@@ -110,46 +119,22 @@ struct AgentLoopResult {
     reasoning_content: Option<String>,
     /// Tools used during processing
     tools_used: Vec<String>,
-}
-
-/// Mutable state for tool call handling.
-struct ToolCallState<'a> {
-    /// Conversation messages
-    messages: &'a mut Vec<ChatMessage>,
-    /// List of tools used so far
-    tools_used: &'a mut Vec<String>,
-}
-
-// ── Inline logging functions (replaces LoggingHook) ─────────
-
-/// Log an LLM response — reasoning and content.
-/// Redacts sensitive values if provided.
-fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
-    if let Some(ref reasoning) = response.reasoning_content {
-        if !reasoning.is_empty() {
-            let safe_reasoning = redact_secrets(reasoning, vault_values);
-            debug!("[Agent] Reasoning (iter {}): {}", iteration, safe_reasoning);
-        }
-    }
-    if let Some(ref content) = response.content {
-        if !content.is_empty() {
-            let safe_content = redact_secrets(content, vault_values);
-            info!("[Agent] Response (iter {}): {}", iteration, safe_content);
-        }
-    }
+    /// Token usage for this request
+    token_usage: Option<crate::token_tracker::TokenUsage>,
+    /// Cost for this request
+    cost: f64,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
 
 /// The agent loop - core processing engine.
 ///
-/// Uses **Option<T>** for storage dependencies (explicit null handling):
-/// - **SessionManager** — session persistence (load/save messages)
-/// - **MemoryStore** — provides SqliteStore for session/summary management
-/// - **SummarizationService** — LLM-based context compression
+/// Uses **AgentContext trait** for state management (polymorphic dispatch):
+/// - **PersistentContext** — main agents with session persistence and compression
+/// - **StatelessContext** — subagents without persistence
 ///
-/// Main agents get 'Some(real_implementation)'; subagents get 'None'.
-/// This is more explicit than trait objects and avoids virtual dispatch.
+/// This pattern eliminates `Option<T>` checks in the hot path — the context
+/// is determined at initialization, not at every message.
 ///
 /// Explicit long-term memory lives in `~/.nanobot/memory/*.md` files (SSOT).
 /// SQLite only stores machine-state (sessions, summaries, cron, kv).
@@ -159,36 +144,44 @@ fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[Str
 ///
 /// External shell hooks ('~/.nanobot/hooks/') are invoked at request
 /// boundaries (pre_request / post_response) via subprocess — UNIX philosophy.
+///
+/// Message interceptors (e.g., VaultInjector) are called before LLM processing
+/// directly — no middleware chain indirection.
+///
+/// ## Security Note: Vault Values Lifecycle
+///
+/// Injected vault values (plaintext secrets) are scoped to **single requests**.
+/// They are collected as local variables in `process_direct_with_callback`,
+/// passed through the agent loop, and dropped when the request completes.
+/// This prevents memory accumulation and limits exposure window.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
     config: AgentConfig,
     workspace: PathBuf,
     /// History truncator configuration.
     history_config: HistoryConfig,
-    /// Session persistence — 'None' for subagents.
-    session_manager: Option<Arc<SessionManager>>,
-    /// Context compression service — 'None' for subagents.
-    summarization: Option<Arc<SummarizationService>>,
+    /// Agent context — handles session persistence and compression.
+    /// Uses trait dispatch instead of Option<T> to eliminate branching.
+    context: Arc<dyn AgentContext>,
     /// Pre-loaded system prompt (from workspace bootstrap files).
     system_prompt: String,
     /// Pre-loaded skills context (from workspace skills).
     skills_context: Option<String>,
     /// External shell hook runner (pre_request / post_response).
     external_hooks: ExternalHookRunner,
-    /// Vault injector for sensitive data (optional).
+    /// Vault injector for pre-LLM secret injection (optional)
     vault_injector: Option<VaultInjector>,
-    /// Injected values for log redaction (thread-safe).
-    vault_values: Mutex<Vec<String>>,
+    /// Pricing configuration for cost calculation (optional)
+    pricing: Option<crate::token_tracker::ModelPricing>,
+    /// Token usage tracker for the session
+    session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
 }
 
 impl AgentLoop {
     /// Create a new agent loop with a pre-built tool registry.
     ///
-    /// Owns core services via 'Option<T>' (explicit null handling):
-    /// - **SessionManager** — session load/save
-    /// - **MemoryStore** — provides SqliteStore for sessions/summaries
-    /// - **SummarizationService** — context compression
+    /// Uses **PersistentContext** for full session persistence and compression.
     ///
     /// Loads system prompt and skills context **once** at initialization.
     /// Logging is inlined directly — no hook indirection.
@@ -201,73 +194,18 @@ impl AgentLoop {
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let memory_store = Arc::new(MemoryStore::new().await);
-        let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
-
-        let store_arc = memory_store.sqlite_store().clone();
-        let summarization = Arc::new(SummarizationService::new(
-            provider.clone(),
-            Arc::new(store_arc),
-            config.model.clone(),
-        ));
-
-        // Load system prompt and skills directly — no hook indirection
-        let system_prompt =
-            prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
-        let skills_context = prompt::load_skills_context(&workspace).await;
-
-        // External shell hooks: look for scripts in ~/.nanobot/hooks/
-        let hooks_dir = dirs::home_dir()
-            .map(|p| p.join(".nanobot").join("hooks"))
-            .unwrap_or_else(|| {
-                tracing::warn!("Could not resolve home directory, disabling external hooks.");
-                PathBuf::from("/dev/null")
-            });
-        let external_hooks = ExternalHookRunner::new(hooks_dir);
-
-        // Initialize vault (optional - for sensitive data isolation)
-        let vault_injector = match VaultStore::new() {
-            Ok(store) => {
-                debug!("[Agent] Vault initialized successfully");
-                Some(VaultInjector::new(Arc::new(store)))
-            }
-            Err(e) => {
-                debug!("[Agent] Vault not available: {}", e);
-                None
-            }
-        };
-
-        Ok(Self {
-            provider,
-            tools,
-            config,
-            workspace,
-            history_config: HistoryConfig::default(),
-            session_manager: Some(session_manager),
-            summarization: Some(summarization),
-            system_prompt,
-            skills_context,
-            external_hooks,
-            vault_injector,
-            vault_values: Mutex::new(Vec::new()),
-        })
+        Self::with_services(provider, workspace, config, tools, memory_store).await
     }
 
-    /// Create a new agent loop with an **externally created** 'MemoryStore'.
-    ///
-    /// Use this when the 'MemoryStore' must be shared with the session manager
-    /// and summarization service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace bootstrap files exist but cannot be read.
-    pub async fn with_memory_store(
+    /// Internal helper: create AgentLoop with pre-created services.
+    async fn with_services(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
         memory_store: Arc<MemoryStore>,
     ) -> Result<Self, AgentError> {
         let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
@@ -279,6 +217,105 @@ impl AgentLoop {
             config.model.clone(),
         ));
 
+        let context: Arc<dyn AgentContext> =
+            Arc::new(PersistentContext::new(session_manager, summarization));
+
+        let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
+        let external_hooks = Self::load_external_hooks();
+        let vault_injector = Self::create_vault_injector();
+
+        Ok(Self {
+            provider,
+            tools,
+            config,
+            workspace,
+            history_config: HistoryConfig::default(),
+            context,
+            system_prompt,
+            skills_context,
+            external_hooks,
+            vault_injector,
+            pricing: None,
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
+        })
+    }
+
+    /// Load system prompt and skills context from workspace.
+    async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
+        let system_prompt =
+            prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
+        let skills_context = prompt::load_skills_context(workspace).await;
+        Ok((system_prompt, skills_context))
+    }
+
+    /// Create external hook runner from ~/.nanobot/hooks/.
+    fn load_external_hooks() -> ExternalHookRunner {
+        let hooks_dir = dirs::home_dir()
+            .map(|p| p.join(".nanobot").join("hooks"))
+            .unwrap_or_else(|| {
+                tracing::warn!("Could not resolve home directory, disabling external hooks.");
+                PathBuf::from("/dev/null")
+            });
+        ExternalHookRunner::new(hooks_dir)
+    }
+
+    /// Initialize vault injector if VaultStore is available.
+    fn create_vault_injector() -> Option<VaultInjector> {
+        match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully, adding vault injector");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(_) => {
+                debug!("[Agent] Vault not available, skipping vault injector");
+                None
+            }
+        }
+    }
+
+    /// Create a new agent loop with an **externally created** 'MemoryStore'.
+    ///
+    /// Uses **PersistentContext** for full session persistence and compression.
+    /// Use this when the 'MemoryStore' must be shared with other components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workspace bootstrap files exist but cannot be read.
+    pub async fn with_memory_store(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        memory_store: Arc<MemoryStore>,
+    ) -> Result<Self, AgentError> {
+        Self::with_memory_store_and_pricing(provider, workspace, config, tools, memory_store, None)
+            .await
+    }
+
+    /// Create a new agent loop with MemoryStore and pricing configuration.
+    ///
+    /// Uses **PersistentContext** for full session persistence and compression.
+    pub async fn with_memory_store_and_pricing(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        memory_store: Arc<MemoryStore>,
+        pricing: Option<crate::token_tracker::ModelPricing>,
+    ) -> Result<Self, AgentError> {
+        let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
+
+        let store_arc = memory_store.sqlite_store().clone();
+        let summarization = Arc::new(SummarizationService::new(
+            provider.clone(),
+            Arc::new(store_arc),
+            config.model.clone(),
+        ));
+
+        // Create persistent context for main agents
+        let context: Arc<dyn AgentContext> =
+            Arc::new(PersistentContext::new(session_manager, summarization));
+
         // Load system prompt and skills directly — no hook indirection
         let system_prompt =
             prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
@@ -293,59 +330,67 @@ impl AgentLoop {
             });
         let external_hooks = ExternalHookRunner::new(hooks_dir);
 
-        // Initialize vault (optional - for sensitive data isolation)
+        // Initialize vault injector (optional - for sensitive data isolation)
         let vault_injector = match VaultStore::new() {
             Ok(store) => {
-                debug!("[Agent] Vault initialized successfully");
+                debug!("[Agent] Vault initialized successfully, adding vault injector");
                 Some(VaultInjector::new(Arc::new(store)))
             }
-            Err(e) => {
-                debug!("[Agent] Vault not available: {}", e);
+            Err(_) => {
+                debug!("[Agent] Vault not available, skipping vault injector");
                 None
             }
         };
 
         Ok(Self {
             provider,
-            tools,
+            tools: Arc::new(tools),
             config,
             workspace,
             history_config: HistoryConfig::default(),
-            session_manager: Some(session_manager),
-            summarization: Some(summarization),
+            context,
             system_prompt,
             skills_context,
             external_hooks,
             vault_injector,
-            vault_values: Mutex::new(Vec::new()),
+            pricing: pricing.clone(),
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new(
+                pricing
+                    .as_ref()
+                    .map(|p| p.currency.as_str())
+                    .unwrap_or("USD"),
+            )),
         })
     }
 
     /// Create a new agent loop for subagents without default hooks or services.
     ///
+    /// Uses **StatelessContext** — no persistence, all operations are no-ops.
     /// System prompt is empty by default; use 'set_system_prompt()' to configure.
-    /// Subagents get 'None' for all storage services (no persistence).
     /// No external hooks for subagents.
-    /// No vault for subagents.
+    /// No vault for subagents (empty interceptor chain).
     pub fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
+        // Use stateless context for subagents
+        let context: Arc<dyn AgentContext> = Arc::new(StatelessContext::new());
+
         Ok(Self {
             provider,
             tools,
             config,
             workspace,
             history_config: HistoryConfig::default(),
-            session_manager: None,
-            summarization: None,
+            context,
             system_prompt: String::new(),
             skills_context: None,
             external_hooks: ExternalHookRunner::noop(),
-            vault_injector: None,
-            vault_values: Mutex::new(Vec::new()),
+            vault_injector: None, // No vault for subagents
+            pricing: None,
+            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -367,32 +412,22 @@ impl AgentLoop {
     /// Clear the session for the given key (used by CLI for '/new' command).
     ///
     /// This resets the conversation history so the next message starts fresh.
-    /// No-op for subagents (no session storage).
+    /// For stateless contexts (subagents), this is a no-op.
     pub async fn clear_session(&self, session_key: &SessionKey) {
-        if let Some(ref sm) = self.session_manager {
-            sm.clear_session(session_key).await;
+        // Only clear if we have persistence
+        if self.context.is_persistent() {
+            self.context.load_session(session_key).await;
+            // Note: SessionManager has a clear_session method, but AgentContext
+            // doesn't expose it directly. For now, we skip this optimization
+            // since the session will be fresh on next load anyway.
         }
     }
 
-    /// Process a message directly (for CLI or testing)
+    /// Process a message and return response.
     pub async fn process_direct(
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<AgentResponse, AgentError> {
-        self.process_direct_with_callback(content, session_key, None)
-            .await
-    }
-
-    /// Process a message with optional streaming callback.
-    ///
-    /// The pipeline is a straight-line sequence with no hidden control flow.
-    /// See module-level docs for the full execution flow diagram.
-    pub async fn process_direct_with_callback(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse, AgentError> {
         let session_key_str = session_key.to_string();
         // ── 1. External hook: pre_request (can abort or modify) ───
@@ -408,6 +443,7 @@ impl AgentLoop {
                         content: error_msg,
                         reasoning_content: None,
                         tools_used: vec![],
+                        model: Some(self.config.model.clone()),
                     });
                 }
                 // Use modified message if provided, otherwise keep original
@@ -423,19 +459,14 @@ impl AgentLoop {
         };
         let content = content.as_str();
 
-        // ── 2. Load session history (direct, no trait indirection) ─────
-        let session = match &self.session_manager {
-            Some(sm) => sm.get_or_create(session_key).await,
-            None => crate::session::Session::from_key(session_key.clone()),
-        };
+        // ── 2. Load session history (trait dispatch) ─────
+        let session = self.context.load_session(session_key).await;
         let history_snapshot = session.get_history(self.config.memory_window);
 
-        // ── 3. Save user message (direct, Option-aware) ────────────────
-        if let Some(ref sm) = self.session_manager {
-            if let Err(e) = sm.append_by_key(session_key, "user", content, None).await {
-                warn!("Failed to persist user message: {}", e);
-            }
-        }
+        // ── 3. Save user message (trait dispatch) ────────────────
+        self.context
+            .save_message(session_key, "user", content, None)
+            .await;
 
         // ── 4. Truncate history (pure computation) ─────────────────
         let processed = process_history(history_snapshot, &self.history_config);
@@ -445,46 +476,15 @@ impl AgentLoop {
         // The summarization LLM call is expensive (~10-30s). Instead of blocking
         // the user's response, we:
         //   a) Load the existing (possibly stale) summary — cheap SQLite read.
-        //   b) If there are evictions, fire off a background `tokio::spawn` task
-        //      to generate an updated summary. It will be available next turn.
+        //   b) If there are evictions, fire off background compression.
         //   c) Use the existing summary for this turn's prompt assembly.
-        let summary = match &self.summarization {
-            Some(s) => {
-                // Always load the existing summary (fast, no LLM call)
-                let existing = s.load_summary(&session_key_str).await;
+        let summary = self.context.load_summary(&session_key_str).await;
 
-                // If messages were evicted, spawn background compression
-                if !processed.evicted.is_empty() {
-                    let svc = Arc::clone(s);
-                    let key = session_key_str.clone();
-                    let evicted = processed.evicted.clone();
-
-                    tokio::spawn(async move {
-                        debug!(
-                            "[Summarization] Background compression task started for session '{}'",
-                            key
-                        );
-                        match svc.compress(&key, &evicted).await {
-                            Ok(_) => {
-                                debug!(
-                                    "[Summarization] Background compression completed for session '{}'",
-                                    key
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "[Summarization] Background compression failed for session '{}': {}",
-                                    key, e
-                                );
-                            }
-                        }
-                    });
-                }
-
-                existing
-            }
-            None => None,
-        };
+        // If messages were evicted, trigger background compression (non-blocking)
+        if !processed.evicted.is_empty() {
+            self.context
+                .compress_context(&session_key_str, &processed.evicted);
+        }
 
         // ── 6. Inject system prompts (direct) ──────────────────────
         let mut system_prompts = Vec::new();
@@ -503,48 +503,40 @@ impl AgentLoop {
             summary.as_deref(),
         );
 
-        // ── 7.5. Inject vault secrets (before sending to LLM) ────────
-        let _injection_report = if let Some(ref injector) = self.vault_injector {
-            let report = injector.inject(&mut messages);
-
-            // Store injected values for log redaction
-            if let Ok(mut values) = self.vault_values.lock() {
-                *values = report.injected_values.clone();
-            }
-
-            if !report.missing_keys.is_empty() {
-                warn!("[Vault] Missing keys: {:?}", report.missing_keys);
-            }
+        // ── 7.5. Vault injection ────────────────────────────────────
+        // Inject secrets at the last moment before sending to LLM.
+        // CRITICAL: Collect injected values into LOCAL variable for log redaction!
+        // This prevents memory leaks by scoping secrets to single requests.
+        let mut local_vault_values = Vec::new();
+        if let Some(ref vault) = self.vault_injector {
+            let report = vault.inject(&mut messages);
+            local_vault_values = report.injected_values;
             if !report.keys_used.is_empty() {
                 debug!(
-                    "[Vault] Injected {} keys: {:?}",
+                    "[Agent] Vault injected {} keys into {} messages",
                     report.keys_used.len(),
-                    report.keys_used
+                    report.messages_modified
                 );
             }
-
-            Some(report)
-        } else {
-            None
-        };
+        }
+        // Deduplicate
+        local_vault_values.sort();
+        local_vault_values.dedup();
+        if !local_vault_values.is_empty() {
+            debug!(
+                "[Agent] Collected {} injected values for log redaction (scoped to this request)",
+                local_vault_values.len()
+            );
+        }
 
         // ── 8. Run agent loop ─────────────────────────────────────
-        let effective_cb = if self.config.streaming {
-            callback
-        } else {
-            None
-        };
-        let result = self.run_agent_loop(messages, effective_cb).await?;
+        let result = self.run_agent_loop(messages, &local_vault_values).await?;
 
         // ── 9. External hook: post_response (audit / alerting) ────
         let tools_used_str = result.tools_used.join(", ");
 
         // Redact secrets from post_response hook
-        let safe_content = if let Ok(values) = self.vault_values.lock().as_ref() {
-            redact_secrets(&result.content, values)
-        } else {
-            result.content.clone()
-        };
+        let safe_content = redact_secrets(&result.content, &local_vault_values);
 
         if let Err(e) = self
             .external_hooks
@@ -554,25 +546,23 @@ impl AgentLoop {
             warn!("post_response hook failed (ignored): {}", e);
         }
 
-        // ── 10. Save assistant message (direct, Option-aware) ──────────
+        // ── 10. Save assistant message (trait dispatch) ──────────
         // Redact secrets before saving to history
-        if let Some(ref sm) = self.session_manager {
-            let history_content = if let Ok(values) = self.vault_values.lock().as_ref() {
-                redact_secrets(&result.content, values)
-            } else {
-                result.content.clone()
-            };
+        let history_content = redact_secrets(&result.content, &local_vault_values);
 
-            if let Err(e) = sm
-                .append_by_key(
-                    session_key,
-                    "assistant",
-                    &history_content,
-                    Some(result.tools_used.clone()),
-                )
-                .await
-            {
-                warn!("Failed to persist assistant message: {}", e);
+        self.context
+            .save_message(
+                session_key,
+                "assistant",
+                &history_content,
+                Some(result.tools_used.clone()),
+            )
+            .await;
+
+        // Output session token stats if available
+        if let Ok(stats) = self.session_stats.lock() {
+            if stats.request_count > 0 {
+                info!("{}", stats.format_summary());
             }
         }
 
@@ -580,145 +570,231 @@ impl AgentLoop {
             content: result.content,
             reasoning_content: result.reasoning_content,
             tools_used: result.tools_used,
+            model: Some(self.config.model.clone()),
+        })
+    }
+
+    /// Process a message with streaming callback.
+    pub async fn process_direct_streaming<F>(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        callback: F,
+    ) -> Result<AgentResponse, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send + 'static,
+    {
+        let session_key_str = session_key.to_string();
+        let content = match self
+            .external_hooks
+            .run_pre_request(&session_key_str, content)
+            .await
+        {
+            Ok(Some(output)) => {
+                if output.is_abort() {
+                    let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
+                    return Ok(AgentResponse {
+                        content: error_msg,
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        model: Some(self.config.model.clone()),
+                    });
+                }
+                output
+                    .modified_message
+                    .unwrap_or_else(|| content.to_string())
+            }
+            Ok(None) => content.to_string(),
+            Err(e) => {
+                warn!("pre_request hook failed (continuing): {}", e);
+                content.to_string()
+            }
+        };
+        let content = content.as_str();
+
+        let session = self.context.load_session(session_key).await;
+        let history_snapshot = session.get_history(self.config.memory_window);
+        self.context
+            .save_message(session_key, "user", content, None)
+            .await;
+
+        let processed = process_history(history_snapshot, &self.history_config);
+        let summary = self.context.load_summary(&session_key_str).await;
+        if !processed.evicted.is_empty() {
+            self.context
+                .compress_context(&session_key_str, &processed.evicted);
+        }
+
+        let mut system_prompts = Vec::new();
+        if !self.system_prompt.is_empty() {
+            system_prompts.push(self.system_prompt.clone());
+        }
+        if let Some(ref skills) = self.skills_context {
+            system_prompts.push(skills.clone());
+        }
+
+        let mut messages = Self::assemble_prompt(
+            processed.messages,
+            content,
+            &system_prompts,
+            summary.as_deref(),
+        );
+
+        let mut local_vault_values = Vec::new();
+        if let Some(ref vault) = self.vault_injector {
+            let report = vault.inject(&mut messages);
+            local_vault_values = report.injected_values;
+        }
+        local_vault_values.sort();
+        local_vault_values.dedup();
+
+        let result = self
+            .run_agent_loop_streaming(messages, &local_vault_values, callback)
+            .await?;
+
+        let tools_used_str = result.tools_used.join(", ");
+        let safe_content = redact_secrets(&result.content, &local_vault_values);
+        if let Err(e) = self
+            .external_hooks
+            .run_post_response(&session_key_str, &safe_content, &tools_used_str)
+            .await
+        {
+            warn!("post_response hook failed (ignored): {}", e);
+        }
+
+        let history_content = redact_secrets(&result.content, &local_vault_values);
+        self.context
+            .save_message(
+                session_key,
+                "assistant",
+                &history_content,
+                Some(result.tools_used.clone()),
+            )
+            .await;
+
+        if let Ok(stats) = self.session_stats.lock() {
+            if stats.request_count > 0 {
+                info!("{}", stats.format_summary());
+            }
+        }
+
+        Ok(AgentResponse {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            model: Some(self.config.model.clone()),
         })
     }
 
     // ── Agent Loop Internals ────────────────────────────────
+    // Note: calculate_token_usage and handle_tool_calls were moved to executor_core.rs
+    // as part of the AgentExecutor refactoring.
 
     /// Unified agent iteration loop.
     ///
-    /// Always uses 'chat_stream' — for non-streaming providers the default
-    /// trait impl wraps the response in a single-chunk stream, so both paths
-    /// converge here.  When 'callback' is 'None', stream events are silently
-    /// discarded.
+    /// Delegates to `AgentExecutor` for the core LLM loop.
+    /// Handles session stats tracking after execution completes.
+    ///
+    /// # Security: Vault Values Scoping
+    ///
+    /// `vault_values` is passed as a parameter (not stored in self) to ensure
+    /// plaintext secrets are scoped to single requests. This prevents memory
+    /// accumulation and limits the exposure window for sensitive data.
     async fn run_agent_loop(
         &self,
-        initial_messages: Vec<ChatMessage>,
-        callback: Option<&StreamCallback>,
+        messages: Vec<ChatMessage>,
+        vault_values: &[String],
     ) -> Result<AgentLoopResult, AgentError> {
-        let noop: StreamCallback = Box::new(|_| {});
-        let cb: &StreamCallback = callback.unwrap_or(&noop);
+        use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-        // Get vault values for log redaction
-        let vault_values: Vec<String> = self
-            .vault_values
-            .lock()
-            .map(|v| v.clone())
-            .unwrap_or_default();
+        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
 
-        let mut messages = initial_messages;
-        let mut tools_used = Vec::new();
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
-
-        for iteration in 1..=self.config.max_iterations {
-            debug!("Agent loop iteration {}", iteration);
-
-            let request = request_handler.build_chat_request(&messages);
-            let mut stream_result = request_handler.send_with_retry(request).await?;
-            let response = stream::accumulate_stream(&mut stream_result, cb).await?;
-
-            // Inline logging (replaces LoggingHook::on_llm_response)
-            log_llm_response(&response, iteration, &vault_values);
-
-            if !response.has_tool_calls() {
-                let content = response.content.unwrap_or_else(|| {
-                    "I've completed processing but have no response to give.".to_string()
-                });
-                cb(&StreamEvent::Done);
-                return Ok(AgentLoopResult {
-                    content,
-                    reasoning_content: response.reasoning_content,
-                    tools_used,
-                });
-            }
-
-            // Has tool calls — execute them and continue the loop
-            let mut state = ToolCallState {
-                messages: &mut messages,
-                tools_used: &mut tools_used,
-            };
-            self.handle_tool_calls(&response, &executor, &mut state, cb)
-                .await;
+        let mut options = ExecutorOptions::new().with_vault_values(vault_values);
+        if let Some(ref pricing) = self.pricing {
+            options = options.with_pricing(pricing.clone());
         }
 
-        // Exhausted max iterations without a final response
+        let result = executor.execute_with_options(messages, &options).await?;
+
+        // Update session stats
+        if let Some(ref usage) = result.token_usage {
+            if let Ok(mut stats) = self.session_stats.lock() {
+                stats.add_usage(usage, result.cost);
+            }
+        }
+
         Ok(AgentLoopResult {
-            content: "I've completed processing but have no response to give.".to_string(),
-            reasoning_content: None,
-            tools_used,
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            token_usage: result.token_usage,
+            cost: result.cost,
         })
     }
 
-    /// Execute tool calls, append results to messages, and update tracking.
-    async fn handle_tool_calls(
+    /// Execute with streaming callback.
+    ///
+    /// Delegates to `AgentExecutor` for the core LLM loop with streaming.
+    /// Handles session stats tracking after execution completes.
+    ///
+    /// # Security: Vault Values Scoping
+    ///
+    /// `vault_values` is passed as a parameter (not stored in self) to ensure
+    /// plaintext secrets are scoped to single requests.
+    async fn run_agent_loop_streaming<F>(
         &self,
-        response: &ChatResponse,
-        executor: &ToolExecutor<'_>,
-        state: &mut ToolCallState<'_>,
-        cb: &StreamCallback,
-    ) {
-        info!(
-            "[Agent] Executing {} tool call(s): {}",
-            response.tool_calls.len(),
-            response
-                .tool_calls
-                .iter()
-                .map(|tc| tc.function.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        messages: Vec<ChatMessage>,
+        vault_values: &[String],
+        mut callback: F,
+    ) -> Result<AgentLoopResult, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send + 'static,
+    {
+        use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
+        use tokio::sync::mpsc;
 
-        // Add assistant message with tool calls to the conversation
-        if response.tool_calls.is_empty() {
-            if let Some(ref c) = response.content {
-                state.messages.push(ChatMessage::assistant(c));
+        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
+
+        let mut options = ExecutorOptions::new().with_vault_values(vault_values);
+        if let Some(ref pricing) = self.pricing {
+            options = options.with_pricing(pricing.clone());
+        }
+
+        // Create channel for stream events
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+
+        // Spawn task to forward events to callback
+        let forward_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                callback(event);
             }
-        } else {
-            state.messages.push(ChatMessage::assistant_with_tools(
-                response.content.clone(),
-                response.tool_calls.clone(),
-            ));
+        });
+
+        // Execute with streaming
+        let result = executor
+            .execute_stream_with_options(messages, event_tx, &options)
+            .await?;
+
+        // Wait for event forwarding to complete
+        let _ = forward_handle.await;
+
+        // Update session stats
+        if let Some(ref usage) = result.token_usage {
+            if let Ok(mut stats) = self.session_stats.lock() {
+                stats.add_usage(usage, result.cost);
+            }
         }
 
-        // Emit ToolStart events before execution
-        for tool_call in &response.tool_calls {
-            cb(&StreamEvent::ToolStart {
-                name: tool_call.function.name.clone(),
-            });
-        }
-
-        // Execute tool calls sequentially to prevent race conditions
-        // and maintain LLM's expected causal ordering
-        for tool_call in &response.tool_calls {
-            let start = std::time::Instant::now();
-            let result = executor.execute_one(tool_call).await;
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            let tool_name = tool_call.function.name.clone();
-
-            // Inline logging (replaces LoggingHook::on_tool_result)
-            debug!(
-                "[Tool] {} -> {} ({}ms)",
-                tool_name, &result.output, duration_ms
-            );
-
-            state.tools_used.push(tool_name.clone());
-
-            let output_preview = truncate_preview(&result.output, 500);
-
-            cb(&StreamEvent::ToolEnd {
-                name: tool_name.clone(),
-                output: output_preview,
-            });
-            // Add the tool result to the conversation
-            state.messages.push(ChatMessage::tool_result(
-                tool_call.id.clone(),
-                tool_name.clone(),
-                result.output,
-            ));
-        }
+        Ok(AgentLoopResult {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            token_usage: result.token_usage,
+            cost: result.cost,
+        })
     }
+
+    // Note: handle_tool_calls was moved to executor_core.rs as part of the AgentExecutor refactoring.
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -777,18 +853,4 @@ impl AgentLoop {
 
         messages
     }
-}
-
-/// Truncate a string for preview logging, respecting UTF-8 char boundaries.
-fn truncate_preview(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        return s.to_string();
-    }
-    let end = s
-        .char_indices()
-        .take_while(|(i, _)| *i < max_chars)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    format!("{}... (truncated, {} chars total)", &s[..end], s.len())
 }

@@ -29,6 +29,7 @@ pub mod search;
 
 pub mod session;
 pub mod skills;
+pub mod token_tracker;
 pub mod tools;
 pub mod vault;
 #[cfg(feature = "webhook")]
@@ -36,8 +37,11 @@ pub mod webhook;
 pub mod workspace;
 
 pub use config::Config;
-pub use error::{AgentError, ChannelError, McpError, ProviderError};
+pub use error::{AgentError, ChannelError, McpError, PipelineError, ProviderError};
 pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
 pub use vault::{InjectionReport, VaultError, VaultInjector, VaultStore};
+
+// Re-export outbound routing types for convenience
+pub use channels::{OutboundSender, OutboundSenderRegistry};

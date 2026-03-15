@@ -12,15 +12,19 @@ mod copilot;
 mod copilot_oauth;
 mod gemini;
 mod model_spec;
+pub mod registry;
 pub mod streaming;
 
 pub use base::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta,
     FinishReason, LlmProvider, MessageRole, ThinkingConfig, ToolCall, ToolCallDelta,
-    ToolDefinition,
+    ToolDefinition, Usage,
 };
-pub use common::{parse_json_args, OpenAICompatibleProvider, ProviderConfig};
+pub use common::{
+    parse_json_args, OpenAICompatibleProvider, ProviderConfig, ProviderError, ProviderResult,
+};
 pub use copilot::CopilotProvider;
 pub use copilot_oauth::{CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse};
 pub use gemini::GeminiProvider;
 pub use model_spec::ModelSpec;
+pub use registry::ProviderRegistry;

@@ -37,17 +37,18 @@
 //! "AWS credentials: {{vault:aws_access_key}} {{vault:aws_secret_key}}"
 //! ```
 
+mod crypto;
 mod error;
 mod injector;
 mod redaction;
 mod scanner;
 mod store;
 
+pub use crypto::{EncryptedData, KdfParams, VaultCrypto};
 pub use error::VaultError;
 pub use injector::{InjectionReport, VaultInjector};
 pub use redaction::{contains_secrets, redact_message_secrets, redact_secrets};
 pub use scanner::{
     contains_placeholders, extract_keys, replace_placeholders, scan_placeholders, Placeholder,
-    PLACEHOLDER_PATTERN,
 };
-pub use store::{VaultEntry, VaultMetadata, VaultStore};
+pub use store::{AtomicTimestamp, VaultEntryV2, VaultFileV2, VaultMetadata, VaultStore};

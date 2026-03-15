@@ -51,9 +51,10 @@ async fn test_agent_initialization() {
         "test-key",
         None,
         Some("gpt-4o".to_string()),
-    );
+    )
+    .expect("openai should be known provider");
 
-    let tools = nanobot_core::tools::ToolRegistry::new();
+    let tools = Arc::new(nanobot_core::tools::ToolRegistry::new());
     let agent =
         nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools)
             .await
@@ -139,6 +140,7 @@ async fn test_outbound_message() {
         content: "Response".to_string(),
         metadata: Some(serde_json::json!({"thread_ts": "12345"})),
         trace_id: None,
+        ws_message: None,
     };
 
     assert_eq!(outbound.channel, ChannelType::Discord);
@@ -281,6 +283,30 @@ async fn test_simple_schema() {
         .contains(&serde_json::json!("path")));
 }
 
+#[test]
+fn test_simple_schema_with_array() {
+    use nanobot_core::tools::simple_schema;
+
+    // Test array type with default string items
+    let schema = simple_schema(&[
+        ("tags", "array", false, "List of tags"),
+        ("ids", "array<integer>", false, "List of IDs"),
+    ]);
+
+    // Verify tags array has items with string type
+    let tags_prop = &schema["properties"]["tags"];
+    assert!(tags_prop.is_object());
+    assert_eq!(tags_prop["type"], "array");
+    assert_eq!(tags_prop["items"]["type"], "string");
+    assert_eq!(tags_prop["description"], "List of tags");
+
+    // Verify ids array has items with integer type
+    let ids_prop = &schema["properties"]["ids"];
+    assert!(ids_prop.is_object());
+    assert_eq!(ids_prop["type"], "array");
+    assert_eq!(ids_prop["items"]["type"], "integer");
+}
+
 // =============================================================================
 // Config Tests
 // =============================================================================
@@ -291,9 +317,13 @@ async fn test_config_defaults() {
 
     let config = Config::default();
 
-    assert_eq!(config.agents.defaults.temperature, 0.0);
-    assert_eq!(config.agents.defaults.max_tokens, 0);
-    assert_eq!(config.agents.defaults.max_iterations, 0);
+    // Agent defaults have sensible default values
+    assert_eq!(config.agents.defaults.temperature, 0.7);
+    assert_eq!(config.agents.defaults.max_tokens, 4096);
+    assert_eq!(config.agents.defaults.max_iterations, 20);
+    assert_eq!(config.agents.defaults.memory_window, 50);
+    assert!(config.agents.defaults.streaming);
+    assert!(!config.agents.defaults.thinking_enabled);
     assert!(!config.tools.restrict_to_workspace);
 }
 
@@ -464,7 +494,8 @@ async fn test_provider_trait() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
     let provider =
-        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()));
+        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()))
+            .expect("openai should be known provider");
 
     assert_eq!(provider.name(), "openai");
     assert_eq!(provider.default_model(), "gpt-4o");
@@ -479,7 +510,8 @@ async fn test_openrouter_provider() {
         "sk-or-test",
         None,
         Some("anthropic/claude-sonnet-4".to_string()),
-    );
+    )
+    .expect("openrouter should be known provider");
 
     assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
@@ -494,7 +526,8 @@ async fn test_anthropic_provider() {
         "sk-ant-test",
         None,
         Some("claude-sonnet-4-20250514".to_string()),
-    );
+    )
+    .expect("anthropic should be known provider");
 
     assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
@@ -1236,6 +1269,7 @@ async fn test_outbound_message_for_all_channels() {
             content: "Response message".to_string(),
             metadata: Some(serde_json::json!({"thread_ts": "123456"})),
             trace_id: None,
+            ws_message: None,
         };
 
         assert_eq!(msg.channel, channel);

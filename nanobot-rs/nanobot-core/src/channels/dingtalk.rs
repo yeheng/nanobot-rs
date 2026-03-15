@@ -30,6 +30,77 @@ pub struct DingTalkConfig {
     pub allow_from: Vec<String>,
 }
 
+/// Send a text message via DingTalk webhook (stateless).
+///
+/// This function creates a one-off HTTP client and signs the request
+/// if a secret is provided. Used by the OutboundSenderRegistry.
+#[instrument(name = "channel.dingtalk.send_stateless", skip_all)]
+pub async fn send_message_stateless(
+    webhook_url: &str,
+    secret: Option<&str>,
+    text: &str,
+) -> anyhow::Result<()> {
+    let client = Client::new();
+
+    // Build signed URL
+    let url = if let Some(s) = secret {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let string_to_sign = format!("{}\n{}", timestamp, s);
+
+        let mut hmac = Sha256::new();
+        hmac.update(string_to_sign.as_bytes());
+        let sign = BASE64.encode(hmac.finalize());
+        let sign_encoded = urlencoding::encode(&sign);
+
+        format!(
+            "{}&timestamp={}&sign={}",
+            webhook_url, timestamp, sign_encoded
+        )
+    } else {
+        webhook_url.to_string()
+    };
+
+    #[derive(Serialize)]
+    struct TextMessage {
+        msgtype: String,
+        text: TextContent,
+    }
+
+    #[derive(Serialize)]
+    struct TextContent {
+        content: String,
+    }
+
+    let message = TextMessage {
+        msgtype: "text".to_string(),
+        text: TextContent {
+            content: text.to_string(),
+        },
+    };
+
+    let response = client.post(&url).json(&message).send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await?;
+        anyhow::bail!("Failed to send DingTalk message: {} - {}", status, body);
+    }
+
+    #[derive(Deserialize)]
+    struct DingTalkResponse {
+        errcode: i32,
+        errmsg: String,
+    }
+
+    let result: DingTalkResponse = response.json().await?;
+    if result.errcode != 0 {
+        anyhow::bail!("DingTalk API error: {} - {}", result.errcode, result.errmsg);
+    }
+
+    debug!("Sent DingTalk message (stateless): {}", text);
+    Ok(())
+}
+
 /// DingTalk channel.
 ///
 /// Sends incoming messages through `InboundSender` which applies auth/rate-limit

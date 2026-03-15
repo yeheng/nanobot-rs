@@ -1,12 +1,10 @@
-//! Full-text search module using Tantivy.
+//! Full-text search types.
 //!
-//! Provides high-performance search capabilities for:
-//! - Memory files (`~/.nanobot/memory/*.md`)
-//! - Session history (SQLite `session_messages` table)
+//! Provides basic search types for memory search functionality.
+//! For advanced Tantivy-based full-text search, use the standalone `tantivy-mcp` server.
 
-pub mod query;
-pub mod result;
-pub mod tantivy;
+mod query;
+mod result;
 
 pub use query::{BooleanQuery, DateRange, FuzzyQuery, SearchQuery, SortOrder};
 pub use result::{HighlightedText, SearchResult};

@@ -84,6 +84,7 @@ impl Tool for MessageTool {
             content: params.content.clone(),
             metadata: Default::default(),
             trace_id: None,
+            ws_message: None,
         };
 
         // Route through Outbound Actor — enqueue instantly, no network wait.

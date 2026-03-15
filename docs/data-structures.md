@@ -31,7 +31,15 @@ OutboundMessage {
     content: String,
     metadata: Option<serde_json::Value>,
     trace_id: Option<String>,
+    ws_message: Option<WebSocketMessage>,  // WebSocket 实时消息
 }
+
+WebSocketMessage {
+    msg_type: WebSocketMessageType,  // Text | Thinking | ToolStart | ToolEnd | TokenStats | Error | Done
+    content: String,
+    metadata: Option<serde_json::Value>,
+}
+```
 ```
 
 ### 1.3 会话标识
@@ -127,7 +135,15 @@ ChatResponse {
     content: Option<String>,              // 文本回复
     tool_calls: Vec<ToolCall>,            // 工具调用请求
     reasoning_content: Option<String>,    // 推理/思考内容 (DeepSeek R1 等)
+    token_usage: Option<TokenUsage>,      // Token 使用量统计
 }
+
+TokenUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+    total_tokens: u32,
+}
+```
 ```
 
 ### 2.4 ToolCall / ToolDefinition
@@ -234,105 +250,43 @@ MemoryQuery {
 
 ---
 
-## 5. Pipeline 数据结构 (opt-in)
+## 5. Vault 数据结构
 
-> 以下结构仅在 `pipeline.enabled: true` 时激活。
-
-### 5.1 TaskState (状态机)
+### 5.1 VaultEntryV2
 
 ```rust
-enum TaskState {
-    Pending,     // 新创建
-    Triage,      // 太子分诊中
-    Planning,    // 中书省规划中
-    Reviewing,   // 门下省审核中
-    Assigned,    // 尚书省分派中
-    Executing,   // 六部执行中
-    Review,      // 执行后审核
-    Done,        // 已完成
-    Blocked,     // 被阻塞
+VaultEntryV2 {
+    key: String,                      // 密钥名称
+    value: String,                    // 密钥值 (可加密)
+    description: Option<String>,      // 描述
+    metadata: VaultMetadata,
 }
-```
 
-合法转换: `Pending→Triage→Planning→Reviewing→Assigned→Executing→Review→Done`，另有 `Reviewing→Planning`（拒绝）、`Executing/Review→Blocked`、`Blocked→Executing/Planning`（恢复）。
-
-### 5.2 PipelineTask
-
-```rust
-PipelineTask {
-    id: String,                       // UUID v4
-    title: String,                    // 任务标题
-    description: String,              // 详细描述
-    state: TaskState,                 // 当前状态
-    priority: TaskPriority,           // Low | Normal | High | Critical
-    assigned_role: Option<String>,    // 当前负责角色
-    review_count: u32,                // 审核轮次
-    retry_count: u32,                 // 重试次数 (停滞恢复)
-    last_heartbeat: DateTime<Utc>,    // 最后心跳 (停滞检测用)
+VaultMetadata {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    result: Option<String>,           // 完成时的结果
-    origin_channel: Option<String>,   // 来源渠道
-    origin_chat_id: Option<String>,   // 来源会话
+    last_used: Option<DateTime<Utc>>,
 }
 ```
 
-### 5.3 FlowLogEntry (审计日志)
+### 5.2 VaultFileV2
 
 ```rust
-FlowLogEntry {
-    id: i64,
-    task_id: String,
-    from_state: String,
-    to_state: String,
-    agent_role: String,               // 执行转换的角色
-    reason: Option<String>,           // 转换原因
-    timestamp: DateTime<Utc>,
+VaultFileV2 {
+    version: String,                  // "2.0"
+    entries: HashMap<String, VaultEntryV2>,
+    encryption: Option<EncryptedData>,
+    kdf_params: Option<KdfParams>,    // 密钥派生参数
 }
 ```
 
-### 5.4 ProgressEntry (进度记录)
+### 5.3 InjectionReport
 
 ```rust
-ProgressEntry {
-    id: i64,
-    task_id: String,
-    agent_role: String,
-    content: String,                  // 进度描述
-    percentage: Option<f32>,          // 0.0 ~ 100.0
-    timestamp: DateTime<Utc>,
-}
-```
-
-### 5.5 PipelineEvent (编排器事件)
-
-```rust
-enum PipelineEvent {
-    TaskCreated { task_id: String },
-    TaskTransitioned { task_id: String, new_state: TaskState, agent_role: String },
-    ProgressReported { task_id: String, agent_role: String },
-    StallDetected { task_id: String },
-}
-```
-
-### 5.6 PipelineConfig
-
-```rust
-PipelineConfig {
-    enabled: bool,                    // 主开关 (默认 false)
-    use_default_template: bool,       // 加载内置三省六部模板 (默认 true)
-    roles: HashMap<String, AgentRoleDef>,
-    max_reviews: u32,                 // 审核上限 (默认 3)
-    stall_timeout_secs: u64,          // 心跳超时 (默认 60s)
-    model: Option<String>,            // 全局模型覆盖
-}
-
-AgentRoleDef {
-    description: String,
-    allowed_agents: Vec<String>,
-    soul_path: Option<String>,        // 自定义 SOUL.md 路径
-    model: Option<String>,            // 角色专用模型
-    responsible_states: Vec<String>,
+InjectionReport {
+    total_placeholders: usize,        // 占位符总数
+    replaced: usize,                  // 成功替换数
+    missing_keys: Vec<String>,        // 未找到的密钥
 }
 ```
 
@@ -384,40 +338,9 @@ AgentRoleDef {
 │   ├── last_run TEXT
 │   └── next_run TEXT
 │
-│  ─── Pipeline 表 (opt-in, 仅 pipeline.enabled 时创建) ───
+│  ─── 高级搜索 (已迁移到 tantivy-mcp MCP 服务) ───
 │
-├── pipeline_tasks        管线任务看板
-│   ├── id TEXT PK        UUID v4
-│   ├── title TEXT        任务标题
-│   ├── description TEXT  任务详情
-│   ├── state TEXT        状态 (pending/triage/planning/reviewing/assigned/executing/review/done/blocked)
-│   ├── priority TEXT     优先级 (low/normal/high/critical)
-│   ├── assigned_role TEXT 当前负责角色
-│   ├── review_count INT  审核轮次计数
-│   ├── retry_count INT   重试计数 (停滞恢复)
-│   ├── last_heartbeat TEXT RFC 3339 (停滞检测用)
-│   ├── created_at TEXT
-│   ├── updated_at TEXT
-│   ├── result TEXT       完成时的结果内容 (nullable)
-│   ├── origin_channel TEXT 来源渠道
-│   └── origin_chat_id TEXT 来源会话
-│
-├── pipeline_flow_log     流转审计日志 (append-only)
-│   ├── id INTEGER PK
-│   ├── task_id TEXT      → pipeline_tasks.id
-│   ├── from_state TEXT   原状态
-│   ├── to_state TEXT     目标状态
-│   ├── agent_role TEXT   执行角色
-│   ├── reason TEXT       转换原因 (nullable)
-│   └── timestamp TEXT
-│
-└── pipeline_progress_log 执行进度日志
-    ├── id INTEGER PK
-    ├── task_id TEXT       → pipeline_tasks.id
-    ├── agent_role TEXT    上报角色
-    ├── content TEXT       进度描述
-    ├── percentage REAL    完成百分比 (nullable)
-    └── timestamp TEXT
+├── (tantivy-mcp 服务)         独立的 MCP 服务器提供全文搜索
 ```
 
 ---
@@ -439,12 +362,8 @@ AgentRoleDef {
 ├── memory/                 扩展记忆目录
 ├── skills/                 用户自定义技能
 │   └── *.md                Markdown + YAML frontmatter
-└── pipeline_templates/     管线角色 SOUL 模板 (opt-in)
-    ├── taizi.md            太子 — 分诊
-    ├── zhongshu.md         中书省 — 规划
-    ├── menxia.md           门下省 — 审核
-    ├── shangshu.md         尚书省 — 调度
-    └── ministry_default.md 六部通用执行
+├── vault/                  敏感数据隔离目录
+│   └── secrets.json        加密存储的密钥 (AES-256-GCM)
 ```
 
 > **Bootstrap 文件加载顺序**: PROFILE.md → SOUL.md → AGENTS.md → MEMORY.md → BOOTSTRAP.md

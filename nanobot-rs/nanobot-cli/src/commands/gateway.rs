@@ -4,13 +4,17 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use tracing::info;
 
 use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, SubagentManager};
 #[allow(unused_imports)]
 use nanobot_core::channels::Channel;
-use nanobot_core::config::load_config;
+use nanobot_core::channels::OutboundSenderRegistry;
+use nanobot_core::config::{load_config, ModelRegistry};
 use nanobot_core::cron::CronService;
+use nanobot_core::providers::ProviderRegistry;
+use nanobot_core::token_tracker::ModelPricing;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 
 /// Run the gateway command
@@ -66,8 +70,14 @@ pub async fn cmd_gateway() -> Result<()> {
     let (bus, inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
     let bus = Arc::new(bus);
 
-    // Create cron service
-    let cron_service = Arc::new(CronService::new(workspace.clone()).await);
+    // MemoryStore provides the underlying SqliteStore for session management
+    // Create this FIRST to ensure a single connection pool is shared across all services
+    let memory_store = Arc::new(MemoryStore::new().await);
+    let sqlite_store = memory_store.sqlite_store().clone();
+
+    // Create cron service with the shared SqliteStore to avoid duplicate connection pools
+    let cron_service =
+        Arc::new(CronService::with_store(sqlite_store.clone(), workspace.clone()).await);
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config)?;
@@ -83,81 +93,107 @@ pub async fn cmd_gateway() -> Result<()> {
         agent_config.thinking_enabled = false;
     }
 
+    // Build model registry and provider registry for switch_model tool
+    let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+
+    // Log available models if any are configured
+    if !model_registry.is_empty() {
+        info!(
+            "Model switching enabled with {} model profiles: {}",
+            model_registry.len(),
+            model_registry.list_available_models().join(", ")
+        );
+    }
+
     // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp_servers.is_empty() {
+    let mcp_tools = if !config.tools.mcp.stdio.is_empty()
+        || !config.tools.mcp.remote.is_empty()
+        || !config.tools.mcp_servers.is_empty()
+    {
         println!("Starting MCP servers...");
-        let (_mcp_manager, tools) =
-            nanobot_core::mcp::start_mcp_servers(&config.tools.mcp_servers).await;
+        let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
         println!("  {} MCP tools loaded", tools.len());
         tools
     } else {
         Vec::new()
     };
 
-    // MemoryStore provides the underlying SqliteStore for session management
-    let memory_store = Arc::new(MemoryStore::new().await);
+    let subagent_tools = Arc::new(super::registry::build_tool_registry(
+        super::registry::ToolRegistryConfig {
+            config: config.clone(),
+            workspace: workspace.clone(),
+            mcp_tools: vec![],
+            subagent_manager: None,
+            extra_tools: vec![],
+            sqlite_store: None, // Subagent doesn't need history search
+            model_registry: Some(model_registry.clone()),
+            provider_registry: Some(provider_registry.clone()),
+        },
+    ));
 
     let subagent_manager = Arc::new(
         SubagentManager::new(
             provider_info.provider.clone(),
             workspace.clone(),
-            Arc::new({
-                let cfg = config.clone();
-                let ws = workspace.clone();
-                move || {
-                    super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
-                        config: cfg.clone(),
-                        workspace: ws.clone(),
-                        mcp_tools: vec![],
-                        subagent_manager: None,
-                        extra_tools: vec![],
-                        enable_tantivy_search: false,
-                    })
-                }
-            }),
+            subagent_tools,
             bus.outbound_sender(),
         )
         .await,
     );
 
-    // Build tool registry externally with gateway-specific tools
-    let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
+    #[allow(unused_mut)]
+    let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
         mcp_tools,
         subagent_manager: Some(subagent_manager.clone()),
-        extra_tools: vec![
-            (
-                Box::new(MessageTool::new(bus.outbound_sender())),
-                ToolMetadata {
-                    display_name: "Send Message".to_string(),
-                    category: "communication".to_string(),
-                    tags: vec!["message".to_string(), "send".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            ),
-            (
-                Box::new(CronTool::new(cron_service.clone())),
-                ToolMetadata {
-                    display_name: "Schedule Task".to_string(),
-                    category: "system".to_string(),
-                    tags: vec!["cron".to_string(), "schedule".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            ),
-        ],
-        enable_tantivy_search: true, // Gateway mode disables Tantivy search tools
+        extra_tools: {
+            let ext: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)> = vec![
+                (
+                    Box::new(MessageTool::new(bus.outbound_sender()))
+                        as Box<dyn nanobot_core::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Send Message".to_string(),
+                        category: "communication".to_string(),
+                        tags: vec!["message".to_string(), "send".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                ),
+                (
+                    Box::new(CronTool::new(cron_service.clone()))
+                        as Box<dyn nanobot_core::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Schedule Task".to_string(),
+                        category: "system".to_string(),
+                        tags: vec!["cron".to_string(), "schedule".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                ),
+            ];
+
+            ext
+        },
+        sqlite_store: Some(sqlite_store),
+        model_registry: Some(model_registry.clone()),
+        provider_registry: Some(provider_registry.clone()),
     });
 
+    // Convert pricing info to ModelPricing
+    let pricing = provider_info
+        .pricing
+        .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
+
     let agent = Arc::new(
-        AgentLoop::with_memory_store(
+        AgentLoop::with_memory_store_and_pricing(
             provider_info.provider,
             workspace.clone(),
             agent_config,
             tools,
             memory_store,
+            pricing,
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?,
@@ -179,7 +215,8 @@ pub async fn cmd_gateway() -> Result<()> {
     // Outbound Actor decouples network I/O from the agent loop.
 
     // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
-    let channels_config = Arc::new(config.channels.clone());
+    // Create registry from config - supports custom channels via register_custom()
+    let outbound_registry = Arc::new(OutboundSenderRegistry::from_config(&config.channels));
 
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
@@ -219,7 +256,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     tasks.push(tokio::spawn(nanobot_core::bus::run_outbound_actor(
         outbound_rx,
-        channels_config,
+        outbound_registry,
         #[cfg(feature = "all-channels")]
         Some(websocket_manager),
     )));
@@ -228,10 +265,12 @@ pub async fn cmd_gateway() -> Result<()> {
     {
         let outbound_tx = bus.outbound_sender();
         let agent_for_router = agent.clone();
+        let manager_for_router = Some(subagent_manager.clone());
         tasks.push(tokio::spawn(nanobot_core::bus::run_router_actor(
             inbound_rx,
             outbound_tx,
             agent_for_router,
+            manager_for_router,
         )));
     }
 

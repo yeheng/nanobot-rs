@@ -87,6 +87,15 @@ impl ChannelType {
             _ => ChannelType::Custom(s),
         }
     }
+
+    /// Check if this channel supports real-time streaming.
+    ///
+    /// Streaming channels receive incremental LLM output (thinking, content, tool events)
+    /// and forward them to the client in real-time. Non-streaming channels only receive
+    /// the final aggregated response.
+    pub fn supports_streaming(&self) -> bool {
+        matches!(self, ChannelType::WebSocket)
+    }
 }
 
 impl fmt::Display for ChannelType {
@@ -213,7 +222,7 @@ pub struct OutboundMessage {
     /// Target chat ID
     pub chat_id: String,
 
-    /// Message content
+    /// Message content (plain text)
     pub content: String,
 
     /// Additional metadata
@@ -223,6 +232,50 @@ pub struct OutboundMessage {
     /// Trail trace ID for end-to-end request tracking.
     #[serde(default)]
     pub trace_id: Option<String>,
+
+    /// Structured WebSocket message (for real-time streaming)
+    /// When set, this takes precedence over `content` for WebSocket channels
+    #[serde(skip)]
+    pub ws_message: Option<WebSocketMessage>,
+}
+
+impl OutboundMessage {
+    /// Create a new outbound message with plain text content
+    pub fn new(
+        channel: ChannelType,
+        chat_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel,
+            chat_id: chat_id.into(),
+            content: content.into(),
+            metadata: None,
+            trace_id: None,
+            ws_message: None,
+        }
+    }
+
+    /// Create an outbound message with a structured WebSocket message
+    pub fn with_ws_message(
+        channel: ChannelType,
+        chat_id: impl Into<String>,
+        ws_message: WebSocketMessage,
+    ) -> Self {
+        Self {
+            channel,
+            chat_id: chat_id.into(),
+            content: String::new(),
+            metadata: None,
+            trace_id: None,
+            ws_message: Some(ws_message),
+        }
+    }
+
+    /// Check if this message has a structured WebSocket payload
+    pub fn has_ws_message(&self) -> bool {
+        self.ws_message.is_some()
+    }
 }
 
 /// Media attachment
@@ -237,6 +290,114 @@ pub struct MediaAttachment {
     /// Optional caption
     #[serde(default)]
     pub caption: Option<String>,
+}
+
+// ── WebSocket Streaming Messages ─────────────────────────────
+
+/// WebSocket streaming message types for real-time UI updates.
+///
+/// These message types enable the frontend to display thinking process,
+/// tool calls, and content streaming in real-time.
+///
+/// # Protocol
+///
+/// ```json
+/// // Thinking/reasoning content
+/// {"type": "thinking", "content": "..."}
+///
+/// // Tool call started
+/// {"type": "tool_start", "name": "tool_name", "arguments": "{...}"}
+///
+/// // Tool call completed
+/// {"type": "tool_end", "name": "tool_name", "output": "..."}
+///
+/// // Streaming content chunk
+/// {"type": "content", "content": "..."}
+///
+/// // Stream completed
+/// {"type": "done"}
+///
+/// // Plain text message (legacy)
+/// {"type": "text", "content": "..."}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WebSocketMessage {
+    /// Thinking/reasoning content from the LLM
+    Thinking { content: String },
+
+    /// A tool call has started
+    ToolStart {
+        name: String,
+        #[serde(default)]
+        arguments: Option<String>,
+    },
+
+    /// A tool call has completed
+    ToolEnd {
+        name: String,
+        #[serde(default)]
+        output: Option<String>,
+    },
+
+    /// Streaming content chunk
+    Content { content: String },
+
+    /// Stream has completed
+    Done,
+
+    /// Plain text message (legacy support)
+    Text { content: String },
+}
+
+impl WebSocketMessage {
+    /// Create a thinking message
+    pub fn thinking(content: impl Into<String>) -> Self {
+        Self::Thinking {
+            content: content.into(),
+        }
+    }
+
+    /// Create a tool_start message
+    pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
+        Self::ToolStart {
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    /// Create a tool_end message
+    pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
+        Self::ToolEnd {
+            name: name.into(),
+            output,
+        }
+    }
+
+    /// Create a content message
+    pub fn content(content: impl Into<String>) -> Self {
+        Self::Content {
+            content: content.into(),
+        }
+    }
+
+    /// Create a done message
+    pub fn done() -> Self {
+        Self::Done
+    }
+
+    /// Create a plain text message (legacy)
+    pub fn text(content: impl Into<String>) -> Self {
+        Self::Text {
+            content: content.into(),
+        }
+    }
+
+    /// Serialize to JSON string
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self)
+            .unwrap_or_else(|_| r#"{"type":"text","content":"serialization error"}"#.to_string())
+    }
 }
 
 #[cfg(test)]

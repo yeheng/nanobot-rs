@@ -8,6 +8,7 @@
 //! SQLite is only used for machine-state.
 
 use crate::memory::SqliteStore;
+use sqlx::SqlitePool;
 
 /// Memory store — thin wrapper over `SqliteStore` for machine-state.
 ///
@@ -38,5 +39,12 @@ impl MemoryStore {
     /// Get a reference to the underlying `SqliteStore`.
     pub fn sqlite_store(&self) -> &SqliteStore {
         &self.store
+    }
+
+    /// Get a clone of the underlying SQLite pool.
+    ///
+    /// Useful for sharing the pool with other subsystems (e.g., pipeline).
+    pub fn pool(&self) -> SqlitePool {
+        self.store.pool()
     }
 }

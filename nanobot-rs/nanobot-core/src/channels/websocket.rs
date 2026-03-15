@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -6,8 +5,9 @@ use axum::{
     extract::{Query, State},
     response::IntoResponse,
 };
+use dashmap::DashMap;
 use futures::{sink::SinkExt, stream::StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::bus::events::{InboundMessage, OutboundMessage};
@@ -34,21 +34,48 @@ pub struct WebSocketQuery {
     pub user_id: Option<String>,
 }
 
-/// Guard to ensure connection cleanup even on panic or early return
+/// Unified guard for connection cleanup on disconnect.
+///
+/// Uses ownership verification (compare-and-swap pattern) to prevent
+/// a stale guard from destroying a newer connection for the same user.
+/// This handles the race where:
+///   1. User disconnects → guard drop spawns async cleanup
+///   2. User reconnects → new connection registered
+///   3. Old cleanup task runs → must NOT remove the new connection
 struct ConnectionGuard {
     manager: Arc<WebSocketManager>,
     connection_id: ConnectionId,
+    user_id: UserId,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         let manager = self.manager.clone();
         let connection_id = self.connection_id.clone();
-        // Use tokio::spawn to handle async cleanup in Drop
-        tokio::spawn(async move {
-            manager.connections.write().await.remove(&connection_id);
-            debug!("Connection guard cleaned up connection: {}", connection_id);
-        });
+        let user_id = self.user_id.clone();
+
+        // Remove from connections map
+        manager.connections.remove(&connection_id);
+
+        // Only remove user mapping if it still points to OUR connection_id.
+        // DashMap's remove_if allows atomic check-and-remove.
+        manager
+            .user_connections
+            .remove_if(&user_id, |_, current_conn_id| {
+                let is_ours = *current_conn_id == connection_id;
+                if is_ours {
+                    debug!(
+                        "Connection guard cleaned up user {} and connection {}",
+                        user_id, connection_id
+                    );
+                } else {
+                    debug!(
+                    "Connection guard skipped user {} cleanup: current connection is {}, not {}",
+                    user_id, current_conn_id, connection_id
+                );
+                }
+                is_ours
+            });
     }
 }
 
@@ -57,25 +84,28 @@ pub struct WebSocketManager {
     /// Map of active connections
     /// Key: Connection ID (UUID)
     /// Value: Sender to the connection's write loop
-    connections: RwLock<HashMap<ConnectionId, mpsc::Sender<Message>>>,
+    ///
+    /// Uses DashMap for better concurrent performance - operations only lock
+    /// the relevant shard, not the entire map.
+    connections: DashMap<ConnectionId, mpsc::Sender<Message>>,
 
     /// Map of user IDs to connection IDs (for routing messages to specific users)
-    user_connections: RwLock<HashMap<UserId, ConnectionId>>,
+    user_connections: DashMap<UserId, ConnectionId>,
 
     /// Sender to the message bus for inbound messages
     inbound_tx: mpsc::Sender<InboundMessage>,
 
     /// Optional authentication token validator (can be set via set_auth_validator)
-    auth_validator: RwLock<Option<AuthValidator>>,
+    auth_validator: std::sync::RwLock<Option<AuthValidator>>,
 }
 
 impl WebSocketManager {
     pub fn new(inbound_tx: mpsc::Sender<InboundMessage>) -> Self {
         Self {
-            connections: RwLock::new(HashMap::new()),
-            user_connections: RwLock::new(HashMap::new()),
+            connections: DashMap::new(),
+            user_connections: DashMap::new(),
             inbound_tx,
-            auth_validator: RwLock::new(None),
+            auth_validator: std::sync::RwLock::new(None),
         }
     }
 
@@ -84,12 +114,15 @@ impl WebSocketManager {
     where
         F: Fn(&str) -> bool + Send + Sync + 'static,
     {
-        *self.auth_validator.try_write().unwrap() = Some(Arc::new(validator));
+        // Use std::sync::RwLock since this is a one-time setup operation
+        if let Ok(mut guard) = self.auth_validator.write() {
+            *guard = Some(Arc::new(validator));
+        }
     }
 
     /// Get the number of active connections
-    pub async fn connection_count(&self) -> usize {
-        self.connections.read().await.len()
+    pub fn connection_count(&self) -> usize {
+        self.connections.len()
     }
 
     /// Handle a new WebSocket connection
@@ -103,23 +136,38 @@ impl WebSocketManager {
 
     /// Send an outbound message to a specific user/connection
     pub async fn send(&self, msg: OutboundMessage) {
-        let connections = self.connections.read().await;
-        let user_connections = self.user_connections.read().await;
-
         // Try to find the connection by chat_id (which could be user_id or connection_id)
-        let connection_id = if let Some(conn_id) = user_connections.get(&msg.chat_id) {
+        let connection_id = if let Some(conn_id) = self.user_connections.get(&msg.chat_id) {
             // chat_id is a user_id, look up the connection
-            conn_id.clone()
-        } else if connections.contains_key(&msg.chat_id) {
+            conn_id.value().clone()
+        } else if self.connections.contains_key(&msg.chat_id) {
             // chat_id is already a connection_id
             msg.chat_id.clone()
         } else {
-            warn!("No connection found for chat_id: {}", msg.chat_id);
+            warn!(
+                "No connection found for chat_id: {} (user_connections: {:?})",
+                msg.chat_id,
+                self.user_connections
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect::<Vec<_>>()
+            );
             return;
         };
 
-        if let Some(sender) = connections.get(&connection_id) {
-            let text = msg.content;
+        if let Some(sender) = self.connections.get(&connection_id) {
+            // Check if we have a structured WebSocket message
+            let text = if let Some(ref ws_msg) = msg.ws_message {
+                ws_msg.to_json()
+            } else if !msg.content.is_empty() {
+                // Legacy: send plain text (wrapped in JSON for consistency)
+                msg.content
+            } else {
+                // Empty message, skip
+                warn!("WebSocketManager::send - empty message, skipping");
+                return;
+            };
+
             if let Err(e) = sender.send(Message::Text(text.into())).await {
                 warn!(
                     "Failed to send message to connection {}: {}",
@@ -146,7 +194,8 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
 
     // Authenticate if token is provided
     if let Some(token) = &query.token {
-        let validator = manager.auth_validator.read().await;
+        // Use std::sync::RwLock since auth validation is a quick synchronous operation
+        let validator = manager.auth_validator.read().unwrap();
         if let Some(ref validator_fn) = *validator {
             if !validator_fn(token) {
                 warn!(
@@ -163,8 +212,8 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
         connection_id, user_id
     );
 
-    // Check connection limit
-    let current_connections = manager.connection_count().await;
+    // Check connection limit (synchronous with DashMap)
+    let current_connections = manager.connection_count();
     if current_connections >= MAX_CONNECTIONS {
         warn!(
             "Connection limit reached ({}/{}), rejecting new connection",
@@ -176,40 +225,31 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     // Create a bounded channel for sending messages to this connection (backpressure)
     let (tx, mut rx) = mpsc::channel(CONNECTION_CHANNEL_SIZE);
 
-    // Register the connection
-    {
-        let mut connections = manager.connections.write().await;
-        let mut user_connections = manager.user_connections.write().await;
-
-        // If user already has a connection, remove the old one (single connection per user)
-        if let Some(old_conn_id) = user_connections.get(&user_id) {
-            connections.remove(old_conn_id);
-            info!(
-                "Replaced old connection {} for user {}",
-                old_conn_id, user_id
-            );
-        }
-
-        connections.insert(connection_id.clone(), tx);
-        user_connections.insert(user_id.clone(), connection_id.clone());
+    // Register the connection using DashMap (no explicit locking needed)
+    // If user already has a connection, remove the old one (single connection per user)
+    if let Some(old_conn_id) = manager.user_connections.get(&user_id) {
+        let old_id = old_conn_id.value().clone();
+        manager.connections.remove(&old_id);
+        info!("Replaced old connection {} for user {}", old_id, user_id);
     }
+
+    manager.connections.insert(connection_id.clone(), tx);
+    manager
+        .user_connections
+        .insert(user_id.clone(), connection_id.clone());
 
     info!(
         "WebSocket connected: {} (user: {}), total connections: {}",
         connection_id,
         user_id,
-        manager.connection_count().await
+        manager.connection_count()
     );
 
-    // Create guard to ensure cleanup
+    // Single unified guard handles both connection and user mapping cleanup.
+    // Uses ownership verification to avoid destroying newer connections.
     let _guard = ConnectionGuard {
         manager: manager.clone(),
         connection_id: connection_id.clone(),
-    };
-
-    // Also clean up user connection mapping on exit (guard will be dropped with _guard)
-    let _user_cleanup_guard = UserConnectionGuard {
-        manager: manager.clone(),
         user_id: user_id.clone(),
     };
 
@@ -251,12 +291,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                         }
                     }
                     Message::Close(_) => {
-                        debug!("Received close frame from {}", connection_id);
+                        tracing::trace!("Received close frame from {}", connection_id);
                         break;
                     }
                     Message::Ping(_data) => {
                         // Handle ping for keepalive
-                        debug!("Received ping from {}", connection_id);
+                        tracing::trace!("Received ping from {}", connection_id);
                         // Note: axum handles pong automatically
                     }
                     _ => {}
@@ -268,40 +308,15 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     // Wait for either task to finish
     tokio::select! {
         _ = (&mut send_task) => {
-            debug!("Send task finished for {}", connection_id);
+            tracing::trace!("Send task finished for {}", connection_id);
         },
         _ = (&mut recv_task) => {
-            debug!("Recv task finished for {}", connection_id);
+            tracing::trace!("Recv task finished for {}", connection_id);
         },
     }
 
     // Guard will clean up automatically
     debug!("WebSocket connection closed: {}", connection_id);
-}
-
-/// Guard to clean up user connection mapping
-struct UserConnectionGuard {
-    manager: Arc<WebSocketManager>,
-    user_id: String,
-}
-
-impl Drop for UserConnectionGuard {
-    fn drop(&mut self) {
-        let manager = self.manager.clone();
-        let user_id = self.user_id.clone();
-        tokio::spawn(async move {
-            let mut user_connections = manager.user_connections.write().await;
-            if let Some(conn_id) = user_connections.remove(&user_id) {
-                // Also remove from connections map
-                let mut connections = manager.connections.write().await;
-                connections.remove(&conn_id);
-                debug!(
-                    "User connection guard cleaned up user {} and connection {}",
-                    user_id, conn_id
-                );
-            }
-        });
-    }
 }
 
 #[cfg(test)]
@@ -319,16 +334,16 @@ mod tests {
         assert_eq!(query.user_id, Some("user-123".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_websocket_manager_creation() {
+    #[test]
+    fn test_websocket_manager_creation() {
         let (inbound_tx, _) = mpsc::channel(100);
         let manager = WebSocketManager::new(inbound_tx);
 
-        assert_eq!(manager.connection_count().await, 0);
+        assert_eq!(manager.connection_count(), 0);
     }
 
-    #[tokio::test]
-    async fn test_auth_validator() {
+    #[test]
+    fn test_auth_validator() {
         let (inbound_tx, _) = mpsc::channel(100);
         let manager = WebSocketManager::new(inbound_tx);
 
@@ -337,6 +352,6 @@ mod tests {
 
         // The validator is set, we can't easily test it without a full connection
         // but we can verify the method doesn't panic
-        assert!(manager.auth_validator.read().await.is_some());
+        assert!(manager.auth_validator.read().unwrap().is_some());
     }
 }

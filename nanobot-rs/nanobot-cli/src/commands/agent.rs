@@ -9,9 +9,11 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
 use nanobot_core::agent::memory::MemoryStore;
-use nanobot_core::agent::{AgentLoop, AgentResponse, StreamCallback, StreamEvent};
+use nanobot_core::agent::{AgentLoop, AgentResponse, StreamEvent};
 use nanobot_core::bus::events::SessionKey;
-use nanobot_core::config::load_config;
+use nanobot_core::config::{load_config, ModelRegistry};
+use nanobot_core::providers::ProviderRegistry;
+use nanobot_core::token_tracker::ModelPricing;
 
 use crate::cli::AgentOptions;
 
@@ -58,18 +60,34 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp_servers.is_empty() {
+    let mcp_tools = if !config.tools.mcp.stdio.is_empty()
+        || !config.tools.mcp.remote.is_empty()
+        || !config.tools.mcp_servers.is_empty()
+    {
         println!("Starting MCP servers...");
-        let (_mcp_manager, tools) =
-            nanobot_core::mcp::start_mcp_servers(&config.tools.mcp_servers).await;
+        let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
         println!("  {} MCP tools loaded", tools.len());
         tools
     } else {
         Vec::new()
     };
 
-    // Build tool registry (CLI mode: no bus/cron, but support Tantivy search)
+    // Build tool registry (CLI mode: no bus/cron)
     let memory_store = Arc::new(MemoryStore::new().await);
+    let sqlite_store = memory_store.sqlite_store().clone();
+
+    // Build model registry and provider registry for switch_model tool
+    let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+
+    // Log available models if any are configured
+    if !model_registry.is_empty() {
+        info!(
+            "Model switching enabled with {} model profiles: {}",
+            model_registry.len(),
+            model_registry.list_available_models().join(", ")
+        );
+    }
 
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config,
@@ -77,38 +95,29 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         mcp_tools,
         subagent_manager: None,
         extra_tools: vec![],
-        enable_tantivy_search: true, // CLI mode enables Tantivy search tools
+        sqlite_store: Some(sqlite_store),
+        model_registry: Some(model_registry),
+        provider_registry: Some(provider_registry),
     });
 
-    let agent = AgentLoop::with_memory_store(
+    // Convert pricing info to ModelPricing
+    let pricing = provider_info
+        .pricing
+        .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
+
+    let agent = AgentLoop::with_memory_store_and_pricing(
         provider_info.provider,
         workspace,
         agent_config,
         tools,
         memory_store,
+        pricing,
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?;
+
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
-
-    // Create streaming callback for progressive CLI output
-    // Note: Use stdout for content (piping), stderr for status/logs
-    let stream_callback: StreamCallback = Box::new(|event| {
-        match event {
-            StreamEvent::Content(_text) => {}
-            StreamEvent::Reasoning(text) => {
-                eprint!("{}", text.dimmed().italic());
-                std::io::stderr().flush().ok();
-            }
-            StreamEvent::ToolStart { name: _ } => {}
-            StreamEvent::ToolEnd { name: _, output: _ } => {}
-            StreamEvent::Done => {
-                // Ensure stdout ends with newline for clean separation
-                eprintln!("\n");
-            }
-        }
-    });
 
     match opts.message {
         Some(msg) => {
@@ -117,8 +126,29 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             let session_key =
                 SessionKey::new(nanobot_core::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
-                let _response = agent
-                    .process_direct_with_callback(&msg, &session_key, Some(&stream_callback))
+                agent
+                    .process_direct_streaming(&msg, &session_key, |event| match event {
+                        StreamEvent::Content(text) => print!("{}", text),
+                        StreamEvent::Reasoning(text) => {
+                            eprint!("{}", text.dimmed().italic());
+                            std::io::stderr().flush().ok();
+                        }
+                        StreamEvent::TokenStats {
+                            input_tokens,
+                            output_tokens,
+                            total_tokens,
+                            cost,
+                            currency,
+                        } => {
+                            let symbol = if currency == "CNY" { "¥" } else { "$" };
+                            eprintln!(
+                                "\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                                input_tokens, output_tokens, total_tokens, symbol, cost
+                            );
+                        }
+                        StreamEvent::Done => println!(),
+                        _ => {}
+                    })
                     .await?;
             } else {
                 let response = agent.process_direct(&msg, &session_key).await?;
@@ -173,17 +203,26 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         // Process the message
                         if use_streaming {
                             println!();
-                            match agent
-                                .process_direct_with_callback(
-                                    line,
-                                    &interactive_session,
-                                    Some(&stream_callback),
-                                )
-                                .await
-                            {
-                                Ok(_response) => {
-                                    println!();
+                            match agent.process_direct_streaming(line, &interactive_session, |event| {
+                                match event {
+                                    StreamEvent::Content(text) => {
+                                        print!("{}", text);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    StreamEvent::Reasoning(text) => {
+                                        eprint!("{}", text.dimmed().italic());
+                                        std::io::stderr().flush().ok();
+                                    }
+                                    StreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost, currency } => {
+                                        let symbol = if currency == "CNY" { "¥" } else { "$" };
+                                        eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                                            input_tokens, output_tokens, total_tokens, symbol, cost);
+                                    }
+                                    StreamEvent::Done => {}
+                                    _ => {}
                                 }
+                            }).await {
+                                Ok(_) => println!("\n"),
                                 Err(e) => println!("\n{} {}\n", "Error:".red(), e),
                             }
                         } else {

@@ -227,6 +227,7 @@ impl GeminiProvider {
             content,
             tool_calls,
             reasoning_content: None,
+            usage: None,
         })
     }
 }
@@ -423,6 +424,7 @@ fn convert_gemini_chunk(value: serde_json::Value) -> ChatStreamChunk {
             tool_calls,
         },
         finish_reason,
+        usage: None, // Gemini doesn't provide usage in streaming chunks
     }
 }
 

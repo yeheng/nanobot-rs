@@ -73,6 +73,13 @@ impl SqliteStore {
         Ok(store)
     }
 
+    /// Get a clone of the underlying SQLite pool.
+    ///
+    /// Useful for sharing the pool with other subsystems (e.g., pipeline).
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
+    }
+
     /// Verify that the database is usable (integrity + read/write).
     async fn health_check(&self) -> anyhow::Result<()> {
         // Integrity check
