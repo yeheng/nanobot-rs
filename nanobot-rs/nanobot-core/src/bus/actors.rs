@@ -119,7 +119,15 @@ pub async fn run_session_actor(
         }
 
         // Process message and handle result immediately (avoid holding non-Send across await)
-        match process_session_message(msg, &session_key, &agent, &outbound_tx, subagent_manager.as_ref().map(|m| m.as_ref())).await {
+        match process_session_message(
+            msg,
+            &session_key,
+            &agent,
+            &outbound_tx,
+            subagent_manager.as_ref().map(|m| m.as_ref()),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 tracing::error!("Session [{}] error: {}", session_key_str, e);
