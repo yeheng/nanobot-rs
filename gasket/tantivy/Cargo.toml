@@ -1,5 +1,5 @@
 [package]
-name = "tantivy-cli"
+name = "gasket-tantivy"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -8,10 +8,6 @@ description = "Tantivy full-text search CLI tool"
 repository = "https://github.com/YeHeng/gasket"
 keywords = ["search", "tantivy", "index", "full-text", "cli"]
 categories = ["command-line-utilities", "text-processing"]
-
-[[bin]]
-name = "tantivy-cli"
-path = "src/main.rs"
 
 [dependencies]
 # File locking (for process-level index mutex)
@@ -43,8 +39,3 @@ directories = "6"
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
-
-[profile.release]
-opt-level = 3
-lto = true
-strip = true

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use directories::UserDirs;
-use tantivy_cli::index::{Document, FieldDef, IndexConfig, IndexManager, SearchQuery};
-use tantivy_cli::maintenance::rebuild_index;
+use gasket_tantivy::index::{Document, FieldDef, IndexConfig, IndexManager, SearchQuery};
+use gasket_tantivy::maintenance::rebuild_index;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -185,7 +185,7 @@ enum MaintainCommands {
     },
 }
 
-fn main() -> tantivy_cli::Result<()> {
+fn main() -> gasket_tantivy::Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
@@ -216,7 +216,7 @@ fn main() -> tantivy_cli::Result<()> {
 }
 
 /// Initialize logging
-fn init_logging(log_level: &str) -> tantivy_cli::Result<()> {
+fn init_logging(log_level: &str) -> gasket_tantivy::Result<()> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
@@ -231,7 +231,7 @@ fn init_logging(log_level: &str) -> tantivy_cli::Result<()> {
 fn execute_index_command(
     manager: &mut IndexManager,
     subcommand: IndexCommands,
-) -> tantivy_cli::Result<()> {
+) -> gasket_tantivy::Result<()> {
     match subcommand {
         IndexCommands::Create {
             name,
@@ -239,7 +239,7 @@ fn execute_index_command(
             default_ttl,
         } => {
             let field_defs: Vec<FieldDef> = serde_json::from_str(&fields).map_err(|e| {
-                tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+                gasket_tantivy::Error::ParseError(format!("Invalid fields JSON: {}", e))
             })?;
 
             let config = default_ttl.map(|ttl| IndexConfig {
@@ -303,7 +303,7 @@ fn execute_index_command(
         IndexCommands::Rebuild { name, fields } => {
             let new_fields: Option<Vec<FieldDef>> = if let Some(fields_json) = fields {
                 Some(serde_json::from_str(&fields_json).map_err(|e| {
-                    tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+                    gasket_tantivy::Error::ParseError(format!("Invalid fields JSON: {}", e))
                 })?)
             } else {
                 None
@@ -322,7 +322,7 @@ fn execute_index_command(
 fn execute_doc_command(
     manager: &mut IndexManager,
     subcommand: DocCommands,
-) -> tantivy_cli::Result<()> {
+) -> gasket_tantivy::Result<()> {
     match subcommand {
         DocCommands::Add {
             index,
@@ -332,7 +332,7 @@ fn execute_doc_command(
         } => {
             let field_map: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(&fields).map_err(|e| {
-                    tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+                    gasket_tantivy::Error::ParseError(format!("Invalid fields JSON: {}", e))
                 })?;
 
             let mut doc = Document::new(id.clone(), field_map);
@@ -356,19 +356,19 @@ fn execute_doc_command(
             parallel,
         } => {
             // Parse documents from file or command line
-            let doc_inputs: Vec<tantivy_cli::index::BatchDocumentInput> =
+            let doc_inputs: Vec<gasket_tantivy::index::BatchDocumentInput> =
                 if let Some(file_path) = file {
                     let content = std::fs::read_to_string(&file_path)
-                        .map_err(|e| tantivy_cli::Error::PathError(file_path, e.to_string()))?;
+                        .map_err(|e| gasket_tantivy::Error::PathError(file_path, e.to_string()))?;
                     serde_json::from_str(&content).map_err(|e| {
-                        tantivy_cli::Error::ParseError(format!("Invalid JSON file: {}", e))
+                        gasket_tantivy::Error::ParseError(format!("Invalid JSON file: {}", e))
                     })?
                 } else if let Some(documents_json) = documents {
                     serde_json::from_str(&documents_json).map_err(|e| {
-                        tantivy_cli::Error::ParseError(format!("Invalid documents JSON: {}", e))
+                        gasket_tantivy::Error::ParseError(format!("Invalid documents JSON: {}", e))
                     })?
                 } else {
-                    return Err(tantivy_cli::Error::ParseError(
+                    return Err(gasket_tantivy::Error::ParseError(
                         "Either --file or --documents must be provided".to_string(),
                     ));
                 };
@@ -422,9 +422,9 @@ fn execute_search_command(
     manager: &IndexManager,
     index: &str,
     query_json: &str,
-) -> tantivy_cli::Result<()> {
+) -> gasket_tantivy::Result<()> {
     let query: SearchQuery = serde_json::from_str(query_json)
-        .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid query JSON: {}", e)))?;
+        .map_err(|e| gasket_tantivy::Error::ParseError(format!("Invalid query JSON: {}", e)))?;
 
     let results = manager.search(index, &query)?;
 
@@ -442,7 +442,7 @@ fn execute_search_command(
 fn execute_maintain_command(
     manager: &IndexManager,
     subcommand: MaintainCommands,
-) -> tantivy_cli::Result<()> {
+) -> gasket_tantivy::Result<()> {
     match subcommand {
         MaintainCommands::Status { index } => {
             if let Some(index_name) = index {
@@ -474,17 +474,17 @@ fn execute_maintain_command(
 }
 
 /// Parse a TTL string into a duration
-fn parse_ttl(ttl: &str) -> tantivy_cli::Result<chrono::Duration> {
+fn parse_ttl(ttl: &str) -> gasket_tantivy::Result<chrono::Duration> {
     let ttl = ttl.trim();
 
     if ttl.is_empty() {
-        return Err(tantivy_cli::Error::ParseError("Empty TTL".to_string()));
+        return Err(gasket_tantivy::Error::ParseError("Empty TTL".to_string()));
     }
 
     let numeric_end = ttl.find(|c: char| !c.is_ascii_digit()).unwrap_or(ttl.len());
 
     if numeric_end == 0 {
-        return Err(tantivy_cli::Error::ParseError(format!(
+        return Err(gasket_tantivy::Error::ParseError(format!(
             "Invalid TTL: {}",
             ttl
         )));
@@ -492,7 +492,7 @@ fn parse_ttl(ttl: &str) -> tantivy_cli::Result<chrono::Duration> {
 
     let number: i64 = ttl[..numeric_end]
         .parse()
-        .map_err(|_| tantivy_cli::Error::ParseError(format!("Invalid TTL number: {}", ttl)))?;
+        .map_err(|_| gasket_tantivy::Error::ParseError(format!("Invalid TTL number: {}", ttl)))?;
 
     let unit = &ttl[numeric_end..];
 
@@ -503,7 +503,7 @@ fn parse_ttl(ttl: &str) -> tantivy_cli::Result<chrono::Duration> {
         "d" | "day" | "days" => chrono::Duration::days(number),
         "w" | "week" | "weeks" => chrono::Duration::weeks(number),
         _ => {
-            return Err(tantivy_cli::Error::ParseError(format!(
+            return Err(gasket_tantivy::Error::ParseError(format!(
                 "Unknown TTL unit: {}",
                 unit
             )))
