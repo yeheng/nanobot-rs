@@ -1,14 +1,14 @@
 # Architecture Overview
 
-> Nanobot-RS System Architecture Overview
+> Gasket-RS System Architecture Overview
 
 ---
 
 ## Crate Structure
 
 ```
-nanobot-rs/                    (Cargo workspace)
-├── nanobot-core/              Core library — all business logic
+gasket-rs/                    (Cargo workspace)
+├── gasket-core/              Core library — all business logic
 │   └── src/
 │       ├── agent/             Agent core engine (loop, executor, prompt, history, stream, summarization, subagent, context)
 │       ├── bus/               Message bus (Actor model: Router/Session/Outbound)
@@ -29,7 +29,7 @@ nanobot-rs/                    (Cargo workspace)
 │       ├── vault/             Sensitive data isolation (encrypted storage + runtime injection) → see vault-guide.md
 │       ├── webhook/           Webhook server
 │       └── workspace/         Workspace template files
-└── nanobot-cli/               CLI executable
+└── gasket-cli/               CLI executable
     └── src/
         ├── main.rs            Command entry + Gateway launcher
         ├── cli.rs             CLI interactive mode
@@ -43,7 +43,7 @@ nanobot-rs/                    (Cargo workspace)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        nanobot-cli (Binary)                      │
+│                        gasket-cli (Binary)                      │
 │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐ │
 │  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │ │
 │  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │ │
@@ -53,7 +53,7 @@ nanobot-rs/                    (Cargo workspace)
 ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
                                  │           │
 ┌────────────────────────────────┼───────────┼─────────────────────┐
-│                        nanobot-core (Library)                    │
+│                        gasket-core (Library)                    │
 │                                │           │                     │
 │  ┌─────────────────────────────▼───────────▼──────────────────┐  │
 │  │                      Agent Loop (Core Engine)               │  │
@@ -90,7 +90,7 @@ nanobot-rs/                    (Cargo workspace)
 │  │                │                                           │
 │  │  Router Actor  │   ┌───────────────────────────────────┐   │
 │  │  Session Actor │   │   External Shell Hooks            │   │
-│  │  Outbound Actor│   │   ~/.nanobot/hooks/               │   │
+│  │  Outbound Actor│   │   ~/.gasket/hooks/               │   │
 │  └───────┬────────┘   │   pre_request.sh                  │   │
 │          │            │   post_response.sh                │   │
 │  ┌───────▼──────────────────────────┐  └──────────────────┘   │
@@ -146,7 +146,7 @@ nanobot-rs/                    (Cargo workspace)
 |-----------|----------------|
 | **AgentContext trait** | Abstracts via trait instead of Option<T> pattern, supports PersistentContext (full deps) and StatelessContext (no persistence) |
 | **Actor model messaging** | Gateway uses three Actors (Router → Session → Outbound) communicating via mpsc channels, zero-lock design |
-| **External Hook extension** | Follows UNIX philosophy, extends via Shell scripts in `~/.nanobot/hooks/`, data flows through stdin/stdout JSON |
+| **External Hook extension** | Follows UNIX philosophy, extends via Shell scripts in `~/.gasket/hooks/`, data flows through stdin/stdout JSON |
 | **Feature flag compilation** | Communication channels compiled via Cargo feature flags, enable on demand |
 | **No in-memory cache** | SessionManager reads/writes SQLite directly, leverages SQLite page cache to avoid consistency issues |
 | **Vault sensitive data isolation** | Sensitive data completely isolated from LLM-accessible storage, injected only at runtime, supports encrypted storage |

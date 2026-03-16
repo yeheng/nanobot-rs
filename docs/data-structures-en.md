@@ -1,6 +1,6 @@
 # Data Structure Design
 
-> Nanobot-RS Core Data Structure Definitions
+> Gasket-RS Core Data Structure Definitions
 
 ---
 
@@ -293,7 +293,7 @@ InjectionReport {
 ## 6. SQLite Database Structure
 
 ```
-~/.nanobot/nanobot.db  (SqliteStore — sqlx::SqlitePool)
+~/.gasket/gasket.db  (SqliteStore — sqlx::SqlitePool)
 │
 ├── sessions              Session metadata
 │   ├── key TEXT PK       Session identifier (e.g., "cli:interactive", "telegram:12345")
@@ -346,9 +346,9 @@ InjectionReport {
 ## 7. File System Storage Structure
 
 ```
-~/.nanobot/                 Workspace root directory
+~/.gasket/                 Workspace root directory
 ├── config.yaml             Main configuration file
-├── nanobot.db              SQLite database
+├── gasket.db              SQLite database
 ├── PROFILE.md              Agent role/personality definition
 ├── SOUL.md                 Agent soul/values definition
 ├── AGENTS.md               Agent behavior/capability description

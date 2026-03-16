@@ -3,9 +3,9 @@ name = "tantivy-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["nanobot contributors"]
+authors = ["gasket contributors"]
 description = "Tantivy full-text search CLI tool"
-repository = "https://github.com/yeheng/nanobot"
+repository = "https://github.com/YeHeng/gasket"
 keywords = ["search", "tantivy", "index", "full-text", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 

@@ -10,7 +10,7 @@
 flowchart TB
     subgraph External["External Input"]
         User[User Message]
-        Hook[Shell Hooks<br/>~/.nanobot/hooks/]
+        Hook[Shell Hooks<br/>~/.gasket/hooks/]
         Vault[Vault Secrets]
     end
 

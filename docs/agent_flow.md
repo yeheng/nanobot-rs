@@ -8,7 +8,7 @@
 flowchart TB
     subgraph External["外部输入"]
         User[用户消息]
-        Hook[Shell Hooks<br/>~/.nanobot/hooks/]
+        Hook[Shell Hooks<br/>~/.gasket/hooks/]
         Vault[Vault Secrets]
     end
 

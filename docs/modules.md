@@ -1,6 +1,6 @@
 # 模块设计
 
-> Nanobot-RS 各模块职责与接口设计
+> Gasket-RS 各模块职责与接口设计
 
 ---
 
@@ -154,7 +154,7 @@ trait Channel: Send + Sync {
 ```
 ┌─────────────┐    JSON-RPC 2.0     ┌──────────────────┐
 │  MCP Client │◄───── stdio ───────▶│  MCP Server      │
-│  (nanobot)  │                     │  (外部进程)       │
+│  (gasket)  │                     │  (外部进程)       │
 │             │                     │                   │
 │  initialize │────────────────────▶│  返回 tool 列表   │
 │  tools/list │────────────────────▶│  返回 tool 定义   │
@@ -202,7 +202,7 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
                         stderr → tracing::debug!
 ```
 
-- 脚本位于 `~/.nanobot/hooks/`
+- 脚本位于 `~/.gasket/hooks/`
 - `pre_request.sh` — 请求预处理（可修改或中止输入）
 - `post_response.sh` — 响应后处理（审计/告警）
 - 2 秒超时，1 MB stdout 上限，非阻塞 `tokio::process::Command`
@@ -280,12 +280,12 @@ trait ContextCompressionHook: Send + Sync {
 
 ## 10. config/ — 配置管理
 
-- `loader.rs` — 配置文件加载 (`~/.nanobot/config.yaml`)
+- `loader.rs` — 配置文件加载 (`~/.gasket/config.yaml`)
 - `schema.rs` — 配置结构定义 (providers, agents, channels, tools 等)
 - `provider.rs` — Provider 配置定义
 - `agent.rs` — Agent 配置定义
 - `channel.rs` — 渠道配置定义
-- 兼容 Python nanobot 配置格式
+- 兼容 Python gasket 配置格式
 
 ---
 

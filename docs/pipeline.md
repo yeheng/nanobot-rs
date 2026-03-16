@@ -1,12 +1,12 @@
 # 多 Agent 协作管线 (三省六部)
 
-> Nanobot 多 Agent 分层协作框架使用指南
+> Gasket 多 Agent 分层协作框架使用指南
 
 ---
 
 ## 概述
 
-Pipeline 子系统为 nanobot 引入了**分层多 Agent 协作机制**，灵感来自中国古代的[「三省六部」](https://github.com/cft0808/edict)治理体系。它提供：
+Pipeline 子系统为 gasket 引入了**分层多 Agent 协作机制**，灵感来自中国古代的[「三省六部」](https://github.com/cft0808/edict)治理体系。它提供：
 
 - **任务状态机** — 严格的生命周期管理，杜绝非法状态跳转
 - **权限矩阵** — 有向图授权，Agent 只能委派到允许的目标角色
@@ -55,7 +55,7 @@ Pipeline 子系统为 nanobot 引入了**分层多 Agent 协作机制**，灵感
 
 ### 1. 启用 Pipeline
 
-在 `~/.nanobot/config.yaml` 中添加：
+在 `~/.gasket/config.yaml` 中添加：
 
 ```yaml
 pipeline:
@@ -66,7 +66,7 @@ pipeline:
 
 ### 2. 验证启动
 
-启动 nanobot 后，日志中应出现：
+启动 gasket 后，日志中应出现：
 
 ```
 Pipeline orchestrator started
@@ -436,7 +436,7 @@ pipeline:
   roles:
     gong:
       description: "工部 - 专注 Rust 开发"
-      soulPath: "/home/user/.nanobot/souls/gong_rust.md"
+      soulPath: "/home/user/.gasket/souls/gong_rust.md"
 ```
 
 ---
@@ -444,7 +444,7 @@ pipeline:
 ## 模块结构
 
 ```
-nanobot-core/src/pipeline/
+gasket-core/src/pipeline/
 ├── mod.rs              模块入口 + re-exports
 ├── config.rs           PipelineConfig, AgentRoleDef
 ├── state_machine.rs    TaskState 枚举, 转换验证
@@ -454,7 +454,7 @@ nanobot-core/src/pipeline/
 ├── permission.rs       PermissionMatrix 权限矩阵
 └── stall_detector.rs   StallDetector 停滞检测
 
-nanobot-core/src/tools/
+gasket-core/src/tools/
 ├── pipeline_task.rs    任务看板工具
 ├── delegate.rs         权限委派工具
 └── report_progress.rs  进度上报工具
@@ -519,11 +519,11 @@ pipeline:
     gong:
       description: "工部 - 全栈开发"
       allowedAgents: ["shangshu"]
-      soulPath: "~/.nanobot/souls/fullstack_dev.md"
+      soulPath: "~/.gasket/souls/fullstack_dev.md"
     bing:
       description: "兵部 - DevOps"
       allowedAgents: ["shangshu"]
-      soulPath: "~/.nanobot/souls/devops.md"
+      soulPath: "~/.gasket/souls/devops.md"
 ```
 
 ### 示例 4：禁用默认模板 + 完全自定义

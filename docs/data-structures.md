@@ -1,6 +1,6 @@
 # 数据结构设计
 
-> Nanobot-RS 核心数据结构定义
+> Gasket-RS 核心数据结构定义
 
 ---
 
@@ -295,7 +295,7 @@ InjectionReport {
 ## 6. SQLite 数据库结构
 
 ```
-~/.nanobot/nanobot.db  (SqliteStore — sqlx::SqlitePool)
+~/.gasket/gasket.db  (SqliteStore — sqlx::SqlitePool)
 │
 ├── sessions              会话元数据
 │   ├── key TEXT PK       会话标识 (如 "cli:interactive", "telegram:12345")
@@ -348,9 +348,9 @@ InjectionReport {
 ## 7. 文件系统存储结构
 
 ```
-~/.nanobot/                 工作空间根目录
+~/.gasket/                 工作空间根目录
 ├── config.yaml             主配置文件
-├── nanobot.db              SQLite 数据库
+├── gasket.db              SQLite 数据库
 ├── PROFILE.md              Agent 角色/人格定义
 ├── SOUL.md                 Agent 灵魂/价值观定义
 ├── AGENTS.md               Agent 行为/能力描述

@@ -129,7 +129,7 @@ Examples: `1d`, `7d`, `30d`, `1w`
 
 ## Data Storage
 
-Default data directory: `~/.nanobot/tantivy/`
+Default data directory: `~/.gasket/tantivy/`
 
 Structure:
 ```

@@ -5,23 +5,23 @@
 cargo build --release --workspace
 
 # Run CLI in interactive mode
-cargo run --release --package nanobot-cli -- agent
+cargo run --release --package gasket-cli -- agent
 
 # Single message mode
-cargo run --release --package nanobot-cli -- agent -m "your message"
+cargo run --release --package gasket-cli -- agent -m "your message"
 
 # Start gateway (multi-channel daemon)
-cargo run --release --package nanobot-cli -- gateway
+cargo run --release --package gasket-cli -- gateway
 
 # Initialize configuration
-cargo run --release --package nanobot-cli -- onboard
+cargo run --release --package gasket-cli -- onboard
 ```
 
 ## Project Structure
 
 ```
-nanobot-rs/                    # Rust workspace root
-├── nanobot-core/              # Core library (all business logic)
+gasket-rs/                    # Rust workspace root
+├── gasket-core/              # Core library (all business logic)
 │   └── src/
 │       ├── agent/             # Agent loop, executor, pipeline
 │       ├── bus/               # Actor-based message bus (Router → Session → Outbound)
@@ -32,7 +32,7 @@ nanobot-rs/                    # Rust workspace root
 │       ├── providers/         # LLM providers (OpenAI, Anthropic, DeepSeek, etc.)
 │       ├── tools/             # Tool system (exec, file, web, spawn_parallel)
 │       └── vault/             # Knowledge vault scanner
-└── nanobot-cli/               # CLI binary
+└── gasket-cli/               # CLI binary
     └── src/commands/          # Command handlers (agent, gateway, onboard)
 
 web/                           # Vue.js frontend (Vite + Tailwind)
@@ -44,8 +44,8 @@ docs/                          # Design documentation
 
 | File | Purpose |
 |------|---------|
-| `nanobot-rs/Cargo.toml` | Workspace definition, shared dependencies |
-| `~/.nanobot/config.yaml` | Runtime configuration (providers, agents, channels) |
+| `gasket-rs/Cargo.toml` | Workspace definition, shared dependencies |
+| `~/.gasket/config.yaml` | Runtime configuration (providers, agents, channels) |
 | `config.example.yaml` | Example configuration with model profiles |
 | `docs/architecture.md` | Full system architecture |
 | `docs/data-flow.md` | Message flow diagrams |
@@ -73,7 +73,7 @@ docs/                          # Design documentation
 ## Architecture Notes
 
 - **Actor Model:** Three-actor pipeline: Router → Session → Outbound (zero-lock)
-- **Agent Loop:** `nanobot-core/src/agent/loop_.rs` is the core execution engine
+- **Agent Loop:** `gasket-core/src/agent/loop_.rs` is the core execution engine
 - **Streaming:** SSE streaming with thinking/reasoning mode support
 - **MCP:** JSON-RPC 2.0 over stdio for external tool servers
 - **Dynamic Models:** `switch_model` tool allows delegating tasks to specialized models
@@ -85,12 +85,12 @@ docs/                          # Design documentation
 cargo test --workspace
 
 # Run with specific feature
-cargo test --features "telegram" --package nanobot-core
+cargo test --features "telegram" --package gasket-core
 ```
 
 ## Gotchas
 
-- Config file is at `~/.nanobot/config.yaml`, not project root
+- Config file is at `~/.gasket/config.yaml`, not project root
 - Use `provider/model` format for model IDs (e.g., `openrouter/anthropic/claude-4.5-sonnet`)
 - SQLite is bundled; no separate installation needed
 - Feature flags control which channels are compiled (`--features "telegram,discord"`)

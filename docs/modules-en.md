@@ -1,6 +1,6 @@
 # Module Design
 
-> Nanobot-RS Module Responsibilities and Interface Design
+> Gasket-RS Module Responsibilities and Interface Design
 
 ---
 
@@ -154,7 +154,7 @@ trait Channel: Send + Sync {
 ```
 ┌─────────────┐    JSON-RPC 2.0     ┌──────────────────┐
 │  MCP Client │◄───── stdio ───────▶│  MCP Server      │
-│  (nanobot)  │                     │  (External proc) │
+│  (gasket)  │                     │  (External proc) │
 │             │                     │                  │
 │  initialize │────────────────────▶│  Return tool list│
 │  tools/list │────────────────────▶│  Return tool def │
@@ -202,7 +202,7 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
                         stderr → tracing::debug!
 ```
 
-- Scripts located in `~/.nanobot/hooks/`
+- Scripts located in `~/.gasket/hooks/`
 - `pre_request.sh` — Request preprocessing (can modify or abort input)
 - `post_response.sh` — Post-response processing (audit/alert)
 - 2 second timeout, 1 MB stdout limit, non-blocking `tokio::process::Command`
@@ -280,12 +280,12 @@ Current implementation `SummarizationService`: When history messages are evicted
 
 ## 10. config/ — Configuration Management
 
-- `loader.rs` — Configuration file loading (`~/.nanobot/config.yaml`)
+- `loader.rs` — Configuration file loading (`~/.gasket/config.yaml`)
 - `schema.rs` — Configuration structure definitions (providers, agents, channels, tools, etc.)
 - `provider.rs` — Provider configuration definitions
 - `agent.rs` — Agent configuration definitions
 - `channel.rs` — Channel configuration definitions
-- Compatible with Python nanobot configuration format
+- Compatible with Python gasket configuration format
 
 ---
 

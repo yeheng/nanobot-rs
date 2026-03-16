@@ -1,6 +1,6 @@
 # Vault Usage Guide
 
-Vault is Nanobot's sensitive data isolation module for securely storing and managing sensitive information (API keys, passwords, database connection strings, etc.).
+Vault is Gasket's sensitive data isolation module for securely storing and managing sensitive information (API keys, passwords, database connection strings, etc.).
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Vault's core function is to completely isolate sensitive data from LLM-accessibl
 ### Storage Location
 
 ```
-~/.nanobot/vault/secrets.json
+~/.gasket/vault/secrets.json
 ```
 
 ## Design Principles
@@ -57,17 +57,17 @@ Sensitive data never appears in:
 
 ```bash
 # Interactive setup (prompts for value)
-nanobot vault set openai_api_key
+gasket vault set openai_api_key
 
 # Direct value and description
-nanobot vault set db_password --value "my_secret_password" --description "Database password"
+gasket vault set db_password --value "my_secret_password" --description "Database password"
 ```
 
 ### 2. List Secrets
 
 ```bash
 # List all keys (values hidden)
-nanobot vault list
+gasket vault list
 ```
 
 Example output:
@@ -97,27 +97,27 @@ In the message received by the Agent, `{{vault:openai_api_key}}` is automaticall
 
 ## CLI Command Reference
 
-### `nanobot vault list`
+### `gasket vault list`
 
 List all vault entries (values hidden).
 
 ```bash
-nanobot vault list
+gasket vault list
 ```
 
-### `nanobot vault set`
+### `gasket vault set`
 
 Set a vault entry.
 
 ```bash
 # Interactive setup
-nanobot vault set <key>
+gasket vault set <key>
 
 # Direct setup
-nanobot vault set <key> --value <value> --description <description>
+gasket vault set <key> --value <value> --description <description>
 
 # Shorthand
-nanobot vault set <key> -v <value> -d <description>
+gasket vault set <key> -v <value> -d <description>
 ```
 
 **Parameters:**
@@ -129,21 +129,21 @@ nanobot vault set <key> -v <value> -d <description>
 
 ```bash
 # Interactive setup (password input hidden)
-nanobot vault set api_key
+gasket vault set api_key
 
 # Direct setup
-nanobot vault set aws_access_key -v "AKIAIOSFODNN7EXAMPLE" -d "AWS Access Key"
+gasket vault set aws_access_key -v "AKIAIOSFODNN7EXAMPLE" -d "AWS Access Key"
 
 # Update existing entry (preserves creation time)
-nanobot vault set api_key -v "new_value"
+gasket vault set api_key -v "new_value"
 ```
 
-### `nanobot vault get`
+### `gasket vault get`
 
 Get key value (outputs directly to stdout).
 
 ```bash
-nanobot vault get <key>
+gasket vault get <key>
 ```
 
 **Note:** This command outputs the secret value directly, use with caution.
@@ -152,21 +152,21 @@ nanobot vault get <key>
 
 ```bash
 # Use in scripts
-export API_KEY=$(nanobot vault get openai_api_key)
+export API_KEY=$(gasket vault get openai_api_key)
 
 # Copy to clipboard (macOS)
-nanobot vault get api_key | pbcopy
+gasket vault get api_key | pbcopy
 ```
 
-### `nanobot vault show`
+### `gasket vault show`
 
 Show detailed information about a key.
 
 ```bash
-nanobot vault show <key>
+gasket vault show <key>
 
 # Show key value
-nanobot vault show <key> --show-value
+gasket vault show <key> --show-value
 ```
 
 **Parameters:**
@@ -186,29 +186,29 @@ openai_api_key
   Usage: {{vault:openai_api_key}}
 ```
 
-### `nanobot vault delete`
+### `gasket vault delete`
 
 Delete a key.
 
 ```bash
-nanobot vault delete <key>
+gasket vault delete <key>
 
 # Skip confirmation prompt
-nanobot vault delete <key> --force
+gasket vault delete <key> --force
 ```
 
 **Parameters:**
 - `--force, -f` - Skip confirmation prompt
 
-### `nanobot vault import`
+### `gasket vault import`
 
 Import keys from JSON file.
 
 ```bash
-nanobot vault import <file>
+gasket vault import <file>
 
 # Merge mode (don't overwrite existing keys)
-nanobot vault import <file> --merge
+gasket vault import <file> --merge
 ```
 
 **Parameters:**
@@ -228,18 +228,18 @@ nanobot vault import <file> --merge
 }
 ```
 
-### `nanobot vault export`
+### `gasket vault export`
 
 Export all keys to JSON file.
 
 ```bash
-nanobot vault export <file>
+gasket vault export <file>
 ```
 
 **Example:**
 
 ```bash
-nanobot vault export ~/backup/vault_backup.json
+gasket vault export ~/backup/vault_backup.json
 ```
 
 **Note:** Exported file contains all key values, keep it secure!
@@ -297,7 +297,7 @@ Key names must:
 Ensure correct vault file permissions:
 
 ```bash
-chmod 600 ~/.nanobot/vault/secrets.json
+chmod 600 ~/.gasket/vault/secrets.json
 ```
 
 ### 2. Don't Hardcode in Code
@@ -320,24 +320,24 @@ let message = "Use {{vault:api_key}} to authenticate";
 
 ```bash
 # Update key value
-nanobot vault set api_key -v "new_secret_value"
+gasket vault set api_key -v "new_secret_value"
 ```
 
 ### 4. Backup and Restore
 
 ```bash
 # Backup
-nanobot vault export ~/secure_backup/vault_$(date +%Y%m%d).json
+gasket vault export ~/secure_backup/vault_$(date +%Y%m%d).json
 
 # Restore
-nanobot vault import ~/secure_backup/vault_20240115.json
+gasket vault import ~/secure_backup/vault_20240115.json
 ```
 
 ### 5. Audit Usage
 
 ```bash
 # View last used time
-nanobot vault show api_key
+gasket vault show api_key
 ```
 
 ### 6. Principle of Least Privilege
@@ -345,7 +345,7 @@ nanobot vault show api_key
 Only set access for keys that are needed, delete unused keys:
 
 ```bash
-nanobot vault delete unused_key
+gasket vault delete unused_key
 ```
 
 ## Common Use Cases
@@ -354,9 +354,9 @@ nanobot vault delete unused_key
 
 ```bash
 # Set multiple API keys
-nanobot vault set openai_api_key -d "OpenAI API Key"
-nanobot vault set anthropic_api_key -d "Anthropic API Key"
-nanobot vault set github_token -d "GitHub Personal Access Token"
+gasket vault set openai_api_key -d "OpenAI API Key"
+gasket vault set anthropic_api_key -d "Anthropic API Key"
+gasket vault set github_token -d "GitHub Personal Access Token"
 ```
 
 In conversation:
@@ -369,9 +369,9 @@ Please use {{vault:openai_api_key}} to call GPT-4 API to help me analyze this co
 
 ```bash
 # Store database credentials
-nanobot vault set db_host -v "db.example.com" -d "Database host"
-nanobot vault set db_user -v "admin" -d "Database user"
-nanobot vault set db_password -v "secret123" -d "Database password"
+gasket vault set db_host -v "db.example.com" -d "Database host"
+gasket vault set db_user -v "admin" -d "Database user"
+gasket vault set db_password -v "secret123" -d "Database password"
 ```
 
 In conversation:
@@ -383,9 +383,9 @@ Help me write a database query to connect to {{vault:db_host}}, username is admi
 ### AWS Credentials
 
 ```bash
-nanobot vault set aws_access_key -v "AKIAIOSFODNN7EXAMPLE" -d "AWS Access Key"
-nanobot vault set aws_secret_key -v "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" -d "AWS Secret Key"
-nanobot vault set aws_region -v "us-east-1" -d "AWS Region"
+gasket vault set aws_access_key -v "AKIAIOSFODNN7EXAMPLE" -d "AWS Access Key"
+gasket vault set aws_secret_key -v "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" -d "AWS Secret Key"
+gasket vault set aws_region -v "us-east-1" -d "AWS Region"
 ```
 
 ### CI/CD Integration
@@ -396,7 +396,7 @@ Use in CI/CD pipelines:
 # .github/workflows/deploy.yml
 - name: Get API Key
   run: |
-    export API_KEY=$(nanobot vault get production_api_key)
+    export API_KEY=$(gasket vault get production_api_key)
     ./deploy.sh
 ```
 
@@ -407,7 +407,7 @@ Use in CI/CD pipelines:
 If you see `Key not found` error:
 
 1. Check key name spelling
-2. Use `nanobot vault list` to view all available keys
+2. Use `gasket vault list` to view all available keys
 3. Ensure key name contains only letters, numbers, and underscores
 
 ### Placeholder Not Replaced
@@ -424,8 +424,8 @@ If you encounter file permission errors:
 
 ```bash
 # Fix permissions
-chmod 700 ~/.nanobot/vault
-chmod 600 ~/.nanobot/vault/secrets.json
+chmod 700 ~/.gasket/vault
+chmod 600 ~/.gasket/vault/secrets.json
 ```
 
 ## Related Documentation

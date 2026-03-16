@@ -1,6 +1,6 @@
 # Data Flow Design
 
-> Data flow paths in Nanobot-RS under different modes
+> Data flow paths in Gasket-RS under different modes
 
 ---
 
