@@ -496,9 +496,14 @@ async fn test_provider_trait() {
     use nanobot_core::providers::LlmProvider;
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider =
-        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()), true)
-            .expect("openai should be known provider");
+    let provider = OpenAICompatibleProvider::from_name(
+        "openai",
+        "test-key",
+        None,
+        Some("gpt-4o".to_string()),
+        true,
+    )
+    .expect("openai should be known provider");
 
     assert_eq!(provider.name(), "openai");
     assert_eq!(provider.default_model(), "gpt-4o");
