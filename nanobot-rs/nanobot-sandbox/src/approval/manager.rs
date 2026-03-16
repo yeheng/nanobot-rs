@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::{
@@ -139,11 +140,13 @@ impl Default for RuleEngine {
 /// Approval manager
 ///
 /// Central coordinator for the approval system.
+/// Uses `RwLock` for interior mutability to allow rule modifications
+/// without requiring `&mut self`.
 pub struct ApprovalManager {
     /// Permission store
     store: Box<dyn PermissionStore>,
-    /// Rule engine
-    rules: RuleEngine,
+    /// Rule engine (wrapped in RwLock for interior mutability)
+    rules: RwLock<RuleEngine>,
     /// Session cache
     session: ApprovalSession,
     /// User interaction handler
@@ -157,7 +160,7 @@ impl ApprovalManager {
     pub fn new(store: Box<dyn PermissionStore>, config: ApprovalConfig) -> Self {
         Self {
             store,
-            rules: RuleEngine::new(),
+            rules: RwLock::new(RuleEngine::new()),
             session: ApprovalSession::new(config.session_timeout),
             interaction: None,
             config,
@@ -171,10 +174,11 @@ impl ApprovalManager {
     }
 
     /// Initialize by loading rules from storage
-    pub async fn initialize(&mut self) -> Result<()> {
+    pub async fn initialize(&self) -> Result<()> {
         let rules = self.store.load_rules().await?;
-        self.rules.set_rules(rules);
-        info!("Loaded {} approval rules", self.rules.rules().len());
+        let mut engine = self.rules.write().await;
+        engine.set_rules(rules);
+        info!("Loaded {} approval rules", engine.rules().len());
         Ok(())
     }
 
@@ -200,7 +204,8 @@ impl ApprovalManager {
         }
 
         // 2. Check rules
-        if let Some(rule) = self.rules.find_match(operation) {
+        let engine = self.rules.read().await;
+        if let Some(rule) = engine.find_match(operation) {
             debug!("Found matching rule: {:?}", rule.permission);
             return match rule.permission {
                 PermissionLevel::Allowed => PermissionVerdict::Allowed,
@@ -223,6 +228,7 @@ impl ApprovalManager {
                 },
             };
         }
+        drop(engine); // Release read lock before continuing
 
         // 3. Use default level
         let default_level = self.default_level();
@@ -263,9 +269,11 @@ impl ApprovalManager {
                 if let Some(interaction) = &self.interaction {
                     let level = interaction.confirm(&request).await?;
 
-                    // Cache if ask_once
+                    // Cache if ask_once - store the actual decision (approved/denied)
                     if level == PermissionLevel::AskOnce {
-                        self.session.cache_permission(operation, context, level);
+                        // For AskOnce, we cache the user's decision
+                        // The user approved by returning AskOnce, so cache as approved
+                        self.session.cache_decision(operation, context, true);
                     }
 
                     Ok(level)
@@ -278,19 +286,37 @@ impl ApprovalManager {
         }
     }
 
-    /// Add a new rule
+    /// Add a new rule (immediately effective)
     pub async fn add_rule(&self, rule: ApprovalRule) -> Result<()> {
+        // Persist to store
         self.store.add_rule(&rule).await?;
-        // Note: We can't modify self.rules directly here because it's not mutable
-        // In a real implementation, we'd use interior mutability (RwLock)
-        info!("Added approval rule: {:?}", rule.id);
+
+        // Update in-memory rules
+        let mut engine = self.rules.write().await;
+        engine.add_rule(rule.clone());
+
+        info!(
+            "Added approval rule: {:?} (now {} rules total)",
+            rule.id,
+            engine.rules().len()
+        );
         Ok(())
     }
 
-    /// Revoke a rule
+    /// Revoke a rule (immediately effective)
     pub async fn revoke_rule(&self, rule_id: uuid::Uuid) -> Result<()> {
+        // Remove from store
         self.store.remove_rule(rule_id).await?;
-        info!("Revoked approval rule: {}", rule_id);
+
+        // Update in-memory rules
+        let mut engine = self.rules.write().await;
+        engine.remove_rule(rule_id);
+
+        info!(
+            "Revoked approval rule: {} (now {} rules total)",
+            rule_id,
+            engine.rules().len()
+        );
         Ok(())
     }
 
@@ -303,8 +329,15 @@ impl ApprovalManager {
     }
 
     /// Get all rules
-    pub fn rules(&self) -> &[ApprovalRule] {
-        self.rules.rules()
+    pub async fn rules(&self) -> Vec<ApprovalRule> {
+        let engine = self.rules.read().await;
+        engine.rules().to_vec()
+    }
+
+    /// Get rule count (for quick checks)
+    pub async fn rule_count(&self) -> usize {
+        let engine = self.rules.read().await;
+        engine.rules().len()
     }
 
     /// Clear session cache
@@ -354,5 +387,36 @@ mod tests {
         assert!(engine.pattern_matches("/tmp/*", "/tmp/file.txt"));
         assert!(engine.pattern_matches("*.txt", "file.txt"));
         assert!(engine.pattern_matches("*test*", "my_test_file"));
+    }
+
+    #[tokio::test]
+    async fn test_approval_manager_rule_management() {
+        use crate::approval::JsonPermissionStore;
+
+        // Create a manager with in-memory store
+        let store = Box::new(JsonPermissionStore::new_temp().unwrap());
+        let config = ApprovalConfig::default();
+        let manager = ApprovalManager::new(store, config);
+
+        // Initially no rules
+        assert_eq!(manager.rule_count().await, 0);
+
+        // Add a rule
+        let rule = ApprovalRule::new(OperationType::command("ls"), PermissionLevel::Allowed);
+        let rule_id = rule.id;
+        manager.add_rule(rule).await.unwrap();
+
+        // Rule should be immediately effective
+        assert_eq!(manager.rule_count().await, 1);
+
+        // Check permission should find the rule
+        let op = OperationType::command("ls");
+        let context = ExecutionContext::new();
+        let verdict = manager.check_permission(&op, &context).await;
+        assert!(matches!(verdict, PermissionVerdict::Allowed));
+
+        // Revoke the rule
+        manager.revoke_rule(rule_id).await.unwrap();
+        assert_eq!(manager.rule_count().await, 0);
     }
 }

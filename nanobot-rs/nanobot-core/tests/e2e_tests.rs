@@ -44,6 +44,8 @@ async fn test_agent_initialization() {
         max_tool_result_chars: 8000,
         thinking_enabled: false,
         streaming: false,
+        subagent_timeout_secs: 10,
+        session_idle_timeout_secs: 300,
     };
 
     let provider = nanobot_core::providers::OpenAICompatibleProvider::from_name(

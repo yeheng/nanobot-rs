@@ -31,6 +31,15 @@ impl JsonPermissionStore {
         Ok(Self::new(path))
     }
 
+    /// Create a temporary store for testing
+    #[cfg(test)]
+    pub fn new_temp() -> Result<Self> {
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| SandboxError::StoreError(format!("Failed to create temp dir: {}", e)))?;
+        let path = temp_dir.path().join("test_rules.json");
+        Ok(Self::new(path))
+    }
+
     async fn ensure_parent_dir(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             if !parent.exists() {

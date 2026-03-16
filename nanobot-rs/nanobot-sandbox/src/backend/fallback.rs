@@ -105,6 +105,7 @@ impl SandboxBackend for FallbackBackend {
             stderr,
             timed_out: false,
             resource_exceeded: false,
+            duration_ms: 0, // Duration is tracked by ProcessManager
         })
     }
 }
@@ -128,7 +129,7 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.success());
+        assert!(result.is_success());
         assert!(result.stdout.contains("hello"));
     }
 

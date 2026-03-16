@@ -60,35 +60,10 @@ impl Platform {
 }
 
 /// Execution result from sandbox backend
-#[derive(Debug, Clone)]
-pub struct ExecutionResult {
-    /// Exit code (None if killed by signal)
-    pub exit_code: Option<i32>,
-    /// Standard output
-    pub stdout: String,
-    /// Standard error
-    pub stderr: String,
-    /// Whether the command was killed due to timeout
-    pub timed_out: bool,
-    /// Whether the command was killed due to resource limits
-    pub resource_exceeded: bool,
-}
-
-impl ExecutionResult {
-    /// Check if execution was successful
-    pub fn success(&self) -> bool {
-        self.exit_code == Some(0)
-    }
-
-    /// Get combined output
-    pub fn output(&self) -> String {
-        if self.stderr.is_empty() {
-            self.stdout.clone()
-        } else {
-            format!("{}\n{}", self.stdout, self.stderr)
-        }
-    }
-}
+///
+/// This is a re-export of `executor::ExecutionResult` to avoid duplication.
+/// All backends should use this type for consistency.
+pub use crate::executor::ExecutionResult;
 
 /// Sandbox backend trait
 ///

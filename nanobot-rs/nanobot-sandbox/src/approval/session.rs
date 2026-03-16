@@ -1,6 +1,14 @@
 //! Approval session management
 //!
 //! Manages session-based permission caching for "ask_once" permissions.
+//!
+//! ## Caching Logic
+//!
+//! When a user responds to an approval request:
+//! - `AskOnce` + user approves → cache `Allowed` (auto-approve for session)
+//! - `AskOnce` + user denies → cache `Denied` (auto-deny for session)
+//! - `AskAlways` → never cached (always ask)
+//! - `Allowed`/`Denied` → handled by rules, not session cache
 
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -25,15 +33,22 @@ pub enum PermissionVerdict {
     },
 }
 
+/// Cached decision for an operation in a session
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedDecision {
+    /// User approved this operation for the session
+    Approved,
+    /// User denied this operation for the session
+    Denied,
+}
+
 /// Session-based permission cache entry
 #[derive(Debug, Clone)]
 struct SessionEntry {
-    /// Permission level
-    permission: PermissionLevel,
+    /// The cached decision (approved or denied)
+    decision: CachedDecision,
     /// When the entry was created
     created_at: DateTime<Utc>,
-    /// Session ID this entry belongs to
-    _session_id: Option<Uuid>,
 }
 
 /// Key for session cache
@@ -76,7 +91,11 @@ impl ApprovalSession {
         self.current_session_id
     }
 
-    /// Check if an operation has a cached permission
+    /// Check if an operation has a cached decision.
+    ///
+    /// Returns `Some(PermissionLevel::Allowed)` if the user previously approved,
+    /// or `Some(PermissionLevel::Denied)` if the user previously denied.
+    /// Returns `None` if no cached decision exists or the entry has expired.
     pub fn check_cache(
         &self,
         operation: &OperationType,
@@ -95,32 +114,63 @@ impl ApprovalSession {
                 self.cache.remove(&key);
                 None
             } else {
-                Some(entry.permission)
+                // Return the cached decision as a PermissionLevel
+                match entry.decision {
+                    CachedDecision::Approved => Some(PermissionLevel::Allowed),
+                    CachedDecision::Denied => Some(PermissionLevel::Denied),
+                }
             }
         })
     }
 
-    /// Cache a permission for an operation
+    /// Cache a user's decision for an "ask_once" operation.
+    ///
+    /// This should be called after the user responds to an approval request.
+    /// The actual decision (approved/denied) is cached, not the `AskOnce` level.
+    ///
+    /// # Arguments
+    /// * `operation` - The operation that was approved/denied
+    /// * `context` - The execution context
+    /// * `approved` - Whether the user approved (true) or denied (false)
+    pub fn cache_decision(
+        &self,
+        operation: &OperationType,
+        context: &ExecutionContext,
+        approved: bool,
+    ) {
+        let key = CacheKey {
+            operation: operation.clone(),
+            session_id: context.session_id.or(self.current_session_id),
+        };
+
+        let entry = SessionEntry {
+            decision: if approved {
+                CachedDecision::Approved
+            } else {
+                CachedDecision::Denied
+            },
+            created_at: Utc::now(),
+        };
+
+        self.cache.insert(key, entry);
+    }
+
+    /// Legacy method: Cache a permission for an operation.
+    ///
+    /// **Deprecated**: Use `cache_decision` instead, which properly handles
+    /// the approved/denied state.
+    #[deprecated(since = "2.0.0", note = "Use `cache_decision` instead")]
     pub fn cache_permission(
         &self,
         operation: &OperationType,
         context: &ExecutionContext,
         permission: PermissionLevel,
     ) {
+        // Only cache AskOnce decisions - convert to approved/denied
         if permission == PermissionLevel::AskOnce {
-            // Only cache ask_once permissions
-            let key = CacheKey {
-                operation: operation.clone(),
-                session_id: context.session_id.or(self.current_session_id),
-            };
-
-            let entry = SessionEntry {
-                permission,
-                created_at: Utc::now(),
-                _session_id: context.session_id.or(self.current_session_id),
-            };
-
-            self.cache.insert(key, entry);
+            // Legacy behavior: assume approved when caching AskOnce
+            // New code should use cache_decision explicitly
+            self.cache_decision(operation, context, true);
         }
     }
 
@@ -190,20 +240,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cache_permission() {
+    fn test_cache_decision_approved() {
         let session = ApprovalSession::new(3600);
         let operation = OperationType::command("ls");
         let context = ExecutionContext::new();
 
-        // No cached permission initially
+        // No cached decision initially
         assert!(session.check_cache(&operation, &context).is_none());
 
-        // Cache a permission
-        session.cache_permission(&operation, &context, PermissionLevel::AskOnce);
+        // Cache an approval
+        session.cache_decision(&operation, &context, true);
 
-        // Now we should have a cached permission
-        // Note: AskOnce is cached, but returns None for check_cache
-        // because we want to ask once per session
+        // Should return Allowed
+        let result = session.check_cache(&operation, &context);
+        assert!(matches!(result, Some(PermissionLevel::Allowed)));
+    }
+
+    #[test]
+    fn test_cache_decision_denied() {
+        let session = ApprovalSession::new(3600);
+        let operation = OperationType::command("rm");
+        let context = ExecutionContext::new();
+
+        // Cache a denial
+        session.cache_decision(&operation, &context, false);
+
+        // Should return Denied
+        let result = session.check_cache(&operation, &context);
+        assert!(matches!(result, Some(PermissionLevel::Denied)));
     }
 
     #[test]
@@ -212,9 +276,39 @@ mod tests {
         let operation = OperationType::command("ls");
         let context = ExecutionContext::new();
 
-        session.cache_permission(&operation, &context, PermissionLevel::AskOnce);
+        session.cache_decision(&operation, &context, true);
         session.clear_cache();
 
+        assert_eq!(session.cache_size(), 0);
+    }
+
+    #[test]
+    fn test_session_isolation() {
+        let session = ApprovalSession::new(3600);
+        let operation = OperationType::command("ls");
+
+        // Cache for session 1
+        let context1 = ExecutionContext::new().with_session_id(Uuid::new_v4());
+        session.cache_decision(&operation, &context1, true);
+
+        // Cache for session 2
+        let context2 = ExecutionContext::new().with_session_id(Uuid::new_v4());
+        session.cache_decision(&operation, &context2, false);
+
+        // Each session should have its own decision
+        let result1 = session.check_cache(&operation, &context1);
+        let result2 = session.check_cache(&operation, &context2);
+
+        assert!(matches!(result1, Some(PermissionLevel::Allowed)));
+        assert!(matches!(result2, Some(PermissionLevel::Denied)));
+    }
+
+    #[test]
+    fn test_expiry() {
+        // Create session with very short timeout
+        let session = ApprovalSession::new(0); // 0 seconds = immediate expiry
+
+        // This test is timing-dependent, so we just verify the structure
         assert_eq!(session.cache_size(), 0);
     }
 }

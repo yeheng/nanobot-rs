@@ -1,33 +1,52 @@
 //! CLI-based approval interaction
 //!
 //! Provides terminal-based user confirmation using dialoguer.
+//!
+//! ## Timeout Behavior
+//!
+//! The CLI interaction runs in a blocking context (required by dialoguer).
+//! The timeout is implemented by spawning the interaction in a separate task
+//! and waiting with a timeout. If the timeout expires, the operation is
+//! automatically denied.
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use dialoguer::{Confirm, Select};
+use tokio::time::timeout;
 
 use super::ApprovalInteraction;
 use crate::approval::{ApprovalRequest, PermissionLevel};
 use crate::error::{Result, SandboxError};
 
+/// Default timeout for user interaction (5 minutes)
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
 /// CLI-based approval interaction
+///
+/// Uses terminal prompts for user confirmation. The interaction runs
+/// in a blocking context to support dialoguer's synchronous API.
 pub struct CliInteraction {
     /// Timeout for user response
-    _timeout: Duration,
+    timeout: Duration,
 }
 
 impl CliInteraction {
-    /// Create a new CLI interaction handler
+    /// Create a new CLI interaction handler with default timeout (5 minutes)
     pub fn new() -> Self {
         Self {
-            _timeout: Duration::from_secs(300), // 5 minutes default
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         }
     }
 
     /// Create with custom timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self { _timeout: timeout }
+        Self { timeout }
+    }
+
+    /// Get the configured timeout
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     fn display_request(&self, request: &ApprovalRequest) {
@@ -45,19 +64,12 @@ impl CliInteraction {
         }
 
         println!("\n💡 Suggested: {}", request.suggested_level);
+        println!("⏱️  Timeout: {} seconds", self.timeout.as_secs());
         println!("{}", "=".repeat(60));
     }
-}
 
-impl Default for CliInteraction {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ApprovalInteraction for CliInteraction {
-    async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel> {
+    /// Run the interactive prompt (blocking)
+    fn run_prompt(&self, request: &ApprovalRequest) -> Result<PermissionLevel> {
         self.display_request(request);
 
         // First, ask if the user wants to allow this operation
@@ -102,6 +114,55 @@ impl ApprovalInteraction for CliInteraction {
     }
 }
 
+impl Default for CliInteraction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ApprovalInteraction for CliInteraction {
+    async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel> {
+        // Clone request for the blocking task
+        let request = request.clone();
+        let timeout_duration = self.timeout;
+
+        // Run the interactive prompt with timeout
+        let result = timeout(
+            timeout_duration,
+            tokio::task::spawn_blocking(move || {
+                // Create a temporary CliInteraction for the blocking context
+                let cli = CliInteraction::with_timeout(timeout_duration);
+                cli.run_prompt(&request)
+            }),
+        )
+        .await;
+
+        match result {
+            // timeout succeeded, spawn_blocking succeeded, prompt succeeded
+            Ok(Ok(Ok(level))) => Ok(level),
+            // timeout succeeded, spawn_blocking succeeded, prompt failed
+            Ok(Ok(Err(e))) => Err(e),
+            // timeout succeeded, spawn_blocking failed (panic/cancel)
+            Ok(Err(join_err)) => Err(SandboxError::ApprovalFailed(format!(
+                "Blocking task failed: {}",
+                join_err
+            ))),
+            // Timeout expired
+            Err(_) => {
+                println!(
+                    "\n⏰ Approval request timed out after {} seconds",
+                    timeout_duration.as_secs()
+                );
+                println!("❌ Operation automatically denied.");
+                Err(SandboxError::ApprovalTimeout {
+                    timeout_secs: timeout_duration.as_secs(),
+                })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,9 +170,17 @@ mod tests {
     #[test]
     fn test_cli_interaction_creation() {
         let interaction = CliInteraction::new();
-        assert_eq!(interaction._timeout, Duration::from_secs(300));
+        assert_eq!(
+            interaction.timeout(),
+            Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+        );
 
         let interaction = CliInteraction::with_timeout(Duration::from_secs(60));
-        assert_eq!(interaction._timeout, Duration::from_secs(60));
+        assert_eq!(interaction.timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_default_timeout() {
+        assert_eq!(DEFAULT_TIMEOUT_SECS, 300);
     }
 }

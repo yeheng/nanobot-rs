@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use nanobot_core::agent::{SubagentManager, SubagentTracker};
 use nanobot_core::bus::events::OutboundMessage;
-use nanobot_core::providers::{LlmProvider, ProviderRegistry};
+use nanobot_core::providers::ProviderRegistry;
 use nanobot_core::tools::ToolRegistry;
 
 async fn create_test_manager() -> SubagentManager {
@@ -25,7 +25,6 @@ async fn create_test_manager() -> SubagentManager {
 
 #[tokio::test]
 async fn test_subagent_tracker_creation() {
-    let tracker = SubagentTracker::new();
     let id = SubagentTracker::generate_id();
 
     assert!(!id.is_empty());

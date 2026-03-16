@@ -48,10 +48,7 @@ pub mod interaction;
 pub mod audit;
 
 // Re-exports for convenience
-pub use backend::{
-    available_backends, create_backend, ExecutionResult as BackendExecutionResult, Platform,
-    SandboxBackend,
-};
+pub use backend::{available_backends, create_backend, Platform, SandboxBackend};
 pub use config::{
     AuditConfig, CommandPolicy, CommandPolicyConfig, ResourceLimits, ResourceLimitsConfig,
     SandboxConfig,

@@ -184,6 +184,7 @@ impl SandboxBackend for LinuxBwrapBackend {
             stderr,
             timed_out: false,
             resource_exceeded: false,
+            duration_ms: 0, // Duration is tracked by ProcessManager
         })
     }
 }
