@@ -32,18 +32,18 @@ jobs:
           targets: ${{ matrix.target }}
       
       - name: Build
-        run: cd nanobot-rs && cargo build --release --target ${{ matrix.target }} --all-features
+        run: cd gasket && cargo build --release --target ${{ matrix.target }} --all-features
       
       - name: Package (Linux/macOS)
         if: matrix.archive == 'tar.gz'
         run: |
-          cd nanobot-rs/target/${{ matrix.target }}/release
-          tar -czvf nanobot-${{ matrix.target }}.tar.gz nanobot
+          cd gasket/target/${{ matrix.target }}/release
+          tar -czvf gasket-${{ matrix.target }}.tar.gz gasket
       
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: nanobot-rs/target/${{ matrix.target }}/release/nanobot-${{ matrix.target }}.tar.gz
+          files: gasket/target/${{ matrix.target }}/release/gasket-${{ matrix.target }}.tar.gz
 
   publish-crates:
     name: Publish to crates.io
@@ -57,7 +57,7 @@ jobs:
       
       - name: Publish to crates.io
         run: |
-          cd nanobot-rs
-          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p nanobot-core || true
+          cd gasket
+          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p gasket-core || true
           sleep 10
-          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p nanobot-cli || true
+          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} -p gasket-cli || true

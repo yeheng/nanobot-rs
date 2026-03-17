@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'nanobot-rs/**'
+      - 'gasket/**'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'nanobot-rs/**'
+      - 'gasket/**'
       - '.github/workflows/ci.yml'
 
 env:
@@ -34,19 +34,19 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            nanobot-rs/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+            gasket/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('gasket/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       
       - name: Check formatting
-        run: cd nanobot-rs && cargo fmt --all -- --check
+        run: cd gasket && cargo fmt --all -- --check
       
       - name: Run clippy
-        run: cd nanobot-rs && cargo clippy --all-features -- -D warnings
+        run: cd gasket && cargo clippy --all-features -- -D warnings
       
       - name: Run tests
-        run: cd nanobot-rs && cargo test --all-features
+        run: cd gasket && cargo test --all-features
 
   build:
     name: Build
@@ -64,19 +64,19 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            nanobot-rs/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+            gasket/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('gasket/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       
       - name: Build release
-        run: cd nanobot-rs && cargo build --release --all-features
+        run: cd gasket && cargo build --release --all-features
       
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: nanobot-linux
-          path: nanobot-rs/target/release/nanobot
+          name: gasket-linux
+          path: gasket/target/release/gasket
 
   build-macos:
     name: Build (macOS)
@@ -94,19 +94,19 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            nanobot-rs/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+            gasket/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('gasket/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       
       - name: Build release
-        run: cd nanobot-rs && cargo build --release --all-features
+        run: cd gasket && cargo build --release --all-features
       
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: nanobot-macos
-          path: nanobot-rs/target/release/nanobot
+          name: gasket-macos
+          path: gasket/target/release/gasket
 
   build-windows:
     name: Build (Windows)
@@ -124,24 +124,24 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            nanobot-rs/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+            gasket/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('gasket/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       
       - name: Build release
-        run: cd nanobot-rs && cargo build --release --all-features
+        run: cd gasket && cargo build --release --all-features
       
       - name: Package binary
         run: |
-          cd nanobot-rs/target/release
-          Compress-Archive -Update -Path nanobot.exe -DestinationPath nanobot-windows.zip 
+          cd gasket/target/release
+          Compress-Archive -Update -Path gasket.exe -DestinationPath gasket-windows.zip 
       
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: nanobot-windows
-          path: nanobot-rs/target/release/nanobot-windows.zip
+          name: gasket-windows
+          path: gasket/target/release/gasket-windows.zip
 
   docs:
     name: Documentation
@@ -154,10 +154,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: Build docs
-        run: cd nanobot-rs && cargo doc --no-deps --all-features
+        run: cd gasket && cargo doc --no-deps --all-features
       
       - name: Upload docs
         uses: actions/upload-artifact@v4
         with:
           name: docs
-          path: nanobot-rs/target/doc
+          path: gasket/target/doc
