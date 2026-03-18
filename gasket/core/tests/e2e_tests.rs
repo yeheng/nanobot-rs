@@ -431,6 +431,7 @@ async fn test_cron_job_fields() {
 // =============================================================================
 
 #[tokio::test]
+#[cfg(feature = "tool-web-search")]
 async fn test_web_search_tool_schema() {
     use gasket_core::tools::WebSearchTool;
 
@@ -444,6 +445,7 @@ async fn test_web_search_tool_schema() {
 }
 
 #[tokio::test]
+#[cfg(feature = "tool-web-fetch")]
 async fn test_web_fetch_tool_schema() {
     use gasket_core::tools::WebFetchTool;
 
@@ -457,6 +459,7 @@ async fn test_web_fetch_tool_schema() {
 }
 
 #[tokio::test]
+#[cfg(feature = "tool-web-fetch")]
 async fn test_web_fetch_tool_with_options() {
     use gasket_core::tools::WebFetchTool;
 
@@ -472,6 +475,7 @@ async fn test_web_fetch_tool_with_options() {
 // =============================================================================
 
 #[tokio::test]
+#[cfg(feature = "tool-cron")]
 async fn test_cron_tool_schema() {
     use gasket_core::cron::CronService;
     use gasket_core::tools::CronTool;
