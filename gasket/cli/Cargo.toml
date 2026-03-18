@@ -11,7 +11,7 @@ name = "gasket"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-tools", "all-providers", "workspace-download"]
+default = ["markdown", "all-providers", "workspace-download"]
 
 # Rendering
 markdown = ["termimad"]
@@ -33,13 +33,6 @@ all-channels = ["gasket-core/all-channels", "axum", "teloxide"]
 provider-gemini = ["gasket-core/provider-gemini"]
 provider-copilot = ["gasket-core/provider-copilot"]
 all-providers = ["provider-gemini", "provider-copilot"]
-
-# Tools
-tool-web-fetch = ["gasket-core/tool-web-fetch"]
-tool-web-search = ["gasket-core/tool-web-search"]
-tool-spawn = ["gasket-core/tool-spawn"]
-tool-cron = ["gasket-core/tool-cron"]
-all-tools = ["tool-web-fetch", "tool-web-search", "tool-spawn", "tool-cron"]
 
 # Workspace template download
 workspace-download = ["gasket-core/workspace-download"]

@@ -9,15 +9,12 @@ use gasket_core::agent::AgentConfig;
 use gasket_core::config::{Config, ModelRegistry};
 use gasket_core::memory::SqliteStore;
 use gasket_core::providers::ProviderRegistry;
-#[cfg(feature = "tool-web-fetch")]
 use gasket_core::tools::WebFetchTool;
-#[cfg(feature = "tool-web-search")]
 use gasket_core::tools::WebSearchTool;
 use gasket_core::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
     ToolMetadata, ToolRegistry, WriteFileTool,
 };
-#[cfg(feature = "tool-spawn")]
 use gasket_core::tools::{SpawnParallelTool, SpawnTool};
 
 /// Resolve the exec workspace directory from config or default to $HOME/.gasket.
@@ -116,7 +113,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     } = registry_config;
 
     // Suppress unused warnings when tool-spawn feature is disabled
-    #[cfg(not(feature = "tool-spawn"))]
     let _ = (&subagent_manager, &model_registry, &provider_registry);
 
     let restrict = config.tools.restrict_to_workspace;
@@ -152,7 +148,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
-    #[cfg(feature = "tool-web-fetch")]
     tools.register_with_metadata(
         Box::new(
             WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
@@ -171,7 +166,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
-    #[cfg(feature = "tool-web-search")]
     tools.register_with_metadata(
         Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
         ToolMetadata {
@@ -220,7 +214,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     );
 
     // Spawn tool
-    #[cfg(feature = "tool-spawn")]
     {
         let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
             (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnTool::with_registries(

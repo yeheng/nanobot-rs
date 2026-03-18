@@ -25,13 +25,6 @@ provider-gemini = ["gasket-providers/provider-gemini"]
 provider-copilot = ["gasket-providers/provider-copilot"]
 all-providers = ["gasket-providers/all-providers"]
 
-# Tool variants
-tool-web-fetch = ["html2text"]
-tool-web-search = []
-tool-spawn = []
-tool-cron = []
-all-tools = ["tool-web-fetch", "tool-web-search", "tool-spawn", "tool-cron"]
-
 # Workspace template download
 workspace-download = ["tar", "flate2"]
 
@@ -83,7 +76,7 @@ dashmap = "6.1"
 base64 = "0.22"
 
 # HTML parsing
-html2text = { version = "0.16", optional = true }
+html2text = { version = "0.16" }
 
 # Webhook HTTP server (optional)
 axum = { workspace = true, optional = true, features = ["ws"] }

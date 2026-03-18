@@ -15,7 +15,6 @@ use gasket_core::config::{load_config, ModelRegistry};
 use gasket_core::cron::CronService;
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::token_tracker::ModelPricing;
-#[cfg(feature = "tool-cron")]
 use gasket_core::tools::CronTool;
 use gasket_core::tools::{MessageTool, ToolMetadata};
 
@@ -149,7 +148,6 @@ pub async fn cmd_gateway() -> Result<()> {
                 },
             )];
 
-            #[cfg(feature = "tool-cron")]
             ext.push((
                 Box::new(CronTool::new(cron_service.clone())) as Box<dyn gasket_core::tools::Tool>,
                 ToolMetadata {

@@ -624,15 +624,6 @@ impl AgentLoop {
     /// The caller can now await each event send, providing proper backpressure.
     ///
     /// ## Usage in SessionActor
-    ///
-    /// ```rust
-    /// let (mut event_rx, result_handle) = agent.process_direct_streaming_with_channel(...).await?;
-    /// while let Some(event) = event_rx.recv().await {
-    ///     // Can now use .await here for proper backpressure!
-    ///     websocket_manager.send(event_to_ws(event)).await?;
-    /// }
-    /// let response = result_handle.await??;
-    /// ```
     pub async fn process_direct_streaming_with_channel(
         &self,
         content: &str,
