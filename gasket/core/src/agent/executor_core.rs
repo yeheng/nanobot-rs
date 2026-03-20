@@ -448,10 +448,7 @@ impl<'a> AgentExecutor<'a> {
 
         // Accumulate token usage and cost
         if let Some(ref api_usage) = response.usage {
-            let usage = crate::token_tracker::TokenUsage::from_api_fields(
-                api_usage.input_tokens,
-                api_usage.output_tokens,
-            );
+            let usage = TokenUsage::from(api_usage);
             state.accumulate_usage(&usage, options.pricing.as_ref());
             Self::send_token_stats_event(state, event_tx, options).await;
         }

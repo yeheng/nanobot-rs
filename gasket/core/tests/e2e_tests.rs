@@ -492,7 +492,6 @@ async fn test_cron_tool_schema() {
 
 #[tokio::test]
 async fn test_provider_trait() {
-
     let provider = gasket_core::providers::build_rig_provider(
         "openai",
         Some("test-key".to_string()),

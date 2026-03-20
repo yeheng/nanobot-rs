@@ -34,6 +34,18 @@ impl TokenUsage {
     }
 }
 
+impl From<gasket_providers::Usage> for TokenUsage {
+    fn from(usage: gasket_providers::Usage) -> Self {
+        Self::new(usage.input_tokens, usage.output_tokens)
+    }
+}
+
+impl From<&gasket_providers::Usage> for TokenUsage {
+    fn from(usage: &gasket_providers::Usage) -> Self {
+        Self::new(usage.input_tokens, usage.output_tokens)
+    }
+}
+
 /// Pricing configuration for a model
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelPricing {

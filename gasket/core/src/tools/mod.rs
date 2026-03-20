@@ -11,6 +11,11 @@
 //! - `cron`: Scheduled tasks
 //! - `spawn`: Spawn sub-agents
 //! - `spawn_parallel`: Parallel sub-agent spawning
+//!
+//! # Rig Integration
+//!
+//! The `rig_compat` module provides adapters to make gasket tools compatible
+//! with rig's tool system, allowing seamless integration with rig agents.
 
 mod base;
 mod cron;
@@ -19,6 +24,7 @@ mod history_search;
 mod memory_search;
 mod message;
 mod registry;
+pub mod rig_compat;
 mod shell;
 mod spawn;
 mod spawn_parallel;
@@ -32,6 +38,7 @@ pub use history_search::HistorySearchTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
+pub use rig_compat::{ArcToolWrapper, GasketToolAsRig, ToolWrapper, definitions_to_toolset, to_toolset_from_tools};
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
