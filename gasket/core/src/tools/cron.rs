@@ -88,8 +88,16 @@ impl Tool for CronTool {
             job_id: Option<String>,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `action`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'action'. When calling 'schedule_task', you must provide an action. Supported actions: 'add', 'list', 'remove'. Example: {\"action\": \"add\", \"name\": \"my-reminder\", \"cron\": \"0 9 * * *\", \"message\": \"Time for standup!\"}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         match args.action.as_str() {
             "add" => {

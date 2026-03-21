@@ -137,8 +137,16 @@ impl Tool for WebFetchTool {
             prompt: Option<String>,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `url`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'url'. When calling 'web_fetch', you must provide the URL to fetch. Example: {\"url\": \"https://example.com\", \"prompt\": \"Extract the main content\"}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         info!("Fetching URL: {}", args.url);
 

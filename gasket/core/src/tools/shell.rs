@@ -187,8 +187,16 @@ impl Tool for ExecTool {
             description: Option<String>,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `command`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'command'. When calling 'exec', you must provide the command to execute. Example: {\"command\": \"ls -la\", \"description\": \"List files in current directory\"}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         // Gate: tool must be explicitly enabled
         if !self.enabled {

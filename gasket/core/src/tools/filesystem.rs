@@ -11,6 +11,16 @@ use tracing::{debug, instrument};
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
 
+/// Helper function to create a more helpful error message for missing required parameters.
+///
+/// This improves the LLM's ability to understand what went wrong and how to fix it.
+fn missing_param_error(param_name: &str, tool_name: &str, example: &str) -> ToolError {
+    ToolError::InvalidArguments(format!(
+        "Missing required parameter '{}'. When calling '{}', you must provide this parameter. Example: {}",
+        param_name, tool_name, example
+    ))
+}
+
 fn validate_path(path: &str, allowed_dir: &Option<PathBuf>) -> Result<PathBuf, ToolError> {
     let path = PathBuf::from(path);
     if let Some(allowed) = allowed_dir {
@@ -77,8 +87,18 @@ impl Tool for ReadFileTool {
             limit: Option<usize>,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `absolute_path`") {
+                missing_param_error(
+                    "absolute_path",
+                    "read_file",
+                    r#"{"absolute_path": "/path/to/file.txt"}"#,
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         let path = validate_path(&args.absolute_path, &self.allowed_dir)?;
         debug!("Reading file: {:?}", path);
@@ -145,8 +165,24 @@ impl Tool for WriteFileTool {
             content: String,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `file_path`") {
+                missing_param_error(
+                    "file_path",
+                    "write_file",
+                    r#"{"file_path": "/path/to/file.txt", "content": "your content here"}"#,
+                )
+            } else if err_msg.contains("missing field `content`") {
+                missing_param_error(
+                    "content",
+                    "write_file",
+                    r#"{"file_path": "/path/to/file.txt", "content": "your content here"}"#,
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         // Extract path (and handle non-existent path validation properly later if needed, but we check prefix first)
         let path = PathBuf::from(&args.file_path);
@@ -249,8 +285,21 @@ impl Tool for EditFileTool {
             instruction: String,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            let example = r#"{"file_path": "/path/to/file.txt", "old_string": "old text", "new_string": "new text", "instruction": "replace old with new"}"#;
+            if err_msg.contains("missing field `file_path`") {
+                missing_param_error("file_path", "edit_file", example)
+            } else if err_msg.contains("missing field `old_string`") {
+                missing_param_error("old_string", "edit_file", example)
+            } else if err_msg.contains("missing field `new_string`") {
+                missing_param_error("new_string", "edit_file", example)
+            } else if err_msg.contains("missing field `instruction`") {
+                missing_param_error("instruction", "edit_file", example)
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         let path = validate_path(&args.file_path, &self.allowed_dir)?;
         debug!("Editing file: {:?} - {}", path, args.instruction);
@@ -329,8 +378,18 @@ impl Tool for ListDirTool {
             path: String,
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `path`") {
+                missing_param_error(
+                    "path",
+                    "list_directory",
+                    r#"{"path": "/home/user/documents"}"#,
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         let path = PathBuf::from(&args.path);
         debug!("Listing directory: {:?}", path);

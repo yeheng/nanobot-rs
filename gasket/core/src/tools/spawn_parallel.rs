@@ -171,8 +171,16 @@ impl Tool for SpawnParallelTool {
 
     #[instrument(name = "tool.spawn_parallel", skip_all)]
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let args: SpawnParallelArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: SpawnParallelArgs = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `tasks`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'tasks'. When calling 'spawn_parallel', you must provide an array of tasks. Example: {\"tasks\": [\"Search for Rust tutorials\", \"Find Python documentation\"]}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         let manager = match &self.manager {
             Some(m) => m,

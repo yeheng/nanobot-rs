@@ -510,8 +510,16 @@ impl Tool for WebSearchTool {
             5
         }
 
-        let args: Args =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: Args = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `query`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'query'. When calling 'web_search', you must provide a search query. Example: {\"query\": \"Rust programming language tutorial\", \"count\": 5}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         self.do_search(&args.query, args.count).await
     }

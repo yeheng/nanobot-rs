@@ -137,8 +137,16 @@ impl Tool for SpawnTool {
 
     #[instrument(name = "tool.spawn", skip_all)]
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let args: SpawnArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: SpawnArgs = serde_json::from_value(args).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("missing field `task`") {
+                ToolError::InvalidArguments(
+                    "Missing required parameter 'task'. When calling 'spawn', you must provide a task description for the subagent. Example: {\"task\": \"Search for all TypeScript files in the src directory\"}".to_string()
+                )
+            } else {
+                ToolError::InvalidArguments(err_msg)
+            }
+        })?;
 
         let manager = match &self.manager {
             Some(m) => m,
