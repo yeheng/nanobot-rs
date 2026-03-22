@@ -2,9 +2,9 @@
 //!
 //! Provides utilities for buffering and ordering WebSocket messages
 //! to ensure a user-friendly display order:
-//! 1. Thinking messages first
+//! 1. Thinking messages first (merged into one)
 //! 2. Tool events (ToolStart/ToolEnd)
-//! 3. Content messages last
+//! 3. Content messages last (merged into one)
 //!
 //! This ordering ensures the UI shows the thinking process before
 //! the response content, avoiding interleaved display issues.
@@ -45,9 +45,9 @@ impl BufferedEvents {
     }
 
     /// Flush messages in a user-friendly order:
-    /// 1. All Thinking messages first
+    /// 1. All Thinking messages first (merged into one)
     /// 2. ToolStart/ToolEnd (if any, in original order relative to each other)
-    /// 3. All Content messages last
+    /// 3. All Content messages last (merged into one)
     /// 4. Other messages (Done, Text, etc.)
     ///
     /// This ensures the UI shows the thinking process before the response content,
@@ -57,29 +57,55 @@ impl BufferedEvents {
             return Vec::new();
         }
 
-        let mut thinking_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut thinking_content = String::new();
         let mut tool_msgs: Vec<WebSocketMessage> = Vec::new();
-        let mut content_msgs: Vec<WebSocketMessage> = Vec::new();
+        let mut content_content = String::new();
         let mut other_msgs: Vec<WebSocketMessage> = Vec::new();
 
         for msg in self.messages.drain(..) {
             match &msg {
-                WebSocketMessage::Thinking { .. } => thinking_msgs.push(msg),
+                WebSocketMessage::Thinking { content } => {
+                    // Merge all thinking content into one string
+                    if thinking_content.is_empty() {
+                        thinking_content = content.clone();
+                    } else {
+                        thinking_content.push_str(content);
+                    }
+                }
                 WebSocketMessage::ToolStart { .. } | WebSocketMessage::ToolEnd { .. } => {
                     tool_msgs.push(msg)
                 }
-                WebSocketMessage::Content { .. } => content_msgs.push(msg),
+                WebSocketMessage::Content { content } => {
+                    // Merge all content into one string
+                    if content_content.is_empty() {
+                        content_content = content.clone();
+                    } else {
+                        content_content.push_str(content);
+                    }
+                }
                 _ => other_msgs.push(msg),
             }
         }
 
-        // Concatenate: Thinking -> Tools -> Content -> Other
-        let mut result = Vec::with_capacity(
-            thinking_msgs.len() + tool_msgs.len() + content_msgs.len() + other_msgs.len(),
-        );
-        result.append(&mut thinking_msgs);
+        // Build result: one merged Thinking, then tools, then one merged Content, then others
+        let mut result = Vec::with_capacity(1 + tool_msgs.len() + 1 + other_msgs.len());
+
+        // Single merged Thinking message
+        if !thinking_content.is_empty() {
+            result.push(WebSocketMessage::Thinking {
+                content: thinking_content,
+            });
+        }
+
         result.append(&mut tool_msgs);
-        result.append(&mut content_msgs);
+
+        // Single merged Content message
+        if !content_content.is_empty() {
+            result.push(WebSocketMessage::Content {
+                content: content_content,
+            });
+        }
+
         result.append(&mut other_msgs);
 
         result
@@ -104,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ordering() {
+    fn test_ordering_and_merging() {
         let mut buffer = BufferedEvents::new();
 
         // Add messages in mixed order
@@ -121,15 +147,30 @@ mod tests {
 
         let flushed = buffer.flush_ordered();
 
-        // Verify order: Thinking -> Tools -> Content -> Other
-        assert_eq!(flushed.len(), 7);
+        // Verify order and merging: Thinking (merged) -> Tools -> Content (merged) -> Done
+        // After merging: 1 thinking + 2 tools + 1 content + 1 done = 5 messages
+        assert_eq!(flushed.len(), 5);
+
+        // First message should be merged Thinking
         assert!(matches!(flushed[0], WebSocketMessage::Thinking { .. }));
-        assert!(matches!(flushed[1], WebSocketMessage::Thinking { .. }));
-        assert!(matches!(flushed[2], WebSocketMessage::ToolStart { .. }));
-        assert!(matches!(flushed[3], WebSocketMessage::ToolEnd { .. }));
-        assert!(matches!(flushed[4], WebSocketMessage::Content { .. }));
-        assert!(matches!(flushed[5], WebSocketMessage::Content { .. }));
-        assert!(matches!(flushed[6], WebSocketMessage::Done));
+        if let WebSocketMessage::Thinking { content } = &flushed[0] {
+            assert_eq!(content, "thinking1thinking2");
+        }
+
+        // Second should be ToolStart
+        assert!(matches!(flushed[1], WebSocketMessage::ToolStart { .. }));
+
+        // Third should be ToolEnd
+        assert!(matches!(flushed[2], WebSocketMessage::ToolEnd { .. }));
+
+        // Fourth should be merged Content
+        assert!(matches!(flushed[3], WebSocketMessage::Content { .. }));
+        if let WebSocketMessage::Content { content } = &flushed[3] {
+            assert_eq!(content, "content1content2");
+        }
+
+        // Fifth should be Done
+        assert!(matches!(flushed[4], WebSocketMessage::Done));
     }
 
     #[test]
