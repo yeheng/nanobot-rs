@@ -16,13 +16,13 @@ use axum::{
 };
 use tracing::{debug, error, info};
 
-use super::handlers;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
-use crate::channels::feishu::{
-    FeishuChallenge, FeishuChallengeResponse, FeishuConfig, FeishuEvent, FeishuTextContent,
+use super::channel::{
+    FeishuChallenge, FeishuChallengeResponse, FeishuConfig, FeishuEvent, FeishuMessage,
+    FeishuSender, FeishuTextContent,
 };
-use crate::channels::middleware::InboundSender;
+use crate::middleware::InboundSender;
+use crate::webhook::handlers;
+use gasket_types::{ChannelType, InboundMessage};
 
 /// State for Feishu webhook routes.
 ///
@@ -164,8 +164,8 @@ async fn process_webhook_event(
 async fn process_message_event(
     config: &FeishuConfig,
     inbound_sender: &InboundSender,
-    message: crate::channels::feishu::FeishuMessage,
-    sender: Option<crate::channels::feishu::FeishuSender>,
+    message: FeishuMessage,
+    sender: Option<FeishuSender>,
 ) -> anyhow::Result<()> {
     if let Some(ref sender_info) = sender {
         let sender_id = &sender_info.sender_id.user_id;

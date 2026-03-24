@@ -17,7 +17,6 @@ pub mod bus;
 pub mod channels;
 pub mod config;
 pub mod cron;
-pub mod crypto;
 pub mod error;
 pub mod heartbeat;
 pub mod hooks;
@@ -30,8 +29,10 @@ pub mod skills;
 pub mod token_tracker;
 pub mod tools;
 pub mod vault;
+
+// Re-export webhook from gasket-channels (feature-gated)
 #[cfg(feature = "webhook")]
-pub mod webhook;
+pub use gasket_channels::webhook;
 
 pub use config::Config;
 pub use error::{AgentError, ChannelError, PipelineError, ProviderError};

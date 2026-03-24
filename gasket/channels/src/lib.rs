@@ -3,7 +3,20 @@
 //! This crate provides:
 //! - Core channel types (`events`, `config`, `base`, `middleware`, `outbound`)
 //! - Feature-gated channel implementations (Telegram, Discord, Slack, etc.)
-//! - WeCom crypto utilities (feature-gated)
+//! - Platform-specific webhook handlers (DingTalk, Feishu, WeCom)
+//!
+//! # Platform Modules
+//!
+//! Each platform module contains both channel and webhook implementations:
+//!
+//! - [`dingtalk`] - DingTalk (钉钉) channel and webhook
+//! - [`feishu`] - Feishu (飞书) channel and webhook
+//! - [`wecom`] - WeCom (企业微信) channel, webhook, and crypto
+//!
+//! # Webhook Server
+//!
+//! The [`webhook`] module provides a generic HTTP server that can be combined
+//! with platform-specific routes.
 
 // Core types (always compiled)
 pub mod base;
@@ -13,11 +26,17 @@ pub mod events;
 pub mod middleware;
 pub mod outbound;
 
-// WeCom crypto (feature-gated)
-#[cfg(feature = "wecom")]
-pub mod crypto_wecom;
+// Webhook HTTP server infrastructure
+// Enabled when any platform that needs webhooks is enabled, or when webhook feature is explicitly enabled
+#[cfg(any(
+    feature = "webhook",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "wecom"
+))]
+pub mod webhook;
 
-// Channel implementations (feature-gated)
+// Platform channel implementations (feature-gated)
 #[cfg(feature = "dingtalk")]
 pub mod dingtalk;
 #[cfg(feature = "discord")]

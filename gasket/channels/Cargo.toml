@@ -12,10 +12,10 @@ telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
 email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
-dingtalk = ["sha2"]
-feishu = []
-wecom = ["sha1", "aes", "cbc", "quick-xml"]
-webhook = ["axum", "dashmap"]
+dingtalk = ["sha2", "axum", "tower", "tower-http", "dashmap"]
+feishu = ["axum", "tower", "tower-http", "dashmap"]
+wecom = ["sha1", "aes", "cbc", "quick-xml", "axum", "tower", "tower-http", "dashmap"]
+webhook = ["axum", "tower", "tower-http", "dashmap"]
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
 
 [dependencies]
@@ -77,6 +77,9 @@ async-imap = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
 
-# WebSocket manager (optional, for webhook feature)
+# Webhook HTTP server (optional - used by dingtalk, feishu, wecom, and standalone webhook)
 axum = { workspace = true, optional = true, features = ["ws"] }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+bytes = "1"
 dashmap = { version = "6.1", optional = true }

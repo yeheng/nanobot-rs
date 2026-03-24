@@ -149,6 +149,14 @@ impl OutboundSenderRegistry {
         self.senders.insert(ChannelType::Custom(name), sender);
     }
 
+    /// Register a sender for a specific channel type.
+    ///
+    /// This allows registering senders for both built-in and custom channel types.
+    pub fn register(&mut self, channel: ChannelType, sender: Arc<dyn OutboundSender>) {
+        debug!("Registering outbound sender for channel: {:?}", channel);
+        self.senders.insert(channel, sender);
+    }
+
     /// Send an outbound message.
     pub async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
         match self.senders.get(&msg.channel) {

@@ -15,7 +15,7 @@ email = ["gasket-channels/email"]
 dingtalk = ["gasket-channels/dingtalk"]
 feishu = ["gasket-channels/feishu"]
 wecom = ["gasket-channels/wecom"]
-webhook = ["axum", "tower", "tower-http", "gasket-channels/webhook"]
+webhook = ["gasket-channels/webhook"]
 # Smart model selection based on task content analysis
 smart-model-selection = []
 all-channels = ["gasket-channels/all-channels"]
@@ -41,7 +41,7 @@ futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9.33"
-json5 = "0.4"
+json5 = "1.3"
 
 # HTTP
 reqwest.workspace = true
@@ -79,10 +79,7 @@ base64 = "0.22"
 # HTML parsing
 html2text = { version = "0.16" }
 
-# Webhook HTTP server (optional)
-axum = { workspace = true, optional = true, features = ["ws"] }
-tower = { workspace = true, optional = true }
-tower-http = { workspace = true, optional = true }
+# Bytes for HTTP body handling
 bytes = "1"
 
 # SQLite (async)

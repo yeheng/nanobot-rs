@@ -12,8 +12,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
-use super::base::Channel;
-use crate::crypto_wecom::{compute_signature, decode_aes_key, decrypt_message};
+use super::crypto::{compute_signature, decode_aes_key, decrypt_message};
+use crate::base::Channel;
 use crate::events::ChannelType;
 use crate::events::InboundMessage;
 use crate::middleware::InboundSender;
@@ -300,7 +300,10 @@ impl WeComChannel {
     /// WeCom sends: `GET /callback?msg_signature=...&timestamp=...&nonce=...&echostr=...`
     ///
     /// Returns the decrypted echostr that should be sent back as the HTTP response body.
-    pub fn verify_url(&self, query: &WeComCallbackQuery) -> anyhow::Result<String> {
+    pub fn verify_url(
+        &self,
+        query: &WeComCallbackQuery,
+    ) -> anyhow::Result<String> {
         let token = self
             .config
             .token

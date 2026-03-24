@@ -18,12 +18,13 @@ use axum::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::handlers;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
-use crate::channels::middleware::InboundSender;
-use crate::channels::wecom::{WeComCallbackBody, WeComCallbackQuery, WeComConfig};
-use crate::crypto::wecom::{compute_signature, decode_aes_key, decrypt_message};
+use super::channel::{
+    parse_callback_xml, WeComCallbackBody, WeComCallbackQuery, WeComConfig,
+};
+use super::crypto::{compute_signature, decode_aes_key, decrypt_message};
+use crate::middleware::InboundSender;
+use crate::webhook::handlers;
+use gasket_types::{ChannelType, InboundMessage};
 
 /// State for WeCom webhook routes.
 ///
@@ -212,7 +213,7 @@ async fn process_callback_message(
     debug!("Decrypted WeCom callback message: {}", xml_str);
 
     // Parse the XML message — reuse the parser from the channel module
-    let message = crate::channels::wecom::parse_callback_xml(&xml_str)?;
+    let message = parse_callback_xml(&xml_str)?;
 
     // Check allowlist
     if !config.allow_from.is_empty() && !config.allow_from.contains(&message.from_user_name) {

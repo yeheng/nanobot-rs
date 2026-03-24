@@ -16,11 +16,10 @@ use axum::{
 };
 use tracing::{debug, error};
 
-use super::handlers;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
-use crate::channels::dingtalk::{DingTalkCallbackMessage, DingTalkConfig};
-use crate::channels::middleware::InboundSender;
+use super::channel::{DingTalkCallbackMessage, DingTalkConfig};
+use crate::middleware::InboundSender;
+use crate::webhook::handlers;
+use gasket_types::{ChannelType, InboundMessage};
 
 /// State for DingTalk webhook routes.
 ///
