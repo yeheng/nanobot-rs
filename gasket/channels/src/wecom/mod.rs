@@ -19,8 +19,8 @@ pub mod webhook;
 
 // Re-export public API
 pub use channel::{
-    parse_callback_xml, WeComCallbackBody, WeComCallbackMessage, WeComCallbackQuery,
-    WeComChannel, WeComConfig,
+    parse_callback_xml, WeComCallbackBody, WeComCallbackMessage, WeComCallbackQuery, WeComChannel,
+    WeComConfig,
 };
 pub use crypto::{compute_signature, decode_aes_key, decrypt_message};
 pub use webhook::{create_wecom_routes, WeComState};

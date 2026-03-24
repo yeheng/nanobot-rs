@@ -18,9 +18,7 @@ use axum::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::channel::{
-    parse_callback_xml, WeComCallbackBody, WeComCallbackQuery, WeComConfig,
-};
+use super::channel::{parse_callback_xml, WeComCallbackBody, WeComCallbackQuery, WeComConfig};
 use super::crypto::{compute_signature, decode_aes_key, decrypt_message};
 use crate::middleware::InboundSender;
 use crate::webhook::handlers;

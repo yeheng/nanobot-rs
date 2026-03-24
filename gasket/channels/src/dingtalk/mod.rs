@@ -17,7 +17,7 @@ pub mod webhook;
 
 // Re-export public API
 pub use channel::{
-    DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig, DingTalkTextContent,
-    DingTalkWebhookResponse, send_message_stateless,
+    send_message_stateless, DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig,
+    DingTalkTextContent, DingTalkWebhookResponse,
 };
 pub use webhook::{create_dingtalk_routes, DingTalkState};

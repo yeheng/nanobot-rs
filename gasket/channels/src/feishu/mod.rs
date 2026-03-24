@@ -17,8 +17,8 @@ pub mod webhook;
 
 // Re-export public API
 pub use channel::{
-    FeishuChallenge, FeishuChallengeResponse, FeishuChannel, FeishuConfig, FeishuEvent,
-    FeishuEventData, FeishuMessage, FeishuMention, FeishuMentionId, FeishuSender, FeishuSenderId,
-    FeishuTextContent, send_text_stateless,
+    send_text_stateless, FeishuChallenge, FeishuChallengeResponse, FeishuChannel, FeishuConfig,
+    FeishuEvent, FeishuEventData, FeishuMention, FeishuMentionId, FeishuMessage, FeishuSender,
+    FeishuSenderId, FeishuTextContent,
 };
 pub use webhook::{create_feishu_routes, FeishuState};

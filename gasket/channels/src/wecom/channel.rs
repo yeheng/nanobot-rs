@@ -300,10 +300,7 @@ impl WeComChannel {
     /// WeCom sends: `GET /callback?msg_signature=...&timestamp=...&nonce=...&echostr=...`
     ///
     /// Returns the decrypted echostr that should be sent back as the HTTP response body.
-    pub fn verify_url(
-        &self,
-        query: &WeComCallbackQuery,
-    ) -> anyhow::Result<String> {
+    pub fn verify_url(&self, query: &WeComCallbackQuery) -> anyhow::Result<String> {
         let token = self
             .config
             .token
