@@ -1,6 +1,7 @@
 //! Summarization service for conversation history.
 //!
 //! Provides LLM-based summarization for long conversations to manage context window.
+//! Also handles embedding generation for evicted messages (semantic history recall).
 
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use tracing::debug;
 
 use crate::memory::SqliteStore;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
+use crate::search::{top_k_similar, TextEmbedder};
 use crate::session::SessionMessage;
 
 use super::history_processor::count_tokens;
@@ -19,15 +21,20 @@ pub const SUMMARIZATION_PROMPT: &str =
 /// Prefix for injected summary assistant messages
 pub const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
 
+/// Prefix for recalled history injection
+pub const RECALL_PREFIX: &str = "[回忆]";
+
 /// Service for summarizing conversation history using LLM.
 ///
 /// When conversations exceed token budgets, this service generates
 /// summaries of older messages to preserve context while reducing
-/// token usage.
+/// token usage. Also stores embeddings for semantic history recall.
 pub struct SummarizationService {
     provider: Arc<dyn LlmProvider>,
     store: Arc<SqliteStore>,
     model: String,
+    /// Optional text embedder for semantic history recall
+    embedder: Option<Arc<TextEmbedder>>,
 }
 
 impl SummarizationService {
@@ -37,7 +44,28 @@ impl SummarizationService {
             provider,
             store,
             model,
+            embedder: None,
         }
+    }
+
+    /// Create a new summarization service with embedding support.
+    pub fn with_embedder(
+        provider: Arc<dyn LlmProvider>,
+        store: Arc<SqliteStore>,
+        model: String,
+        embedder: Arc<TextEmbedder>,
+    ) -> Self {
+        Self {
+            provider,
+            store,
+            model,
+            embedder: Some(embedder),
+        }
+    }
+
+    /// Set the embedder for semantic history recall.
+    pub fn set_embedder(&mut self, embedder: Arc<TextEmbedder>) {
+        self.embedder = Some(embedder);
     }
 
     /// Load an existing summary for a session.
@@ -47,6 +75,49 @@ impl SummarizationService {
             Err(e) => {
                 debug!("Failed to load session summary: {}", e);
                 None
+            }
+        }
+    }
+
+    /// Generate and store embeddings for evicted messages.
+    ///
+    /// This enables semantic recall of old conversations that were
+    /// dropped from the context window.
+    async fn save_evicted_embeddings(
+        &self,
+        session_key: &str,
+        evicted_messages: &[SessionMessage],
+    ) {
+        let Some(ref embedder) = self.embedder else {
+            debug!("No embedder configured, skipping embedding generation");
+            return;
+        };
+
+        for (idx, msg) in evicted_messages.iter().enumerate() {
+            // Generate a unique message ID based on session key and index
+            let message_id = format!("{}:evicted:{}", session_key, idx);
+
+            match embedder.embed(&msg.content) {
+                Ok(embedding) => {
+                    if let Err(e) = self
+                        .store
+                        .save_embedding(&message_id, session_key, &embedding)
+                        .await
+                    {
+                        debug!(
+                            "Failed to save embedding for evicted message {}: {}",
+                            idx, e
+                        );
+                    } else {
+                        debug!(
+                            "Saved embedding for evicted message {} in session {}",
+                            idx, session_key
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to embed evicted message {}: {}", idx, e);
+                }
             }
         }
     }
@@ -120,23 +191,21 @@ impl SummarizationService {
 
         Ok(summary_text)
     }
-}
 
-// ── ContextCompressionHook ─────────────────────────────────
-
-/// Hook interface for context compression.
-///
-/// Decouples the compression strategy (LLM summarization, vector retrieval,
-/// entity extraction, etc.) from the agent loop.  The `AgentLoop` calls this
-/// hook after history truncation; the returned summary is injected into the
-/// prompt by `ContextBuilder`.
-impl SummarizationService {
+    /// Context compression hook.
+    ///
+    /// Called after history truncation; generates summary and saves embeddings
+    /// for evicted messages. The returned summary is injected into the prompt.
     pub async fn compress(
         &self,
         session_key: &str,
         evicted_messages: &[SessionMessage],
     ) -> anyhow::Result<Option<String>> {
         if !evicted_messages.is_empty() {
+            // Save embeddings for evicted messages (enables semantic recall)
+            self.save_evicted_embeddings(session_key, evicted_messages)
+                .await;
+
             let existing_summary = self.load_summary(session_key).await;
             match self
                 .summarize(session_key, evicted_messages, &existing_summary)
@@ -154,6 +223,51 @@ impl SummarizationService {
         } else {
             Ok(self.load_summary(session_key).await)
         }
+    }
+
+    /// Recall relevant historical messages based on semantic similarity.
+    ///
+    /// Returns the top-K most relevant messages from the embedding store
+    /// for the given query embedding.
+    pub async fn recall_history(
+        &self,
+        session_key: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> Vec<(String, f32)> {
+        let Ok(embeddings) = self.store.load_session_embeddings(session_key).await else {
+            debug!("Failed to load session embeddings for {}", session_key);
+            return Vec::new();
+        };
+
+        if embeddings.is_empty() {
+            return Vec::new();
+        }
+
+        // Build candidates list for top_k_similar
+        // embeddings format: Vec<(message_id, content, embedding)>
+        let candidates: Vec<(String, Vec<f32>)> = embeddings
+            .iter()
+            .map(|(msg_id, _content, embedding)| (msg_id.clone(), embedding.clone()))
+            .collect();
+
+        // Find top-K similar
+        let top_results = top_k_similar(query_embedding, &candidates, top_k);
+
+        // Map back to content using the original embeddings list
+        let content_map: std::collections::HashMap<String, &str> = embeddings
+            .iter()
+            .map(|(msg_id, content, _)| (msg_id.clone(), content.as_str()))
+            .collect();
+
+        top_results
+            .into_iter()
+            .filter_map(|(msg_id, score)| {
+                content_map
+                    .get(msg_id)
+                    .map(|content| (content.to_string(), score))
+            })
+            .collect()
     }
 }
 
@@ -174,5 +288,11 @@ mod tests {
     fn test_summary_prefix_format() {
         assert!(SUMMARY_PREFIX.starts_with('['));
         assert!(SUMMARY_PREFIX.ends_with(": "));
+    }
+
+    #[test]
+    fn test_recall_prefix_format() {
+        assert!(RECALL_PREFIX.starts_with('['));
+        assert!(RECALL_PREFIX.ends_with(']'));
     }
 }

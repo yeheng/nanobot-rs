@@ -12,7 +12,7 @@ use reqwest::Client;
 use tracing::{debug, info};
 
 /// GitHub repository information
-const GITHUB_REPO: &str = "yeheng/nanobot-rs";
+const GITHUB_REPO: &str = "yeheng/gasket";
 const GITHUB_BRANCH: &str = "main";
 
 /// Result of the download operation
@@ -41,21 +41,6 @@ impl WorkspaceDownloader {
             target_dir: gasket_core::config::config_dir(),
             overwrite_existing: false,
         }
-    }
-
-    /// Create a downloader with a custom target directory
-    pub fn with_target_dir(target_dir: PathBuf) -> Self {
-        Self {
-            client: Client::new(),
-            target_dir,
-            overwrite_existing: false,
-        }
-    }
-
-    /// Set whether to overwrite existing files
-    pub fn with_overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite_existing = overwrite;
-        self
     }
 
     /// Download and extract workspace templates from GitHub
@@ -184,26 +169,5 @@ impl WorkspaceDownloader {
 impl Default for WorkspaceDownloader {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_downloader_with_custom_dir() {
-        let temp_dir = TempDir::new().unwrap();
-        let downloader = WorkspaceDownloader::with_target_dir(temp_dir.path().to_path_buf());
-        assert_eq!(downloader.target_dir, temp_dir.path());
-    }
-
-    #[test]
-    fn test_overwrite_flag() {
-        let temp_dir = TempDir::new().unwrap();
-        let downloader = WorkspaceDownloader::with_target_dir(temp_dir.path().to_path_buf())
-            .with_overwrite(true);
-        assert!(downloader.overwrite_existing);
     }
 }

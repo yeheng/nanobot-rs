@@ -1,12 +1,14 @@
 //! Tool registry for managing and executing tools
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde_json::Value;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use super::{Tool, ToolError, ToolMetadata, ToolResult};
 use crate::providers::ToolDefinition;
+use crate::search::{top_k_similar, TextEmbedder};
 
 /// A tool bundled with its optional metadata.
 struct RegisteredTool {
@@ -14,9 +16,15 @@ struct RegisteredTool {
     metadata: Option<ToolMetadata>,
 }
 
-/// Registry for managing tools
+/// Registry for managing tools with semantic routing support.
+///
+/// The registry stores tool embeddings for fast Top-K retrieval based on
+/// cosine similarity to the user query. Embeddings are computed once at
+/// startup and cached in memory.
 pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
+    /// Cached embeddings: (tool_name, embedding_vector)
+    embeddings: OnceLock<Vec<(String, Vec<f32>)>>,
 }
 
 impl ToolRegistry {
@@ -24,6 +32,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             items: HashMap::new(),
+            embeddings: OnceLock::new(),
         }
     }
 
@@ -31,6 +40,8 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
         debug!("Registering tool: {}", name);
+        // Invalidate cached embeddings when tools change
+        self.embeddings = OnceLock::new();
         self.items.insert(
             name,
             RegisteredTool {
@@ -47,6 +58,8 @@ impl ToolRegistry {
             "Registering tool with metadata: {} (category: {:?})",
             name, meta.category
         );
+        // Invalidate cached embeddings when tools change
+        self.embeddings = OnceLock::new();
         self.items.insert(
             name,
             RegisteredTool {
@@ -61,6 +74,65 @@ impl ToolRegistry {
         if let Some(entry) = self.items.get_mut(name) {
             entry.metadata = Some(meta);
         }
+    }
+
+    /// Initialize embeddings for all registered tools.
+    ///
+    /// This should be called once after all tools are registered.
+    /// Uses the tool's description text to generate embeddings.
+    pub fn initialize_embeddings(&self, embedder: &TextEmbedder) {
+        if self.embeddings.get().is_some() {
+            debug!("Tool embeddings already initialized, skipping");
+            return;
+        }
+
+        let mut embeddings = Vec::with_capacity(self.items.len());
+        for (name, entry) in &self.items {
+            match embedder.embed(entry.tool.description()) {
+                Ok(vec) => {
+                    embeddings.push((name.clone(), vec));
+                    debug!("Generated embedding for tool: {}", name);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to embed tool '{}': {}", name, e);
+                }
+            }
+        }
+
+        if self.embeddings.set(embeddings).is_err() {
+            debug!("Tool embeddings were already set by another thread");
+        } else {
+            info!("Initialized embeddings for {} tools", self.items.len());
+        }
+    }
+
+    /// Get the top-K most relevant tools for a query.
+    ///
+    /// Uses cosine similarity between the query embedding and cached tool embeddings.
+    /// Returns tool definitions ready for LLM consumption.
+    pub fn get_top_k(&self, query_vec: &[f32], k: usize) -> Vec<ToolDefinition> {
+        let embeddings = match self.embeddings.get() {
+            Some(e) => e,
+            None => {
+                // Fallback: return all tools if embeddings not initialized
+                debug!("Tool embeddings not initialized, returning all tools");
+                return self.get_definitions();
+            }
+        };
+
+        let top_names = top_k_similar(query_vec, embeddings, k);
+        top_names
+            .into_iter()
+            .filter_map(|(name, _score)| {
+                self.items.get(name).map(|entry| {
+                    ToolDefinition::function(
+                        entry.tool.name(),
+                        entry.tool.description(),
+                        entry.tool.parameters(),
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Get metadata for a tool

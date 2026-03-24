@@ -206,6 +206,27 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
 
+        // ── Session embeddings (for semantic history recall) ──
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_embeddings (
+                message_id  TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (session_key) REFERENCES sessions(key) ON DELETE CASCADE
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_embeddings_session_key
+             ON session_embeddings(session_key)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }

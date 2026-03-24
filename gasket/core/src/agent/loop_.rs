@@ -12,6 +12,7 @@
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
 //!    7.5. vault_injection            → inject secrets from vault (optional)
+//!    7.6. history_recall              → semantic recall of old messages (optional)
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
 //! 10. save_assistant_msg          → context.save_message() (trait dispatch)
@@ -20,6 +21,7 @@
 //! External shell hooks (if present) are called via subprocess at steps 1 and 10.
 //! Step 5's background compression uses `tokio::spawn` — zero user-facing latency.
 //! Step 7.5 injects vault secrets directly via `VaultInjector`.
+//! Step 7.6 recalls relevant history via semantic embedding search.
 //!
 //! ## AgentContext Trait Pattern
 //!
@@ -44,6 +46,7 @@ use crate::bus::events::SessionKey;
 use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
 use crate::providers::{ChatMessage, LlmProvider};
+use crate::search::TextEmbedder;
 use crate::tools::ToolRegistry;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 
@@ -190,6 +193,10 @@ pub struct AgentLoop {
     vault_injector: Option<VaultInjector>,
     /// Pricing configuration for cost calculation (optional)
     pricing: Option<crate::token_tracker::ModelPricing>,
+    /// Text embedder for semantic history recall (optional)
+    embedder: Option<Arc<TextEmbedder>>,
+    /// Number of historical messages to recall (0 = disabled)
+    history_recall_k: usize,
 }
 
 impl AgentLoop {
@@ -250,6 +257,8 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             pricing: None,
+            embedder: None,
+            history_recall_k: 3, // Default: recall top 3 relevant messages
         })
     }
 
@@ -367,6 +376,8 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             pricing: pricing.clone(),
+            embedder: None,
+            history_recall_k: 3,
         })
     }
 
@@ -397,12 +408,29 @@ impl AgentLoop {
             external_hooks: ExternalHookRunner::noop(),
             vault_injector: None, // No vault for subagents
             pricing: None,
+            embedder: None,      // No embedding for subagents
+            history_recall_k: 0, // Disable history recall for subagents
         })
     }
 
     /// Set the system prompt (used by subagents to configure identity).
     pub fn set_system_prompt(&mut self, prompt: String) {
         self.system_prompt = prompt;
+    }
+
+    /// Set the text embedder for semantic history recall.
+    ///
+    /// When enabled, the agent will recall relevant historical messages
+    /// from evicted context using semantic similarity search.
+    pub fn set_embedder(&mut self, embedder: Arc<TextEmbedder>) {
+        self.embedder = Some(embedder);
+    }
+
+    /// Set the number of historical messages to recall.
+    ///
+    /// Set to 0 to disable semantic history recall.
+    pub fn set_history_recall_k(&mut self, k: usize) {
+        self.history_recall_k = k;
     }
 
     /// Get the model name
@@ -503,12 +531,45 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
+        // ── 6.5. Semantic history recall (optional) ───────────────
+        let recalled_history = if self.history_recall_k > 0 {
+            if let Some(ref embedder) = self.embedder {
+                match embedder.embed(content) {
+                    Ok(query_vec) => {
+                        match self
+                            .context
+                            .recall_history(&session_key_str, &query_vec, self.history_recall_k)
+                            .await
+                        {
+                            Ok(recalled) => {
+                                debug!("[Agent] Recalled {} historical messages", recalled.len());
+                                Some(recalled)
+                            }
+                            Err(e) => {
+                                debug!("[Agent] History recall failed: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("[Agent] Failed to embed query for recall: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // ── 7. Assemble prompt (pure, synchronous) ─────────────────
         let mut messages = Self::assemble_prompt(
             processed.messages,
             content,
             &system_prompts,
             summary.as_deref(),
+            recalled_history.as_deref(),
         );
 
         // ── 7.5. Vault injection ────────────────────────────────────
@@ -691,11 +752,44 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
+        // ── 6.5. Semantic history recall (optional) ───────────────
+        let recalled_history = if self.history_recall_k > 0 {
+            if let Some(ref embedder) = self.embedder {
+                match embedder.embed(&content_str) {
+                    Ok(query_vec) => {
+                        match self
+                            .context
+                            .recall_history(&session_key_str, &query_vec, self.history_recall_k)
+                            .await
+                        {
+                            Ok(recalled) => {
+                                debug!("[Agent] Recalled {} historical messages", recalled.len());
+                                Some(recalled)
+                            }
+                            Err(e) => {
+                                debug!("[Agent] History recall failed: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("[Agent] Failed to embed query for recall: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut messages = Self::assemble_prompt(
             processed.messages,
             &content_str,
             &system_prompts,
             summary.as_deref(),
+            recalled_history.as_deref(),
         );
 
         let mut local_vault_values = Vec::new();
@@ -827,6 +921,7 @@ impl AgentLoop {
         current_message: &str,
         system_prompts: &[String],
         summary: Option<&str>,
+        recalled_history: Option<&[String]>,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
@@ -849,6 +944,19 @@ impl AgentLoop {
             }
         }
 
+        // 2.5. Inject recalled history (semantic recall of old conversations)
+        if let Some(recalled) = recalled_history {
+            if !recalled.is_empty() {
+                let recall_content = format!(
+                    "{}\n{}",
+                    crate::agent::summarization::RECALL_PREFIX,
+                    recalled.join("\n")
+                );
+                messages.push(ChatMessage::assistant(recall_content));
+                debug!("Injected {} recalled history messages", recalled.len());
+            }
+        }
+
         // 3. Add processed history messages (consume msg.content to avoid cloning)
         let history_count = processed_history.len();
         for msg in processed_history {
@@ -867,9 +975,10 @@ impl AgentLoop {
         messages.push(ChatMessage::user(current_message));
 
         debug!(
-            "Built messages: {} history msgs, summary: {}",
+            "Built messages: {} history msgs, summary: {}, recalled: {}",
             history_count,
-            summary.is_some()
+            summary.is_some(),
+            recalled_history.map(|r| r.len()).unwrap_or(0)
         );
 
         messages

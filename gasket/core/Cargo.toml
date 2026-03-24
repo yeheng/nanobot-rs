@@ -94,6 +94,12 @@ tiktoken-rs = "0.9"
 # Regex for vault placeholder scanning
 regex = "1"
 
+# Offline text embedding (ONNX-based, ~20MB model weights)
+fastembed = "5.13.0"
+
+# Zero-copy byte casting for embeddings
+bytemuck = "1"
+
 # Sandbox module
 gasket-sandbox = { path = "../sandbox" }
 
@@ -110,4 +116,4 @@ tokio-test = "0.4"
 dotenvy = "0.15"
 rustls = { version = "0.23", features = ["ring"] }
 tempfile = "3"
-criterion = "0.5"
+criterion = "0.8"

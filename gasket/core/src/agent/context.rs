@@ -58,6 +58,20 @@ pub trait AgentContext: Send + Sync {
     /// The implementation may spawn a background task or be a no-op.
     fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
 
+    /// Recall relevant historical messages based on semantic similarity.
+    ///
+    /// Returns the top-K most relevant messages from the embedding store.
+    /// Returns an empty vector if semantic recall is not available.
+    async fn recall_history(
+        &self,
+        _key: &str,
+        _query_embedding: &[f32],
+        _top_k: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        // Default: no semantic recall available
+        Ok(Vec::new())
+    }
+
     /// Check if this context has persistence enabled.
     fn is_persistent(&self) -> bool;
 }
@@ -177,6 +191,22 @@ impl AgentContext for PersistentContext {
         });
     }
 
+    async fn recall_history(
+        &self,
+        key: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        let results = self
+            .summarization
+            .recall_history(key, query_embedding, top_k)
+            .await;
+        Ok(results
+            .into_iter()
+            .map(|(content, _score)| content)
+            .collect())
+    }
+
     fn is_persistent(&self) -> bool {
         true
     }
@@ -225,6 +255,16 @@ impl AgentContext for StatelessContext {
 
     fn compress_context(&self, _key: &str, _evicted: &[SessionMessage]) {
         // No compression for stateless context
+    }
+
+    async fn recall_history(
+        &self,
+        _key: &str,
+        _query_embedding: &[f32],
+        _top_k: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        // No history recall for stateless context
+        Ok(Vec::new())
     }
 
     fn is_persistent(&self) -> bool {

@@ -12,6 +12,6 @@
 //! let level = interaction.confirm(&request).await?;
 //! ```
 
-mod cli;
+// mod cli;
 
-pub use cli::CliInteraction;
+//pub use cli::CliInteraction;

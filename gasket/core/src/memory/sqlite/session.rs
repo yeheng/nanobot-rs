@@ -255,4 +255,82 @@ impl SqliteStore {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    // ── Session Embeddings API (Semantic History Recall) ──
+
+    /// Save an embedding for a message.
+    ///
+    /// The embedding is stored as a BLOB using bytemuck for zero-copy
+    /// conversion between `[f32]` and `[u8]`.
+    pub async fn save_embedding(
+        &self,
+        message_id: &str,
+        session_key: &str,
+        embedding: &[f32],
+    ) -> anyhow::Result<()> {
+        let embedding_bytes = crate::search::embedding_to_bytes(embedding);
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_embeddings (message_id, session_key, embedding) VALUES ($1, $2, $3)",
+        )
+        .bind(message_id)
+        .bind(session_key)
+        .bind(embedding_bytes)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved embedding for message: {}", message_id);
+        Ok(())
+    }
+
+    /// Load all embeddings for a session.
+    ///
+    /// Returns a vector of `(message_id, content, embedding)` tuples.
+    /// The embedding is converted back from BLOB to `Vec<f32>` using bytemuck.
+    pub async fn load_session_embeddings(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<(String, String, Vec<f32>)>> {
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            r#"
+            SELECT e.message_id, m.content, e.embedding
+            FROM session_embeddings e
+            JOIN session_messages m ON e.message_id = CAST(m.id AS TEXT)
+            WHERE e.session_key = $1
+            ORDER BY m.id ASC
+            "#,
+        )
+        .bind(session_key)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let message_id: String = row.get("message_id");
+            let content: String = row.get("content");
+            let embedding_blob: Vec<u8> = row.get("embedding");
+
+            // Convert BLOB back to Vec<f32>
+            let embedding = crate::search::bytes_to_embedding(&embedding_blob).to_vec();
+            result.push((message_id, content, embedding));
+        }
+        Ok(result)
+    }
+
+    /// Delete embeddings for a specific message.
+    pub async fn delete_embedding(&self, message_id: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM session_embeddings WHERE message_id = $1")
+            .bind(message_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Clear all embeddings for a session.
+    pub async fn clear_session_embeddings(&self, session_key: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM session_embeddings WHERE session_key = $1")
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        debug!("Cleared embeddings for session: {}", session_key);
+        Ok(())
+    }
 }
