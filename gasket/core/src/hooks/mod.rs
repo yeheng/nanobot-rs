@@ -25,6 +25,7 @@
 mod external;
 mod registry;
 mod types;
+mod vault;
 
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
 pub use registry::{HookBuilder, HookRegistry, PipelineHook};
@@ -32,3 +33,4 @@ pub use types::{
     ExecutionStrategy, HookAction, HookContext, HookPoint, MutableContext, ReadonlyContext,
     ToolCallInfo,
 };
+pub use vault::VaultHook;
