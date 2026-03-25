@@ -44,11 +44,14 @@ use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
 use crate::error::AgentError;
-use crate::hooks::ExternalHookRunner;
+use crate::hooks::{
+    ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
+    MutableContext, VaultHook,
+};
 use crate::providers::{ChatMessage, LlmProvider};
-use crate::search::TextEmbedder;
 use crate::tools::ToolRegistry;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
+use tokio::sync::RwLock;
 
 use crate::agent::context::{PersistentContext, StatelessContext};
 use crate::agent::memory::MemoryStore;
@@ -161,18 +164,24 @@ struct AgentLoopResult {
 /// System prompt and skills context are loaded **once** at initialization
 /// and stored as plain 'String' fields — no dynamic dispatch.
 ///
-/// External shell hooks ('~/.gasket/hooks/') are invoked at request
-/// boundaries (pre_request / post_response) via subprocess — UNIX philosophy.
+/// Lifecycle hooks are managed via **HookRegistry** — a unified mechanism for:
+/// - External shell hooks (pre_request / post_response)
+/// - Vault secret injection (before LLM)
+/// - Semantic history recall (after history load)
 ///
-/// Message interceptors (e.g., VaultInjector) are called before LLM processing
-/// directly — no middleware chain indirection.
+/// ## Hook Architecture
+///
+/// The hook registry provides a unified interface for all pipeline hooks:
+/// - `BeforeRequest`: External shell hooks can modify/abort requests
+/// - `AfterHistory`: Semantic recall of relevant context
+/// - `BeforeLLM`: Vault secret injection
+/// - `AfterResponse`: External shell hooks for auditing
 ///
 /// ## Security Note: Vault Values Lifecycle
 ///
 /// Injected vault values (plaintext secrets) are scoped to **single requests**.
-/// They are collected as local variables in `process_direct_with_callback`,
-/// passed through the agent loop, and dropped when the request completes.
-/// This prevents memory accumulation and limits exposure window.
+/// They are collected in `vault_values` field, passed through the agent loop,
+/// and used for log redaction. They persist across the request lifetime.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
@@ -187,16 +196,13 @@ pub struct AgentLoop {
     system_prompt: String,
     /// Pre-loaded skills context (from workspace skills).
     skills_context: Option<String>,
-    /// External shell hook runner (pre_request / post_response).
-    external_hooks: ExternalHookRunner,
-    /// Vault injector for pre-LLM secret injection (optional)
-    vault_injector: Option<VaultInjector>,
+    /// Unified hook registry for all lifecycle hooks.
+    /// Replaces external_hooks, vault_injector, embedder, history_recall_k.
+    hooks: Arc<HookRegistry>,
     /// Pricing configuration for cost calculation (optional)
     pricing: Option<crate::token_tracker::ModelPricing>,
-    /// Text embedder for semantic history recall (optional)
-    embedder: Option<Arc<TextEmbedder>>,
-    /// Number of historical messages to recall (0 = disabled)
-    history_recall_k: usize,
+    /// Injected vault values for log redaction (shared with VaultHook)
+    vault_values: Arc<RwLock<Vec<String>>>,
 }
 
 impl AgentLoop {
@@ -242,8 +248,9 @@ impl AgentLoop {
             Arc::new(PersistentContext::new(session_manager, summarization));
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-        let external_hooks = Self::load_external_hooks();
-        let vault_injector = Self::create_vault_injector();
+
+        // Build hooks using HookBuilder
+        let (hooks, vault_values) = Self::build_hooks();
 
         Ok(Self {
             provider,
@@ -254,11 +261,9 @@ impl AgentLoop {
             context,
             system_prompt,
             skills_context,
-            external_hooks,
-            vault_injector,
+            hooks,
             pricing: None,
-            embedder: None,
-            history_recall_k: 3, // Default: recall top 3 relevant messages
+            vault_values,
         })
     }
 
@@ -270,29 +275,48 @@ impl AgentLoop {
         Ok((system_prompt, skills_context))
     }
 
-    /// Create external hook runner from ~/.gasket/hooks/.
-    fn load_external_hooks() -> ExternalHookRunner {
+    /// Build hooks registry for main agents.
+    ///
+    /// Creates:
+    /// - ExternalShellHook at BeforeRequest and AfterResponse
+    /// - VaultHook at BeforeLLM (if vault is available)
+    fn build_hooks() -> (Arc<HookRegistry>, Arc<RwLock<Vec<String>>>) {
+        let vault_values = Arc::new(RwLock::new(Vec::new()));
+
         let hooks_dir = dirs::home_dir()
             .map(|p| p.join(".gasket").join("hooks"))
             .unwrap_or_else(|| {
                 tracing::warn!("Could not resolve home directory, disabling external hooks.");
                 PathBuf::from("/dev/null")
             });
-        ExternalHookRunner::new(hooks_dir)
-    }
 
-    /// Initialize vault injector if VaultStore is available.
-    fn create_vault_injector() -> Option<VaultInjector> {
-        match VaultStore::new() {
-            Ok(store) => {
-                debug!("[Agent] Vault initialized successfully, adding vault injector");
-                Some(VaultInjector::new(Arc::new(store)))
-            }
-            Err(_) => {
-                debug!("[Agent] Vault not available, skipping vault injector");
-                None
-            }
-        }
+        let external_runner = ExternalHookRunner::new(hooks_dir);
+
+        let mut builder = HookBuilder::new()
+            // External shell hooks at BeforeRequest and AfterResponse
+            .with_hook(Arc::new(ExternalShellHook::new(
+                external_runner.clone(),
+                HookPoint::BeforeRequest,
+            )))
+            .with_hook(Arc::new(ExternalShellHook::new(
+                external_runner,
+                HookPoint::AfterResponse,
+            )));
+
+        // Add vault hook if available
+        let vault_values = if let Ok(store) = VaultStore::new() {
+            debug!("[Agent] Vault initialized successfully, adding vault injector");
+            let vault_hook = VaultHook::new(VaultInjector::new(Arc::new(store)));
+            // Get the injected values handle for log redaction
+            let values = vault_hook.injected_values();
+            builder = builder.with_hook(Arc::new(vault_hook));
+            values
+        } else {
+            debug!("[Agent] Vault not available, skipping vault injector");
+            vault_values
+        };
+
+        (builder.build_shared(), vault_values)
     }
 
     /// Create a new agent loop with an **externally created** 'MemoryStore'.
@@ -343,26 +367,8 @@ impl AgentLoop {
             prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
         let skills_context = prompt::load_skills_context(&workspace).await;
 
-        // External shell hooks: look for scripts in ~/.gasket/hooks/
-        let hooks_dir = dirs::home_dir()
-            .map(|p| p.join(".gasket").join("hooks"))
-            .unwrap_or_else(|| {
-                tracing::warn!("Could not resolve home directory, disabling external hooks.");
-                PathBuf::from("/dev/null")
-            });
-        let external_hooks = ExternalHookRunner::new(hooks_dir);
-
-        // Initialize vault injector (optional - for sensitive data isolation)
-        let vault_injector = match VaultStore::new() {
-            Ok(store) => {
-                debug!("[Agent] Vault initialized successfully, adding vault injector");
-                Some(VaultInjector::new(Arc::new(store)))
-            }
-            Err(_) => {
-                debug!("[Agent] Vault not available, skipping vault injector");
-                None
-            }
-        };
+        // Build hooks using unified registry
+        let (hooks, vault_values) = Self::build_hooks();
 
         Ok(Self {
             provider,
@@ -373,11 +379,9 @@ impl AgentLoop {
             context,
             system_prompt,
             skills_context,
-            external_hooks,
-            vault_injector,
-            pricing: pricing.clone(),
-            embedder: None,
-            history_recall_k: 3,
+            hooks,
+            pricing,
+            vault_values,
         })
     }
 
@@ -385,8 +389,7 @@ impl AgentLoop {
     ///
     /// Uses **StatelessContext** — no persistence, all operations are no-ops.
     /// System prompt is empty by default; use 'set_system_prompt()' to configure.
-    /// No external hooks for subagents.
-    /// No vault for subagents (empty interceptor chain).
+    /// No hooks for subagents by default; use 'with_hooks()' to customize.
     pub fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
@@ -405,11 +408,9 @@ impl AgentLoop {
             context,
             system_prompt: String::new(),
             skills_context: None,
-            external_hooks: ExternalHookRunner::noop(),
-            vault_injector: None, // No vault for subagents
+            hooks: HookRegistry::empty(), // Empty hooks for subagents
             pricing: None,
-            embedder: None,      // No embedding for subagents
-            history_recall_k: 0, // Disable history recall for subagents
+            vault_values: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -418,19 +419,22 @@ impl AgentLoop {
         self.system_prompt = prompt;
     }
 
-    /// Set the text embedder for semantic history recall.
+    /// Set custom hooks for this agent.
     ///
-    /// When enabled, the agent will recall relevant historical messages
-    /// from evicted context using semantic similarity search.
-    pub fn set_embedder(&mut self, embedder: Arc<TextEmbedder>) {
-        self.embedder = Some(embedder);
+    /// Used by subagents to inherit hooks from the main agent.
+    pub fn with_hooks(mut self, hooks: Arc<HookRegistry>) -> Self {
+        self.hooks = hooks;
+        self
     }
 
-    /// Set the number of historical messages to recall.
-    ///
-    /// Set to 0 to disable semantic history recall.
-    pub fn set_history_recall_k(&mut self, k: usize) {
-        self.history_recall_k = k;
+    /// Get a reference to the hook registry.
+    pub fn hooks(&self) -> &Arc<HookRegistry> {
+        &self.hooks
+    }
+
+    /// Get mutable access to vault values (for log redaction).
+    pub fn vault_values(&self) -> &Arc<RwLock<Vec<String>>> {
+        &self.vault_values
     }
 
     /// Get the model name
@@ -464,65 +468,61 @@ impl AgentLoop {
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
         let session_key_str = session_key.to_string();
-        // ── 1. External hook: pre_request (can abort or modify) ───
-        let content = match self
-            .external_hooks
-            .run_pre_request(&session_key_str, content)
-            .await
-        {
-            Ok(Some(output)) => {
-                if output.is_abort() {
-                    let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
-                    return Ok(AgentResponse {
-                        content: error_msg,
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        model: Some(self.config.model.clone()),
-                        token_usage: None,
-                        cost: 0.0,
-                    });
-                }
-                // Use modified message if provided, otherwise keep original
-                output
-                    .modified_message
-                    .unwrap_or_else(|| content.to_string())
-            }
-            Ok(None) => content.to_string(), // No hook or empty output — continue
-            Err(e) => {
-                warn!("pre_request hook failed (continuing): {}", e);
-                content.to_string()
-            }
-        };
-        let content = content.as_str();
 
-        // ── 2. Load session history (trait dispatch) ─────
+        // ── 1. Build initial mutable context for hooks ─────────────
+        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
+        let mut ctx = MutableContext {
+            session_key: &session_key_str,
+            messages: &mut messages,
+            user_input: Some(content),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+
+        // ── 2. BeforeRequest hooks (can modify input or abort) ─────
+        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+            HookAction::Abort(msg) => {
+                return Ok(AgentResponse {
+                    content: msg,
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(self.config.model.clone()),
+                    token_usage: None,
+                    cost: 0.0,
+                });
+            }
+            HookAction::Continue => {}
+        }
+
+        // Get the (possibly modified) user content
+        let content: String = ctx
+            .messages
+            .iter()
+            .find(|m| m.role == crate::providers::MessageRole::User)
+            .and_then(|m| m.content.clone())
+            .unwrap_or_else(|| content.to_string());
+
+        // ── 3. Load session history (trait dispatch) ─────
         let session = self.context.load_session(session_key).await;
         let history_snapshot = session.get_history(self.config.memory_window);
 
-        // ── 3. Save user message (trait dispatch) ────────────────
+        // ── 4. Save user message (trait dispatch) ────────────────
         self.context
-            .save_message(session_key, "user", content, None)
+            .save_message(session_key, "user", &content, None)
             .await;
 
-        // ── 4. Truncate history (pure computation) ─────────────────
+        // ── 5. Truncate history (pure computation) ─────────────────
         let processed = process_history(history_snapshot, &self.history_config);
 
-        // ── 5. Load existing summary + spawn background compression ─────
-        //
-        // The summarization LLM call is expensive (~10-30s). Instead of blocking
-        // the user's response, we:
-        //   a) Load the existing (possibly stale) summary — cheap SQLite read.
-        //   b) If there are evictions, fire off background compression.
-        //   c) Use the existing summary for this turn's prompt assembly.
+        // ── 6. Load existing summary + spawn background compression ─────
         let summary = self.context.load_summary(&session_key_str).await;
-
-        // If messages were evicted, trigger background compression (non-blocking)
         if !processed.evicted.is_empty() {
             self.context
                 .compress_context(&session_key_str, &processed.evicted);
         }
 
-        // ── 6. Inject system prompts (direct) ──────────────────────
+        // ── 7. Inject system prompts (direct) ──────────────────────
         let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
             system_prompts.push(self.system_prompt.clone());
@@ -531,94 +531,58 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
-        // ── 6.5. Semantic history recall (optional) ───────────────
-        let recalled_history = if self.history_recall_k > 0 {
-            if let Some(ref embedder) = self.embedder {
-                match embedder.embed(content) {
-                    Ok(query_vec) => {
-                        match self
-                            .context
-                            .recall_history(&session_key_str, &query_vec, self.history_recall_k)
-                            .await
-                        {
-                            Ok(recalled) => {
-                                debug!("[Agent] Recalled {} historical messages", recalled.len());
-                                Some(recalled)
-                            }
-                            Err(e) => {
-                                debug!("[Agent] History recall failed: {}", e);
-                                None
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("[Agent] Failed to embed query for recall: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // ── 7. Assemble prompt (pure, synchronous) ─────────────────
+        // ── 8. Assemble prompt (pure, synchronous) ─────────────────
         let mut messages = Self::assemble_prompt(
             processed.messages,
-            content,
+            &content,
             &system_prompts,
             summary.as_deref(),
-            recalled_history.as_deref(),
+            None, // History recall is now handled by hooks
         );
 
-        // ── 7.5. Vault injection ────────────────────────────────────
-        // Inject secrets at the last moment before sending to LLM.
-        // CRITICAL: Collect injected values into LOCAL variable for log redaction!
-        // This prevents memory leaks by scoping secrets to single requests.
-        let mut local_vault_values = Vec::new();
-        if let Some(ref vault) = self.vault_injector {
-            let report = vault.inject(&mut messages);
-            local_vault_values = report.injected_values;
-            if !report.keys_used.is_empty() {
-                debug!(
-                    "[Agent] Vault injected {} keys into {} messages",
-                    report.keys_used.len(),
-                    report.messages_modified
-                );
-            }
-        }
-        // Deduplicate
-        local_vault_values.sort();
-        local_vault_values.dedup();
-        if !local_vault_values.is_empty() {
-            debug!(
-                "[Agent] Collected {} injected values for log redaction (scoped to this request)",
-                local_vault_values.len()
-            );
-        }
+        // ── 9. AfterHistory hooks (semantic recall, etc.) ───────────
+        let mut ctx = MutableContext {
+            session_key: &session_key_str,
+            messages: &mut messages,
+            user_input: Some(&content),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
 
-        // ── 8. Run agent loop ─────────────────────────────────────
+        // ── 10. BeforeLLM hooks (vault injection, etc.) ────────────
+        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
+
+        // Get vault values for log redaction
+        let local_vault_values = self.vault_values.read().await.clone();
+
+        // ── 11. Run agent loop ─────────────────────────────────────
         let result = self.run_agent_loop(messages, &local_vault_values).await?;
 
-        // ── 9. External hook: post_response (audit / alerting) ────
-        let tools_used_str = result.tools_used.join(", ");
+        // ── 12. AfterResponse hooks (audit, logging, etc.) ────────
+        let tools_used: Vec<crate::hooks::ToolCallInfo> = result
+            .tools_used
+            .iter()
+            .map(|name| crate::hooks::ToolCallInfo {
+                id: name.clone(),
+                name: name.clone(),
+                arguments: None,
+            })
+            .collect();
 
-        // Redact secrets from post_response hook
-        let safe_content = redact_secrets(&result.content, &local_vault_values);
+        let mut ctx = MutableContext {
+            session_key: &session_key_str,
+            messages: &mut vec![],
+            user_input: Some(&content),
+            response: Some(&result.content),
+            tool_calls: Some(&tools_used),
+            token_usage: result.token_usage.as_ref(),
+        };
+        self.hooks.execute(HookPoint::AfterResponse, &mut ctx).await?;
 
-        if let Err(e) = self
-            .external_hooks
-            .run_post_response(&session_key_str, &safe_content, &tools_used_str)
-            .await
-        {
-            warn!("post_response hook failed (ignored): {}", e);
-        }
-
-        // ── 10. Save assistant message (trait dispatch) ──────────
-        // Redact secrets before saving to history
+        // ── 13. Save assistant message (trait dispatch) ──────────
         let history_content = redact_secrets(&result.content, &local_vault_values);
-
         self.context
             .save_message(
                 session_key,
@@ -698,38 +662,43 @@ impl AgentLoop {
     > {
         let session_key_str = session_key.to_string();
 
-        // Pre-request processing (must complete before streaming)
-        let content_str = match self
-            .external_hooks
-            .run_pre_request(&session_key_str, content)
-            .await
-        {
-            Ok(Some(output)) => {
-                if output.is_abort() {
-                    let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
-                    let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                    let handle = tokio::spawn(async move {
-                        Ok(AgentResponse {
-                            content: error_msg,
-                            reasoning_content: None,
-                            tools_used: vec![],
-                            model: Some("error".to_string()),
-                            token_usage: None,
-                            cost: 0.0,
-                        })
-                    });
-                    return Ok((rx, handle));
-                }
-                output
-                    .modified_message
-                    .unwrap_or_else(|| content.to_string())
-            }
-            Ok(None) => content.to_string(),
-            Err(e) => {
-                warn!("pre_request hook failed (continuing): {}", e);
-                content.to_string()
-            }
+        // ── 1. Build initial mutable context for hooks ─────────────
+        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
+        let mut ctx = MutableContext {
+            session_key: &session_key_str,
+            messages: &mut messages,
+            user_input: Some(content),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
         };
+
+        // ── 2. BeforeRequest hooks (can modify input or abort) ─────
+        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+            HookAction::Abort(msg) => {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                let handle = tokio::spawn(async move {
+                    Ok(AgentResponse {
+                        content: msg,
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        model: Some("error".to_string()),
+                        token_usage: None,
+                        cost: 0.0,
+                    })
+                });
+                return Ok((rx, handle));
+            }
+            HookAction::Continue => {}
+        }
+
+        // Get the (possibly modified) user content
+        let content_str = ctx
+            .messages
+            .iter()
+            .find(|m| m.role == crate::providers::MessageRole::User)
+            .and_then(|m| m.content.clone())
+            .unwrap_or_else(|| content.to_string());
 
         let session = self.context.load_session(session_key).await;
         let history_snapshot = session.get_history(self.config.memory_window);
@@ -752,53 +721,29 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
-        // ── 6.5. Semantic history recall (optional) ───────────────
-        let recalled_history = if self.history_recall_k > 0 {
-            if let Some(ref embedder) = self.embedder {
-                match embedder.embed(&content_str) {
-                    Ok(query_vec) => {
-                        match self
-                            .context
-                            .recall_history(&session_key_str, &query_vec, self.history_recall_k)
-                            .await
-                        {
-                            Ok(recalled) => {
-                                debug!("[Agent] Recalled {} historical messages", recalled.len());
-                                Some(recalled)
-                            }
-                            Err(e) => {
-                                debug!("[Agent] History recall failed: {}", e);
-                                None
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("[Agent] Failed to embed query for recall: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
+        // ── Assemble prompt ──────────────────────────────────────
         let mut messages = Self::assemble_prompt(
             processed.messages,
             &content_str,
             &system_prompts,
             summary.as_deref(),
-            recalled_history.as_deref(),
+            None, // History recall handled by hooks
         );
 
-        let mut local_vault_values = Vec::new();
-        if let Some(ref vault) = self.vault_injector {
-            let report = vault.inject(&mut messages);
-            local_vault_values = report.injected_values;
-        }
-        local_vault_values.sort();
-        local_vault_values.dedup();
+        // ── AfterHistory and BeforeLLM hooks ─────────────────────
+        let mut ctx = MutableContext {
+            session_key: &session_key_str,
+            messages: &mut messages,
+            user_input: Some(&content_str),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
+        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
+
+        // Get vault values for log redaction
+        let local_vault_values = self.vault_values.read().await.clone();
 
         // Create channel for stream events
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
@@ -808,7 +753,7 @@ impl AgentLoop {
         let tools = self.tools.clone();
         let config = self.config.clone();
         let pricing = self.pricing.clone();
-        let external_hooks = self.external_hooks.clone();
+        let hooks = self.hooks.clone();
         let context = self.context.clone();
         let session_key_clone = session_key.clone();
 
@@ -828,14 +773,27 @@ impl AgentLoop {
                 .execute_stream_with_options(messages, event_tx, &options)
                 .await?;
 
-            // Post-response processing
-            let tools_used_str = result.tools_used.join(", ");
-            let safe_content = redact_secrets(&result.content, &local_vault_values);
-            if let Err(e) = external_hooks
-                .run_post_response(&session_key_str, &safe_content, &tools_used_str)
-                .await
-            {
-                warn!("post_response hook failed (ignored): {}", e);
+            // ── AfterResponse hooks ───────────────────────────────
+            let tools_used: Vec<crate::hooks::ToolCallInfo> = result
+                .tools_used
+                .iter()
+                .map(|name| crate::hooks::ToolCallInfo {
+                    id: name.clone(),
+                    name: name.clone(),
+                    arguments: None,
+                })
+                .collect();
+
+            let mut ctx = MutableContext {
+                session_key: &session_key_str,
+                messages: &mut vec![],
+                user_input: Some(&content_str),
+                response: Some(&result.content),
+                tool_calls: Some(&tools_used),
+                token_usage: result.token_usage.as_ref(),
+            };
+            if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
+                warn!("AfterResponse hook failed (ignored): {}", e);
             }
 
             // Save to history

@@ -14,6 +14,7 @@ pub use super::channel::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
     TelegramConfig,
 };
+pub use super::embedding::EmbeddingConfig;
 pub use super::provider::ProviderConfig;
 pub use super::tools::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
@@ -38,6 +39,10 @@ pub struct Config {
     /// Tools configuration
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    /// Embedding configuration for semantic search
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
 
     /// Multi-agent state machine configuration (opt-in).
     /// When absent or `enabled: false`, the state machine subsystem is completely dormant.

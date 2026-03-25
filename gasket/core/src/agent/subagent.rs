@@ -16,6 +16,7 @@ use crate::agent::prompt;
 use crate::agent::stream::StreamEvent;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentResult};
 use crate::bus::events::{OutboundMessage, SessionKey};
+use crate::hooks::HookRegistry;
 use crate::providers::{ChatMessage, LlmProvider};
 use crate::tools::ToolRegistry;
 
@@ -128,6 +129,8 @@ pub struct SubagentTaskBuilder<'a> {
     session_key: Option<SessionKey>,
     /// Cancellation token for graceful shutdown
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
+    /// Optional hooks registry (uses empty registry if None)
+    hooks: Option<Arc<HookRegistry>>,
 }
 
 impl<'a> SubagentTaskBuilder<'a> {
@@ -143,6 +146,7 @@ impl<'a> SubagentTaskBuilder<'a> {
             system_prompt: None,
             session_key: None,
             cancellation_token: None,
+            hooks: None,
         }
     }
 
@@ -188,6 +192,26 @@ impl<'a> SubagentTaskBuilder<'a> {
         self
     }
 
+    /// Set custom hooks for this subagent.
+    ///
+    /// When set, the subagent will use these hooks instead of an empty registry.
+    /// This allows subagents to have their own hook pipeline (e.g., for logging,
+    /// auditing, or custom preprocessing).
+    pub fn with_hooks(mut self, hooks: Arc<HookRegistry>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Inherit hooks from the main agent.
+    ///
+    /// This is a convenience method that's equivalent to `with_hooks(agent_hooks)`.
+    /// Use this when you want the subagent to share the same hook pipeline as
+    /// the main agent (e.g., for shared logging or vault access).
+    pub fn inherit_hooks(mut self, agent_hooks: Arc<HookRegistry>) -> Self {
+        self.hooks = Some(agent_hooks);
+        self
+    }
+
     /// Spawn the subagent task and return its ID.
     ///
     /// The task runs in the background and sends its result to `result_tx`
@@ -202,6 +226,7 @@ impl<'a> SubagentTaskBuilder<'a> {
         let task_clone = self.task.clone();
         let id_clone = self.subagent_id.clone();
         let cancellation_token = self.cancellation_token.clone();
+        let hooks = self.hooks.clone();
 
         let agent_config = self.agent_config.unwrap_or_else(|| AgentConfig {
             model: provider.default_model().to_string(),
@@ -255,7 +280,7 @@ impl<'a> SubagentTaskBuilder<'a> {
                 });
             };
 
-            let mut agent =
+            let agent =
                 match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
                     Ok(a) => a,
                     Err(e) => {
@@ -284,6 +309,13 @@ impl<'a> SubagentTaskBuilder<'a> {
                         return;
                     }
                 };
+
+            // Apply hooks if provided
+            let mut agent = if let Some(ref hooks) = hooks {
+                agent.with_hooks(hooks.clone())
+            } else {
+                agent
+            };
 
             let system_prompt = match system_prompt_override {
                 Some(p) => p,

@@ -194,8 +194,8 @@ fn main() -> gasket_tantivy::Result<()> {
     // Determine index directory
     let index_dir = cli.index_dir.clone().unwrap_or_else(|| {
         UserDirs::new()
-            .map(|dirs| dirs.home_dir().join(".nanobot/tantivy"))
-            .unwrap_or_else(|| PathBuf::from(".nanobot/tantivy"))
+            .map(|dirs| dirs.home_dir().join(".gaskey/tantivy"))
+            .unwrap_or_else(|| PathBuf::from(".gaskey/tantivy"))
     });
 
     info!("Index directory: {:?}", index_dir);

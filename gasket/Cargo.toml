@@ -67,6 +67,7 @@ anyhow = "1"
 
 # Configuration
 dirs = "6"
+directories = "5"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }

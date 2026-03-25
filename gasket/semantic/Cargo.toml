@@ -14,6 +14,7 @@ local-embedding = ["fastembed", "bytemuck", "parking_lot"]
 [dependencies]
 # Async
 async-trait.workspace = true
+directories.workspace = true
 
 # Serialization
 serde.workspace = true

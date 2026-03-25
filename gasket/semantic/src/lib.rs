@@ -24,5 +24,8 @@ mod embedder;
 mod vector_math;
 
 #[cfg(feature = "local-embedding")]
-pub use embedder::{TextEmbedder, EMBEDDING_DIM};
-pub use vector_math::{bytes_to_embedding, cosine_similarity, embedding_to_bytes, top_k_similar};
+pub use embedder::{EmbeddingConfig, TextEmbedder, DEFAULT_CACHE_DIR, DEFAULT_MODEL};
+pub use vector_math::{cosine_similarity, top_k_similar};
+
+#[cfg(feature = "local-embedding")]
+pub use vector_math::{bytes_to_embedding, embedding_to_bytes};

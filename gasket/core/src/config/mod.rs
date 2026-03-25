@@ -12,9 +12,11 @@
 //! - [`channel`] - Messaging channels (Telegram, Discord, Slack, etc.)
 //! - [`tools`] - Tool configuration (Web, MCP, Exec)
 //! - [`model_registry`] - Model profile registry for dynamic model switching
+//! - [`embedding`] - Embedding configuration for semantic search
 
 mod agent;
 mod channel;
+mod embedding;
 mod loader;
 mod model_registry;
 mod provider;
@@ -23,6 +25,7 @@ mod schema;
 mod tools;
 
 pub use agent::{AgentDefaults, AgentDefaults as AgentConfig, AgentsConfig, ModelProfile};
+pub use embedding::EmbeddingConfig;
 pub use loader::{config_dir, config_path, load_config, ConfigLoader};
 pub use model_registry::ModelRegistry;
 pub use provider::{ModelConfig, ProviderConfig, ProviderType};

@@ -97,10 +97,8 @@ impl PipelineHook for HistoryRecallHook {
                     Ok(recalled) if !recalled.is_empty() => {
                         debug!("[HistoryRecall] Recalled {} messages", recalled.len());
 
-                        let recall_msg = format!(
-                            "# Relevant Historical Context\n{}",
-                            recalled.join("\n")
-                        );
+                        let recall_msg =
+                            format!("# Relevant Historical Context\n{}", recalled.join("\n"));
                         ctx.messages.push(ChatMessage::assistant(recall_msg));
                     }
                     Ok(_) => {

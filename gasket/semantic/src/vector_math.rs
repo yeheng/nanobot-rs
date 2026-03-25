@@ -41,11 +41,11 @@ pub fn top_k_similar<'a>(
     scores
 }
 
-// ── bytemuck helpers for BLOB serialisation ──────────────────────────
+// ── bytemuck helpers for BLOB serialisation (requires local-embedding feature) ──
 
 /// Convert a float slice to a byte slice (zero-copy).
 ///
-/// This function is only available when the `local-embedding` feature is enabled.
+/// Only available when the `local-embedding` feature is enabled.
 #[cfg(feature = "local-embedding")]
 #[inline]
 pub fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
@@ -54,7 +54,7 @@ pub fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
 
 /// Convert a byte slice back to a float slice (zero-copy).
 ///
-/// This function is only available when the `local-embedding` feature is enabled.
+/// Only available when the `local-embedding` feature is enabled.
 ///
 /// # Panics
 ///
@@ -63,20 +63,6 @@ pub fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
 #[inline]
 pub fn bytes_to_embedding(bytes: &[u8]) -> &[f32] {
     bytemuck::cast_slice(bytes)
-}
-
-// When local-embedding is not enabled, provide stub implementations
-// that return empty slices (these should not be called in practice)
-#[cfg(not(feature = "local-embedding"))]
-#[inline]
-pub fn embedding_to_bytes(_embedding: &[f32]) -> &[u8] {
-    &[]
-}
-
-#[cfg(not(feature = "local-embedding"))]
-#[inline]
-pub fn bytes_to_embedding(_bytes: &[u8]) -> &[f32] {
-    &[]
 }
 
 #[cfg(test)]
