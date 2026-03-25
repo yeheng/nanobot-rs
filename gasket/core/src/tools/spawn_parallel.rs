@@ -12,7 +12,6 @@ use tokio::time::timeout;
 use tracing::{info, instrument, trace, warn};
 
 use super::base::{Tool, ToolError};
-use crate::agent::stream_buffer::BufferedEvents;
 use crate::agent::subagent::SubagentManager;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
 use crate::bus::events::{OutboundMessage, WebSocketMessage};
@@ -343,13 +342,10 @@ impl Tool for SpawnParallelTool {
         let outbound_tx = manager.outbound_sender();
         let session_key = manager.get_session_key();
 
-        // Spawn a background task to collect events and forward to WebSocket/channel
+        // Spawn a background task to forward events to WebSocket in real-time
         // Move task_id_map into the task for [Task N] labeling
         // Track whether each subagent is at the start of a new line (for prefix insertion)
         let mut subagent_at_line_start: HashMap<String, bool> = HashMap::new();
-
-        // Buffer events per subagent - key is subagent ID
-        let mut subagent_buffers: HashMap<String, BufferedEvents> = HashMap::new();
 
         tokio::spawn(async move {
             // Direct ownership - no lock needed
@@ -378,8 +374,6 @@ impl Tool for SpawnParallelTool {
                         info!("{} Started: {} (ID: {})", task_label, task, id);
                         // Initialize line start state for new subagent
                         subagent_at_line_start.insert(id.clone(), true);
-                        // Initialize buffer for this subagent
-                        subagent_buffers.insert(id.clone(), BufferedEvents::new());
                     }
                     SubagentEvent::Thinking { id, content } => {
                         trace!("{} Thinking: {} (ID: {})", task_label, content, id);
@@ -415,22 +409,14 @@ impl Tool for SpawnParallelTool {
                             result.model.as_deref().unwrap_or("unknown"),
                             id
                         );
-                        // Mark this subagent as completed
-                        if let Some(buf) = subagent_buffers.get_mut(id) {
-                            buf.completed = true;
-                        }
                     }
                     SubagentEvent::Error { id, error } => {
                         warn!("{} Error: {} (ID: {})", task_label, error, id);
-                        // Mark this subagent as completed (with error)
-                        if let Some(buf) = subagent_buffers.get_mut(id) {
-                            buf.completed = true;
-                        }
                     }
                 }
 
-                // Buffer WebSocket message (don't send immediately)
-                if session_key.is_some() {
+                // Send WebSocket message immediately (no buffering)
+                if let Some(ref key) = session_key {
                     let ws_msg = match &event {
                         SubagentEvent::Thinking { id, content } => {
                             // Only add prefix at line start to avoid repeating for every char
@@ -479,42 +465,21 @@ impl Tool for SpawnParallelTool {
                         _ => None, // Started, Completed - don't send to WS
                     };
 
-                    // Add message to the subagent's buffer
+                    // Send immediately without buffering
                     if let Some(msg) = ws_msg {
-                        if let Some(buf) = subagent_buffers.get_mut(subagent_id) {
-                            buf.messages.push(msg);
-                        }
-                    }
-                }
-
-                // Check if this subagent has completed and flush its buffer
-                if let Some(ref key) = session_key {
-                    if let Some(buf) = subagent_buffers.get_mut(subagent_id) {
-                        if buf.completed {
-                            // Flush all buffered messages for this subagent in ordered format
-                            // Use flush_ordered to ensure Thinking messages come before Content
-                            for msg in buf.flush_ordered() {
-                                let outbound = OutboundMessage::with_ws_message(
-                                    key.channel.clone(),
-                                    &key.chat_id,
-                                    msg,
-                                );
-                                // Use timeout + send to apply backpressure without indefinite blocking
-                                // This gives the channel time to drain while avoiding blocking forever
-                                match timeout(
-                                    Duration::from_millis(100),
-                                    outbound_tx.send(outbound),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(_)) => { /* sent successfully */ }
-                                    Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
-                                    Err(_) => warn!(
-                                        "Send timeout after 100ms, outbound channel congested"
-                                    ),
-                                }
-                            }
-                            buf.completed = false;
+                        let outbound = OutboundMessage::with_ws_message(
+                            key.channel.clone(),
+                            &key.chat_id,
+                            msg,
+                        );
+                        // Use timeout + send to apply backpressure without indefinite blocking
+                        match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await
+                        {
+                            Ok(Ok(_)) => { /* sent successfully */ }
+                            Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
+                            Err(_) => warn!(
+                                "Send timeout after 100ms, outbound channel congested"
+                            ),
                         }
                     }
                 }

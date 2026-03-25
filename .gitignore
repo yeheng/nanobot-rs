@@ -28,3 +28,4 @@ nanobot
 .repomix*
 repomix*
 config.yaml
+.fastembed_cache

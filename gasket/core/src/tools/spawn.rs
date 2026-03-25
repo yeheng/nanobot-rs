@@ -14,7 +14,6 @@ use tokio::time::timeout;
 use tracing::{info, instrument, trace, warn};
 
 use super::base::{Tool, ToolError};
-use crate::agent::stream_buffer::BufferedEvents;
 use crate::agent::subagent::SubagentManager;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
 use crate::bus::events::{OutboundMessage, WebSocketMessage};
@@ -234,11 +233,8 @@ impl Tool for SpawnTool {
         // Track whether we're at the start of a new line (for prefix insertion)
         let mut at_line_start = true;
 
-        // Buffer events until subagent completes
-        let mut buffer = BufferedEvents::new();
-
-        // Spawn background task to collect events and forward to WebSocket/channel
-        // Uses buffering: collect all events, send them only when subagent completes
+        // Spawn background task to forward events to WebSocket in real-time
+        // No buffering - messages are sent immediately as they arrive
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 // Log the event
@@ -270,16 +266,14 @@ impl Tool for SpawnTool {
                             id,
                             result.model.as_deref().unwrap_or("unknown")
                         );
-                        buffer.completed = true;
                     }
                     SubagentEvent::Error { id, error } => {
                         warn!("[Spawn] Subagent {} error: {}", id, error);
-                        buffer.completed = true;
                     }
                 }
 
-                // Buffer WebSocket message (don't send immediately)
-                if session_key.is_some() {
+                // Send WebSocket message immediately (no buffering)
+                if let Some(ref key) = session_key {
                     let ws_msg = match &event {
                         SubagentEvent::Thinking { content, .. } => {
                             // Only add prefix at line start to avoid repeating for every char
@@ -326,34 +320,23 @@ impl Tool for SpawnTool {
                         _ => None, // Started, Completed - don't send to WS
                     };
 
+                    // Send immediately without buffering
                     if let Some(msg) = ws_msg {
-                        buffer.messages.push(msg);
-                    }
-                }
-
-                // When subagent completes, flush all buffered messages in ordered format
-                if buffer.completed {
-                    if let Some(ref key) = session_key {
-                        // Use flush_ordered to ensure Thinking messages come before Content
-                        for msg in buffer.flush_ordered() {
-                            let outbound = OutboundMessage::with_ws_message(
-                                key.channel.clone(),
-                                &key.chat_id,
-                                msg,
-                            );
-                            // Use timeout + send to apply backpressure without indefinite blocking
-                            match timeout(Duration::from_millis(100), outbound_tx.send(outbound))
-                                .await
-                            {
-                                Ok(Ok(_)) => { /* sent successfully */ }
-                                Ok(Err(e)) => warn!("[Spawn] Outbound channel closed: {}", e),
-                                Err(_) => warn!(
-                                    "[Spawn] Send timeout after 100ms, outbound channel congested"
-                                ),
+                        let outbound = OutboundMessage::with_ws_message(
+                            key.channel.clone(),
+                            &key.chat_id,
+                            msg,
+                        );
+                        // Use timeout + send to apply backpressure without indefinite blocking
+                        match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await
+                        {
+                            Ok(Ok(_)) => { /* sent successfully */ }
+                            Ok(Err(e)) => warn!("[Spawn] Outbound channel closed: {}", e),
+                            Err(_) => {
+                                warn!("[Spawn] Send timeout after 100ms, outbound channel congested")
                             }
                         }
                     }
-                    buffer.completed = false;
                 }
             }
         });
