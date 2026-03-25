@@ -72,7 +72,10 @@ mod tests {
         buffer.push(WebSocketMessage::thinking("thinking1"));
         buffer.push(WebSocketMessage::tool_start("tool1", None));
         buffer.push(WebSocketMessage::content("content1"));
-        buffer.push(WebSocketMessage::tool_end("tool1", Some("result".to_string())));
+        buffer.push(WebSocketMessage::tool_end(
+            "tool1",
+            Some("result".to_string()),
+        ));
         buffer.push(WebSocketMessage::done());
 
         let flushed = buffer.flush();

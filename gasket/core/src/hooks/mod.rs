@@ -1,27 +1,32 @@
-//! External shell hook system — UNIX philosophy for agent extensibility.
+//! Agent pipeline lifecycle hooks
 //!
-//! Instead of internal Rust trait objects, hooks are **external shell scripts**
-//! executed via subprocess. Data flows through stdin/stdout as JSON.
+//! Provides a unified hook mechanism for the agent pipeline:
+//! - `HookPoint`: Execution points in the pipeline
+//! - `HookContext`: Context passed to hooks
+//! - `PipelineHook`: Trait for implementing hooks
+//! - `HookRegistry`: Registry for managing hooks
 //!
-//! ## Hook Directory
+//! ## Hook Points
 //!
-//! Scripts live in `~/.gasket/hooks/`:
-//! - `pre_request.sh`  — intercept/modify user input before processing
-//! - `post_response.sh` — audit/alert after the agent responds
+//! Hooks can be attached at five execution points:
+//! - `BeforeRequest`: Before the request is processed (can modify input)
+//! - `AfterHistory`: After history is loaded (can add context)
+//! - `BeforeLLM`: Before sending to LLM (last chance to modify)
+//! - `AfterToolCall`: After a tool call completes (logging/auditing)
+//! - `AfterResponse`: After the response is generated (notifications)
 //!
-//! ## Data Flow
+//! ## Execution Strategies
 //!
-//! ```text
-//! Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
-//!                         stderr → tracing::debug!
-//! ```
-//!
-//! ## Defensive Execution
-//!
-//! - **2-second timeout** — scripts that hang are killed
-//! - **1 MB stdout cap** — prevents memory exhaustion
-//! - **Non-blocking** — uses `tokio::process::Command`
+//! - **Sequential** (BeforeRequest, AfterHistory, BeforeLLM):
+//!   Hooks run one after another, can modify messages, can abort.
+//! - **Parallel** (AfterToolCall, AfterResponse):
+//!   Hooks run concurrently with readonly access, fire-and-forget.
 
 mod external;
+mod types;
 
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner};
+pub use types::{
+    ExecutionStrategy, HookAction, HookContext, HookPoint, MutableContext, ReadonlyContext,
+    ToolCallInfo,
+};

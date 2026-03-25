@@ -36,6 +36,14 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 
+    /// Hook execution error
+    #[error("Hook '{name}' failed: {message}")]
+    HookFailed { name: String, message: String },
+
+    /// Request aborted by hook
+    #[error("Request aborted by hook: {0}")]
+    AbortedByHook(String),
+
     /// Generic error with message
     #[error("{0}")]
     Other(String),

@@ -477,9 +477,7 @@ impl Tool for SpawnParallelTool {
                         {
                             Ok(Ok(_)) => { /* sent successfully */ }
                             Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
-                            Err(_) => warn!(
-                                "Send timeout after 100ms, outbound channel congested"
-                            ),
+                            Err(_) => warn!("Send timeout after 100ms, outbound channel congested"),
                         }
                     }
                 }

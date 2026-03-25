@@ -333,7 +333,9 @@ impl Tool for SpawnTool {
                             Ok(Ok(_)) => { /* sent successfully */ }
                             Ok(Err(e)) => warn!("[Spawn] Outbound channel closed: {}", e),
                             Err(_) => {
-                                warn!("[Spawn] Send timeout after 100ms, outbound channel congested")
+                                warn!(
+                                    "[Spawn] Send timeout after 100ms, outbound channel congested"
+                                )
                             }
                         }
                     }
