@@ -7,10 +7,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{debug, warn};
+
+use super::{HookAction, HookPoint, MutableContext, PipelineHook, ReadonlyContext};
+use crate::error::AgentError;
+use crate::providers::MessageRole;
 
 /// Maximum time a hook script is allowed to run before being killed.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -324,6 +329,92 @@ fn is_executable(_path: &Path) -> bool {
     true
 }
 
+// ── ExternalShellHook Wrapper ──────────────────────────────
+
+/// Wraps ExternalHookRunner as a PipelineHook.
+///
+/// This adapter allows the existing shell-based hook runner to integrate
+/// with the new hook registry system. It supports:
+/// - `BeforeRequest`: Run `pre_request.sh`, handle abort and message modification
+/// - `AfterResponse`: Run `post_response.sh` (parallel execution)
+pub struct ExternalShellHook {
+    runner: ExternalHookRunner,
+    point: HookPoint,
+}
+
+impl ExternalShellHook {
+    /// Create a new ExternalShellHook wrapping the given runner.
+    ///
+    /// # Arguments
+    /// * `runner` - The external hook runner to wrap
+    /// * `point` - The hook point (typically BeforeRequest or AfterResponse)
+    pub fn new(runner: ExternalHookRunner, point: HookPoint) -> Self {
+        Self { runner, point }
+    }
+}
+
+#[async_trait]
+impl PipelineHook for ExternalShellHook {
+    fn name(&self) -> &str {
+        "external_shell"
+    }
+
+    fn point(&self) -> HookPoint {
+        self.point
+    }
+
+    async fn run(&self, ctx: &mut MutableContext<'_>) -> Result<HookAction, AgentError> {
+        // Only BeforeRequest uses this method
+        let input = ctx.user_input.unwrap_or("");
+        let output = self
+            .runner
+            .run_pre_request(ctx.session_key, input)
+            .await
+            .map_err(|e| AgentError::HookFailed {
+                name: self.name().to_string(),
+                message: e.to_string(),
+            })?;
+
+        match output {
+            Some(out) if out.is_abort() => Ok(HookAction::Abort(
+                out.error.unwrap_or_else(|| "Request aborted".to_string()),
+            )),
+            Some(out) => {
+                if let Some(modified) = out.modified_message {
+                    // Modify the first user message
+                    for msg in ctx.messages.iter_mut() {
+                        if msg.role == MessageRole::User {
+                            msg.content = Some(modified);
+                            break;
+                        }
+                    }
+                }
+                Ok(HookAction::Continue)
+            }
+            None => Ok(HookAction::Continue),
+        }
+    }
+
+    async fn run_parallel(&self, ctx: &ReadonlyContext<'_>) -> Result<HookAction, AgentError> {
+        // Only AfterResponse uses this method
+        let response = ctx.response.unwrap_or("");
+        let tools = ctx
+            .tool_calls
+            .map(|t| t.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
+            .unwrap_or_default();
+
+        self.runner
+            .run_post_response(ctx.session_key, response, &tools)
+            .await
+            .map_err(|e| AgentError::HookFailed {
+                name: self.name().to_string(),
+                message: e.to_string(),
+            })?;
+
+        Ok(HookAction::Continue)
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -402,5 +493,57 @@ mod tests {
         let result = runner.run_pre_request("test:session", "hello").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+    use crate::providers::ChatMessage;
+
+    #[test]
+    fn test_external_shell_hook_creation() {
+        let runner = ExternalHookRunner::noop();
+        let hook = ExternalShellHook::new(runner, HookPoint::BeforeRequest);
+        assert_eq!(hook.name(), "external_shell");
+        assert_eq!(hook.point(), HookPoint::BeforeRequest);
+    }
+
+    #[tokio::test]
+    async fn test_noop_runner_returns_continue() {
+        let runner = ExternalHookRunner::noop();
+        let hook = ExternalShellHook::new(runner, HookPoint::BeforeRequest);
+
+        let mut messages = vec![ChatMessage::user("test")];
+        let mut ctx = MutableContext {
+            session_key: "test:123",
+            messages: &mut messages,
+            user_input: Some("test"),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+
+        let result = hook.run(&mut ctx).await;
+        assert!(matches!(result, Ok(HookAction::Continue)));
+    }
+
+    #[tokio::test]
+    async fn test_after_response_noop() {
+        let runner = ExternalHookRunner::noop();
+        let hook = ExternalShellHook::new(runner, HookPoint::AfterResponse);
+
+        let messages = vec![ChatMessage::user("test")];
+        let ctx = ReadonlyContext {
+            session_key: "test:123",
+            messages: &messages,
+            user_input: Some("test"),
+            response: Some("response content"),
+            tool_calls: None,
+            token_usage: None,
+        };
+
+        let result = hook.run_parallel(&ctx).await;
+        assert!(matches!(result, Ok(HookAction::Continue)));
     }
 }

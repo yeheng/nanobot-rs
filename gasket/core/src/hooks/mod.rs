@@ -26,7 +26,7 @@ mod external;
 mod registry;
 mod types;
 
-pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner};
+pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
 pub use registry::{HookBuilder, HookRegistry, PipelineHook};
 pub use types::{
     ExecutionStrategy, HookAction, HookContext, HookPoint, MutableContext, ReadonlyContext,
