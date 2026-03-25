@@ -105,11 +105,12 @@ impl SandboxBackend for WindowsFallbackBackend {
         // For now, we just truncate output
         let max_output = config.limits.max_output_bytes;
         let stdout = if stdout.len() > max_output {
+            let original_len = stdout.len();
             let mut truncated = stdout;
             truncated.truncate(max_output);
             truncated.push_str(&format!(
                 "\n\n[OUTPUT TRUNCATED: {} bytes exceeded limit of {} bytes]",
-                stdout.len(),
+                original_len,
                 max_output
             ));
             truncated
