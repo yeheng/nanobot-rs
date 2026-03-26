@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::time::timeout;
 use tracing::{info, instrument, trace, warn};
 
-use super::base::{Tool, ToolError};
+use super::base::{Tool, ToolContext, ToolError, ToolResult};
 use crate::agent::subagent::SubagentManager;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
 use crate::bus::events::{OutboundMessage, WebSocketMessage};
@@ -135,7 +135,7 @@ impl Tool for SpawnTool {
     }
 
     #[instrument(name = "tool.spawn", skip_all)]
-    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let args: SpawnArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
@@ -227,8 +227,12 @@ impl Tool for SpawnTool {
         })?;
 
         // Get outbound channel and session key for WebSocket streaming
-        let outbound_tx = manager.outbound_sender();
-        let session_key = manager.get_session_key();
+        // Priority: ToolContext (passed directly) > SubagentManager (global state, deprecated)
+        let outbound_tx = _ctx
+            .outbound_tx
+            .clone()
+            .unwrap_or_else(|| manager.outbound_sender());
+        let session_key = _ctx.session_key.clone().or_else(|| manager.get_session_key());
 
         // Track whether we're at the start of a new line (for prefix insertion)
         let mut at_line_start = true;

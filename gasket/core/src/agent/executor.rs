@@ -6,7 +6,7 @@ use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use crate::providers::ToolCall;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolContext, ToolRegistry};
 
 /// Result of executing a single tool call
 pub struct ToolCallResult {
@@ -40,7 +40,7 @@ impl<'a> ToolExecutor<'a> {
 
     /// Execute a single tool call and return the result.
     #[instrument(name = "executor.execute_one", skip_all, fields(tool = %tool_call.function.name))]
-    pub async fn execute_one(&self, tool_call: &ToolCall) -> ToolCallResult {
+    pub async fn execute_one(&self, tool_call: &ToolCall, ctx: &ToolContext) -> ToolCallResult {
         info!(
             "Tool call: {}({:?})",
             tool_call.function.name, tool_call.function.arguments
@@ -52,6 +52,7 @@ impl<'a> ToolExecutor<'a> {
             .execute(
                 &tool_call.function.name,
                 tool_call.function.arguments.clone(),
+                ctx,
             )
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
@@ -99,11 +100,11 @@ impl<'a> ToolExecutor<'a> {
     }
 
     /// Execute a single tool call by name and raw arguments (convenience method).
-    pub async fn execute_raw(&self, name: &str, args: Value) -> String {
+    pub async fn execute_raw(&self, name: &str, args: Value, ctx: &ToolContext) -> String {
         let start = Instant::now();
         let result = self
             .registry
-            .execute(name, args)
+            .execute(name, args, ctx)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
         let elapsed = start.elapsed();
@@ -149,7 +150,7 @@ impl<'a> ToolExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{Tool, ToolError, ToolRegistry, ToolResult as TResult};
+    use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult as TResult};
     use async_trait::async_trait;
 
     struct EchoTool;
@@ -165,7 +166,7 @@ mod tests {
         fn parameters(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        async fn execute(&self, args: Value) -> TResult {
+        async fn execute(&self, args: Value, _ctx: &ToolContext) -> TResult {
             Ok(args.to_string())
         }
     }
@@ -183,7 +184,7 @@ mod tests {
         fn parameters(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        async fn execute(&self, _args: Value) -> TResult {
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> TResult {
             Err(ToolError::ExecutionError("boom".to_string()))
         }
     }
@@ -201,7 +202,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("call_1", "echo", serde_json::json!({"msg": "hi"}));
-        let result = executor.execute_one(&tc).await;
+        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
 
         assert_eq!(result.tool_call_id, "call_1");
         assert_eq!(result.tool_name, "echo");
@@ -214,7 +215,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("call_2", "fail", serde_json::json!({}));
-        let result = executor.execute_one(&tc).await;
+        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
 
         assert!(result.output.starts_with("Error:"));
     }
@@ -229,7 +230,7 @@ mod tests {
             "echo",
             serde_json::json!({"long": "abcdefghijklmnopqrstuvwxyz"}),
         );
-        let result = executor.execute_one(&tc).await;
+        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
 
         assert!(result.output.len() <= 10 + "\n\n[... truncated]".len());
         assert!(result.output.ends_with("[... truncated]"));
@@ -241,7 +242,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("c1", "nonexistent", serde_json::json!({}));
-        let result = executor.execute_one(&tc).await;
+        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
 
         assert!(result.output.starts_with("Error:"));
     }
@@ -260,7 +261,7 @@ mod tests {
             // Each Chinese character is 3 bytes in UTF-8
             serde_json::json!({"text": "你好世界测试数据更多内容"}),
         );
-        let result = executor.execute_one(&tc).await;
+        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
 
         // Should not panic and should end with truncated marker
         assert!(result.output.ends_with("[... truncated]"));

@@ -7,8 +7,49 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::events::{OutboundMessage, SessionKey};
+
 /// Result type for tool execution
 pub type ToolResult = Result<String, ToolError>;
+
+/// Context passed to tool execution, providing request-scoped data.
+///
+/// This replaces the old pattern of storing session_key in SubagentManager
+/// as a global mutable state. Now each tool execution receives its context
+/// directly, eliminating multi-tenant data leakage risks.
+#[derive(Debug, Clone, Default)]
+pub struct ToolContext {
+    /// Session key for WebSocket streaming (identifies the client connection).
+    pub session_key: Option<SessionKey>,
+    /// Channel to send outbound WebSocket messages in real-time.
+    pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
+}
+
+impl ToolContext {
+    /// Create an empty context (for non-streaming or test scenarios).
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Create a context with session key only.
+    pub fn with_session_key(session_key: SessionKey) -> Self {
+        Self {
+            session_key: Some(session_key),
+            outbound_tx: None,
+        }
+    }
+
+    /// Create a context with both session key and outbound channel.
+    pub fn new(
+        session_key: SessionKey,
+        outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    ) -> Self {
+        Self {
+            session_key: Some(session_key),
+            outbound_tx: Some(outbound_tx),
+        }
+    }
+}
 
 /// Error type for tool execution
 #[derive(Debug, thiserror::Error)]
@@ -38,8 +79,12 @@ pub trait Tool: Send + Sync {
     /// Get the JSON schema for parameters
     fn parameters(&self) -> Value;
 
-    /// Execute the tool with given arguments
-    async fn execute(&self, args: Value) -> ToolResult;
+    /// Execute the tool with given arguments and context.
+    ///
+    /// The `ctx` parameter provides request-scoped data like session_key
+    /// and outbound channel for WebSocket streaming. This eliminates the
+    /// need for global mutable state in SubagentManager.
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
 }
 
 /// Metadata describing a tool's capabilities, tags, and permission requirements.

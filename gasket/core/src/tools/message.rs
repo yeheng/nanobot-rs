@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use super::{Tool, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::bus::events::ChannelType;
 use crate::bus::events::OutboundMessage;
 
@@ -72,7 +72,7 @@ impl Tool for MessageTool {
     }
 
     #[instrument(name = "tool.send_message", skip_all)]
-    async fn execute(&self, params: Value) -> ToolResult {
+    async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
@@ -132,7 +132,7 @@ mod tests {
             "channel": "telegram"
             // Missing chat_id and content
         });
-        let result = tool.execute(params).await;
+        let result = tool.execute(params, &ToolContext::empty()).await;
         assert!(result.is_err());
     }
 
@@ -144,7 +144,7 @@ mod tests {
             "chat_id": "12345",
             "content": "Hello!"
         });
-        let result = tool.execute(params).await;
+        let result = tool.execute(params, &ToolContext::empty()).await;
         assert!(result.is_ok());
 
         // Verify the message was routed to the outbound channel

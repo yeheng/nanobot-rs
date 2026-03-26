@@ -26,7 +26,7 @@ use crate::agent::stream::{self, StreamEvent};
 use crate::error::AgentError;
 use crate::providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use crate::token_tracker::{ModelPricing, TokenUsage};
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolContext, ToolRegistry};
 use crate::vault::redact_secrets;
 
 /// Default response when no content is available
@@ -381,14 +381,20 @@ impl<'a> AgentExecutor<'a> {
             response.tool_calls.clone(),
         ));
 
+        // Create empty context for now - in production, this should be passed from the caller
+        let ctx = ToolContext::empty();
+
         // Execute tool calls in parallel
         let futures: Vec<_> = response
             .tool_calls
             .iter()
-            .map(|tc| async move {
-                let start = std::time::Instant::now();
-                let result = executor.execute_one(tc).await;
-                (tc, result, start.elapsed())
+            .map(|tc| {
+                let ctx = &ctx;
+                async move {
+                    let start = std::time::Instant::now();
+                    let result = executor.execute_one(tc, ctx).await;
+                    (tc, result, start.elapsed())
+                }
             })
             .collect();
 
@@ -433,7 +439,14 @@ impl<'a> AgentExecutor<'a> {
                 if event_count == 1 {
                     debug!("[Executor] Received first event from LLM stream");
                 }
-                let _ = tx.send(event).await;
+                // Check if channel is still open - if not, client disconnected
+                if tx.send(event).await.is_err() {
+                    debug!(
+                        "[Executor] Event channel closed after {} events, client disconnected - aborting",
+                        event_count
+                    );
+                    break;
+                }
             }
             debug!(
                 "[Executor] Event stream ended, total events: {}, awaiting response future",

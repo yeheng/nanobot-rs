@@ -13,6 +13,7 @@ serde_json.workspace = true
 
 # Async
 async-trait.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 # Time
 chrono.workspace = true

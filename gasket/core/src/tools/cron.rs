@@ -6,7 +6,7 @@ use serde_json::Value;
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::{Tool, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::cron::CronService;
 
 /// Cron tool for managing scheduled tasks
@@ -78,7 +78,7 @@ impl Tool for CronTool {
     }
 
     #[instrument(name = "tool.cron", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             action: String,

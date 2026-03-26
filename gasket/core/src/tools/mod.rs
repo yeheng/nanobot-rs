@@ -26,7 +26,7 @@ mod web_fetch;
 mod web_search;
 
 // Re-export tool trait and base types from gasket-types
-pub use gasket_types::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
+pub use gasket_types::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
 
 // Re-export tool implementations
 pub use cron::CronTool;

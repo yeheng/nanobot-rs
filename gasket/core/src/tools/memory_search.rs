@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::fs;
 use tracing::debug;
 
-use super::{simple_schema, Tool, ToolError, ToolResult};
+use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
 // ── Unified Search Tool ────────────────────────────────────────
 
@@ -111,7 +111,7 @@ impl Tool for MemorySearchTool {
         ])
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
@@ -278,7 +278,7 @@ mod tests {
     async fn test_search_finds_keyword() {
         let (_tmp, tool) = setup_test_dir();
         let args = serde_json::json!({"query": "PostgreSQL"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("PostgreSQL"));
         assert!(result.contains("project_alpha.md"));
     }
@@ -287,7 +287,7 @@ mod tests {
     async fn test_search_case_insensitive() {
         let (_tmp, tool) = setup_test_dir();
         let args = serde_json::json!({"query": "postgresql"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("PostgreSQL"));
     }
 
@@ -295,7 +295,7 @@ mod tests {
     async fn test_search_no_results() {
         let (_tmp, tool) = setup_test_dir();
         let args = serde_json::json!({"query": "nonexistent_keyword_xyz"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("No matches found"));
     }
 
@@ -303,7 +303,7 @@ mod tests {
     async fn test_search_multiple_files() {
         let (_tmp, tool) = setup_test_dir();
         let args = serde_json::json!({"query": "Rust"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("preferences.md"));
     }
 
@@ -311,7 +311,7 @@ mod tests {
     async fn test_search_with_context() {
         let (_tmp, tool) = setup_test_dir();
         let args = serde_json::json!({"query": "PostgreSQL", "context_lines": 1});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains(">>>"));
     }
 
@@ -320,7 +320,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
         let args = serde_json::json!({"query": "anything"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("No matches found"));
     }
 
@@ -328,7 +328,7 @@ mod tests {
     async fn test_search_nonexistent_directory() {
         let tool = MemorySearchTool::with_dir(PathBuf::from("/tmp/nonexistent_nanobot_test"));
         let args = serde_json::json!({"query": "anything"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("does not exist"));
     }
 }

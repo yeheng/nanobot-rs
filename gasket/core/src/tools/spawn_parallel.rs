@@ -5,13 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::timeout;
 use tracing::{info, instrument, trace, warn};
 
-use super::base::{Tool, ToolError};
+use super::base::{Tool, ToolContext, ToolError, ToolResult};
 use crate::agent::subagent::SubagentManager;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
 use crate::bus::events::{OutboundMessage, WebSocketMessage};
@@ -169,7 +168,7 @@ impl Tool for SpawnParallelTool {
     }
 
     #[instrument(name = "tool.spawn_parallel", skip_all)]
-    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
@@ -237,25 +236,16 @@ impl Tool for SpawnParallelTool {
             task_count
         );
 
-        // Prepare spawn configurations for all tasks first (sequential but fast)
-        // Use Box<dyn Future> to unify different async block types
-        let mut spawn_futures: Vec<
-            std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>>,
-        > = Vec::with_capacity(task_count);
-
         // Track subagent_id -> task_index mapping for [Task N] labeling
         let mut task_id_map: HashMap<String, usize> = HashMap::with_capacity(task_count);
 
+        // Spawn all subagents directly - spawn() is non-blocking because it uses tokio::spawn internally
+        // We await it just to get the subagent ID, not to wait for execution
         for (idx, spec) in task_specs.into_iter().enumerate() {
             let subagent_id = SubagentTracker::generate_id();
             // Record mapping for [Task N] labeling in WebSocket messages
             task_id_map.insert(subagent_id.clone(), idx + 1); // 1-indexed for user display
             let task = spec.task.clone();
-            // Clone sender inside the loop - each task gets its own sender
-            // The original sender will be dropped after all futures are created
-            let result_tx = result_tx.clone();
-            let event_tx_clone = event_tx.clone();
-            let cancellation_token_clone = cancellation_token.clone();
 
             // Model selection with fallback and optional smart selection
             let selected_model = self.select_model(&spec.model_id, &task);
@@ -287,18 +277,16 @@ impl Tool for SpawnParallelTool {
                     profile.model
                 );
 
-                // Create boxed future using Builder pattern with cancellation
-                let manager = manager.clone();
-                spawn_futures.push(Box::pin(async move {
-                    manager
-                        .task(subagent_id, task)
-                        .with_provider(provider)
-                        .with_config(agent_config)
-                        .with_streaming(event_tx_clone)
-                        .with_cancellation_token(cancellation_token_clone)
-                        .spawn(result_tx)
-                        .await
-                }));
+                // Spawn subagent - this is non-blocking, just returns the ID
+                let _id = manager
+                    .task(subagent_id, task)
+                    .with_provider(provider)
+                    .with_config(agent_config)
+                    .with_streaming(event_tx.clone())
+                    .with_cancellation_token(cancellation_token.clone())
+                    .spawn(result_tx.clone())
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
             } else {
                 // No model profile matched, use default provider
                 info!(
@@ -306,31 +294,26 @@ impl Tool for SpawnParallelTool {
                     idx + 1
                 );
 
-                let manager = manager.clone();
-                spawn_futures.push(Box::pin(async move {
-                    manager
-                        .task(subagent_id, task)
-                        .with_streaming(event_tx_clone)
-                        .with_cancellation_token(cancellation_token_clone)
-                        .spawn(result_tx)
-                        .await
-                }));
+                // Spawn subagent - this is non-blocking, just returns the ID
+                let _id = manager
+                    .task(subagent_id, task)
+                    .with_streaming(event_tx.clone())
+                    .with_cancellation_token(cancellation_token.clone())
+                    .spawn(result_tx.clone())
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
             }
         }
 
-        // CRITICAL: Drop the original senders now that all futures have been created.
-        // Each future owns its own cloned sender. Once all subagents complete,
-        // these cloned senders will be dropped, and the channel will close naturally,
-        // allowing event_rx.recv() to return None.
-        // Without this drop, the channel would never close because the original
-        // sender would keep it alive indefinitely.
+        // CRITICAL: Drop the original senders now that all subagents have been spawned.
+        // Once all subagents complete, these cloned senders will be dropped,
+        // and the channel will close naturally, allowing event_rx.recv() to return None.
         drop(result_tx);
         drop(event_tx);
 
-        // Spawn all subagents in parallel - this is the key change!
         info!(
-            "Spawning {} subagents in parallel with streaming",
-            spawn_futures.len()
+            "All {} subagent spawn requests submitted (executing in background)",
+            task_count
         );
 
         // Take event receiver - we own it now, no Arc<Mutex> needed
@@ -338,9 +321,13 @@ impl Tool for SpawnParallelTool {
             ToolError::ExecutionError(format!("Failed to take event receiver: {}", e))
         })?;
 
-        // Get outbound channel and session key from manager for WebSocket streaming
-        let outbound_tx = manager.outbound_sender();
-        let session_key = manager.get_session_key();
+        // Get outbound channel and session key for WebSocket streaming
+        // Priority: ToolContext (passed directly) > SubagentManager (global state, deprecated)
+        let outbound_tx = _ctx
+            .outbound_tx
+            .clone()
+            .unwrap_or_else(|| manager.outbound_sender());
+        let session_key = _ctx.session_key.clone().or_else(|| manager.get_session_key());
 
         // Spawn a background task to forward events to WebSocket in real-time
         // Move task_id_map into the task for [Task N] labeling
@@ -484,31 +471,6 @@ impl Tool for SpawnParallelTool {
             }
         });
 
-        // Wait for spawn results
-        let spawn_results = join_all(spawn_futures).await;
-
-        info!(
-            "All {} subagent spawn requests submitted (results pending)",
-            spawn_results.len()
-        );
-
-        // Check for spawn failures
-        let mut spawn_failures = 0;
-        for (idx, result) in spawn_results.into_iter().enumerate() {
-            if let Err(e) = result {
-                warn!("Task {} failed to spawn: {}", idx + 1, e);
-                spawn_failures += 1;
-            }
-        }
-
-        if spawn_failures > 0 {
-            warn!(
-                "{} subagent(s) failed to spawn, expecting {} results",
-                spawn_failures,
-                task_count - spawn_failures
-            );
-        }
-
         // Wait for all results
         info!("Waiting for {} subagent results...", task_count);
         let results = tracker.wait_for_all(task_count).await.map_err(|e| {
@@ -586,7 +548,7 @@ mod tests {
             "tasks": []
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_err());
     }
 
@@ -598,7 +560,7 @@ mod tests {
             "tasks": tasks
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_err());
     }
 
@@ -609,7 +571,7 @@ mod tests {
             "tasks": ["Task 1"]
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not available"));
     }

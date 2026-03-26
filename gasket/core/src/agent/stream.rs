@@ -154,16 +154,50 @@ pub fn stream_events(
                     if let Some(ref text) = chunk.delta.content {
                         if !text.is_empty() {
                             content.push_str(text);
-                            // Use try_send to avoid blocking if receiver is not being consumed
-                            // If channel is full or closed, we just skip sending the event
-                            let _ = tx.try_send(StreamEvent::Content(text.clone()));
+                            // Check if channel is still open before continuing
+                            // If closed, abort the LLM stream to save resources
+                            if tx.try_send(StreamEvent::Content(text.clone())).is_err() {
+                                debug!(
+                                    "[StreamEvents] Channel closed, aborting LLM stream after {} chunks",
+                                    chunk_count
+                                );
+                                // Channel closed - client disconnected
+                                // Return partial response to avoid wasting LLM tokens
+                                let _ = response_tx.send(Ok(ChatResponse {
+                                    content: Some(content),
+                                    tool_calls: tool_acc.finalize(),
+                                    reasoning_content: if reasoning_content.is_empty() {
+                                        None
+                                    } else {
+                                        Some(reasoning_content)
+                                    },
+                                    usage: accumulated_usage,
+                                }));
+                                return;
+                            }
                         }
                     }
 
                     if let Some(ref reasoning) = chunk.delta.reasoning_content {
                         if !reasoning.is_empty() {
                             reasoning_content.push_str(reasoning);
-                            let _ = tx.try_send(StreamEvent::Reasoning(reasoning.clone()));
+                            // Check if channel is still open
+                            if tx.try_send(StreamEvent::Reasoning(reasoning.clone())).is_err() {
+                                debug!(
+                                    "[StreamEvents] Channel closed during reasoning, aborting LLM stream"
+                                );
+                                let _ = response_tx.send(Ok(ChatResponse {
+                                    content: Some(content),
+                                    tool_calls: tool_acc.finalize(),
+                                    reasoning_content: if reasoning_content.is_empty() {
+                                        None
+                                    } else {
+                                        Some(reasoning_content)
+                                    },
+                                    usage: accumulated_usage,
+                                }));
+                                return;
+                            }
                         }
                     }
 

@@ -3,4 +3,4 @@
 //! This module re-exports the tool trait and types from `gasket-types`
 //! for backward compatibility.
 
-pub use gasket_types::{simple_schema, Tool, ToolError};
+pub use gasket_types::{simple_schema, Tool, ToolContext, ToolError, ToolResult};

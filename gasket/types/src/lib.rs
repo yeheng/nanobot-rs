@@ -16,4 +16,4 @@ pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
     SessionKeyParseError, WebSocketMessage,
 };
-pub use tool::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
+pub use tool::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};

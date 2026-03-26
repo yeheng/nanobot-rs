@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
 
-use super::{simple_schema, Tool, ToolError, ToolResult};
+use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 use crate::memory::SqliteStore;
 
 // ── History Search Tool ────────────────────────────────────────
@@ -122,7 +122,7 @@ impl Tool for HistorySearchTool {
         ])
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let mut parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 

@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::fs;
 use tracing::{debug, instrument};
 
-use super::base::simple_schema;
+use super::base::{simple_schema, ToolContext};
 use super::{Tool, ToolError, ToolResult};
 
 fn validate_path(path: &str, allowed_dir: &Option<PathBuf>) -> Result<PathBuf, ToolError> {
@@ -67,7 +67,7 @@ impl Tool for ReadFileTool {
     }
 
     #[instrument(name = "tool.read_file", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             absolute_path: String,
@@ -138,7 +138,7 @@ impl Tool for WriteFileTool {
     }
 
     #[instrument(name = "tool.write_file", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             file_path: String,
@@ -240,7 +240,7 @@ impl Tool for EditFileTool {
     }
 
     #[instrument(name = "tool.edit_file", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             file_path: String,
@@ -323,7 +323,7 @@ impl Tool for ListDirTool {
     }
 
     #[instrument(name = "tool.list_dir", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             path: String,
@@ -408,7 +408,7 @@ mod tests {
             "content": "Hello, World!"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_ok());
 
         // Verify file was written
@@ -435,7 +435,7 @@ mod tests {
             "instruction": "Replace World with Rust"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_ok());
 
         // Verify edit
@@ -461,7 +461,7 @@ mod tests {
             "instruction": "test"
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_err());
     }
 
@@ -474,7 +474,7 @@ mod tests {
             "path": temp_dir.to_str().unwrap()
         });
 
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_ok());
     }
 
@@ -500,7 +500,7 @@ mod tests {
             "limit": 3
         });
 
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("Line 2"));
         assert!(result.contains("Line 3"));
         assert!(result.contains("Line 4"));

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use tracing::{debug, info, instrument};
 
-use super::{Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
 use crate::providers::ToolDefinition;
 use crate::search::{top_k_similar, TextEmbedder};
 
@@ -159,16 +159,16 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute a tool by name
-    #[instrument(skip(self, args))]
-    pub async fn execute(&self, name: &str, args: Value) -> ToolResult {
+    /// Execute a tool by name with context
+    #[instrument(skip(self, args, ctx))]
+    pub async fn execute(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolResult {
         let entry = self
             .items
             .get(name)
             .ok_or_else(|| ToolError::NotFound(format!("Tool not found: {}", name)))?;
 
         debug!("Executing tool: {} with args: {:?}", name, args);
-        entry.tool.execute(args).await
+        entry.tool.execute(args, ctx).await
     }
 
     /// List all registered tool names

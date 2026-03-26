@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, instrument, warn};
 
-use super::base::simple_schema;
+use super::base::{simple_schema, ToolContext};
 use super::{Tool, ToolError, ToolResult};
 
 /// Build a reqwest client with proxy configuration.
@@ -498,7 +498,7 @@ impl Tool for WebSearchTool {
     }
 
     #[instrument(name = "tool.web_search", skip_all)]
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
             query: String,
