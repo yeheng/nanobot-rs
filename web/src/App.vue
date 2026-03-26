@@ -28,16 +28,74 @@ const sessions = ref<Session[]>([]);
 const activeSessionId = ref<string>('');
 const isSidebarOpen = ref(true);
 
+// --- Data Migration: Normalize legacy message format ---
+/** Migrate legacy message format to steps-based format */
+const migrateLegacyMessage = (msg: Message): Message => {
+  // Skip if already has steps
+  if (msg.steps && msg.steps.length > 0) {
+    return msg;
+  }
+
+  const steps: any[] = [];
+
+  // Migrate thinking
+  if (msg.thinking) {
+    steps.push({
+      id: 'think_' + msg.id + '_migrated',
+      type: 'thinking',
+      content: msg.thinking
+    });
+  }
+
+  // Migrate tool calls as a tool_group
+  if (msg.toolCalls && msg.toolCalls.length > 0) {
+    steps.push({
+      id: 'tool_group_' + msg.id + '_migrated',
+      type: 'tool_group',
+      tools: msg.toolCalls.map(tc => ({
+        ...tc,
+        id: tc.id || `tool_${msg.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+      }))
+    });
+  }
+
+  // Migrate content
+  if (msg.content) {
+    steps.push({
+      id: 'content_' + msg.id + '_migrated',
+      type: 'content',
+      content: msg.content
+    });
+  }
+
+  // Return normalized message
+  if (steps.length > 0) {
+    return { ...msg, steps };
+  }
+
+  return msg;
+};
+
+/** Migrate all sessions' messages on load */
+const migrateSessionsData = (loadedSessions: Session[]): Session[] => {
+  return loadedSessions.map(session => ({
+    ...session,
+    messages: session.messages.map(migrateLegacyMessage)
+  }));
+};
+
 // Session rename state
 const editingSessionId = ref<string | null>(null);
 const editingName = ref('');
 
-// Load from LocalStorage
+// Load from LocalStorage with data migration
 onMounted(() => {
   const saved = localStorage.getItem('nanobot_sessions');
   if (saved) {
     try {
-      sessions.value = JSON.parse(saved);
+      const loadedSessions = JSON.parse(saved);
+      // Migrate legacy message format to steps-based format
+      sessions.value = migrateSessionsData(loadedSessions);
       if (sessions.value && sessions.value.length > 0) {
         activeSessionId.value = sessions.value[0].id;
       }
@@ -45,7 +103,7 @@ onMounted(() => {
       console.error('Failed to parse sessions from local storage:', e);
     }
   }
-  
+
   // Create first session if empty
   if (sessions.value.length === 0) {
     createNewSession();
@@ -133,21 +191,137 @@ const handleRenameKeydown = (event: KeyboardEvent, sessionId: string) => {
   }
 };
 
-const updateSessionMessages = (sessionId: string, messages: Message[]) => {
+// --- Incremental message update methods (no deep copy) ---
+
+/** Get or create the latest bot message for streaming responses */
+const getOrCreateLatestBotMessage = (sessionId: string): Message | null => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return null;
+
+  const lastMsg = session.messages[session.messages.length - 1];
+  if (lastMsg && lastMsg.role === 'bot') {
+    return lastMsg;
+  }
+
+  const newBotMsg: Message = {
+    id: Date.now().toString(),
+    role: 'bot',
+    content: '',
+    timestamp: Date.now()
+  };
+  session.messages.push(newBotMsg);
+  return newBotMsg;
+};
+
+/** Append a new message (user or system) */
+const appendMessage = (sessionId: string, message: Message) => {
   const session = sessions.value.find(s => s.id === sessionId);
   if (session) {
-    session.messages = messages;
+    session.messages.push(message);
     session.updatedAt = Date.now();
-    // Update name based on first user message if still "New Chat"
-    if (session.name === 'New Chat') {
-      const firstUserMsg = messages.find(m => m.role === 'user');
-      if (firstUserMsg && firstUserMsg.content) {
-        session.name = firstUserMsg.content.slice(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '');
-      }
+    // Update name based on first user message
+    if (session.name === 'New Chat' && message.role === 'user' && message.content) {
+      session.name = message.content.slice(0, 30) + (message.content.length > 30 ? '...' : '');
     }
   }
 };
 
+/** Append content to a specific message field (for streaming) */
+const appendToMessage = (sessionId: string, messageId: string, content: string, field: 'content' | 'thinking' = 'content') => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg) {
+    if (field === 'thinking') {
+      msg.thinking = (msg.thinking || '') + content;
+    } else {
+      msg.content = (msg.content || '') + content;
+    }
+    session.updatedAt = Date.now();
+  }
+};
+
+/** Update message with partial data (tool calls, steps, etc.) */
+const updateMessage = (sessionId: string, messageId: string, updates: Partial<Message>) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg) {
+    Object.assign(msg, updates);
+    session.updatedAt = Date.now();
+  }
+};
+
+/** Ensure message has steps array initialized */
+const ensureMessageSteps = (sessionId: string, messageId: string) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg && !msg.steps) {
+    msg.steps = [];
+  }
+};
+
+/** Push a step to message steps array */
+const pushMessageStep = (sessionId: string, messageId: string, step: any) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg) {
+    if (!msg.steps) msg.steps = [];
+    msg.steps.push(step);
+    session.updatedAt = Date.now();
+  }
+};
+
+/** Update a specific step in message steps */
+const updateMessageStep = (sessionId: string, messageId: string, stepIndex: number, updates: any) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg && msg.steps && msg.steps[stepIndex]) {
+    Object.assign(msg.steps[stepIndex], updates);
+    session.updatedAt = Date.now();
+  }
+};
+
+/** Ensure tool calls array exists */
+const ensureMessageToolCalls = (sessionId: string, messageId: string) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg && !msg.toolCalls) {
+    msg.toolCalls = [];
+  }
+};
+
+/** Push a tool call */
+const pushToolCall = (sessionId: string, messageId: string, toolCall: any) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg) {
+    if (!msg.toolCalls) msg.toolCalls = [];
+    msg.toolCalls.push(toolCall);
+    session.updatedAt = Date.now();
+  }
+};
+
+/** Update a specific tool call by id or index */
+const updateToolCall = (sessionId: string, messageId: string, toolId: string, updates: any) => {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (!session) return;
+  const msg = session.messages.find(m => m.id === messageId);
+  if (msg && msg.toolCalls) {
+    const tool = msg.toolCalls.find(t => t.id === toolId);
+    if (tool) {
+      Object.assign(tool, updates);
+      session.updatedAt = Date.now();
+    }
+  }
+};
+
+/** Clear all messages for a session */
 const clearSessionMessages = (sessionId: string) => {
   const session = sessions.value.find(s => s.id === sessionId);
   if (session) {
@@ -255,7 +429,16 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
         v-if="activeSessionId"
         :session-id="activeSessionId"
         :messages="sessions.find(s => s.id === activeSessionId)?.messages || []"
-        @update-messages="(msgs) => updateSessionMessages(activeSessionId, msgs)"
+        @get-or-create-bot-msg="() => getOrCreateLatestBotMessage(activeSessionId)"
+        @append-message="(msg) => appendMessage(activeSessionId, msg)"
+        @append-to-message="(msgId, content, field) => appendToMessage(activeSessionId, msgId, content, field)"
+        @update-message="(msgId, updates) => updateMessage(activeSessionId, msgId, updates)"
+        @ensure-steps="(msgId) => ensureMessageSteps(activeSessionId, msgId)"
+        @push-step="(msgId, step) => pushMessageStep(activeSessionId, msgId, step)"
+        @update-step="(msgId, idx, updates) => updateMessageStep(activeSessionId, msgId, idx, updates)"
+        @ensure-tool-calls="(msgId) => ensureMessageToolCalls(activeSessionId, msgId)"
+        @push-tool-call="(msgId, tool) => pushToolCall(activeSessionId, msgId, tool)"
+        @update-tool-call="(msgId, toolId, updates) => updateToolCall(activeSessionId, msgId, toolId, updates)"
         @clear-messages="clearSessionMessages(activeSessionId)"
       />
     </main>
