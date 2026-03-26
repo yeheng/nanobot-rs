@@ -6,6 +6,8 @@
 
 ## 1. providers/ — LLM 提供商抽象层
 
+> **注意**: 核心类型从 `gasket-providers` crate re-export，保持向后兼容。
+
 ### 核心 Trait
 
 ```rust
@@ -68,6 +70,8 @@ trait LlmProvider: Send + Sync {
 
 ## 2. tools/ — 工具系统
 
+> **注意**: `Tool` trait 和基础类型从 `gasket-types` re-export，沙箱类型从 `gasket-sandbox` re-export。
+
 ### 核心 Trait
 
 ```rust
@@ -76,7 +80,7 @@ trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;  // JSON Schema
-    async fn execute(&self, args: Value) -> ToolResult;
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
 }
 ```
 
@@ -90,6 +94,7 @@ trait Tool: Send + Sync {
 | `list_dir` | filesystem | 列出目录内容 |
 | `exec` | system | 执行 Shell 命令 (带超时 + command_policy) |
 | `spawn` | system | 创建子代理执行任务 |
+| `spawn_parallel` | system | 并行创建多个子代理 |
 | `web_fetch` | web | HTTP GET 请求 |
 | `web_search` | web | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
 | `message` | communication | 通过 Bus 发消息到渠道 |
@@ -103,13 +108,15 @@ trait Tool: Send + Sync {
 | 模块 | 说明 |
 |------|------|
 | `registry.rs` | `ToolRegistry` — 工具注册表，管理所有可用工具 |
-| `sandbox.rs` | `SandboxProvider` — 沙箱约束 (目录限制) |
-| `resource_limits.rs` | 资源限制 (文件大小, 输出长度等) |
-| `command_policy.rs` | Shell 命令策略 (白名单/黑名单) |
+| `base.rs` | 工具基础类型和辅助函数 |
+
+> **注意**: 沙箱相关类型（`ProcessManager`, `SandboxConfig`）从 `gasket-sandbox` crate re-export。
 
 ---
 
 ## 3. channels/ — 通信渠道
+
+> **注意**: `Channel` trait 和相关类型从 `gasket-channels` crate 定义，核心代码通过 feature flag 条件编译集成。
 
 ### 核心 Trait
 
@@ -151,6 +158,8 @@ trait Channel: Send + Sync {
 
 ## 4. mcp/ — Model Context Protocol
 
+> **注意**: MCP 功能从 `gasket-mcp` crate 提供，核心模块通过条件编译集成。
+
 ```
 ┌─────────────┐    JSON-RPC 2.0     ┌──────────────────┐
 │  MCP Client │◄───── stdio ───────▶│  MCP Server      │
@@ -162,14 +171,14 @@ trait Channel: Send + Sync {
 └─────────────┘                     └──────────────────┘
 ```
 
-### 子模块结构
+### 核心组件
 
-| 文件 | 职责 |
+| 组件 | 职责 |
 |------|------|
-| `client.rs` | `McpClient` — JSON-RPC 2.0 over stdio 通信 |
-| `manager.rs` | `McpManager` — 管理多个 MCP 服务器生命周期 |
-| `tool.rs` | `McpToolBridge` — 将 MCP 工具适配为 `trait Tool` |
-| `types.rs` | `McpServerConfig`, `McpTool` 等类型定义 |
+| `McpClient` | JSON-RPC 2.0 over stdio 通信 |
+| `McpManager` | 管理多个 MCP 服务器生命周期 |
+| `McpToolBridge` | 将 MCP 工具适配为 `trait Tool` |
+| `McpServerConfig` | MCP 服务器配置 |
 
 ---
 
@@ -179,7 +188,7 @@ trait Channel: Send + Sync {
 
 | 文件 | 职责 |
 |------|------|
-| `events.rs` | 事件类型定义: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
+| `events.rs` | 从 `gasket-types` re-export 事件类型: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
 | `actors.rs` | 三个 Actor: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
 | `queue.rs` | 消息队列封装 |
 
@@ -195,7 +204,31 @@ Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outb
 
 ---
 
-## 6. hooks/ — 外部 Shell Hook 系统
+## 6. hooks/ — Agent Pipeline 生命周期 Hook 系统
+
+Hook 系统提供统一的管道扩展机制，支持在 Agent 执行流程的关键节点插入自定义逻辑。
+
+### Hook 执行点
+
+| Hook Point | 执行时机 | 执行策略 | 说明 |
+|------------|----------|----------|------|
+| `BeforeRequest` | 请求处理前 | Sequential | 可修改输入，可中止请求 |
+| `AfterHistory` | 历史加载后 | Sequential | 可添加上下文 |
+| `BeforeLLM` | 发送给 LLM 前 | Sequential | 最后修改机会 |
+| `AfterToolCall` | 工具调用后 | Parallel | 只读访问，fire-and-forget |
+| `AfterResponse` | 响应生成后 | Parallel | 审计/告警 |
+
+### 核心组件
+
+| 组件 | 职责 |
+|------|------|
+| `HookRegistry` | Hook 注册表，管理所有 Hook |
+| `PipelineHook` | Hook trait 定义 |
+| `ExternalShellHook` | 外部 Shell 脚本 Hook 实现 |
+| `HistoryRecallHook` | 历史记忆召回 Hook |
+| `VaultHook` | Vault 注入 Hook |
+
+### 外部 Shell Hook
 
 ```
 Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
@@ -210,6 +243,8 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
 ---
 
 ## 7. memory/ — 存储抽象层
+
+> **注意**: 实际实现从 `gasket-storage` crate re-export。
 
 ### MemoryStore Trait
 
@@ -248,33 +283,74 @@ trait MemoryStore: Send + Sync {
 |------|------|
 | `loop_.rs` | `AgentLoop` — 核心处理循环，编排所有组件 |
 | `executor.rs` | `ToolExecutor` — 工具调用执行（支持并行批量执行） |
+| `executor_core.rs` | `AgentExecutor` — 核心执行引擎（新） |
 | `history_processor.rs` | token 感知的历史截断（tiktoken-rs BPE 编码） |
 | `prompt.rs` | 系统提示词加载（bootstrap 文件 + 技能 + token 截断保护） |
-| `summarization.rs` | `SummarizationService` + `ContextCompressionHook` — LLM 摘要 |
-| `stream.rs` | 流式输出累积器 |
+| `summarization.rs` | `SummarizationService` — LLM 摘要生成 |
+| `stream.rs` | 流式输出累积器，`StreamEvent` 定义 |
 | `request.rs` | 请求构建与重试逻辑 |
 | `memory.rs` | Agent 工作空间内存管理 |
 | `skill_loader.rs` | 技能文件加载器 (Markdown + YAML frontmatter) |
-| `subagent.rs` | 子代理管理 (`submit()` 异步 + `submit_and_wait()` 同步 + `submit_tracked()` 追踪 + `submit_tracked_streaming()` 流式) |
+| `context.rs` | `AgentContext` trait，`PersistentContext` 和 `StatelessContext` 实现 |
+| `subagent.rs` | `SubagentManager` — 子代理管理（Builder 模式 API） |
+| `subagent_tracker.rs` | `SubagentTracker` — 并行子代理追踪 |
+| `spawn_parallel.rs` | `SpawnParallelTool` — 并行子代理工具 |
 
-### ContextCompressionHook
+### AgentContext Trait
 
-可扩展的上下文压缩接口，解耦压缩策略与 Agent 循环：
+通过 trait 抽象替代 `Option<T>` 模式，支持两种实现：
 
 ```rust
 #[async_trait]
-trait ContextCompressionHook: Send + Sync {
-    async fn compress(
+pub trait AgentContext: Send + Sync {
+    async fn load_session(&self, key: &SessionKey) -> Session;
+    async fn save_message(
         &self,
-        session_key: &str,
-        evicted_messages: &[SessionMessage],
-    ) -> Result<Option<String>>;
+        key: &SessionKey,
+        role: &str,
+        content: &str,
+        tools: Option<Vec<String>>,
+    ) -> Result<(), AgentError>;
+    async fn load_summary(&self, key: &str) -> Option<String>;
+    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
+    async fn recall_history(&self, key: &str, query_embedding: &[f32], top_k: usize)
+        -> Result<Vec<String>>;
+    fn is_persistent(&self) -> bool;
 }
 ```
 
-当前实现 `SummarizationService`：当历史消息被驱逐时，调用 LLM 生成摘要并持久化到 SQLite。
+- **PersistentContext**: 完整持久化支持（主 Agent）
+- **StatelessContext**: 无持久化实现（子 Agent）
 
-> **注意**: `ContextCompressionHook` 已简化为 `SummarizationService` 的 `compress()` 方法，不再作为独立 trait。`AgentContext::compress_context()` 直接调用此方法。
+### 上下文压缩
+
+`SummarizationService` 提供上下文压缩功能：
+
+```rust
+pub async fn compress(&self, session_key: &str, evicted_messages: &[SessionMessage])
+    -> Result<()>
+```
+
+当历史消息被驱逐时，调用 LLM 生成摘要并持久化到 SQLite。
+
+### SubagentManager API
+
+SubagentManager 提供 Builder 模式的任务创建 API：
+
+```rust
+// Builder 模式
+let task_id = manager
+    .task("sub-1", "执行任务")
+    .with_system_prompt("自定义提示词".to_string())
+    .with_streaming(event_tx)
+    .with_cancellation_token(token)
+    .spawn(result_tx)
+    .await?;
+
+// 传统 API
+manager.submit(prompt, channel, chat_id)?;
+manager.submit_and_wait(prompt, system_prompt, channel, chat_id).await?;
+```
 
 ---
 
@@ -285,6 +361,9 @@ trait ContextCompressionHook: Send + Sync {
 - `provider.rs` — Provider 配置定义
 - `agent.rs` — Agent 配置定义
 - `channel.rs` — 渠道配置定义
+- `tools.rs` — 工具配置定义
+- `embedding.rs` — Embedding 配置定义
+- `model_registry.rs` — 模型注册表配置
 - 兼容 Python gasket 配置格式
 
 ---
@@ -292,17 +371,18 @@ trait ContextCompressionHook: Send + Sync {
 ## 11. vault/ — 敏感数据隔离模块
 
 > 详细使用指南见 [vault-guide.md](vault-guide.md)
+> **注意**: 核心类型从 `gasket-vault` crate re-export。
 
 ### 核心组件
 
-| 文件 | 职责 |
+| 类型 | 职责 |
 |------|------|
-| `store.rs` | `VaultStore` — JSON 文件存储，支持加密 |
-| `injector.rs` | `VaultInjector` — 运行时占位符替换 |
-| `scanner.rs` | 占位符扫描与解析 (`{{vault:key}}`) |
-| `crypto.rs` | `VaultCrypto` — AES-256-GCM 加密 |
-| `redaction.rs` | 日志脱敏函数 (`redact_secrets`) |
-| `error.rs` | `VaultError` 错误类型 |
+| `VaultStore` | JSON 文件存储，支持加密 |
+| `VaultInjector` | 运行时占位符替换（在 `injector.rs` 中定义） |
+| `VaultCrypto` | AES-256-GCM 加密 |
+| `Placeholder` | 占位符扫描与解析 (`{{vault:key}}`) |
+| `redact_secrets` | 日志脱敏函数 |
+| `VaultError` | 错误类型 |
 
 ### 设计原则
 
@@ -320,6 +400,8 @@ trait ContextCompressionHook: Send + Sync {
 ---
 
 ## 12. search/ — 搜索类型定义
+
+> **注意**: 基础搜索类型从 `gasket-semantic` crate re-export。
 
 ### 核心类型
 
@@ -345,6 +427,14 @@ pub struct HighlightedText {
 }
 ```
 
+### 语义搜索
+
+从 `gasket-semantic` re-export:
+
+- `TextEmbedder` — 文本嵌入生成
+- `cosine_similarity` — 余弦相似度计算
+- `top_k_similar` — Top-K 相似向量检索
+
 > **注意**: 高级 Tantivy 全文搜索已迁移到独立的 `tantivy-mcp` MCP 服务器。
 
 ---
@@ -359,7 +449,7 @@ pub struct HighlightedText {
 | `skills/` | 技能系统 (详见下方) |
 | `webhook/` | Webhook HTTP 服务器（axum） |
 | `workspace/` | 工作空间模板文件（初始化时复制） |
-| `error.rs` | 统一错误类型定义（AgentError, ProviderError, McpError, ChannelError, PipelineError） |
+| `error.rs` | 统一错误类型定义（AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError） |
 | `token_tracker.rs` | Token 计数与追踪 |
 
 ---

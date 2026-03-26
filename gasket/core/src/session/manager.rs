@@ -125,9 +125,7 @@ impl SessionManager {
                 debug!("Loaded session {} from SQLite (per-message)", key_str);
                 s
             }
-            Ok(None) => {
-                Session::from_key(key.clone())
-            }
+            Ok(None) => Session::from_key(key.clone()),
             Err(e) => {
                 warn!("Failed to load session {}: {}, creating new", key_str, e);
                 Session::from_key(key.clone())

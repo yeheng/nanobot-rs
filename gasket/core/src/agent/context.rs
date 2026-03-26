@@ -127,7 +127,9 @@ impl AgentContext for PersistentContext {
         self.session_manager
             .append_by_key(key, role, content, tools)
             .await
-            .map_err(|e| crate::error::AgentError::Other(format!("Failed to persist message: {}", e)))
+            .map_err(|e| {
+                crate::error::AgentError::Other(format!("Failed to persist message: {}", e))
+            })
     }
 
     async fn load_summary(&self, key: &str) -> Option<String> {

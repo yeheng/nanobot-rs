@@ -18,49 +18,49 @@
                            │                    │
                     ┌──────▼───────┐     ┌──────▼───────┐
                     │   Session    │     │ 构建 System  │
-                    │   Manager   │     │ Prompt:      │
-                    │  (SQLite)   │     │ PROFILE.md + │
-                    │  ┌────────┐ │     │ SOUL.md +    │
-                    │  │save    │ │     │ AGENTS.md +  │
-                    │  │user msg│ │     │ MEMORY.md +  │
-                    │  └────────┘ │     │ BOOTSTRAP.md │
-                    └─────────────┘     │ + skills     │
-                                        └──────┬───────┘
-                                               │
-                                        ┌──────▼───────┐
-                                        │ ChatRequest  │
-                                        │ (messages,   │
-                                        │  tools,      │
-                                        │  model)      │
-                                        └──────┬───────┘
-                                               │
-                           ┌───────────────────▼─────────────────────┐
-                           │          LLM Provider (chat/stream)     │
+                    │   Manager    │     │ Prompt:      │
+                    │  (SQLite)    │     │ PROFILE.md + │
+                    │  ┌────────┐  │     │ SOUL.md +    │
+                    │  │save    │  │     │ AGENTS.md +  │
+                    │  │user msg│  │     │ MEMORY.md +  │
+                    │  └────────┘  │     │ BOOTSTRAP.md │
+                    └──────────────┘     │ + skills     │
+                                         └──────┬───────┘
+                                                │
+                                         ┌──────▼───────┐
+                                         │ ChatRequest  │
+                                         │ (messages,   │
+                                         │  tools,      │
+                                         │  model)      │
+                                         └──────┬───────┘
+                                                │
+                           ┌────────────────────▼─────────────────────┐
+                           │          LLM Provider (chat/stream)      │
                            │    ┌──────┐  ┌──────┐  ┌──────────────┐│
                            │    │OpenAI│  │Gemini│  │   Copilot    ││
                            │    │ API  │  │ API  │  │    API       ││
                            │    └──────┘  └──────┘  └──────────────┘│
-                           └───────────────────┬─────────────────────┘
-                                               │
-                                        ┌──────▼───────┐
-                                        │ ChatResponse │
-                                        │ ┌──────────┐ │
-                                        │ │ content  │ │
-                                        │ │ tool_    │ │
-                                        │ │  calls   │ │
-                                        │ │ reasoning│ │
-                                        │ └──────────┘ │
-                                        └──────┬───────┘
-                                               │
-                              ┌────────────────┼────────────────┐
-                              │ has_tool_calls?│                │
-                              │                │                │
-                        ┌─────▼─────┐    ┌─────▼──────┐        │
-                        │  YES      │    │   NO       │        │
-                        │           │    │            │        │
-                  ┌─────▼──────┐   │    │  最终响应   │        │
-                  │  Tool      │   │    │  返回用户   │        │
-                  │  Executor  │   │    └────────────┘        │
+                           └────────────────────┬────────────────────┘
+                                                │
+                                         ┌──────▼───────┐
+                                         │ ChatResponse │
+                                         │ ┌──────────┐ │
+                                         │ │ content  │ │
+                                         │ │ tool_    │ │
+                                         │ │  calls   │ │
+                                         │ │ reasoning│ │
+                                         │ └──────────┘ │
+                                         └──────┬───────┘
+                                                │
+                              ┌─────────────────┼─────────────────┐
+                              │ has_tool_calls? │                 │
+                              │                 │                 │
+                        ┌─────▼─────┐    ┌─────▼──────┐         │
+                        │  YES      │    │   NO       │         │
+                        │           │    │            │         │
+                  ┌─────▼──────┐   │    │  最终响应   │         │
+                  │  Tool      │   │    │  返回用户   │         │
+                  │  Executor  │   │    └────────────┘         │
                   │            │   │                           │
                   │ execute_   │   │                           │
                   │  batch()   │   │                           │
@@ -106,8 +106,8 @@
                     │  HashMap<SessionKey,    │
                     │    mpsc::Sender>        │
                     │  • 按 session_key 分发  │
-                    │  • 懒创建 Session Actor  │
-                    │  • 清理已关闭的 channel  │
+                    │  • 懒创建 Session Actor │
+                    │  • 清理已关闭的 channel │
                     └────┬──────┬──────┬──────┘
                          │      │      │
               ┌──────────▼┐ ┌──▼────┐ ┌▼──────────┐
@@ -146,6 +146,30 @@
 | **Router Actor** | 按 SessionKey 分发消息到 Session Actor，懒创建/清理 | 单任务，拥有路由表 HashMap，零锁 |
 | **Session Actor** | 串行处理单个 session 的所有消息，调用 AgentLoop | 每 session 独立 tokio::spawn，共享 `Arc<AgentLoop>` |
 | **Outbound Actor** | 跨网络 HTTP/WebSocket 发送，不阻塞上游 | 单任务，即使外部 API 阻塞也不影响 Agent |
+
+### WebSocket 流式处理
+
+```
+Session Actor
+    │
+    ▼
+AgentLoop::process_direct_streaming_with_channel()
+    │
+    ▼
+mpsc::Receiver<StreamEvent>
+    │
+    ▼
+stream_event_to_ws_message()
+    │
+    ├──▶ StreamEvent::Content ──▶ WebSocketMessage::Text
+    ├──▶ StreamEvent::Reasoning ──▶ WebSocketMessage::Thinking
+    ├──▶ StreamEvent::ToolStart ──▶ WebSocketMessage::ToolStart
+    ├──▶ StreamEvent::ToolEnd ──▶ WebSocketMessage::ToolEnd
+    └──▶ StreamEvent::Done ──▶ WebSocketMessage::Done
+    │
+    ▼
+Outbound Actor ──▶ WebSocket 客户端
+```
 
 ---
 
@@ -193,7 +217,7 @@
                               └──────┬───────┘
                                      │
                               ┌──────▼───────┐
-                              │ pre_request  │
+                              │ BeforeRequest│
                               │ Hook (可选)  │
                               │ 可修改/中止  │
                               └──────┬───────┘
@@ -224,9 +248,9 @@
                  └───────────────────┬───────────────────┘
                                      │
                  ┌───────────────────▼───────────────────┐
-                 │  ContextCompressionHook.compress()     │
+                 │  AgentContext::compress_context()      │
                  │                                        │
-                 │  evicted 不为空 → LLM 摘要生成          │
+                 │  evicted 不为空 → 后台 LLM 摘要        │
                  │  evicted 为空 → 加载已有摘要             │
                  │  → summary: Option<String>              │
                  └───────────────────┬───────────────────┘
@@ -278,12 +302,12 @@
             │                 │ ChatResponse  │
             │                 └──────┬───────┘
             │                        │
-            │              ┌─────────▼─────────┐
+            │              ┌─────────┴─────────┐
             │              │ has_tool_calls()?  │
             │              └────┬──────────┬───┘
             │                   │ YES      │ NO
             │            ┌──────▼──────┐   │
-            │            │ ToolExecutor │   │
+            │            │ ToolExecutor│   │
             │            │.execute_    │   │
             │            │ batch()     │   │
             │            │             │   │
@@ -310,7 +334,7 @@
                                     └──────┬──────┘
                                            │
                                     ┌──────▼───────┐
-                                    │ post_response│
+                                    │ AfterResponse│
                                     │ Hook (可选)  │
                                     │ 审计/告警    │
                                     └──────┬───────┘
@@ -343,6 +367,19 @@ chat_stream() ──▶ Stream<ChatStreamChunk>
            ▼            ▼            ▼
     callback()      callback()    解析为 Vec<ToolCall>
     (实时输出)      (实时输出)    → ChatResponse
+```
+
+### 流式事件类型
+
+```rust
+pub enum StreamEvent {
+    Content(String),           // 流式内容片段
+    Reasoning(String),         // 推理/思考内容
+    ToolStart { name, arguments },  // 工具调用开始
+    ToolEnd { name, output },       // 工具调用结束
+    TokenStats { input, output },   // Token 统计
+    Done,                      // 流结束
+}
 ```
 
 ---
@@ -395,24 +432,144 @@ InjectionReport {
 
 ## 7. SubagentManager 调度模式
 
+### 7.1 Builder 模式（推荐）
+
 ```
-─── submit() (异步 fire-and-forget) ───
-
-调用者 ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
-  │                              │                              │
-  │  立即返回 Ok(())             │  10 分钟超时                  │  通过 outbound_tx
-  │                              │                              │  发送到渠道
-  ▼                              ▼                              ▼
-(不等待)                    (后台运行)                     (结果路由到 chat)
-
-
-─── submit_and_wait() (同步等待) ───
-
-调用者 ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ oneshot::Sender
-  │              │                                              │
-  │  await rx    │  10 分钟超时                                  │ tx.send(result)
-  │  (阻塞等待)  │                                              │
-  ▼              ▼                                              ▼
-(收到 AgentResponse                                    (oneshot channel)
- 或 Error)
+调用者 ──▶ SubagentManager::task(id, prompt)
+              │
+              ▼
+         SubagentTaskBuilder
+              │
+              ├──▶ .with_system_prompt()
+              ├──▶ .with_streaming(event_tx)
+              ├──▶ .with_cancellation_token(token)
+              └──▶ .with_hooks(hooks)
+              │
+              ▼
+         .spawn(result_tx)
+              │
+              ▼
+    tokio::spawn(async {
+        AgentLoop::process_direct_streaming()
+    })
+              │
+              ▼
+    SubagentEvent ──▶ mpsc::channel ──▶ SubagentTracker
 ```
+
+### 7.2 Fire-and-Forget 模式
+
+```
+调用者 ──▶ SubagentManager::submit(prompt, channel, chat_id)
+  │
+  │  立即返回 Ok(())
+  │
+  ▼
+tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
+                     │                              │
+                     │  10 分钟超时                  │  通过 outbound_tx
+                     │                              │  发送到渠道
+                     ▼                              ▼
+               (后台运行)                     (结果路由到 chat)
+```
+
+### 7.3 同步等待模式
+
+```
+调用者 ──▶ SubagentManager::submit_and_wait(prompt, system_prompt, channel, chat_id)
+  │              │
+  │  await rx    │  tokio::spawn
+  │  (阻塞等待)  │  │
+  ▼              ▼  │
+(收到 AgentResponse  │
+ 或 Error)          │
+                    ▼
+              oneshot::channel
+                    │
+                    ▼
+              (返回结果给调用者)
+```
+
+---
+
+## 8. 上下文压缩数据流
+
+```
+AgentLoop::process_direct()
+    │
+    ▼
+process_history() ──▶ 识别被驱逐消息
+    │
+    ▼
+AgentContext::compress_context(key, evicted)
+    │
+    ├──▶ evicted 为空? ──▶ 返回
+    │
+    ▼
+DashMap::entry(key) ──▶ 检查压缩是否进行中
+    │
+    ▼
+tokio::spawn(async {
+    │
+    ▼
+SummarizationService::compress(key, evicted)
+    │
+    ▼
+LLM 生成摘要
+    │
+    ▼
+SQLite::upsert session_summaries
+    │
+    ▼
+DashMap::remove(key) ──▶ 释放锁
+})
+```
+
+### 并发控制
+
+- `DashMap<String, Arc<AtomicBool>>` 确保每会话只有一个压缩任务
+- `compare_exchange` 实现无锁并发控制
+- 后台执行不阻塞用户响应
+
+---
+
+## 9. Hook 系统数据流
+
+```
+AgentLoop::process_direct()
+    │
+    ├──▶ BeforeRequest Hook ──▶ 可修改/中止请求
+    │
+    ▼
+Load Session / Save User Message
+    │
+    ├──▶ AfterHistory Hook ──▶ 可添加上下文
+    │
+    ▼
+Process History
+    │
+    ├──▶ BeforeLLM Hook ──▶ Vault 注入等最后修改
+    │
+    ▼
+LLM Provider
+    │
+    ├──▶ AfterToolCall Hook ──▶ 并行执行，只读审计
+    │
+    ▼
+Return Response
+    │
+    ├──▶ AfterResponse Hook ──▶ 并行执行，只读审计
+    │
+    ▼
+Save Assistant Message
+```
+
+### Hook 执行策略
+
+| Hook Point | 策略 | 可修改 | 可中止 |
+|------------|------|--------|--------|
+| BeforeRequest | Sequential | ✓ | ✓ |
+| AfterHistory | Sequential | ✓ | ✗ |
+| BeforeLLM | Sequential | ✓ | ✗ |
+| AfterToolCall | Parallel | ✗ | ✗ |
+| AfterResponse | Parallel | ✗ | ✗ |

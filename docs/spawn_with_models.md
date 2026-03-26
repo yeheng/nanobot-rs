@@ -50,12 +50,12 @@ agents:
       provider: zhipu
       model: glm-4-flash
       description: "Fast responses for simple tasks"
-      capabilities: ["quick", "simple"]
+      capabilities: ["fast", "simple"]
       temperature: 0.7
 
     reasoning:
       provider: anthropic
-      model: claude-sonnet-4
+      model: claude-opus-4
       description: "Deep reasoning and analysis"
       capabilities: ["reasoning", "analysis"]
       temperature: 0.3
@@ -67,6 +67,18 @@ agents:
       capabilities: ["code", "documentation"]
       temperature: 0.2
 ```
+
+### ModelProfile 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `provider` | string | 提供商 ID (openai, anthropic, zhipu 等) |
+| `model` | string | 模型 ID (gpt-4o, claude-opus-4 等) |
+| `description` | string | 模型描述 |
+| `capabilities` | string[] | 能力标签 (code, reasoning, fast, creative 等) |
+| `temperature` | float | 采样温度 (0.0-2.0) |
+| `thinking_enabled` | bool | 是否启用推理模式 |
+| `max_tokens` | int | 最大生成 token 数 |
 
 ## Benefits
 

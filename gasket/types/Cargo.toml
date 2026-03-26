@@ -18,5 +18,8 @@ tokio = { workspace = true, features = ["sync"] }
 # Time
 chrono.workspace = true
 
+# UUID (v7 for time-ordered IDs)
+uuid.workspace = true
+
 # Error handling
 thiserror.workspace = true

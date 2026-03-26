@@ -404,7 +404,129 @@ InjectionReport {
 
 ---
 
-## 7. SubagentManager Scheduling Patterns
+## 7. Event Sourcing Flow
+
+### Event Persistence Flow
+
+```
+AgentLoop.process_direct()
+  │
+  ├── User message ──▶ SessionEvent {
+  │       event_type: UserMessage,
+  │       parent_id: current_head,
+  │       content: "user input",
+  │       metadata: { branch: current_branch },
+  │       ...
+  │   } ──▶ SQLite storage
+  │
+  ├── Assistant response ──▶ SessionEvent {
+  │       event_type: AssistantMessage,
+  │       parent_id: previous_event_id,
+  │       content: "assistant reply",
+  │       metadata: { tools_used, token_usage },
+  │       ...
+  │   } ──▶ SQLite storage
+  │
+  ├── Tool calls ──▶ SessionEvent {
+  │       event_type: ToolCall { tool_name, arguments },
+  │       parent_id: assistant_event_id,
+  │       content: JSON(args),
+  │       ...
+  │   } ──▶ SQLite storage
+  │
+  └── Tool results ──▶ SessionEvent {
+          event_type: ToolResult { tool_call_id, tool_name, is_error },
+          parent_id: tool_call_event_id,
+          content: result_or_error,
+          ...
+      } ──▶ SQLite storage
+```
+
+### Branching and Version Control
+
+```
+Session Structure
+┌─────────────────────────────────────────────────────────────┐
+│  Session {                                                  │
+│      key: "telegram:123:456",                               │
+│      current_branch: "main",                                │
+│      branches: HashMap {                                    │
+│          "main"    ──▶ event_id_003,                        │
+│          "feature" ──▶ event_id_007,                        │
+│      },                                                     │
+│      metadata: { ... }                                      │
+│  }                                                          │
+└─────────────────────────────────────────────────────────────┘
+
+Event Chain (parent_id links)
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│ event_001│────▶│ event_002│────▶│ event_003│     │ event_007│
+│ UserMsg  │     │ ToolCall │     │ ToolRslt │     │ Summary  │
+│ "hello"  │     │ exec()   │     │ "ok"     │     │ {...}    │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+      │                                                   ^
+      │                                                   │
+      └───────────────────(main branch head)──────────────┘
+
+Branch Creation
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│ event_003│────▶│ event_004│────▶│ event_005│
+│ ToolRslt │     │ UserMsg  │     │ AsstMsg  │
+│          │     │ "feature"│     │ "done"   │
+└──────────┘     └──────────┘     └──────────┘
+      ^                                 │
+      │                                 │
+      └────(fork point)                 └────(feature branch head)
+
+Merge Event
+┌──────────┐
+│ event_008│
+│ Merge {  │
+│   source_branch: "feature",
+│   source_head: event_005,
+│ } ──▶ combines feature into main
+└──────────┘
+```
+
+### Summary Events
+
+```
+ContextCompressionHook.compress()
+  │
+  ├── Detect token budget exceeded
+  │
+  ├── Select evicted messages (oldest non-recent)
+  │
+  ├── Generate summary via LLM
+  │   "3 messages about API design..."
+  │
+  └── Create SessionEvent {
+          event_type: Summary {
+              summary_type: Compression { token_budget: 4000 },
+              covered_event_ids: [event_001, event_002, event_003],
+          },
+          content: "summary text",
+          parent_id: last_evicted_event_id,
+          ...
+      } ──▶ SQLite storage
+
+Query with Summary
+┌─────────────────────────────────────────────────────────────┐
+│  Build Prompt:                                              │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ [Summary event] "3 messages about API design..."    │    │
+│  │ (replaces evicted messages in context window)       │    │
+│  ├─────────────────────────────────────────────────────┤    │
+│  │ [Recent messages] (kept within token budget)        │    │
+│  ├─────────────────────────────────────────────────────┤    │
+│  │ [Current user message]                              │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. SubagentManager Scheduling Patterns
 
 ```
 ─── submit() (async fire-and-forget) ───

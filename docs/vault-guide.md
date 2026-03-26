@@ -26,6 +26,16 @@ Vault 的核心功能是将敏感数据与 LLM 可访问的存储完全隔离，
 ~/.gasket/vault/secrets.json
 ```
 
+### 加密算法
+
+Vault 使用 **XChaCha20-Poly1305** 进行加密（默认）：
+
+- **算法**: XChaCha20-Poly1305（AEAD 认证加密）
+- **密钥派生**: Argon2id（内存-hard 密钥派生函数）
+- **密码环境变量**: `GASKET_VAULT_PASSWORD`
+
+> **注意**: 代码中也支持 AES-256-GCM，但 XChaCha20-Poly1305 是默认推荐算法，提供更强的 nonce 随机性和现代密码学安全性。
+
 ## 设计原则
 
 ### 1. 数据结构隔离
@@ -299,6 +309,16 @@ gasket vault export ~/backup/vault_backup.json
 ```bash
 chmod 600 ~/.gasket/vault/secrets.json
 ```
+
+### 2. 环境变量加密
+
+设置 vault 密码环境变量以启用加密：
+
+```bash
+export GASKET_VAULT_PASSWORD="your-strong-password"
+```
+
+如果没有设置此环境变量，vault 会提示输入密码。未加密的 vault 文件仍然受文件系统权限保护，但强烈建议启用加密。
 
 ### 2. 不要在代码中硬编码
 

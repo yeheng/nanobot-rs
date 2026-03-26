@@ -8,6 +8,8 @@
 
 ### 1.1 入站消息 (外部 → Agent)
 
+> **来源**: `gasket-types::events::InboundMessage`
+
 ```rust
 InboundMessage {
     channel: ChannelType,             // 枚举: Telegram | Discord | Slack | Feishu | Email |
@@ -23,6 +25,8 @@ InboundMessage {
 ```
 
 ### 1.2 出站消息 (Agent → 外部)
+
+> **来源**: `gasket-types::events::OutboundMessage`
 
 ```rust
 OutboundMessage {
@@ -44,6 +48,8 @@ WebSocketMessage {
 
 ### 1.3 会话标识
 
+> **来源**: `gasket-types::events::SessionKey`
+
 ```rust
 // 强类型会话标识符（替代原来的字符串拼接）
 SessionKey {
@@ -55,6 +61,8 @@ SessionKey {
 ```
 
 ### 1.4 渠道类型
+
+> **来源**: `gasket-types::events::ChannelType`
 
 ```rust
 enum ChannelType {
@@ -73,6 +81,8 @@ enum ChannelType {
 
 ### 1.5 媒体附件
 
+> **来源**: `gasket-types::events::MediaAttachment`
+
 ```rust
 MediaAttachment {
     media_type: String,       // MIME 类型
@@ -88,6 +98,8 @@ MediaAttachment {
 
 ### 2.1 ChatRequest
 
+> **来源**: `gasket-providers::ChatRequest`
+
 ```rust
 ChatRequest {
     model: String,                        // 如 "deepseek-chat"
@@ -101,6 +113,7 @@ ChatRequest {
 
 ### 2.2 ChatMessage
 
+> **来源**: `gasket-providers::ChatMessage`
 > **注意**: `role` 字段已从 `String` 改为强类型 `MessageRole` 枚举。
 
 ```rust
@@ -130,6 +143,8 @@ ChatMessage::tool_result(id, name, content)
 
 ### 2.3 ChatResponse
 
+> **来源**: `gasket-providers::ChatResponse`
+
 ```rust
 ChatResponse {
     content: Option<String>,              // 文本回复
@@ -147,6 +162,8 @@ TokenUsage {
 ```
 
 ### 2.4 ToolCall / ToolDefinition
+
+> **来源**: `gasket-providers::{ToolCall, ToolDefinition}`
 
 ```rust
 ToolCall {
@@ -170,10 +187,27 @@ ToolDefinition {
 
 ### 2.5 ThinkingConfig
 
+> **来源**: `gasket-providers::ThinkingConfig`
+
 ```rust
 ThinkingConfig {
     enabled: bool,
     budget_tokens: Option<u32>,  // 推理预算 (token 数)
+}
+```
+
+### 2.6 流式输出类型
+
+> **来源**: `gasket-core::agent::stream::StreamEvent`
+
+```rust
+pub enum StreamEvent {
+    Content(String),                    // 流式内容片段
+    Reasoning(String),                  // 推理/思考内容
+    ToolStart { name: String, arguments: String },  // 工具调用开始
+    ToolEnd { name: String, output: String },       // 工具调用结束
+    TokenStats { input: u32, output: u32 },         // Token 统计
+    Done,                               // 流结束
 }
 ```
 
@@ -182,6 +216,8 @@ ThinkingConfig {
 ## 3. 会话与历史结构
 
 ### 3.1 Session
+
+> **来源**: `gasket-core::session::Session`
 
 ```rust
 Session {
@@ -200,6 +236,8 @@ SessionMessage {
 
 ### 3.2 历史处理配置
 
+> **来源**: `gasket-core::agent::history_processor`
+
 ```rust
 HistoryConfig {
     max_messages: usize,      // 最大消息条数 (默认 50)
@@ -214,11 +252,55 @@ ProcessedHistory {
 }
 ```
 
+### 3.3 AgentContext Trait
+
+> **来源**: `gasket-core::agent::context`
+
+```rust
+#[async_trait]
+pub trait AgentContext: Send + Sync {
+    /// 加载或创建会话
+    async fn load_session(&self, key: &SessionKey) -> Session;
+
+    /// 保存消息到会话
+    async fn save_message(
+        &self,
+        key: &SessionKey,
+        role: &str,
+        content: &str,
+        tools: Option<Vec<String>>,
+    ) -> Result<(), AgentError>;
+
+    /// 加载会话摘要
+    async fn load_summary(&self, key: &str) -> Option<String>;
+
+    /// 压缩上下文（后台非阻塞）
+    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
+
+    /// 语义历史召回
+    async fn recall_history(
+        &self,
+        key: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<String>>;
+
+    /// 是否启用持久化
+    fn is_persistent(&self) -> bool;
+}
+```
+
+**实现类型**:
+- `PersistentContext`: 完整持久化（主 Agent）
+- `StatelessContext`: 无持久化（子 Agent）
+
 ---
 
 ## 4. 记忆结构
 
 ### 4.1 MemoryEntry
+
+> **来源**: `gasket-storage` 或 `gasket-types`
 
 ```rust
 MemoryEntry {
@@ -238,6 +320,8 @@ MemoryMetadata {
 
 ### 4.2 MemoryQuery
 
+> **来源**: `gasket-core::search`
+
 ```rust
 MemoryQuery {
     text: Option<String>,                 // 全文/语义搜索
@@ -253,6 +337,8 @@ MemoryQuery {
 ## 5. Vault 数据结构
 
 ### 5.1 VaultEntryV2
+
+> **来源**: `gasket-vault::VaultEntryV2`
 
 ```rust
 VaultEntryV2 {
@@ -271,6 +357,8 @@ VaultMetadata {
 
 ### 5.2 VaultFileV2
 
+> **来源**: `gasket-vault::VaultFileV2`
+
 ```rust
 VaultFileV2 {
     version: String,                  // "2.0"
@@ -281,6 +369,8 @@ VaultFileV2 {
 ```
 
 ### 5.3 InjectionReport
+
+> **来源**: `gasket-core::vault::injector`
 
 ```rust
 InjectionReport {
@@ -309,7 +399,7 @@ InjectionReport {
 │   ├── timestamp TEXT    ISO 8601
 │   └── tools_used TEXT   JSON 数组 (nullable)
 │
-├── session_summaries     会话摘要 (ContextCompressionHook 生成)
+├── session_summaries     会话摘要 (SummarizationService 生成)
 │   ├── session_key TEXT PK  → sessions.key
 │   └── summary TEXT         摘要内容
 │
@@ -369,3 +459,108 @@ InjectionReport {
 > **Bootstrap 文件加载顺序**: PROFILE.md → SOUL.md → AGENTS.md → MEMORY.md → BOOTSTRAP.md
 >
 > MEMORY.md 有 2048 token 硬限制，超出时自动截断保留尾部（最新内容）。
+
+---
+
+## 8. 子代理 (Subagent) 结构
+
+### 8.1 SubagentManager
+
+> **来源**: `gasket-core::agent::subagent`
+
+```rust
+pub struct SubagentManager {
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
+    session_key: Arc<RwLock<Option<SessionKey>>>,
+    timeout_secs: u64,
+}
+```
+
+### 8.2 SubagentTaskBuilder
+
+Builder 模式用于配置子代理任务：
+
+```rust
+pub struct SubagentTaskBuilder<'a> {
+    manager: &'a SubagentManager,
+    subagent_id: String,
+    task: String,
+    provider: Option<Arc<dyn LlmProvider>>,
+    config: Option<AgentConfig>,
+    event_tx: Option<mpsc::Sender<SubagentEvent>>,
+    system_prompt: Option<String>,
+    session_key: Option<SessionKey>,
+    cancellation_token: Option<CancellationToken>,
+    hooks: Option<Arc<HookRegistry>>,
+}
+```
+
+### 8.3 SubagentEvent
+
+> **来源**: `gasket-core::agent::subagent_tracker`
+
+```rust
+pub enum SubagentEvent {
+    Thinking { subagent_id: String, content: String },
+    ToolStart { subagent_id: String, name: String, arguments: String },
+    ToolEnd { subagent_id: String, name: String, output: String },
+    Content { subagent_id: String, content: String },
+    Completed { subagent_id: String, result: SubagentResult },
+}
+
+pub struct SubagentResult {
+    pub subagent_id: String,
+    pub content: String,
+    pub success: bool,
+}
+```
+
+---
+
+## 9. Hook 系统结构
+
+### 9.1 Hook 类型定义
+
+> **来源**: `gasket-core::hooks::types`
+
+```rust
+pub enum HookPoint {
+    BeforeRequest,    // 请求处理前
+    AfterHistory,     // 历史加载后
+    BeforeLLM,        // 发送给 LLM 前
+    AfterToolCall,    // 工具调用后
+    AfterResponse,    // 响应生成后
+}
+
+pub enum ExecutionStrategy {
+    Sequential,       // 顺序执行，可修改状态
+    Parallel,         // 并行执行，只读
+}
+
+pub enum HookAction {
+    Continue,         // 继续执行
+    Abort { reason: String },  // 中止请求
+}
+```
+
+### 9.2 HookContext
+
+```rust
+pub struct HookContext {
+    pub session_key: SessionKey,
+    pub messages: Vec<ChatMessage>,
+    pub metadata: HashMap<String, String>,
+}
+
+pub struct MutableContext<'a> {
+    pub messages: &'a mut Vec<ChatMessage>,
+    pub metadata: &'a mut HashMap<String, String>,
+}
+
+pub struct ReadonlyContext<'a> {
+    pub messages: &'a [ChatMessage],
+    pub metadata: &'a HashMap<String, String>,
+}
+```

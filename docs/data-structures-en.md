@@ -177,9 +177,226 @@ ThinkingConfig {
 
 ---
 
-## 3. Session and History Structures
+## 3. Event Sourcing Architecture
 
-### 3.1 Session
+### 3.1 SessionEvent
+
+Immutable fact record representing a single event in the session history. Uses UUID v7 time-ordered identifiers for natural chronological sorting and database-friendly indexing.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEvent {
+    /// Event unique identifier (UUID v7 time-ordered)
+    pub id: Uuid,
+
+    /// Session this event belongs to
+    pub session_key: String,
+
+    /// Parent event ID (supports branching and version control)
+    pub parent_id: Option<Uuid>,
+
+    /// Event type
+    pub event_type: EventType,
+
+    /// Message content
+    pub content: String,
+
+    /// Semantic vector (per-message embedding)
+    pub embedding: Option<Vec<f32>>,
+
+    /// Event metadata
+    pub metadata: EventMetadata,
+
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+}
+```
+
+**Key Design Points:**
+- **UUID v7**: Time-ordered UUIDs provide natural chronological sorting without requiring timestamp indexes
+- **Parent ID**: Enables Git-like branching and version control capabilities
+- **Embedding**: Optional semantic vector for similarity search and context retrieval
+- **Immutable**: Events are append-only; modifications create new events
+
+### 3.2 EventType Enum
+
+Discriminated union representing all possible event types in the system.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EventType {
+    /// User message
+    UserMessage,
+
+    /// Assistant reply
+    AssistantMessage,
+
+    /// Tool call
+    ToolCall {
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+
+    /// Tool result
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        is_error: bool,
+    },
+
+    /// Summary event (compression generated)
+    Summary {
+        summary_type: SummaryType,
+        covered_event_ids: Vec<Uuid>,
+    },
+
+    /// Branch merge
+    Merge {
+        source_branch: String,
+        source_head: Uuid,
+    },
+}
+```
+
+**Event Type Categories:**
+- **Simple variants**: `UserMessage`, `AssistantMessage` - basic message types
+- **Tool variants**: `ToolCall`, `ToolResult` - tool execution lifecycle
+- **Meta variants**: `Summary`, `Merge` - system-generated events for history management
+
+### 3.3 EventTypeCategory
+
+Query-friendly categorization for filtering events without pattern matching on the full enum.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventTypeCategory {
+    UserMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResult,
+    Summary,
+    Merge,
+}
+```
+
+Used for database queries and event stream filtering where exact variant matching is unnecessary.
+
+### 3.4 SummaryType
+
+Specifies the strategy used to generate a summary event.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SummaryType {
+    /// Time window summary
+    TimeWindow { duration_hours: u32 },
+
+    /// Topic summary
+    Topic { topic: String },
+
+    /// Compression summary (when exceeding token budget)
+    Compression { token_budget: usize },
+}
+```
+
+**Summary Strategies:**
+- **TimeWindow**: Summarize events within a specific time range
+- **Topic**: Summarize events related to a specific topic (extracted via embedding similarity)
+- **Compression**: Aggressive summarization triggered when token budget is exceeded
+
+### 3.5 EventMetadata
+
+Extensible metadata container for events.
+
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventMetadata {
+    /// Branch name (None means main branch)
+    pub branch: Option<String>,
+
+    /// List of tools used
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+
+    /// Token statistics
+    pub token_usage: Option<TokenUsage>,
+
+    /// Extension fields
+    #[serde(default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+```
+
+**Fields:**
+- **branch**: Git-like branching support; `None` indicates the main branch
+- **tools_used**: Tracks which tools were invoked during this event's processing
+- **token_usage**: LLM token consumption statistics for cost tracking
+- **extra**: Open-ended key-value store for future extensions without schema changes
+
+### 3.6 Session (Aggregate Root)
+
+Aggregate root managing session state and branch pointers.
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// Session identifier
+    pub key: String,
+
+    /// Current active branch
+    pub current_branch: String,
+
+    /// All branch pointers (branch_name -> latest_event_id)
+    pub branches: HashMap<String, Uuid>,
+
+    /// Session metadata
+    pub metadata: SessionMetadata,
+}
+```
+
+**Responsibilities:**
+- Maintains the current branch context for new events
+- Tracks head commit for each branch
+- Provides session-level metadata and statistics
+
+### 3.7 SessionMetadata
+
+Session-level statistics and housekeeping information.
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct SessionMetadata {
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+
+    /// Last update timestamp
+    pub updated_at: DateTime<Utc>,
+
+    /// Last consolidation point (event ID)
+    pub last_consolidated_event: Option<Uuid>,
+
+    /// Total message count
+    pub total_events: usize,
+
+    /// Cumulative token usage
+    pub total_tokens: u64,
+}
+```
+
+**Usage:**
+- **last_consolidated_event**: Tracks the last event included in a summary; used for incremental summarization
+- **total_events/total_tokens**: Running counters for resource monitoring and limits
+
+---
+
+## 4. Session and History Structures
+
+### 4.1 Session (Legacy)
 
 ```rust
 Session {
@@ -196,7 +413,7 @@ SessionMessage {
 }
 ```
 
-### 3.2 History Processing Configuration
+### 4.2 History Processing Configuration
 
 ```rust
 HistoryConfig {
@@ -214,9 +431,9 @@ ProcessedHistory {
 
 ---
 
-## 4. Memory Structures
+## 5. Memory Structures
 
-### 4.1 MemoryEntry
+### 5.1 MemoryEntry
 
 ```rust
 MemoryEntry {
@@ -234,7 +451,7 @@ MemoryMetadata {
 }
 ```
 
-### 4.2 MemoryQuery
+### 5.2 MemoryQuery
 
 ```rust
 MemoryQuery {
@@ -248,9 +465,9 @@ MemoryQuery {
 
 ---
 
-## 5. Vault Data Structures
+## 6. Vault Data Structures
 
-### 5.1 VaultEntryV2
+### 6.1 VaultEntryV2
 
 ```rust
 VaultEntryV2 {
@@ -267,7 +484,7 @@ VaultMetadata {
 }
 ```
 
-### 5.2 VaultFileV2
+### 6.2 VaultFileV2
 
 ```rust
 VaultFileV2 {
@@ -278,7 +495,7 @@ VaultFileV2 {
 }
 ```
 
-### 5.3 InjectionReport
+### 6.3 InjectionReport
 
 ```rust
 InjectionReport {
@@ -290,7 +507,7 @@ InjectionReport {
 
 ---
 
-## 6. SQLite Database Structure
+## 7. SQLite Database Structure
 
 ```
 ~/.gasket/gasket.db  (SqliteStore — sqlx::SqlitePool)
@@ -343,7 +560,7 @@ InjectionReport {
 
 ---
 
-## 7. File System Storage Structure
+## 8. File System Storage Structure
 
 ```
 ~/.gasket/                 Workspace root directory

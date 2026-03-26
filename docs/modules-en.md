@@ -179,7 +179,7 @@ trait Channel: Send + Sync {
 
 | File | Responsibility |
 |------|----------------|
-| `events.rs` | Event type definitions: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
+| `events.rs` | Event type definitions: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment`, `SessionEvent`, `EventType`, `Session` |
 | `actors.rs` | Three Actors: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
 | `queue.rs` | Message queue encapsulation |
 
@@ -233,12 +233,23 @@ trait MemoryStore: Send + Sync {
 
 ## 8. session/ — Session Management
 
-**SessionManager**: Pure SQLite backend, no in-memory cache
+Event sourcing-based session management with full history reconstruction capability.
 
-- Reads directly from SQLite every time, eliminates cache consistency issues
-- Leverages SQLite page cache to ensure read performance
-- Supports legacy JSON blob session automatic migration
-- Messages stored independently (O(1) append)
+### Core Types
+
+| Type | Description |
+|------|-------------|
+| `Session` | Aggregate root with branch management (branches HashMap) |
+| `SessionEvent` | Immutable events with UUID v7, parent_id for branching support |
+| `EventType` | Event variants: UserMessage, AssistantMessage, ToolCall, ToolResult, Summary, Merge |
+| `EventMetadata` | Event metadata with branch, tools_used, token_usage fields |
+
+### Architecture
+
+- **Event Sourcing**: All messages stored as immutable events enabling full history reconstruction
+- **Branch Support**: Events reference parent events via `parent_id`, branches tracked in `branches` HashMap
+- **Storage**: Pure SQLite backend, no in-memory cache, reads directly from database every time
+- **Migration**: Supports legacy JSON blob session automatic migration
 
 ---
 
