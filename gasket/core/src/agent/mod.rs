@@ -1,6 +1,7 @@
 //! Agent module: core processing engine
 
 pub mod context;
+pub mod context_v2;
 pub mod executor;
 pub mod executor_core;
 pub mod history_processor;
@@ -17,6 +18,9 @@ pub mod subagent_tracker;
 pub mod summarization;
 
 pub use context::{AgentContext, PersistentContext, StatelessContext};
+pub use context_v2::{
+    AgentContext as AgentContextV2, CompressionTask, PersistentContext as PersistentContextV2,
+};
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use history_processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
