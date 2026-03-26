@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Session event - immutable fact record.
@@ -135,6 +136,74 @@ pub struct TokenUsage {
     pub output_tokens: u32,
 }
 
+/// Session - aggregate root for events.
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// Session identifier
+    pub key: String,
+
+    /// Current active branch
+    pub current_branch: String,
+
+    /// All branch pointers (branch_name -> latest_event_id)
+    pub branches: HashMap<String, Uuid>,
+
+    /// Session metadata
+    pub metadata: SessionMetadata,
+}
+
+/// Session metadata.
+#[derive(Debug, Clone, Default)]
+pub struct SessionMetadata {
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+
+    /// Last update timestamp
+    pub updated_at: DateTime<Utc>,
+
+    /// Last consolidation point (event ID)
+    pub last_consolidated_event: Option<Uuid>,
+
+    /// Total message count
+    pub total_events: usize,
+
+    /// Cumulative token usage
+    pub total_tokens: u64,
+}
+
+impl Session {
+    /// Create a new session.
+    pub fn new(key: impl Into<String>) -> Self {
+        let key = key.into();
+        let now = Utc::now();
+        Self {
+            key,
+            current_branch: "main".to_string(),
+            branches: HashMap::new(),
+            metadata: SessionMetadata {
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Create from a SessionKey.
+    pub fn from_key(key: crate::SessionKey) -> Self {
+        Self::new(key.to_string())
+    }
+
+    /// Get branch head event ID.
+    pub fn get_branch_head(&self, branch: &str) -> Option<Uuid> {
+        self.branches.get(branch).copied()
+    }
+
+    /// Get main branch head event ID.
+    pub fn main_head(&self) -> Option<Uuid> {
+        self.get_branch_head("main")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +248,23 @@ mod tests {
             .category(),
             EventTypeCategory::ToolCall
         );
+    }
+
+    #[test]
+    fn test_session_new() {
+        let session = Session::new("test:session");
+        assert_eq!(session.key, "test:session");
+        assert_eq!(session.current_branch, "main");
+        assert!(session.branches.is_empty());
+    }
+
+    #[test]
+    fn test_session_branch_head() {
+        let mut session = Session::new("test:session");
+        let event_id = Uuid::now_v7();
+        session.branches.insert("main".into(), event_id);
+
+        assert_eq!(session.main_head(), Some(event_id));
+        assert_eq!(session.get_branch_head("nonexistent"), None);
     }
 }

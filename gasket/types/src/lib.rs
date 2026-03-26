@@ -18,6 +18,7 @@ pub use events::{
     SessionKeyParseError, WebSocketMessage,
 };
 pub use session_event::{
-    EventMetadata, EventType, EventTypeCategory, SessionEvent, SummaryType, TokenUsage,
+    EventMetadata, EventType, EventTypeCategory, Session, SessionEvent, SessionMetadata,
+    SummaryType, TokenUsage,
 };
 pub use tool::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
