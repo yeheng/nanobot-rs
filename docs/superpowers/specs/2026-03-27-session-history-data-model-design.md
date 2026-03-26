@@ -104,9 +104,34 @@ pub enum EventType {
 }
 
 impl EventType {
-    /// 获取摘要类型列表
-    pub fn category_summary() -> &'static [EventType] {
-        &[EventType::Summary { summary_type: SummaryType::Compression { token_budget: 0 }, covered_event_ids: vec![] }]
+    /// 检查是否为摘要类型事件
+    pub fn is_summary(&self) -> bool {
+        matches!(self, EventType::Summary { .. })
+    }
+}
+
+/// 事件类型分类 (用于查询过滤)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventTypeCategory {
+    UserMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResult,
+    Summary,
+    Merge,
+}
+
+impl EventType {
+    /// 获取事件类型分类
+    pub fn category(&self) -> EventTypeCategory {
+        match self {
+            EventType::UserMessage => EventTypeCategory::UserMessage,
+            EventType::AssistantMessage => EventTypeCategory::AssistantMessage,
+            EventType::ToolCall { .. } => EventTypeCategory::ToolCall,
+            EventType::ToolResult { .. } => EventTypeCategory::ToolResult,
+            EventType::Summary { .. } => EventTypeCategory::Summary,
+            EventType::Merge { .. } => EventTypeCategory::Merge,
+        }
     }
 }
 
@@ -195,7 +220,7 @@ impl Session {
         Self {
             key,
             current_branch: "main".to_string(),
-            branches: HashMap::new(),
+            branches: HashMap::new(), // 空映射表示尚无事件，主分支在首个事件追加时自动初始化
             metadata: SessionMetadata {
                 created_at: now,
                 updated_at: now,
@@ -207,6 +232,16 @@ impl Session {
     /// 从 SessionKey 创建
     pub fn from_key(key: SessionKey) -> Self {
         Self::new(key.to_string())
+    }
+
+    /// 获取分支头事件 ID
+    pub fn get_branch_head(&self, branch: &str) -> Option<Uuid> {
+        self.branches.get(branch).copied()
+    }
+
+    /// 获取主分支头事件 ID
+    pub fn main_head(&self) -> Option<Uuid> {
+        self.get_branch_head("main")
     }
 }
 ```
@@ -242,6 +277,39 @@ pub struct PersistentContext {
     /// 压缩任务发送端
     compression_tx: mpsc::Sender<CompressionTask>,
 }
+
+impl PersistentContext {
+    /// 创建持久化上下文
+    ///
+    /// 这会同时启动 CompressionActor 后台任务
+    pub fn new(
+        pool: SqlitePool,
+        embedding_service: Arc<EmbeddingService>,
+        summarization: Arc<SummarizationService>,
+    ) -> Self {
+        let event_store = Arc::new(EventStore::new(pool.clone()));
+        let session_manager = Arc::new(SessionManager::new(pool));
+        let history_retriever = Arc::new(HistoryRetriever::new(
+            Arc::clone(&event_store),
+            Arc::clone(&embedding_service),
+        ));
+
+        // 启动压缩 Actor
+        let compression_tx = CompressionActor::spawn(
+            Arc::clone(&event_store),
+            summarization,
+            Arc::clone(&embedding_service),
+        );
+
+        Self {
+            session_manager,
+            event_store,
+            history_retriever,
+            embedding_service,
+            compression_tx,
+        }
+    }
+}
 ```
 
 ---
@@ -268,12 +336,23 @@ CREATE TABLE session_events (
     id              TEXT PRIMARY KEY,           -- UUID v7
     session_key     TEXT NOT NULL,
     parent_id       TEXT,                       -- 父事件 UUID
-    event_type      TEXT NOT NULL,              -- 'user'|'assistant'|'tool_call'|'tool_result'|'summary'|'merge'
+    event_type      TEXT NOT NULL,              -- 事件类型: 'user_message'|'assistant_message'|'tool_call'|'tool_result'|'summary'|'merge'
     content         TEXT NOT NULL,
     embedding       BLOB,                       -- f32 vector (bytemuck)
     branch          TEXT DEFAULT 'main',
     tools_used      TEXT DEFAULT '[]',          -- JSON array
     token_usage     TEXT,                       -- JSON: {"input": 100, "output": 50}
+    -- 事件类型特定字段 (用于存储 EventType 变体数据)
+    tool_name       TEXT,                       -- ToolCall/ToolResult 的工具名称
+    tool_arguments  TEXT,                       -- ToolCall 的参数 (JSON)
+    tool_call_id    TEXT,                       -- ToolResult 的调用 ID
+    is_error        INTEGER DEFAULT 0,          -- ToolResult 是否错误
+    summary_type    TEXT,                       -- Summary 类型: 'time_window'|'topic'|'compression'
+    summary_topic   TEXT,                       -- Topic 摘要的主题
+    covered_events  TEXT,                       -- Summary 覆盖的事件 ID 列表 (JSON)
+    merge_source    TEXT,                       -- Merge 的源分支名
+    merge_head      TEXT,                       -- Merge 的源分支头事件 ID
+    -- 通用字段
     extra           TEXT DEFAULT '{}',          -- JSON
     created_at      TEXT NOT NULL,
 
@@ -374,12 +453,14 @@ impl EventStore {
 
 ```rust
 /// 压缩任务
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompressionTask {
     pub session_key: String,
     pub branch: String,
     pub evicted_events: Vec<Uuid>,
     pub compression_type: SummaryType,
+    /// 重试次数
+    pub retry_count: u32,
 }
 
 /// 压缩 Actor - 单线程处理所有压缩请求
@@ -388,6 +469,8 @@ pub struct CompressionActor {
     event_store: Arc<EventStore>,
     summarization: Arc<SummarizationService>,
     embedding_service: Arc<EmbeddingService>,
+    /// 最大重试次数
+    max_retries: u32,
 }
 
 impl CompressionActor {
@@ -404,6 +487,7 @@ impl CompressionActor {
             event_store,
             summarization,
             embedding_service,
+            max_retries: 3,
         };
 
         tokio::spawn(async move {
@@ -415,17 +499,53 @@ impl CompressionActor {
 
     async fn run(mut self) {
         while let Some(task) = self.receiver.recv().await {
-            if let Err(e) = self.process_task(task).await {
+            if let Err(e) = self.process_task(task.clone()).await {
                 tracing::error!("Compression task failed: {}", e);
+
+                // 重试机制
+                if task.retry_count < self.max_retries {
+                    let retry_task = CompressionTask {
+                        retry_count: task.retry_count + 1,
+                        ..task
+                    };
+                    tracing::warn!(
+                        "Retrying compression task (attempt {}/{})",
+                        retry_task.retry_count,
+                        self.max_retries
+                    );
+                    // 指数退避重试
+                    tokio::time::sleep(Duration::from_secs(2u64.pow(task.retry_count))).await;
+                    if let Err(e) = self.process_task(retry_task).await {
+                        tracing::error!("Compression retry failed: {}", e);
+                    }
+                } else {
+                    tracing::error!(
+                        "Compression task failed after {} retries, evicted events may be lost: {:?}",
+                        self.max_retries,
+                        task.evicted_events
+                    );
+                    // 可选：发送告警通知
+                }
             }
         }
     }
 
     async fn process_task(&self, task: CompressionTask) -> Result<(), AgentError> {
+        tracing::info!(
+            "Processing compression for session '{}', {} events",
+            task.session_key,
+            task.evicted_events.len()
+        );
+
         // 1. 加载被驱逐的事件
         let events = self.event_store
             .get_events_by_ids(&task.session_key, &task.evicted_events)
             .await?;
+
+        if events.is_empty() {
+            tracing::warn!("No events found for compression, skipping");
+            return Ok(());
+        }
 
         // 2. 生成摘要
         let summary_content = self.summarization
@@ -457,6 +577,11 @@ impl CompressionActor {
 
         // 5. 持久化摘要事件
         self.event_store.append_event(&summary_event).await?;
+
+        tracing::info!(
+            "Compression complete: summary event {} created",
+            summary_event.id
+        );
 
         Ok(())
     }
@@ -503,6 +628,79 @@ pub struct HistoryQuery {
 
     /// 排序
     pub order: QueryOrder,
+}
+
+impl HistoryQuery {
+    /// 创建查询构造器
+    pub fn builder(session_key: impl Into<String>) -> HistoryQueryBuilder {
+        HistoryQueryBuilder::new(session_key)
+    }
+}
+
+/// 查询构造器 (流式 API)
+pub struct HistoryQueryBuilder {
+    query: HistoryQuery,
+}
+
+impl HistoryQueryBuilder {
+    pub fn new(session_key: impl Into<String>) -> Self {
+        Self {
+            query: HistoryQuery {
+                session_key: session_key.into(),
+                limit: 50,
+                ..Default::default()
+            },
+        }
+    }
+
+    pub fn branch(mut self, branch: impl Into<String>) -> Self {
+        self.query.branch = Some(branch.into());
+        self
+    }
+
+    pub fn time_range(mut self, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+        self.query.time_range = Some(TimeRange { start, end });
+        self
+    }
+
+    pub fn event_types(mut self, types: Vec<EventType>) -> Self {
+        self.query.event_types = types;
+        self
+    }
+
+    pub fn semantic_text(mut self, text: impl Into<String>) -> Self {
+        self.query.semantic_query = Some(SemanticQuery::Text(text.into()));
+        self
+    }
+
+    pub fn semantic_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.query.semantic_query = Some(SemanticQuery::Embedding(embedding));
+        self
+    }
+
+    pub fn tools(mut self, tools: Vec<String>) -> Self {
+        self.query.tools_filter = tools;
+        self
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.query.limit = limit;
+        self
+    }
+
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.query.offset = offset;
+        self
+    }
+
+    pub fn order(mut self, order: QueryOrder) -> Self {
+        self.query.order = order;
+        self
+    }
+
+    pub fn build(self) -> HistoryQuery {
+        self.query
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +791,58 @@ pub struct AgentLoop {
 
 ### 6.2 持久化策略
 
+#### 6.2.1 Embedding 生成时机
+
+```rust
+/// Embedding 生成策略
+#[derive(Debug, Clone)]
+pub struct EmbeddingStrategy {
+    /// 用户消息 Embedding
+    pub user_messages: EmbeddingTiming,
+    /// 助手消息 Embedding
+    pub assistant_messages: EmbeddingTiming,
+    /// 工具调用 Embedding
+    pub tool_events: EmbeddingTiming,
+}
+
+#[derive(Debug, Clone)]
+pub enum EmbeddingTiming {
+    /// 同步生成 (阻塞，保证 Embedding 存在)
+    Synchronous,
+    /// 异步生成 (非阻塞，可能延迟)
+    Asynchronous,
+    /// 不生成
+    Disabled,
+}
+
+impl Default for EmbeddingStrategy {
+    fn default() -> Self {
+        Self {
+            user_messages: EmbeddingTiming::Asynchronous,
+            assistant_messages: EmbeddingTiming::Asynchronous,
+            tool_events: EmbeddingTiming::Disabled,
+        }
+    }
+}
+```
+
+**Embedding 生成流程**:
+
+1. **用户消息**: 默认异步生成，不阻塞主流程
+   - 事件先持久化 (`embedding: None`)
+   - 后台任务生成 Embedding 并更新
+
+2. **助手消息**: 默认异步生成
+   - 保证 LLM 响应快速返回
+   - Embedding 用于后续语义检索
+
+3. **Embedding 失败处理**:
+   - 不影响消息持久化
+   - 记录警告日志
+   - 可通过后台任务重试
+
+#### 6.2.2 消息持久化策略
+
 ```rust
 /// 持久化策略
 pub enum PersistPolicy {
@@ -603,6 +853,21 @@ pub enum PersistPolicy {
     /// 异步尝试，失败不影响主流程
     AsyncBestEffort,
 }
+
+/// 默认持久化策略配置
+pub struct PersistConfig {
+    /// 用户消息：立即持久化
+    pub user_message: PersistPolicy::Immediate,
+    /// 助手消息：立即持久化
+    pub assistant_message: PersistPolicy::Immediate,
+    /// 工具调用：立即持久化
+    pub tool_call: PersistPolicy::Immediate,
+    /// 摘要：后台持久化 (由 CompressionActor 处理)
+    pub summary: PersistPolicy::Background,
+    /// Embedding：异步生成
+    pub embedding: PersistPolicy::AsyncBestEffort,
+}
+```
 
 impl AgentLoop {
     /// 处理用户消息 (主入口)
@@ -728,6 +993,15 @@ pub struct BranchInfo {
     pub event_count: usize,
 }
 
+/// 合并策略
+#[derive(Debug, Clone)]
+pub enum MergeStrategy {
+    /// Fast-forward: 如果目标分支没有新事件，直接移动指针
+    FastForward,
+    /// Merge commit: 创建 Merge 事件记录合并
+    MergeCommit,
+}
+
 impl AgentContext {
     /// 创建新分支
     pub async fn create_branch(
@@ -748,6 +1022,19 @@ impl AgentContext {
     pub async fn list_branches(&self, session_key: &str) -> Result<Vec<BranchInfo>, AgentError>;
 
     /// 合并分支
+    ///
+    /// # 合并语义
+    ///
+    /// 采用 **Merge Commit** 策略：
+    /// 1. 在目标分支创建 `Merge` 事件
+    /// 2. `parent_id` 指向目标分支最新事件
+    /// 3. `Merge` 事件记录源分支名称和头事件 ID
+    /// 4. 不修改历史事件（事件溯源不可变原则）
+    ///
+    /// # 冲突处理
+    ///
+    /// 由于事件不可变，不存在传统意义上的冲突。
+    /// 合并后的历史将包含两个分支的所有事件，通过 `parent_id` 链追踪。
     pub async fn merge_branch(
         &self,
         session_key: &str,
@@ -811,6 +1098,151 @@ impl HistoryRetriever {
 | 阶段 7 | 清理与测试 (删除旧代码, 完整测试覆盖) | 2-3 天 |
 
 **总计**: 15-20 天
+
+---
+
+## 10. 测试策略
+
+### 10.1 单元测试
+
+| 测试类别 | 测试用例 | 重要性 |
+|----------|----------|--------|
+| 事件创建 | `SessionEvent` 序列化/反序列化 | 高 |
+| 事件追加 | `EventStore::append_event` 正确存储 | 高 |
+| 分支历史 | `get_branch_history` 返回正确事件链 | 高 |
+| 分支创建 | `create_branch` 正确设置指针 | 高 |
+| 语义检索 | `search_by_embedding` 返回相关结果 | 中 |
+| 时间旅行 | `get_events_up_to` 正确截断历史 | 高 |
+
+### 10.2 集成测试
+
+| 测试场景 | 描述 | 重要性 |
+|----------|------|--------|
+| 完整对话流程 | 用户消息 → 助手响应 → 持久化 → 历史 | 高 |
+| 分支切换 | 创建分支 → 切换 → 添加事件 → 切换回主分支 | 高 |
+| 压缩流程 | 触发压缩 → 验证摘要事件创建 | 高 |
+| 并发追加 | 多个事件同时追加到同一会话 | 中 |
+| Embedding 生成 | 验证 Embedding 异步生成和存储 | 中 |
+
+### 10.3 关键测试代码
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试事件追加和读取
+    #[tokio::test]
+    async fn test_event_append_and_read() {
+        let store = setup_test_store().await;
+
+        let event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Hello".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+
+        store.append_event(&event).await.unwrap();
+
+        let loaded = store.get_branch_history("test:session", "main").await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].content, "Hello");
+    }
+
+    /// 测试分支创建和历史隔离
+    #[tokio::test]
+    async fn test_branch_isolation() {
+        let store = setup_test_store().await;
+
+        // 主分支事件
+        let e1 = create_test_event("test:session", None, "main");
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = create_test_event("test:session", Some(e1.id), "main");
+        store.append_event(&e2).await.unwrap();
+
+        // 创建分支
+        store.create_branch("test:session", "explore", e1.id).await.unwrap();
+
+        // 分支事件
+        let e3 = create_test_event("test:session", Some(e1.id), "explore");
+        store.append_event(&e3).await.unwrap();
+
+        // 验证隔离
+        let main = store.get_branch_history("test:session", "main").await.unwrap();
+        assert_eq!(main.len(), 2);
+
+        let explore = store.get_branch_history("test:session", "explore").await.unwrap();
+        assert_eq!(explore.len(), 2); // e1 + e3
+    }
+
+    /// 测试时间旅行
+    #[tokio::test]
+    async fn test_time_travel() {
+        let store = setup_test_store().await;
+
+        let e1 = create_test_event("test:session", None, "main");
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = create_test_event("test:session", Some(e1.id), "main");
+        store.append_event(&e2).await.unwrap();
+
+        let e3 = create_test_event("test:session", Some(e2.id), "main");
+        store.append_event(&e3).await.unwrap();
+
+        // 回到 e2
+        let history = store.get_events_up_to("test:session", "main", e2.id).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, e1.id);
+        assert_eq!(history[1].id, e2.id);
+    }
+
+    /// 测试压缩 Actor 重试机制
+    #[tokio::test]
+    async fn test_compression_retry() {
+        let (store, tx) = setup_compression_actor_with_failures(2).await;
+
+        let task = CompressionTask {
+            session_key: "test:session".into(),
+            branch: "main".into(),
+            evicted_events: vec![Uuid::now_v7()],
+            compression_type: SummaryType::Compression { token_budget: 1000 },
+            retry_count: 0,
+        };
+
+        tx.send(task).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // 验证最终成功
+        let summaries = store.get_events_by_type("test:session", "main", &[EventTypeCategory::Summary]).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+    }
+}
+```
+
+### 10.4 属性测试
+
+使用 `proptest` 进行属性测试：
+
+```rust
+proptest! {
+    /// 测试事件链完整性
+    #[test]
+    fn test_event_chain_integrity(events in prop::collection::vec(any::<SessionEvent>(), 1..100)) {
+        let mut prev_id: Option<Uuid> = None;
+        for event in events {
+            prop_assert_eq!(event.parent_id, prev_id);
+            prev_id = Some(event.id);
+        }
+    }
+}
+```
 
 ---
 
