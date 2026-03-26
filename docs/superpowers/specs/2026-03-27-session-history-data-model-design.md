@@ -426,7 +426,7 @@ impl EventStore {
         &self,
         session_key: &str,
         branch: &str,
-        event_types: &[EventType],
+        categories: &[EventTypeCategory],
     ) -> Result<Vec<SessionEvent>, StoreError>;
 
     /// 创建分支
@@ -1246,7 +1246,7 @@ proptest! {
 
 ---
 
-## 10. 设计决策记录
+## 11. 设计决策记录
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
