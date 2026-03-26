@@ -2,9 +2,11 @@
 import { ref, watch, onMounted, nextTick, computed } from 'vue';
 import { Send, Cpu, Trash2, Wifi, WifiOff, Upload, Square, ArrowDown, Sparkles, AlertCircle, X as XIcon, RotateCcw } from 'lucide-vue-next';
 import type { Message } from '../App.vue';
+import type { SubagentState } from '../types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import MessageBubble from './MessageBubble.vue';
+import SubagentPanel from './SubagentPanel.vue';
 import { useChatWebSocket } from '@/hooks/useChatWebSocket';
 
 // Helper function to get scrollable element from ScrollArea
@@ -46,6 +48,12 @@ const isReceiving = ref(false);
 // Tool timing
 const toolStartTimes = ref<Record<string, number>>({});
 
+// Subagent 状态管理
+const activeSubagents = ref<Map<string, SubagentState>>(new Map());
+
+// 计算属性：是否有活跃的 subagent
+const hasActiveSubagents = computed(() => activeSubagents.value.size > 0);
+
 // Error messages
 const errorBanner = ref<string | null>(null);
 let errorBannerTimer: ReturnType<typeof setTimeout> | null = null;
@@ -63,6 +71,117 @@ const suggestedPrompts = [
 ];
 
 // WebSocket handling
+
+// === Subagent 消息处理函数 ===
+function handleSubagentStarted(msg: { id: string; task: string; index: number }) {
+  activeSubagents.value.set(msg.id, {
+    id: msg.id,
+    index: msg.index,
+    task: msg.task,
+    status: 'running',
+    toolCalls: [],
+    toolCount: 0,
+    startTime: Date.now(),
+  });
+}
+
+function handleSubagentThinking(msg: { id: string; content: string }) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent) {
+    subagent.thinking = (subagent.thinking || '') + msg.content;
+  }
+}
+
+function handleSubagentContent(msg: { id: string; content: string }) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent) {
+    subagent.content = (subagent.content || '') + msg.content;
+  }
+}
+
+function handleSubagentToolStart(msg: { id: string; name: string; arguments?: string }) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent) {
+    const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
+    subagent.toolCalls.push({
+      id: toolId,
+      name: msg.name,
+      arguments: msg.arguments,
+      status: 'running',
+      output: null,
+    });
+    subagent.toolCount++;
+  }
+}
+
+function handleSubagentToolEnd(msg: { id: string; name: string; output?: string }) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent && subagent.toolCalls.length > 0) {
+    // 找到匹配的运行中工具
+    const tool = [...subagent.toolCalls].reverse().find(t => t.name === msg.name && t.status === 'running');
+    if (tool) {
+      tool.status = 'complete';
+      tool.output = msg.output;
+      const elapsed = Date.now() - parseInt(tool.id.split('_')[0]);
+      tool.duration = (elapsed / 1000).toFixed(1) + 's';
+    }
+  }
+}
+
+function handleSubagentCompleted(msg: { id: string; index: number; summary: string; tool_count: number }, botMsg: Message) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent) {
+    subagent.status = 'completed';
+    subagent.summary = msg.summary;
+    subagent.toolCount = msg.tool_count;
+    subagent.endTime = Date.now();
+  }
+  checkAndFinalizeSubagents(botMsg);
+}
+
+function handleSubagentError(msg: { id: string; index: number; error: string }, botMsg: Message) {
+  const subagent = activeSubagents.value.get(msg.id);
+  if (subagent) {
+    subagent.status = 'error';
+    subagent.error = msg.error;
+    subagent.endTime = Date.now();
+  }
+  checkAndFinalizeSubagents(botMsg);
+}
+
+function checkAndFinalizeSubagents(botMsg: Message) {
+  const allCompleted = [...activeSubagents.value.values()]
+    .every(s => s.status !== 'running');
+
+  if (allCompleted && activeSubagents.value.size > 0) {
+    finalizeSubagents(botMsg);
+  }
+}
+
+function finalizeSubagents(botMsg: Message) {
+  const subagents = [...activeSubagents.value.values()].sort((a, b) => a.index - b.index);
+  if (subagents.length === 0) return;
+
+  // 生成合并摘要
+  const summary = generateSubagentSummary(subagents);
+
+  // 追加到最新的 bot 消息
+  emit('append-to-message', botMsg.id, summary, 'content');
+
+  // 清理活跃状态
+  activeSubagents.value.clear();
+}
+
+function generateSubagentSummary(subagents: SubagentState[]): string {
+  const lines = ['\n\n---\n**✅ 并行任务完成**\n'];
+  for (const s of subagents) {
+    const status = s.status === 'error' ? '❌' : '✓';
+    const duration = s.endTime ? ((s.endTime - s.startTime) / 1000).toFixed(1) : '?';
+    lines.push(`${status} **Task ${s.index}**: ${s.summary || s.task} _(${s.toolCount} 工具, ${duration}s)_`);
+  }
+  return lines.join('\n');
+}
+
 const handleMessage = (data: string) => {
   try {
     const msg = JSON.parse(data);
@@ -157,6 +276,35 @@ const processWebSocketMessage = (msg: any, botMsg: Message) => {
           scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
         }
       }, 150);
+      break;
+
+    // === Subagent 消息处理 ===
+    case 'subagent_started':
+      handleSubagentStarted(msg);
+      break;
+
+    case 'subagent_thinking':
+      handleSubagentThinking(msg);
+      break;
+
+    case 'subagent_content':
+      handleSubagentContent(msg);
+      break;
+
+    case 'subagent_tool_start':
+      handleSubagentToolStart(msg);
+      break;
+
+    case 'subagent_tool_end':
+      handleSubagentToolEnd(msg);
+      break;
+
+    case 'subagent_completed':
+      handleSubagentCompleted(msg, botMsg);
+      break;
+
+    case 'subagent_error':
+      handleSubagentError(msg, botMsg);
       break;
   }
 };
@@ -413,6 +561,13 @@ const clearHistory = () => {
             :is-last-bot-message="msg.role === 'bot' && idx === messages.length - 1"
             :is-thinking="isThinking"
             :is-receiving="isReceiving"
+          />
+
+          <!-- Subagent 实时状态面板 -->
+          <SubagentPanel
+            v-if="hasActiveSubagents"
+            :subagents="activeSubagents"
+            class="max-w-4xl mx-auto w-full"
           />
         </div>
       </ScrollArea>
