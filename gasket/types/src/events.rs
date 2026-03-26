@@ -410,20 +410,14 @@ pub enum WebSocketMessage {
     // === Subagent 专用消息（新增） ===
     /// Subagent started execution
     SubagentStarted {
-        id: String,        // UUID
-        task: String,      // Task description
-        index: u32,        // Task index (1, 2, 3...)
+        id: String,   // UUID
+        task: String, // Task description
+        index: u32,   // Task index (1, 2, 3...)
     },
     /// Subagent thinking content (incremental)
-    SubagentThinking {
-        id: String,
-        content: String,
-    },
+    SubagentThinking { id: String, content: String },
     /// Subagent output content (incremental)
-    SubagentContent {
-        id: String,
-        content: String,
-    },
+    SubagentContent { id: String, content: String },
     /// Subagent tool call started
     SubagentToolStart {
         id: String,
@@ -442,8 +436,8 @@ pub enum WebSocketMessage {
     SubagentCompleted {
         id: String,
         index: u32,
-        summary: String,    // Brief summary (first 100 chars)
-        tool_count: u32,    // Number of tool calls
+        summary: String, // Brief summary (first 100 chars)
+        tool_count: u32, // Number of tool calls
     },
     /// Subagent execution error
     SubagentError {
@@ -684,12 +678,20 @@ mod tests {
 
     #[test]
     fn test_subagent_tool_messages() {
-        let start_msg = WebSocketMessage::subagent_tool_start("id-123", "read_file", Some(r#"{"path":"/test.txt"}"#.to_string()));
+        let start_msg = WebSocketMessage::subagent_tool_start(
+            "id-123",
+            "read_file",
+            Some(r#"{"path":"/test.txt"}"#.to_string()),
+        );
         let json = start_msg.to_json();
         assert!(json.contains(r#""type":"subagent_tool_start"#));
         assert!(json.contains(r#""name":"read_file"#));
 
-        let end_msg = WebSocketMessage::subagent_tool_end("id-123", "read_file", Some("file contents".to_string()));
+        let end_msg = WebSocketMessage::subagent_tool_end(
+            "id-123",
+            "read_file",
+            Some("file contents".to_string()),
+        );
         let json = end_msg.to_json();
         assert!(json.contains(r#""type":"subagent_tool_end"#));
         assert!(json.contains(r#""output":"file contents"#));

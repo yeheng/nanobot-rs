@@ -354,10 +354,7 @@ impl Tool for SpawnParallelTool {
                 };
 
                 // Get task index (1-indexed for display)
-                let task_index = task_id_map
-                    .get(subagent_id)
-                    .copied()
-                    .unwrap_or(0) as u32;
+                let task_index = task_id_map.get(subagent_id).copied().unwrap_or(0) as u32;
 
                 // Log the event
                 match &event {
@@ -365,16 +362,34 @@ impl Tool for SpawnParallelTool {
                         info!("Task {} Started: {} (ID: {})", task_index, task, id);
                     }
                     SubagentEvent::Thinking { id, content } => {
-                        trace!("Task {} Thinking: {} bytes (ID: {})", task_index, content.len(), id);
+                        trace!(
+                            "Task {} Thinking: {} bytes (ID: {})",
+                            task_index,
+                            content.len(),
+                            id
+                        );
                     }
                     SubagentEvent::Content { id, content } => {
-                        trace!("Task {} Content: {} bytes (ID: {})", task_index, content.len(), id);
+                        trace!(
+                            "Task {} Content: {} bytes (ID: {})",
+                            task_index,
+                            content.len(),
+                            id
+                        );
                     }
                     SubagentEvent::Iteration { id, iteration } => {
-                        info!("Task {} Iteration {} completed (ID: {})", task_index, iteration, id);
+                        info!(
+                            "Task {} Iteration {} completed (ID: {})",
+                            task_index, iteration, id
+                        );
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
-                        trace!("Task {} Tool: {} started (ID: {})", task_index, tool_name, id);
+                        trace!(
+                            "Task {} Tool: {} started (ID: {})",
+                            task_index,
+                            tool_name,
+                            id
+                        );
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
                         trace!("Task {} Tool: {} done (ID: {})", task_index, tool_name, id);
@@ -395,45 +410,36 @@ impl Tool for SpawnParallelTool {
                 // Convert SubagentEvent to structured WebSocketMessage
                 // No more text prefix concatenation - use dedicated message types
                 let ws_msg = match &event {
-                    SubagentEvent::Started { id, task } => {
-                        Some(WebSocketMessage::subagent_started(
-                            id.clone(),
-                            task.clone(),
-                            task_index,
-                        ))
-                    }
-                    SubagentEvent::Thinking { id, content } => {
-                        Some(WebSocketMessage::subagent_thinking(
-                            id.clone(),
-                            content.clone(),
-                        ))
-                    }
-                    SubagentEvent::Content { id, content } => {
-                        Some(WebSocketMessage::subagent_content(
-                            id.clone(),
-                            content.clone(),
-                        ))
-                    }
-                    SubagentEvent::ToolStart { id, tool_name, arguments } => {
-                        Some(WebSocketMessage::subagent_tool_start(
-                            id.clone(),
-                            tool_name.clone(),
-                            arguments.clone(),
-                        ))
-                    }
-                    SubagentEvent::ToolEnd { id, tool_name, output } => {
-                        Some(WebSocketMessage::subagent_tool_end(
-                            id.clone(),
-                            tool_name.clone(),
-                            Some(output.clone()),
-                        ))
-                    }
+                    SubagentEvent::Started { id, task } => Some(
+                        WebSocketMessage::subagent_started(id.clone(), task.clone(), task_index),
+                    ),
+                    SubagentEvent::Thinking { id, content } => Some(
+                        WebSocketMessage::subagent_thinking(id.clone(), content.clone()),
+                    ),
+                    SubagentEvent::Content { id, content } => Some(
+                        WebSocketMessage::subagent_content(id.clone(), content.clone()),
+                    ),
+                    SubagentEvent::ToolStart {
+                        id,
+                        tool_name,
+                        arguments,
+                    } => Some(WebSocketMessage::subagent_tool_start(
+                        id.clone(),
+                        tool_name.clone(),
+                        arguments.clone(),
+                    )),
+                    SubagentEvent::ToolEnd {
+                        id,
+                        tool_name,
+                        output,
+                    } => Some(WebSocketMessage::subagent_tool_end(
+                        id.clone(),
+                        tool_name.clone(),
+                        Some(output.clone()),
+                    )),
                     SubagentEvent::Completed { id, result } => {
                         // Generate brief summary (first 100 chars of content)
-                        let summary: String = result.response.content
-                            .chars()
-                            .take(100)
-                            .collect();
+                        let summary: String = result.response.content.chars().take(100).collect();
                         Some(WebSocketMessage::subagent_completed(
                             id.clone(),
                             task_index,
@@ -441,13 +447,11 @@ impl Tool for SpawnParallelTool {
                             result.response.tools_used.len() as u32,
                         ))
                     }
-                    SubagentEvent::Error { id, error } => {
-                        Some(WebSocketMessage::subagent_error(
-                            id.clone(),
-                            task_index,
-                            error.clone(),
-                        ))
-                    }
+                    SubagentEvent::Error { id, error } => Some(WebSocketMessage::subagent_error(
+                        id.clone(),
+                        task_index,
+                        error.clone(),
+                    )),
                     SubagentEvent::Iteration { .. } => {
                         // Iteration events are silently handled (not sent to frontend)
                         None
@@ -456,14 +460,10 @@ impl Tool for SpawnParallelTool {
 
                 // Send WebSocket message immediately (no buffering)
                 if let (Some(msg), Some(key)) = (ws_msg, session_key.as_ref()) {
-                    let outbound = OutboundMessage::with_ws_message(
-                        key.channel.clone(),
-                        &key.chat_id,
-                        msg,
-                    );
+                    let outbound =
+                        OutboundMessage::with_ws_message(key.channel.clone(), &key.chat_id, msg);
                     // Use timeout + send to apply backpressure without indefinite blocking
-                    match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await
-                    {
+                    match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await {
                         Ok(Ok(_)) => { /* sent successfully */ }
                         Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
                         Err(_) => warn!("Send timeout after 100ms, outbound channel congested"),
