@@ -116,7 +116,6 @@ impl SessionManager {
     /// Get or create a session.
     ///
     /// Reads directly from SQLite; creates new if nothing exists.
-    /// Automatically migrates legacy JSON blob sessions.
     #[instrument(name = "session.get_or_create", skip(self), fields(key = %key))]
     pub async fn get_or_create(&self, key: &SessionKey) -> Session {
         let key_str = key.to_string();
@@ -127,14 +126,7 @@ impl SessionManager {
                 s
             }
             Ok(None) => {
-                // Try legacy format migration
-                match self.try_migrate_legacy_session(&key_str).await {
-                    Ok(Some(s)) => {
-                        debug!("Migrated session {} from legacy format", key_str);
-                        s
-                    }
-                    _ => Session::from_key(key.clone()),
-                }
+                Session::from_key(key.clone())
             }
             Err(e) => {
                 warn!("Failed to load session {}: {}, creating new", key_str, e);
@@ -175,37 +167,6 @@ impl SessionManager {
             messages,
             last_consolidated: meta.last_consolidated,
         }))
-    }
-
-    /// Try to migrate a legacy JSON blob session to per-message storage.
-    async fn try_migrate_legacy_session(&self, key: &str) -> anyhow::Result<Option<Session>> {
-        // Use deprecated method for backward compatibility
-        #[allow(deprecated)]
-        let data = match self.store.load_session(key).await? {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        // Parse legacy format
-        let legacy_session: LegacySession = match serde_json::from_str(&data) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to parse legacy session {}: {}", key, e);
-                return Ok(None);
-            }
-        };
-
-        // Migrate to new format
-        let session = Session {
-            key: legacy_session.key,
-            messages: legacy_session.messages,
-            last_consolidated: legacy_session.last_consolidated,
-        };
-
-        // Persist all messages from legacy format into per-message storage
-        self.migrate_legacy_to_sqlite(&session).await?;
-
-        Ok(Some(session))
     }
 
     /// Save a session after clear().
@@ -371,13 +332,4 @@ impl SessionManager {
             warn!("Failed to delete session {} from SQLite: {}", key_str, e);
         }
     }
-}
-
-/// Legacy session format for migration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacySession {
-    key: String,
-    messages: Vec<SessionMessage>,
-    #[serde(default)]
-    last_consolidated: usize,
 }

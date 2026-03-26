@@ -41,7 +41,7 @@ pub async fn process_message(
     // 2. Save user message
     ctx.context
         .save_message(session_key, "user", user_message, None)
-        .await;
+        .await?;
 
     // 3. Process history
     let processed = process_history(history, &ctx.history_config);
@@ -69,7 +69,7 @@ pub async fn process_message(
             &result.content,
             Some(result.tools_used),
         )
-        .await;
+        .await?;
 
     // 8. Background compression
     if !processed.evicted.is_empty() {

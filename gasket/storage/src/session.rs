@@ -43,41 +43,6 @@ fn bytes_to_embedding(bytes: &[u8]) -> &[f32] {
 impl SqliteStore {
     // ── Session API (Legacy Blob - for migration only) ──
 
-    /// Load a session by key (legacy JSON blob format).
-    /// Used for backward compatibility during migration.
-    #[deprecated(note = "Use load_session_messages instead for per-message storage")]
-    pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let has_data_column: bool = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
-        )
-        .fetch_one(&self.pool)
-        .await?
-            > 0;
-
-        if has_data_column {
-            let row: Option<(String,)> = sqlx::query_as("SELECT data FROM sessions WHERE key = $1")
-                .bind(key)
-                .fetch_optional(&self.pool)
-                .await?;
-            return Ok(row.map(|(d,)| d));
-        }
-        Ok(None)
-    }
-
-    /// Save a session (legacy JSON blob format).
-    #[deprecated(note = "Use append_session_message instead for per-message storage")]
-    pub async fn save_session(&self, key: &str, data: &str) -> anyhow::Result<()> {
-        let updated_at = Utc::now().to_rfc3339();
-        sqlx::query("INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES ($1, $2, $3)")
-            .bind(key)
-            .bind(data)
-            .bind(&updated_at)
-            .execute(&self.pool)
-            .await?;
-        debug!("Saved session (legacy): {}", key);
-        Ok(())
-    }
-
     /// Delete a session by key.
     pub async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
         // CASCADE will delete messages automatically

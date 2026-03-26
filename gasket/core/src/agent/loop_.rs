@@ -514,7 +514,7 @@ impl AgentLoop {
         // ── 4. Save user message (trait dispatch) ────────────────
         self.context
             .save_message(session_key, "user", &content, None)
-            .await;
+            .await?;
 
         // ── 5. Truncate history (pure computation) ─────────────────
         let processed = process_history(history_snapshot, &self.history_config);
@@ -598,7 +598,7 @@ impl AgentLoop {
                 &history_content,
                 Some(result.tools_used.clone()),
             )
-            .await;
+            .await?;
 
         // Log token usage if available
         if let Some(ref usage) = result.token_usage {
@@ -716,7 +716,7 @@ impl AgentLoop {
         let history_snapshot = session.get_history(self.config.memory_window);
         self.context
             .save_message(session_key, "user", &content_str, None)
-            .await;
+            .await?;
 
         let processed = process_history(history_snapshot, &self.history_config);
         let summary = self.context.load_summary(&session_key_str).await;
@@ -812,14 +812,17 @@ impl AgentLoop {
 
             // Save to history
             let history_content = redact_secrets(&result.content, &local_vault_values);
-            context
+            if let Err(e) = context
                 .save_message(
                     &session_key_clone,
                     "assistant",
                     &history_content,
                     Some(result.tools_used.clone()),
                 )
-                .await;
+                .await
+            {
+                warn!("Failed to persist assistant message: {}", e);
+            }
 
             // Log token usage if available
             if let Some(ref usage) = result.token_usage {

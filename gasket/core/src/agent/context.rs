@@ -43,13 +43,17 @@ pub trait AgentContext: Send + Sync {
     async fn load_session(&self, key: &SessionKey) -> Session;
 
     /// Save a message to the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message fails to persist to storage.
     async fn save_message(
         &self,
         key: &SessionKey,
         role: &str,
         content: &str,
         tools: Option<Vec<String>>,
-    );
+    ) -> Result<(), crate::error::AgentError>;
 
     /// Load an existing summary for the session.
     async fn load_summary(&self, key: &str) -> Option<String>;
@@ -119,14 +123,11 @@ impl AgentContext for PersistentContext {
         role: &str,
         content: &str,
         tools: Option<Vec<String>>,
-    ) {
-        if let Err(e) = self
-            .session_manager
+    ) -> Result<(), crate::error::AgentError> {
+        self.session_manager
             .append_by_key(key, role, content, tools)
             .await
-        {
-            tracing::warn!("Failed to persist {} message: {}", role, e);
-        }
+            .map_err(|e| crate::error::AgentError::Other(format!("Failed to persist message: {}", e)))
     }
 
     async fn load_summary(&self, key: &str) -> Option<String> {
@@ -244,8 +245,9 @@ impl AgentContext for StatelessContext {
         _role: &str,
         _content: &str,
         _tools: Option<Vec<String>>,
-    ) {
-        // No-op for stateless context
+    ) -> Result<(), crate::error::AgentError> {
+        // No-op for stateless context - always succeeds
+        Ok(())
     }
 
     async fn load_summary(&self, _key: &str) -> Option<String> {
