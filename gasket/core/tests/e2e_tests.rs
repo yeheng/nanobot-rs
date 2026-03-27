@@ -152,19 +152,74 @@ async fn test_outbound_message() {
 // Session Tests (using new EventStore)
 // =============================================================================
 
+/// Helper function to set up a test database with required tables.
+async fn setup_event_store_pool(db_path: &str) -> sqlx::SqlitePool {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(db_path)
+        .await
+        .unwrap();
+
+    // Create sessions_v2 table
+    sqlx::query(
+        r#"
+        CREATE TABLE sessions_v2 (
+            key TEXT PRIMARY KEY,
+            current_branch TEXT NOT NULL DEFAULT 'main',
+            branches TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_consolidated_event TEXT,
+            total_events INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Create session_events table
+    sqlx::query(
+        r#"
+        CREATE TABLE session_events (
+            id TEXT PRIMARY KEY,
+            session_key TEXT NOT NULL,
+            parent_id TEXT,
+            event_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            embedding BLOB,
+            branch TEXT DEFAULT 'main',
+            tools_used TEXT DEFAULT '[]',
+            token_usage TEXT,
+            tool_name TEXT,
+            tool_arguments TEXT,
+            tool_call_id TEXT,
+            is_error INTEGER DEFAULT 0,
+            summary_type TEXT,
+            summary_topic TEXT,
+            covered_events TEXT,
+            merge_source TEXT,
+            merge_head TEXT,
+            extra TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    pool
+}
+
 #[tokio::test]
 async fn test_event_store_save_and_load() {
     use gasket_core::memory::EventStore;
     use gasket_types::{EventMetadata, EventType, SessionEvent};
 
     let dir = tempfile::tempdir().unwrap();
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect(&format!(
-            "sqlite:{}?mode=rwc",
-            dir.path().join("test.db").display()
-        ))
-        .await
-        .unwrap();
+    let db_path = format!("sqlite:{}?mode=rwc", dir.path().join("test.db").display());
+    let pool = setup_event_store_pool(&db_path).await;
     let store = EventStore::new(pool);
 
     let event = SessionEvent {
@@ -194,13 +249,8 @@ async fn test_event_store_multiple_events() {
     use gasket_types::{EventMetadata, EventType, SessionEvent};
 
     let dir = tempfile::tempdir().unwrap();
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect(&format!(
-            "sqlite:{}?mode=rwc",
-            dir.path().join("test.db").display()
-        ))
-        .await
-        .unwrap();
+    let db_path = format!("sqlite:{}?mode=rwc", dir.path().join("test.db").display());
+    let pool = setup_event_store_pool(&db_path).await;
     let store = EventStore::new(pool);
 
     // Save user event
@@ -242,13 +292,8 @@ async fn test_event_store_with_tools_used() {
     use gasket_types::{EventMetadata, EventType, SessionEvent};
 
     let dir = tempfile::tempdir().unwrap();
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect(&format!(
-            "sqlite:{}?mode=rwc",
-            dir.path().join("test.db").display()
-        ))
-        .await
-        .unwrap();
+    let db_path = format!("sqlite:{}?mode=rwc", dir.path().join("test.db").display());
+    let pool = setup_event_store_pool(&db_path).await;
     let store = EventStore::new(pool);
 
     let event = SessionEvent {
