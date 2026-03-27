@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gasket_core::bus::events::SessionKey;
-use gasket_core::bus::ChannelType;
 use gasket_core::providers::MessageRole;
 use gasket_core::LlmProvider;
 use gasket_core::Tool;
