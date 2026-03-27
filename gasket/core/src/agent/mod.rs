@@ -5,6 +5,7 @@ pub mod context_v2;
 pub mod executor;
 pub mod executor_core;
 pub mod history_processor;
+pub mod history_query;
 pub mod loop_;
 pub mod memory;
 pub mod pipeline;
@@ -24,6 +25,10 @@ pub use context_v2::{
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use history_processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
+pub use history_query::{
+    HistoryQuery, HistoryQueryBuilder, HistoryResult, HistoryRetriever, QueryOrder, ResultMeta,
+    SemanticQuery, TimeRange,
+};
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
 pub use pipeline::{process_message, PipelineContext};
