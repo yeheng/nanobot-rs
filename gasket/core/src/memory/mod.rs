@@ -7,4 +7,4 @@
 //! This module re-exports the public API for backward compatibility.
 
 // Re-export from gasket-storage crate
-pub use gasket_storage::{config_dir, CronJobRow, MessageRow, SessionMeta, SqliteStore};
+pub use gasket_storage::{config_dir, CronJobRow, EventStore, SqliteStore, StoreError};

@@ -150,80 +150,129 @@ async fn test_outbound_message() {
 }
 
 // =============================================================================
-// Session Tests
+// Session Tests (using new EventStore)
 // =============================================================================
 
 #[tokio::test]
-async fn test_session_manager() {
-    use gasket_core::memory::SqliteStore;
-    use gasket_core::session::SessionManager;
+async fn test_event_store_save_and_load() {
+    use gasket_core::memory::EventStore;
+    use gasket_types::{EventMetadata, EventType, SessionEvent};
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db"))
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(&format!(
+            "sqlite:{}?mode=rwc",
+            dir.path().join("test.db").display()
+        ))
         .await
         .unwrap();
-    let manager = SessionManager::new(store);
+    let store = EventStore::new(pool);
 
-    let mut session = manager
-        .get_or_create(&SessionKey::from("test:session1"))
-        .await;
-    assert_eq!(session.key, "test:session1");
+    let event = SessionEvent {
+        id: uuid::Uuid::now_v7(),
+        session_key: "test:session1".into(),
+        parent_id: None,
+        event_type: EventType::UserMessage,
+        content: "Hello".into(),
+        embedding: None,
+        metadata: EventMetadata::default(),
+        created_at: chrono::Utc::now(),
+    };
 
-    session.add_message(MessageRole::User, "Hello", None);
-    session.add_message(MessageRole::Assistant, "Hi there!", None);
+    store.append_event(&event).await.unwrap();
 
-    let history = session.get_history(10);
+    let history = store
+        .get_branch_history("test:session1", "main")
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, "Hello");
+}
+
+#[tokio::test]
+async fn test_event_store_multiple_events() {
+    use gasket_core::memory::EventStore;
+    use gasket_types::{EventMetadata, EventType, SessionEvent};
+
+    let dir = tempfile::tempdir().unwrap();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(&format!(
+            "sqlite:{}?mode=rwc",
+            dir.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
+    let store = EventStore::new(pool);
+
+    // Save user event
+    let user_event = SessionEvent {
+        id: uuid::Uuid::now_v7(),
+        session_key: "test:session2".into(),
+        parent_id: None,
+        event_type: EventType::UserMessage,
+        content: "Hello".into(),
+        embedding: None,
+        metadata: EventMetadata::default(),
+        created_at: chrono::Utc::now(),
+    };
+    store.append_event(&user_event).await.unwrap();
+
+    // Save assistant event
+    let assistant_event = SessionEvent {
+        id: uuid::Uuid::now_v7(),
+        session_key: "test:session2".into(),
+        parent_id: Some(user_event.id),
+        event_type: EventType::AssistantMessage,
+        content: "Hi there!".into(),
+        embedding: None,
+        metadata: EventMetadata::default(),
+        created_at: chrono::Utc::now(),
+    };
+    store.append_event(&assistant_event).await.unwrap();
+
+    let history = store
+        .get_branch_history("test:session2", "main")
+        .await
+        .unwrap();
     assert_eq!(history.len(), 2);
 }
 
 #[tokio::test]
-async fn test_session_clear() {
-    use gasket_core::memory::SqliteStore;
-    use gasket_core::session::SessionManager;
+async fn test_event_store_with_tools_used() {
+    use gasket_core::memory::EventStore;
+    use gasket_types::{EventMetadata, EventType, SessionEvent};
 
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db"))
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(&format!(
+            "sqlite:{}?mode=rwc",
+            dir.path().join("test.db").display()
+        ))
         .await
         .unwrap();
-    let manager = SessionManager::new(store);
+    let store = EventStore::new(pool);
 
-    let key = SessionKey {
-        channel: ChannelType::Cli,
-        chat_id: "clear".to_string(),
+    let event = SessionEvent {
+        id: uuid::Uuid::now_v7(),
+        session_key: "test:tools".into(),
+        parent_id: None,
+        event_type: EventType::AssistantMessage,
+        content: "Done".into(),
+        embedding: None,
+        metadata: EventMetadata {
+            tools_used: vec!["read_file".to_string(), "edit_file".to_string()],
+            ..Default::default()
+        },
+        created_at: chrono::Utc::now(),
     };
+    store.append_event(&event).await.unwrap();
 
-    let mut session = manager.get_or_create(&key).await;
-    session.add_message(MessageRole::User, "Hello", None);
-    assert!(!session.messages.is_empty());
-
-    session.clear();
-    assert!(session.messages.is_empty());
-}
-
-#[tokio::test]
-async fn test_session_tools_used() {
-    use gasket_core::memory::SqliteStore;
-    use gasket_core::session::SessionManager;
-
-    let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("test.db"))
+    let history = store
+        .get_branch_history("test:tools", "main")
         .await
         .unwrap();
-    let manager = SessionManager::new(store);
-
-    let key = SessionKey {
-        channel: ChannelType::Cli,
-        chat_id: "tools".to_string(),
-    };
-
-    let mut session = manager.get_or_create(&key).await;
-    session.add_message(
-        MessageRole::Assistant,
-        "Done",
-        Some(vec!["read_file".to_string(), "edit_file".to_string()]),
-    );
-
-    assert!(session.messages.last().unwrap().tools_used.is_some());
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].metadata.tools_used.len(), 2);
 }
 
 // =============================================================================

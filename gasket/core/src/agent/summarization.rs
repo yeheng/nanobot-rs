@@ -1,7 +1,7 @@
 //! Summarization service for conversation history.
 //!
 //! Provides LLM-based summarization for long conversations to manage context window.
-//! Also handles embedding generation for evicted messages (semantic history recall).
+//! Also handles embedding generation for evicted events (semantic history recall).
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use tracing::debug;
 use crate::memory::SqliteStore;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::search::{top_k_similar, TextEmbedder};
-use crate::session::SessionMessage;
+use gasket_types::SessionEvent;
 
 use super::history_processor::count_tokens;
 
@@ -27,7 +27,7 @@ pub const RECALL_PREFIX: &str = "[回忆]";
 /// Service for summarizing conversation history using LLM.
 ///
 /// When conversations exceed token budgets, this service generates
-/// summaries of older messages to preserve context while reducing
+/// summaries of older events to preserve context while reducing
 /// token usage. Also stores embeddings for semantic history recall.
 pub struct SummarizationService {
     provider: Arc<dyn LlmProvider>,
@@ -79,61 +79,54 @@ impl SummarizationService {
         }
     }
 
-    /// Generate and store embeddings for evicted messages.
+    /// Generate and store embeddings for evicted events.
     ///
     /// This enables semantic recall of old conversations that were
     /// dropped from the context window.
-    async fn save_evicted_embeddings(
-        &self,
-        session_key: &str,
-        evicted_messages: &[SessionMessage],
-    ) {
+    async fn save_evicted_embeddings(&self, session_key: &str, evicted_events: &[SessionEvent]) {
         let Some(ref embedder) = self.embedder else {
             debug!("No embedder configured, skipping embedding generation");
             return;
         };
 
-        for (idx, msg) in evicted_messages.iter().enumerate() {
-            // Generate a unique message ID based on session key and index
-            let message_id = format!("{}:evicted:{}", session_key, idx);
+        for (idx, event) in evicted_events.iter().enumerate() {
+            // Generate a unique event ID based on session key and index
+            let event_id = format!("{}:evicted:{}", session_key, idx);
 
-            match embedder.embed(&msg.content) {
+            match embedder.embed(&event.content) {
                 Ok(embedding) => {
                     if let Err(e) = self
                         .store
-                        .save_embedding(&message_id, session_key, &embedding)
+                        .save_embedding(&event_id, session_key, &embedding)
                         .await
                     {
-                        debug!(
-                            "Failed to save embedding for evicted message {}: {}",
-                            idx, e
-                        );
+                        debug!("Failed to save embedding for evicted event {}: {}", idx, e);
                     } else {
                         debug!(
-                            "Saved embedding for evicted message {} in session {}",
+                            "Saved embedding for evicted event {} in session {}",
                             idx, session_key
                         );
                     }
                 }
                 Err(e) => {
-                    debug!("Failed to embed evicted message {}: {}", idx, e);
+                    debug!("Failed to embed evicted event {}: {}", idx, e);
                 }
             }
         }
     }
 
-    /// Run LLM summarization for evicted (old) messages.
+    /// Run LLM summarization for evicted (old) events.
     ///
-    /// Builds a summarization prompt from existing summary + evicted messages
-    /// (messages that were dropped from context due to token budget).
-    /// This preserves information from old messages that would otherwise be lost.
+    /// Builds a summarization prompt from existing summary + evicted events
+    /// (events that were dropped from context due to token budget).
+    /// This preserves information from old events that would otherwise be lost.
     pub async fn summarize(
         &self,
         session_key: &str,
-        evicted_messages: &[SessionMessage],
+        evicted_events: &[SessionEvent],
         existing_summary: &Option<String>,
     ) -> anyhow::Result<String> {
-        // Build context for summarization: existing summary + evicted (old) messages
+        // Build context for summarization: existing summary + evicted (old) events
         let mut context_parts = Vec::new();
         if let Some(existing) = existing_summary {
             if !existing.is_empty() {
@@ -141,9 +134,9 @@ impl SummarizationService {
             }
         }
 
-        // Include evicted messages (old messages that were dropped from context)
-        for msg in evicted_messages {
-            context_parts.push(format!("{}: {}", msg.role, msg.content));
+        // Include evicted events (old events that were dropped from context)
+        for event in evicted_events {
+            context_parts.push(format!("{:?}: {}", event.event_type, event.content));
         }
 
         let context_text = context_parts.join("\n");
@@ -151,9 +144,9 @@ impl SummarizationService {
         // Count tokens of context to avoid sending too much
         let context_tokens = count_tokens(&context_text);
         debug!(
-            "Summarization context: {} tokens, {} evicted messages",
+            "Summarization context: {} tokens, {} evicted events",
             context_tokens,
-            evicted_messages.len()
+            evicted_events.len()
         );
 
         // Build the summarization request
@@ -195,20 +188,20 @@ impl SummarizationService {
     /// Context compression hook.
     ///
     /// Called after history truncation; generates summary and saves embeddings
-    /// for evicted messages. The returned summary is injected into the prompt.
+    /// for evicted events. The returned summary is injected into the prompt.
     pub async fn compress(
         &self,
         session_key: &str,
-        evicted_messages: &[SessionMessage],
+        evicted_events: &[SessionEvent],
     ) -> anyhow::Result<Option<String>> {
-        if !evicted_messages.is_empty() {
-            // Save embeddings for evicted messages (enables semantic recall)
-            self.save_evicted_embeddings(session_key, evicted_messages)
+        if !evicted_events.is_empty() {
+            // Save embeddings for evicted events (enables semantic recall)
+            self.save_evicted_embeddings(session_key, evicted_events)
                 .await;
 
             let existing_summary = self.load_summary(session_key).await;
             match self
-                .summarize(session_key, evicted_messages, &existing_summary)
+                .summarize(session_key, evicted_events, &existing_summary)
                 .await
             {
                 Ok(new_summary) => Ok(Some(new_summary)),
@@ -225,9 +218,9 @@ impl SummarizationService {
         }
     }
 
-    /// Recall relevant historical messages based on semantic similarity.
+    /// Recall relevant historical events based on semantic similarity.
     ///
-    /// Returns the top-K most relevant messages from the embedding store
+    /// Returns the top-K most relevant events from the embedding store
     /// for the given query embedding.
     pub async fn recall_history(
         &self,
@@ -245,10 +238,10 @@ impl SummarizationService {
         }
 
         // Build candidates list for top_k_similar
-        // embeddings format: Vec<(message_id, content, embedding)>
+        // embeddings format: Vec<(event_id, content, embedding)>
         let candidates: Vec<(String, Vec<f32>)> = embeddings
             .iter()
-            .map(|(msg_id, _content, embedding)| (msg_id.clone(), embedding.clone()))
+            .map(|(event_id, _content, embedding)| (event_id.clone(), embedding.clone()))
             .collect();
 
         // Find top-K similar
@@ -257,14 +250,14 @@ impl SummarizationService {
         // Map back to content using the original embeddings list
         let content_map: std::collections::HashMap<String, &str> = embeddings
             .iter()
-            .map(|(msg_id, content, _)| (msg_id.clone(), content.as_str()))
+            .map(|(event_id, content, _)| (event_id.clone(), content.as_str()))
             .collect();
 
         top_results
             .into_iter()
-            .filter_map(|(msg_id, score)| {
+            .filter_map(|(event_id, score)| {
                 content_map
-                    .get(msg_id)
+                    .get(event_id)
                     .map(|content| (content.to_string(), score))
             })
             .collect()

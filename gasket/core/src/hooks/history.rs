@@ -50,7 +50,7 @@ use crate::search::TextEmbedder;
 pub struct HistoryRecallHook {
     embedder: Arc<TextEmbedder>,
     k: usize,
-    context: Arc<dyn AgentContext>,
+    context: AgentContext,
 }
 
 impl HistoryRecallHook {
@@ -61,7 +61,7 @@ impl HistoryRecallHook {
     /// * `embedder` - Text embedder for creating query vectors
     /// * `k` - Number of similar messages to recall (0 = disabled)
     /// * `context` - Agent context for accessing embedding store
-    pub fn new(embedder: Arc<TextEmbedder>, k: usize, context: Arc<dyn AgentContext>) -> Self {
+    pub fn new(embedder: Arc<TextEmbedder>, k: usize, context: AgentContext) -> Self {
         Self {
             embedder,
             k,

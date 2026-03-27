@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
-use super::context_v2::CompressionTask;
+use super::context::CompressionTask;
 
 /// Summarization service trait.
 ///

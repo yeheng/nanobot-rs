@@ -166,11 +166,7 @@ impl EventStore {
             return Ok(vec![]);
         }
 
-        let placeholders: String = event_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders: String = event_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
         let query = format!(
             "SELECT * FROM session_events WHERE session_key = ? AND id IN ({}) ORDER BY created_at ASC",

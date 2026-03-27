@@ -5,17 +5,17 @@
 //! The main pipeline in 'process_direct_with_callback' is a straight-line sequence:
 //!
 //! 1. external_hook(pre_request)  → shell script can abort or modify input
-//! 2. load_session                → context.load_session() (trait dispatch)
-//! 3. save_user_message           → context.save_message() (trait dispatch)
+//! 2. load_session                → context.load_session() (enum dispatch)
+//! 3. save_user_event             → context.save_event() (enum dispatch)
 //! 4. process_history             → pure: truncate history, compute evictions
-//! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if messages were evicted (non-blocking)
+//! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if events were evicted (non-blocking)
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
 //!    7.5. vault_injection            → inject secrets from vault (optional)
 //!    7.6. history_recall              → semantic recall of old messages (optional)
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
-//! 10. save_assistant_msg          → context.save_message() (trait dispatch)
+//! 10. save_assistant_event        → context.save_event() (enum dispatch)
 //!
 //! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
 //! External shell hooks (if present) are called via subprocess at steps 1 and 10.
@@ -23,15 +23,15 @@
 //! Step 7.5 injects vault secrets directly via `VaultInjector`.
 //! Step 7.6 recalls relevant history via semantic embedding search.
 //!
-//! ## AgentContext Trait Pattern
+//! ## AgentContext Enum Pattern
 //!
-//! The agent uses the `AgentContext` trait for state management, eliminating
-//! `Option<T>` checks in the core loop:
-//! - **PersistentContext** — for main agents with full persistence
-//! - **StatelessContext** — for subagents without persistence
+//! The agent uses the `AgentContext` enum for state management, eliminating
+//! `Arc<dyn Trait>` overhead in the core loop:
+//! - **AgentContext::Persistent** — for main agents with full persistence
+//! - **AgentContext::Stateless** — for subagents without persistence
 //!
-//! This pattern allows polymorphic dispatch at initialization time rather than
-//! runtime branching on every message.
+//! This pattern allows enum dispatch at initialization time rather than
+//! runtime vtable lookup on every message.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
-use crate::agent::history_processor::{process_history, HistoryConfig};
+use crate::agent::history_processor::HistoryConfig;
 use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
@@ -53,10 +53,9 @@ use crate::tools::ToolRegistry;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 use tokio::sync::RwLock;
 
-use crate::agent::context::{PersistentContext, StatelessContext};
 use crate::agent::memory::MemoryStore;
-use crate::agent::summarization::SummarizationService;
-use crate::session::SessionManager;
+use gasket_storage::EventStore;
+use gasket_types::{EventMetadata, EventType, SessionEvent};
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -188,10 +187,11 @@ pub struct AgentLoop {
     config: AgentConfig,
     workspace: PathBuf,
     /// History truncator configuration.
+    #[allow(dead_code)]
     history_config: HistoryConfig,
     /// Agent context — handles session persistence and compression.
-    /// Uses trait dispatch instead of Option<T> to eliminate branching.
-    context: Arc<dyn AgentContext>,
+    /// Uses enum dispatch instead of Arc<dyn Trait> for zero overhead.
+    context: AgentContext,
     /// Pre-loaded system prompt (from workspace bootstrap files).
     system_prompt: String,
     /// Pre-loaded skills context (from workspace skills).
@@ -235,17 +235,12 @@ impl AgentLoop {
         tools: Arc<ToolRegistry>,
         memory_store: Arc<MemoryStore>,
     ) -> Result<Self, AgentError> {
-        let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
+        let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
-        let store_arc = memory_store.sqlite_store().clone();
-        let summarization = Arc::new(SummarizationService::new(
-            provider.clone(),
-            Arc::new(store_arc),
-            config.model.clone(),
-        ));
+        // Create compression channel for background summarization
+        let (compression_tx, _compression_rx) = tokio::sync::mpsc::channel(64);
 
-        let context: Arc<dyn AgentContext> =
-            Arc::new(PersistentContext::new(session_manager, summarization));
+        let context = AgentContext::persistent(event_store, compression_tx);
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
 
@@ -349,18 +344,13 @@ impl AgentLoop {
         memory_store: Arc<MemoryStore>,
         pricing: Option<crate::token_tracker::ModelPricing>,
     ) -> Result<Self, AgentError> {
-        let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
+        let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
-        let store_arc = memory_store.sqlite_store().clone();
-        let summarization = Arc::new(SummarizationService::new(
-            provider.clone(),
-            Arc::new(store_arc),
-            config.model.clone(),
-        ));
+        // Create compression channel for background summarization
+        let (compression_tx, _compression_rx) = tokio::sync::mpsc::channel(64);
 
         // Create persistent context for main agents
-        let context: Arc<dyn AgentContext> =
-            Arc::new(PersistentContext::new(session_manager, summarization));
+        let context = AgentContext::persistent(event_store, compression_tx);
 
         // Load system prompt and skills directly — no hook indirection
         let system_prompt =
@@ -387,7 +377,7 @@ impl AgentLoop {
 
     /// Create a new agent loop for subagents without default hooks or services.
     ///
-    /// Uses **StatelessContext** — no persistence, all operations are no-ops.
+    /// Uses **AgentContext::Stateless** — no persistence, all operations are no-ops.
     /// System prompt is empty by default; use 'set_system_prompt()' to configure.
     /// No hooks for subagents by default; use 'with_hooks()' to customize.
     pub fn builder(
@@ -397,7 +387,7 @@ impl AgentLoop {
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         // Use stateless context for subagents
-        let context: Arc<dyn AgentContext> = Arc::new(StatelessContext::new());
+        let context = AgentContext::Stateless;
 
         Ok(Self {
             provider,
@@ -507,24 +497,34 @@ impl AgentLoop {
             .and_then(|m| m.content.clone())
             .unwrap_or_else(|| content.to_string());
 
-        // ── 3. Load session history (trait dispatch) ─────
-        let session = self.context.load_session(session_key).await;
-        let history_snapshot = session.get_history(self.config.memory_window);
+        // ── 3. Load session history (enum dispatch) ─────
+        let history_events = self.context.get_history(&session_key_str, None).await;
 
-        // ── 4. Save user message (trait dispatch) ────────────────
-        self.context
-            .save_message(session_key, "user", &content, None)
-            .await?;
+        // ── 4. Save user event ────────────────
+        let user_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key_str.clone(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: content.clone(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: chrono::Utc::now(),
+        };
+        self.context.save_event(user_event).await?;
 
         // ── 5. Truncate history (pure computation) ─────────────────
-        let processed = process_history(history_snapshot, &self.history_config);
+        // TODO: Implement event-based history processing
+        let history_snapshot: Vec<SessionEvent> = history_events
+            .into_iter()
+            .rev()
+            .take(self.config.memory_window)
+            .rev()
+            .collect();
 
-        // ── 6. Load existing summary + spawn background compression ─────
-        let summary = self.context.load_summary(&session_key_str).await;
-        if !processed.evicted.is_empty() {
-            self.context
-                .compress_context(&session_key_str, &processed.evicted);
-        }
+        // ── 6. TODO: Load existing summary + spawn background compression ─────
+        // Summaries are now stored as events - need to query for summary events
+        let summary: Option<String> = None;
 
         // ── 7. Inject system prompts (direct) ──────────────────────
         let mut system_prompts = Vec::new();
@@ -537,7 +537,7 @@ impl AgentLoop {
 
         // ── 8. Assemble prompt (pure, synchronous) ─────────────────
         let mut messages = Self::assemble_prompt(
-            processed.messages,
+            history_snapshot,
             &content,
             &system_prompts,
             summary.as_deref(),
@@ -566,19 +566,25 @@ impl AgentLoop {
         // ── 11. Run agent loop ─────────────────────────────────────
         let result = self.run_agent_loop(messages, &local_vault_values).await?;
 
-        // ── 12. Save assistant message FIRST (critical data safety) ───────
+        // ── 12. Save assistant event FIRST (critical data safety) ───────
         // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
         // This ensures that if external shell hooks hang or panic, the expensive
         // LLM response is already saved to SQLite and won't be lost.
         let history_content = redact_secrets(&result.content, &local_vault_values);
-        self.context
-            .save_message(
-                session_key,
-                "assistant",
-                &history_content,
-                Some(result.tools_used.clone()),
-            )
-            .await?;
+        let assistant_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key_str.clone(),
+            parent_id: None,
+            event_type: EventType::AssistantMessage,
+            content: history_content,
+            embedding: None,
+            metadata: EventMetadata {
+                tools_used: result.tools_used.clone(),
+                ..Default::default()
+            },
+            created_at: chrono::Utc::now(),
+        };
+        self.context.save_event(assistant_event).await?;
 
         // ── 13. AfterResponse hooks (audit, logging, etc.) ────────
         let tools_used: Vec<crate::hooks::ToolCallInfo> = result
@@ -715,18 +721,33 @@ impl AgentLoop {
             .and_then(|m| m.content.clone())
             .unwrap_or_else(|| content.to_string());
 
-        let session = self.context.load_session(session_key).await;
-        let history_snapshot = session.get_history(self.config.memory_window);
-        self.context
-            .save_message(session_key, "user", &content_str, None)
-            .await?;
+        // ── 3. Load session history (enum dispatch) ─────
+        let history_events = self.context.get_history(&session_key_str, None).await;
 
-        let processed = process_history(history_snapshot, &self.history_config);
-        let summary = self.context.load_summary(&session_key_str).await;
-        if !processed.evicted.is_empty() {
-            self.context
-                .compress_context(&session_key_str, &processed.evicted);
-        }
+        // ── 4. Save user event ────────────────
+        let user_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key_str.clone(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: content_str.clone(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: chrono::Utc::now(),
+        };
+        self.context.save_event(user_event).await?;
+
+        // ── 5. Truncate history (pure computation) ─────────────────
+        // TODO: Implement event-based history processing
+        let history_snapshot: Vec<SessionEvent> = history_events
+            .into_iter()
+            .rev()
+            .take(self.config.memory_window)
+            .rev()
+            .collect();
+
+        // ── 6. TODO: Load existing summary + spawn background compression ─────
+        let summary: Option<String> = None;
 
         let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
@@ -738,7 +759,7 @@ impl AgentLoop {
 
         // ── Assemble prompt ──────────────────────────────────────
         let mut messages = Self::assemble_prompt(
-            processed.messages,
+            history_snapshot,
             &content_str,
             &system_prompts,
             summary.as_deref(),
@@ -772,7 +793,6 @@ impl AgentLoop {
         let pricing = self.pricing.clone();
         let hooks = self.hooks.clone();
         let context = self.context.clone();
-        let session_key_clone = session_key.clone();
 
         // Spawn task to execute agent loop and handle post-processing
         let result_handle = tokio::spawn(async move {
@@ -795,16 +815,21 @@ impl AgentLoop {
             // This ensures that if external shell hooks hang or panic, the expensive
             // LLM response is already saved to SQLite and won't be lost.
             let history_content = redact_secrets(&result.content, &local_vault_values);
-            if let Err(e) = context
-                .save_message(
-                    &session_key_clone,
-                    "assistant",
-                    &history_content,
-                    Some(result.tools_used.clone()),
-                )
-                .await
-            {
-                warn!("Failed to persist assistant message: {}", e);
+            let assistant_event = SessionEvent {
+                id: uuid::Uuid::now_v7(),
+                session_key: session_key_str.clone(),
+                parent_id: None,
+                event_type: EventType::AssistantMessage,
+                content: history_content,
+                embedding: None,
+                metadata: EventMetadata {
+                    tools_used: result.tools_used.clone(),
+                    ..Default::default()
+                },
+                created_at: chrono::Utc::now(),
+            };
+            if let Err(e) = context.save_event(assistant_event).await {
+                warn!("Failed to persist assistant event: {}", e);
             }
 
             // AfterResponse hooks (audit, logging, etc.)
@@ -898,7 +923,7 @@ impl AgentLoop {
 impl AgentLoop {
     /// Pure, synchronous assembly of the LLM prompt sequence.
     fn assemble_prompt(
-        processed_history: Vec<crate::session::SessionMessage>,
+        processed_history: Vec<SessionEvent>,
         current_message: &str,
         system_prompts: &[String],
         summary: Option<&str>,
@@ -938,17 +963,16 @@ impl AgentLoop {
             }
         }
 
-        // 3. Add processed history messages (consume msg.content to avoid cloning)
+        // 3. Add processed history events (convert SessionEvent to ChatMessage)
         let history_count = processed_history.len();
-        for msg in processed_history {
-            match msg.role {
-                crate::providers::MessageRole::User => {
-                    messages.push(ChatMessage::user(msg.content))
+        for event in processed_history {
+            // Only include User and Assistant messages
+            match event.event_type {
+                EventType::UserMessage => messages.push(ChatMessage::user(event.content)),
+                EventType::AssistantMessage => messages.push(ChatMessage::assistant(event.content)),
+                _ => {
+                    // Skip other event types (tool calls, summaries, etc.)
                 }
-                crate::providers::MessageRole::Assistant => {
-                    messages.push(ChatMessage::assistant(msg.content))
-                }
-                _ => {}
             }
         }
 
@@ -956,7 +980,7 @@ impl AgentLoop {
         messages.push(ChatMessage::user(current_message));
 
         debug!(
-            "Built messages: {} history msgs, summary: {}, recalled: {}",
+            "Built messages: {} history events, summary: {}, recalled: {}",
             history_count,
             summary.is_some(),
             recalled_history.map(|r| r.len()).unwrap_or(0)

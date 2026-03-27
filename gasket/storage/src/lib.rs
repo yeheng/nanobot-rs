@@ -14,7 +14,6 @@
 mod cron;
 mod event_store;
 mod kv;
-mod session;
 
 use std::path::PathBuf;
 
@@ -23,7 +22,6 @@ use tracing::debug;
 
 pub use cron::CronJobRow;
 pub use event_store::{EventStore, StoreError};
-pub use session::{MessageRow, SessionMeta};
 
 // Re-export sqlx types for consumers that need direct pool access
 pub use sqlx::sqlite::SqliteRow;
@@ -90,6 +88,105 @@ impl SqliteStore {
     /// Useful for sharing the pool with other subsystems (e.g., pipeline).
     pub fn pool(&self) -> SqlitePool {
         self.pool.clone()
+    }
+
+    // ── Session Summary API ──
+
+    /// Save or replace a session summary (upsert).
+    pub async fn save_session_summary(
+        &self,
+        session_key: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let created_at = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_summaries (session_key, content, created_at) VALUES ($1, $2, $3)",
+        )
+        .bind(session_key)
+        .bind(content)
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved session summary: {}", session_key);
+        Ok(())
+    }
+
+    /// Load a session summary.
+    pub async fn load_session_summary(&self, session_key: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT content FROM session_summaries WHERE session_key = $1")
+                .bind(session_key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(c,)| c))
+    }
+
+    /// Delete a session summary.
+    pub async fn delete_session_summary(&self, session_key: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM session_summaries WHERE session_key = $1")
+            .bind(session_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ── Session Embeddings API (Semantic History Recall) ──
+
+    /// Save an embedding for a message.
+    ///
+    /// The embedding is stored as a BLOB using bytemuck for zero-copy
+    /// conversion between `[f32]` and `[u8]`.
+    pub async fn save_embedding(
+        &self,
+        message_id: &str,
+        session_key: &str,
+        embedding: &[f32],
+    ) -> anyhow::Result<()> {
+        let embedding_bytes = bytemuck::cast_slice(embedding);
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_embeddings (message_id, session_key, embedding) VALUES ($1, $2, $3)",
+        )
+        .bind(message_id)
+        .bind(session_key)
+        .bind(embedding_bytes)
+        .execute(&self.pool)
+        .await?;
+        debug!("Saved embedding for message: {}", message_id);
+        Ok(())
+    }
+
+    /// Load all embeddings for a session.
+    ///
+    /// Returns a vector of `(message_id, content, embedding)` tuples.
+    /// The embedding is converted back from BLOB to `Vec<f32>` using bytemuck.
+    pub async fn load_session_embeddings(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Vec<(String, String, Vec<f32>)>> {
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            r#"
+            SELECT e.message_id, m.content, e.embedding
+            FROM session_embeddings e
+            LEFT JOIN session_messages m ON e.message_id = CAST(m.id AS TEXT)
+            WHERE e.session_key = $1
+            ORDER BY m.id ASC
+            "#,
+        )
+        .bind(session_key)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let message_id: String = row.get("message_id");
+            let content: String = row.get("content");
+            let embedding_blob: Vec<u8> = row.get("embedding");
+
+            // Convert BLOB back to Vec<f32>
+            let embedding = bytemuck::cast_slice(&embedding_blob).to_vec();
+            result.push((message_id, content, embedding));
+        }
+        Ok(result)
     }
 
     /// Verify that the database is usable (integrity + read/write).
@@ -342,7 +439,6 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     pub(crate) async fn temp_store() -> SqliteStore {
         let path =
@@ -383,94 +479,6 @@ mod tests {
     async fn test_sqlite_kv_nonexistent() {
         let store = temp_store().await;
         assert_eq!(store.read_raw("nope").await.unwrap(), None);
-    }
-
-    // ── Session tests ──
-
-    #[tokio::test]
-    async fn test_sqlite_session_meta_and_messages() {
-        let store = temp_store().await;
-
-        store.save_session_meta("test:123", 0).await.unwrap();
-        let meta = store.load_session_meta("test:123").await.unwrap();
-        assert!(meta.is_some());
-        assert_eq!(meta.unwrap().key, "test:123");
-
-        let ts1 = Utc::now();
-        store
-            .append_session_message("test:123", "user", "Hello", &ts1, None)
-            .await
-            .unwrap();
-        let ts2 = Utc::now();
-        store
-            .append_session_message(
-                "test:123",
-                "assistant",
-                "Hi!",
-                &ts2,
-                Some(&["tool1".to_string()]),
-            )
-            .await
-            .unwrap();
-
-        let messages = store.load_session_messages("test:123").await.unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content, "Hello");
-        assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[1].tools_used, Some("[\"tool1\"]".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_session_upsert_meta() {
-        let store = temp_store().await;
-
-        store.save_session_meta("key1", 5).await.unwrap();
-        let meta1 = store.load_session_meta("key1").await.unwrap();
-        assert_eq!(meta1.unwrap().last_consolidated, 5);
-
-        store.save_session_meta("key1", 10).await.unwrap();
-        let meta2 = store.load_session_meta("key1").await.unwrap();
-        assert_eq!(meta2.unwrap().last_consolidated, 10);
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_session_delete() {
-        let store = temp_store().await;
-
-        store.save_session_meta("key1", 0).await.unwrap();
-        let ts = Utc::now();
-        store
-            .append_session_message("key1", "user", "test", &ts, None)
-            .await
-            .unwrap();
-
-        assert!(store.load_session_meta("key1").await.unwrap().is_some());
-        assert!(!store
-            .load_session_messages("key1")
-            .await
-            .unwrap()
-            .is_empty());
-
-        assert!(store.delete_session("key1").await.unwrap());
-        assert!(!store.delete_session("key1").await.unwrap());
-        assert!(store.load_session_meta("key1").await.unwrap().is_none());
-        assert!(store
-            .load_session_messages("key1")
-            .await
-            .unwrap()
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_session_nonexistent() {
-        let store = temp_store().await;
-        assert!(store.load_session_meta("nope").await.unwrap().is_none());
-        assert!(store
-            .load_session_messages("nope")
-            .await
-            .unwrap()
-            .is_empty());
     }
 
     // ── Session Summary tests ──
@@ -521,30 +529,6 @@ mod tests {
         store.save_session_summary("key1", "Summary").await.unwrap();
         assert!(store.delete_session_summary("key1").await.unwrap());
         assert!(!store.delete_session_summary("key1").await.unwrap());
-        assert!(store.load_session_summary("key1").await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_clear_session_messages_clears_summary() {
-        let store = temp_store().await;
-
-        store.save_session_meta("key1", 0).await.unwrap();
-        let ts = Utc::now();
-        store
-            .append_session_message("key1", "user", "test", &ts, None)
-            .await
-            .unwrap();
-        store
-            .save_session_summary("key1", "Old summary")
-            .await
-            .unwrap();
-
-        store.clear_session_messages("key1").await.unwrap();
-        assert!(store
-            .load_session_messages("key1")
-            .await
-            .unwrap()
-            .is_empty());
         assert!(store.load_session_summary("key1").await.unwrap().is_none());
     }
 }
