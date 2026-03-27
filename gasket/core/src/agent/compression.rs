@@ -210,6 +210,7 @@ impl CompressionActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gasket_types::SummaryType;
 
     struct MockSummarization;
 
