@@ -41,7 +41,12 @@ pub use gasket_channels::{
 };
 
 // Re-export webhook (feature-gated)
-#[cfg(any(feature = "webhook", feature = "dingtalk", feature = "feishu", feature = "wecom"))]
+#[cfg(any(
+    feature = "webhook",
+    feature = "dingtalk",
+    feature = "feishu",
+    feature = "wecom"
+))]
 pub use gasket_channels::webhook;
 
 // Re-export vault base types from gasket_vault crate
