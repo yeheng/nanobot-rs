@@ -15,6 +15,7 @@ members = [
     "vault",
     "storage",
     "semantic",
+    "bus",
     "core",
     "cli",
     "providers",
