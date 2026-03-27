@@ -212,9 +212,10 @@ impl Tool for SpawnParallelTool {
                     } else {
                         "Expected JSON array. Wrap tasks in square brackets: [\"task1\", \"task2\"]"
                     };
-                    return Err(ToolError::InvalidArguments(
-                        format!("Failed to parse tasks: {}. {}", json_str, hint)
-                    ));
+                    return Err(ToolError::InvalidArguments(format!(
+                        "Failed to parse tasks: {}. {}",
+                        json_str, hint
+                    )));
                 }
             }
         };
@@ -612,7 +613,8 @@ mod tests {
         let err_msg = format!("Failed to parse tasks: {}. {}", malformed_json, hint);
         assert!(
             err_msg.contains("JSON array detected"),
-            "Error should contain helpful hint for array-like input, got: {}", err_msg
+            "Error should contain helpful hint for array-like input, got: {}",
+            err_msg
         );
 
         // Also test non-array input
@@ -625,7 +627,8 @@ mod tests {
         let err_msg2 = format!("Failed to parse tasks: {}. {}", non_array_json, hint2);
         assert!(
             err_msg2.contains("Expected JSON array"),
-            "Error should suggest wrapping in brackets, got: {}", err_msg2
+            "Error should suggest wrapping in brackets, got: {}",
+            err_msg2
         );
     }
 
@@ -639,7 +642,8 @@ mod tests {
         );
         assert!(
             err_msg.contains("Maximum 10") && err_msg.contains("batches"),
-            "Error should suggest batching, got: {}", err_msg
+            "Error should suggest batching, got: {}",
+            err_msg
         );
     }
 
@@ -649,7 +653,8 @@ mod tests {
         let err_msg = "At least one task is required. Example: {\"tasks\": [\"Research topic A\", \"Analyze data B\"]}";
         assert!(
             err_msg.contains("Example:"),
-            "Error should contain example, got: {}", err_msg
+            "Error should contain example, got: {}",
+            err_msg
         );
     }
 }

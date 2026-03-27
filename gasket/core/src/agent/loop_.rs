@@ -782,7 +782,11 @@ impl AgentLoop {
         };
 
         // Execute BeforeRequest hooks (can modify input or abort)
-        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+        match self
+            .hooks
+            .execute(HookPoint::BeforeRequest, &mut ctx)
+            .await?
+        {
             HookAction::Abort(msg) => {
                 return Err(AgentError::AbortedByHook(msg));
             }
@@ -874,7 +878,9 @@ impl AgentLoop {
             tool_calls: None,
             token_usage: None,
         };
-        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
+        self.hooks
+            .execute(HookPoint::AfterHistory, &mut ctx)
+            .await?;
 
         // Execute BeforeLLM hooks (vault injection)
         self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
@@ -934,7 +940,9 @@ impl AgentLoop {
             tool_calls: Some(&tools_used),
             token_usage: result.token_usage.as_ref(),
         };
-        self.hooks.execute(HookPoint::AfterResponse, &mut ctx).await?;
+        self.hooks
+            .execute(HookPoint::AfterResponse, &mut ctx)
+            .await?;
 
         // Log token usage
         if let Some(ref usage) = result.token_usage {
