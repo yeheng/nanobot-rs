@@ -5,8 +5,8 @@ use std::time::Instant;
 use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
-use gasket_providers::ToolCall;
 use crate::tools::{ToolContext, ToolRegistry};
+use gasket_providers::ToolCall;
 
 /// Result of executing a single tool call
 pub struct ToolCallResult {

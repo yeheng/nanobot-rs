@@ -1,27 +1,13 @@
 //! Parallel spawn tool for concurrent subagent execution with result aggregation
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::time::timeout;
-use tracing::{info, instrument, trace, warn};
+use tracing::{info, instrument};
 
 use super::base::{Tool, ToolContext, ToolError, ToolResult};
-use crate::agent::subagent::SubagentManager;
-use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
-use gasket_bus::events::{OutboundMessage, WebSocketMessage};
-use gasket_core::config::ModelRegistry;
-use gasket_core::providers::ProviderRegistry;
 
-pub struct SpawnParallelTool {
-    manager: Option<Arc<SubagentManager>>,
-    model_registry: Option<Arc<ModelRegistry>>,
-    provider_registry: Option<Arc<ProviderRegistry>>,
-}
+pub struct SpawnParallelTool;
 
 impl Default for SpawnParallelTool {
     fn default() -> Self {
@@ -31,68 +17,7 @@ impl Default for SpawnParallelTool {
 
 impl SpawnParallelTool {
     pub fn new() -> Self {
-        Self {
-            manager: None,
-            model_registry: None,
-            provider_registry: None,
-        }
-    }
-
-    pub fn with_manager(manager: Arc<SubagentManager>) -> Self {
-        Self {
-            manager: Some(manager),
-            model_registry: None,
-            provider_registry: None,
-        }
-    }
-
-    pub fn with_registries(
-        manager: Arc<SubagentManager>,
-        model_registry: Arc<ModelRegistry>,
-        provider_registry: Arc<ProviderRegistry>,
-    ) -> Self {
-        Self {
-            manager: Some(manager),
-            model_registry: Some(model_registry),
-            provider_registry: Some(provider_registry),
-        }
-    }
-
-    /// Select model based on model_id with fallback and optional smart selection.
-    ///
-    /// Selection logic:
-    /// 1. If model_id is provided, try exact match first
-    /// 2. If not found, fallback to default model
-    /// 3. If no model_id and smart-model-selection feature is enabled,
-    ///    analyze task content and select by capability
-    /// 4. Otherwise use default model
-    /// 5. Return None if no model profile matches (use manager default)
-    fn select_model<'a>(
-        &'a self,
-        model_id: &'a Option<String>,
-        _task: &str,
-    ) -> Option<(&'a str, &'a gasket_core::config::ModelProfile)> {
-        let model_registry = self.model_registry.as_ref()?;
-
-        match model_id {
-            Some(id) => {
-                // Try exact match with fallback to default
-                model_registry.get_profile_with_fallback(Some(id))
-            }
-            None => {
-                // No model_id specified
-                #[cfg(feature = "smart-model-selection")]
-                {
-                    // Smart selection based on task content
-                    model_registry.select_by_capability(_task)
-                }
-                #[cfg(not(feature = "smart-model-selection"))]
-                {
-                    // Use default model
-                    model_registry.get_profile_with_fallback(None)
-                }
-            }
-        }
+        Self
     }
 }
 
@@ -168,18 +93,14 @@ impl Tool for SpawnParallelTool {
     }
 
     #[instrument(name = "tool.spawn_parallel", skip_all)]
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let manager = match &self.manager {
-            Some(m) => m,
-            None => {
-                return Err(ToolError::ExecutionError(
-                    "Parallel task spawning is not available in this mode.".to_string(),
-                ))
-            }
-        };
+        // Get spawner from context
+        let spawner = ctx.spawner.as_ref().ok_or_else(|| {
+            ToolError::ExecutionError("No spawner available in ToolContext".to_string())
+        })?;
 
         // Normalize tasks to TaskSpec format
         let task_specs: Vec<TaskSpec> = match args.tasks {
@@ -197,7 +118,6 @@ impl Tool for SpawnParallelTool {
                 if let Ok(specs) = serde_json::from_str::<Vec<TaskSpec>>(&json_str) {
                     specs
                 } else if let Ok(tasks) = serde_json::from_str::<Vec<String>>(&json_str) {
-                    // Try as Vec<String> (simple)
                     tasks
                         .into_iter()
                         .map(|task| TaskSpec {
@@ -225,274 +145,29 @@ impl Tool for SpawnParallelTool {
             ));
         }
 
-        let mut tracker = SubagentTracker::new();
-        let result_tx = tracker.result_sender();
-        let event_tx = tracker.event_sender();
-        let cancellation_token = tracker.cancellation_token();
-        let task_count = task_specs.len();
+        info!("Spawning {} parallel subagent tasks", task_specs.len());
 
-        info!(
-            "Preparing {} parallel subagent tasks with streaming support",
-            task_count
-        );
-
-        // Track subagent_id -> task_index mapping for [Task N] labeling
-        let mut task_id_map: HashMap<String, usize> = HashMap::with_capacity(task_count);
-
-        // Spawn all subagents directly - spawn() is non-blocking because it uses tokio::spawn internally
-        // We await it just to get the subagent ID, not to wait for execution
-        for (idx, spec) in task_specs.into_iter().enumerate() {
-            let subagent_id = SubagentTracker::generate_id();
-            // Record mapping for [Task N] labeling in WebSocket messages
-            task_id_map.insert(subagent_id.clone(), idx + 1); // 1-indexed for user display
-            let task = spec.task.clone();
-
-            // Model selection with fallback and optional smart selection
-            let selected_model = self.select_model(&spec.model_id, &task);
-
-            if let Some((profile_id, profile)) = selected_model {
-                // Model profile found
-                let provider_registry = self.provider_registry.as_ref().ok_or_else(|| {
-                    ToolError::ExecutionError("Provider registry not available".to_string())
-                })?;
-
-                let provider = provider_registry
-                    .get_or_create(&profile.provider)
-                    .map_err(|e| {
-                        ToolError::ExecutionError(format!("Failed to create provider: {}", e))
-                    })?;
-
-                let agent_config = crate::agent::loop_::AgentConfig {
-                    model: profile.model.clone(),
-                    temperature: profile.temperature.unwrap_or(0.7),
-                    thinking_enabled: profile.thinking_enabled.unwrap_or(false),
-                    max_tokens: profile.max_tokens.unwrap_or(4096),
-                    ..Default::default()
-                };
-
-                info!(
-                    "[SpawnParallel] Task {}: Using model profile '{}' (model: {})",
-                    idx + 1,
-                    profile_id,
-                    profile.model
-                );
-
-                // Spawn subagent - this is non-blocking, just returns the ID
-                let _id = manager
-                    .task(subagent_id, task)
-                    .with_provider(provider)
-                    .with_config(agent_config)
-                    .with_streaming(event_tx.clone())
-                    .with_cancellation_token(cancellation_token.clone())
-                    .spawn(result_tx.clone())
-                    .await
-                    .map_err(|e| {
-                        ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
-                    })?;
-            } else {
-                // No model profile matched, use default provider
-                info!(
-                    "[SpawnParallel] Task {}: Using default provider (no model profile matched)",
-                    idx + 1
-                );
-
-                // Spawn subagent - this is non-blocking, just returns the ID
-                let _id = manager
-                    .task(subagent_id, task)
-                    .with_streaming(event_tx.clone())
-                    .with_cancellation_token(cancellation_token.clone())
-                    .spawn(result_tx.clone())
-                    .await
-                    .map_err(|e| {
-                        ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
-                    })?;
-            }
+        // Spawn all tasks concurrently
+        let mut handles = Vec::with_capacity(task_specs.len());
+        for spec in task_specs {
+            let spawner_clone = spawner.clone();
+            let handle =
+                tokio::spawn(async move { spawner_clone.spawn(spec.task, spec.model_id).await });
+            handles.push(handle);
         }
 
-        // CRITICAL: Drop the original senders now that all subagents have been spawned.
-        // Once all subagents complete, these cloned senders will be dropped,
-        // and the channel will close naturally, allowing event_rx.recv() to return None.
-        drop(result_tx);
-        drop(event_tx);
-
-        info!(
-            "All {} subagent spawn requests submitted (executing in background)",
-            task_count
-        );
-
-        // Take event receiver - we own it now, no Arc<Mutex> needed
-        let mut event_rx = tracker.take_event_receiver().map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to take event receiver: {}", e))
-        })?;
-
-        // Get outbound channel and session key for WebSocket streaming
-        // Priority: ToolContext (passed directly) > SubagentManager (global state, deprecated)
-        let outbound_tx = _ctx
-            .outbound_tx
-            .clone()
-            .unwrap_or_else(|| manager.outbound_sender());
-        let session_key = _ctx
-            .session_key
-            .clone()
-            .or_else(|| manager.get_session_key());
-
-        // Spawn a background task to forward events to WebSocket in real-time
-        // Move task_id_map into the task for task index lookup
-        tokio::spawn(async move {
-            // Direct ownership - no lock needed
-            while let Some(event) = event_rx.recv().await {
-                // Extract subagent ID for task index lookup
-                let subagent_id = match &event {
-                    SubagentEvent::Started { id, .. } => id,
-                    SubagentEvent::Thinking { id, .. } => id,
-                    SubagentEvent::Content { id, .. } => id,
-                    SubagentEvent::Iteration { id, .. } => id,
-                    SubagentEvent::ToolStart { id, .. } => id,
-                    SubagentEvent::ToolEnd { id, .. } => id,
-                    SubagentEvent::Completed { id, .. } => id,
-                    SubagentEvent::Error { id, .. } => id,
-                };
-
-                // Get task index (1-indexed for display)
-                let task_index = task_id_map.get(subagent_id).copied().unwrap_or(0) as u32;
-
-                // Log the event
-                match &event {
-                    SubagentEvent::Started { id, task } => {
-                        info!("Task {} Started: {} (ID: {})", task_index, task, id);
-                    }
-                    SubagentEvent::Thinking { id, content } => {
-                        trace!(
-                            "Task {} Thinking: {} bytes (ID: {})",
-                            task_index,
-                            content.len(),
-                            id
-                        );
-                    }
-                    SubagentEvent::Content { id, content } => {
-                        trace!(
-                            "Task {} Content: {} bytes (ID: {})",
-                            task_index,
-                            content.len(),
-                            id
-                        );
-                    }
-                    SubagentEvent::Iteration { id, iteration } => {
-                        info!(
-                            "Task {} Iteration {} completed (ID: {})",
-                            task_index, iteration, id
-                        );
-                    }
-                    SubagentEvent::ToolStart { id, tool_name, .. } => {
-                        trace!(
-                            "Task {} Tool: {} started (ID: {})",
-                            task_index,
-                            tool_name,
-                            id
-                        );
-                    }
-                    SubagentEvent::ToolEnd { id, tool_name, .. } => {
-                        trace!("Task {} Tool: {} done (ID: {})", task_index, tool_name, id);
-                    }
-                    SubagentEvent::Completed { id, result } => {
-                        info!(
-                            "Task {} Completed, model={} (ID: {})",
-                            task_index,
-                            result.model.as_deref().unwrap_or("unknown"),
-                            id
-                        );
-                    }
-                    SubagentEvent::Error { id, error } => {
-                        warn!("Task {} Error: {} (ID: {})", task_index, error, id);
-                    }
-                }
-
-                // Convert SubagentEvent to structured WebSocketMessage
-                // No more text prefix concatenation - use dedicated message types
-                let ws_msg = match &event {
-                    SubagentEvent::Started { id, task } => Some(
-                        WebSocketMessage::subagent_started(id.clone(), task.clone(), task_index),
-                    ),
-                    SubagentEvent::Thinking { id, content } => Some(
-                        WebSocketMessage::subagent_thinking(id.clone(), content.clone()),
-                    ),
-                    SubagentEvent::Content { id, content } => Some(
-                        WebSocketMessage::subagent_content(id.clone(), content.clone()),
-                    ),
-                    SubagentEvent::ToolStart {
-                        id,
-                        tool_name,
-                        arguments,
-                    } => Some(WebSocketMessage::subagent_tool_start(
-                        id.clone(),
-                        tool_name.clone(),
-                        arguments.clone(),
-                    )),
-                    SubagentEvent::ToolEnd {
-                        id,
-                        tool_name,
-                        output,
-                    } => Some(WebSocketMessage::subagent_tool_end(
-                        id.clone(),
-                        tool_name.clone(),
-                        Some(output.clone()),
-                    )),
-                    SubagentEvent::Completed { id, result } => {
-                        // Generate brief summary (first 100 chars of content)
-                        let summary: String = result.response.content.chars().take(100).collect();
-                        Some(WebSocketMessage::subagent_completed(
-                            id.clone(),
-                            task_index,
-                            summary,
-                            result.response.tools_used.len() as u32,
-                        ))
-                    }
-                    SubagentEvent::Error { id, error } => Some(WebSocketMessage::subagent_error(
-                        id.clone(),
-                        task_index,
-                        error.clone(),
-                    )),
-                    SubagentEvent::Iteration { .. } => {
-                        // Iteration events are silently handled (not sent to frontend)
-                        None
-                    }
-                };
-
-                // Send WebSocket message immediately (no buffering)
-                if let (Some(msg), Some(key)) = (ws_msg, session_key.as_ref()) {
-                    let outbound =
-                        OutboundMessage::with_ws_message(key.channel.clone(), &key.chat_id, msg);
-                    // Use timeout + send to apply backpressure without indefinite blocking
-                    match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await {
-                        Ok(Ok(_)) => { /* sent successfully */ }
-                        Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
-                        Err(_) => warn!("Send timeout after 100ms, outbound channel congested"),
-                    }
-                }
-            }
-        });
-
-        // Wait for all results
-        info!("Waiting for {} subagent results...", task_count);
-        let results = tracker.wait_for_all(task_count).await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to wait for subagent results: {}", e))
-        })?;
-
-        if results.len() < task_count {
-            warn!(
-                "Only received {}/{} subagent results. Missing results may be due to: \
-                 1) Subagent task crashed before sending result, \
-                 2) Channel closed unexpectedly, \
-                 3) Timeout waiting for results",
-                results.len(),
-                task_count
-            );
-        } else {
-            info!("All {} subagents completed successfully", results.len());
+        // Collect all results
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let result = handle
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Task join error: {}", e)))?
+                .map_err(|e| ToolError::ExecutionError(format!("Spawn error: {}", e)))?;
+            results.push(result);
         }
 
         // Aggregate results
-        let mut output = format!("Completed {} parallel tasks:\n\n", task_count);
+        let mut output = format!("Completed {} parallel tasks:\n\n", results.len());
         for (idx, result) in results.iter().enumerate() {
             // Include thinking content if available
             if let Some(ref reasoning) = result.response.reasoning_content {
@@ -502,11 +177,10 @@ impl Tool for SpawnParallelTool {
             }
 
             output.push_str(&format!(
-                "## Task {} (ID: {})\n**Model:** {}\n**Prompt:** {}\n**Response:**\n{}\n\n",
+                "## Task {}\n**Model:** {}\n**Prompt:** {}\n**Response:**\n{}\n\n",
                 idx + 1,
-                &result.id,
                 result.model.as_deref().unwrap_or("unknown"),
-                &result.task,
+                result.task,
                 result.response.content
             ));
         }
@@ -566,7 +240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_manager_error() {
+    async fn test_no_spawner_error() {
         let tool = SpawnParallelTool::new();
         let args = serde_json::json!({
             "tasks": ["Task 1"]
@@ -574,7 +248,7 @@ mod tests {
 
         let result = tool.execute(args, &ToolContext::empty()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not available"));
+        assert!(result.unwrap_err().to_string().contains("No spawner"));
     }
 
     #[test]

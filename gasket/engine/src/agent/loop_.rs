@@ -42,15 +42,15 @@ use crate::agent::context::AgentContext;
 use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::agent::HistoryConfig;
-use gasket_types::SessionKey;
+use crate::tools::ToolRegistry;
 use gasket_core::error::AgentError;
 use gasket_core::hooks::{
     ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
     MutableContext, VaultHook,
 };
-use gasket_providers::{ChatMessage, LlmProvider};
-use crate::tools::ToolRegistry;
 use gasket_core::vault::{redact_secrets, VaultInjector, VaultStore};
+use gasket_providers::{ChatMessage, LlmProvider};
+use gasket_types::SessionKey;
 use tokio::sync::RwLock;
 
 use crate::agent::memory::MemoryStore;

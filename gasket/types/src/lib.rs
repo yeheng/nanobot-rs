@@ -21,4 +21,7 @@ pub use session_event::{
     EventMetadata, EventType, EventTypeCategory, Session, SessionEvent, SessionMetadata,
     SummaryType, TokenUsage,
 };
-pub use tool::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
+pub use tool::{
+    simple_schema, SubagentResponse, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError,
+    ToolMetadata, ToolResult,
+};

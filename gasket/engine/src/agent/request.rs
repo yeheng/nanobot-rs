@@ -7,8 +7,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::warn;
 
-use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ThinkingConfig};
 use crate::tools::ToolRegistry;
+use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ThinkingConfig};
 
 use super::loop_::AgentConfig;
 

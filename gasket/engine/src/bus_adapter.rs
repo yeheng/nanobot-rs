@@ -1,10 +1,10 @@
 //! Adapter for integrating with gasket-bus
 
-use std::sync::Arc;
+use crate::agent::AgentLoop;
 use async_trait::async_trait;
 use gasket_bus::MessageHandler;
 use gasket_types::SessionKey;
-use crate::agent::AgentLoop;
+use std::sync::Arc;
 
 /// Engine handler for bus integration.
 pub struct EngineHandler {
@@ -30,7 +30,8 @@ impl MessageHandler for EngineHandler {
         session_key: &SessionKey,
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let response = self.agent_loop
+        let response = self
+            .agent_loop
             .process_direct(message, session_key)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;

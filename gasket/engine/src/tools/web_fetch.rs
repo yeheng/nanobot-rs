@@ -78,7 +78,9 @@ impl WebFetchTool {
     }
 
     /// Create a new web fetch tool with proxy configuration
-    pub fn with_config(config: Option<gasket_core::config::WebToolsConfig>) -> Result<Self, ToolError> {
+    pub fn with_config(
+        config: Option<gasket_core::config::WebToolsConfig>,
+    ) -> Result<Self, ToolError> {
         let client = build_client_with_proxy(config.as_ref())?;
         Ok(Self {
             client,

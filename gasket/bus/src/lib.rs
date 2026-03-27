@@ -6,7 +6,9 @@
 pub mod actors;
 pub mod queue;
 
-pub use actors::{run_outbound_actor, run_router_actor, run_session_actor, MessageHandler, StreamEvent};
+pub use actors::{
+    run_outbound_actor, run_router_actor, run_session_actor, MessageHandler, StreamEvent,
+};
 pub use gasket_types::events::*;
 pub use queue::MessageBus;
 

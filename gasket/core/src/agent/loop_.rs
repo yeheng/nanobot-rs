@@ -39,9 +39,9 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
-use crate::agent::HistoryConfig;
 use crate::agent::prompt;
 use crate::agent::stream::{self};
+use crate::agent::HistoryConfig;
 use crate::bus::events::SessionKey;
 use crate::error::AgentError;
 use crate::hooks::{

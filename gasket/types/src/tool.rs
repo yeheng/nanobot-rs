@@ -12,17 +12,82 @@ use crate::events::{OutboundMessage, SessionKey};
 /// Result type for tool execution
 pub type ToolResult = Result<String, ToolError>;
 
+/// Trait for spawning subagents without hard dependency on SubagentManager.
+///
+/// This trait is defined in gasket-types to avoid circular dependencies.
+/// Tools depend only on this trait, not on the concrete SubagentManager type.
+#[async_trait]
+pub trait SubagentSpawner: Send + Sync {
+    /// Spawn a subagent with the given task and optional model selection.
+    ///
+    /// # Arguments
+    /// * `task` - The task description for the subagent to execute
+    /// * `model_id` - Optional model profile ID to use (uses default if None)
+    ///
+    /// # Returns
+    /// The subagent result or an error if spawning fails
+    async fn spawn(
+        &self,
+        task: String,
+        model_id: Option<String>,
+    ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>>;
+}
+
+/// Subagent execution result.
+///
+/// This is a minimal result type containing only what tools need.
+#[derive(Debug, Clone)]
+pub struct SubagentResult {
+    pub id: String,
+    pub task: String,
+    pub response: SubagentResponse,
+    /// Model name used for this execution
+    pub model: Option<String>,
+}
+
+/// Subagent response structure.
+#[derive(Debug, Clone)]
+pub struct SubagentResponse {
+    pub content: String,
+    pub reasoning_content: Option<String>,
+    pub tools_used: Vec<String>,
+    pub model: Option<String>,
+    pub token_usage: Option<TokenUsage>,
+    pub cost: f64,
+}
+
+/// Token usage statistics.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 /// Context passed to tool execution, providing request-scoped data.
 ///
 /// This replaces the old pattern of storing session_key in SubagentManager
 /// as a global mutable state. Now each tool execution receives its context
 /// directly, eliminating multi-tenant data leakage risks.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ToolContext {
     /// Session key for WebSocket streaming (identifies the client connection).
     pub session_key: Option<SessionKey>,
     /// Channel to send outbound WebSocket messages in real-time.
     pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
+    /// Subagent spawner for tools that need to spawn subagents.
+    /// Uses a trait object to decouple tools from concrete SubagentManager.
+    pub spawner: Option<std::sync::Arc<dyn SubagentSpawner>>,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("session_key", &self.session_key)
+            .field("outbound_tx", &self.outbound_tx.is_some())
+            .field("spawner", &self.spawner.as_ref().map(|_| "SubagentSpawner"))
+            .finish()
+    }
 }
 
 impl ToolContext {
@@ -36,6 +101,7 @@ impl ToolContext {
         Self {
             session_key: Some(session_key),
             outbound_tx: None,
+            spawner: None,
         }
     }
 
@@ -47,6 +113,41 @@ impl ToolContext {
         Self {
             session_key: Some(session_key),
             outbound_tx: Some(outbound_tx),
+            spawner: None,
+        }
+    }
+
+    /// Create a context with spawner only.
+    pub fn with_spawner(spawner: std::sync::Arc<dyn SubagentSpawner>) -> Self {
+        Self {
+            session_key: None,
+            outbound_tx: None,
+            spawner: Some(spawner),
+        }
+    }
+
+    /// Create a context with session key and spawner.
+    pub fn with_session_and_spawner(
+        session_key: SessionKey,
+        spawner: std::sync::Arc<dyn SubagentSpawner>,
+    ) -> Self {
+        Self {
+            session_key: Some(session_key),
+            outbound_tx: None,
+            spawner: Some(spawner),
+        }
+    }
+
+    /// Create a complete context with all fields set.
+    pub fn complete(
+        session_key: SessionKey,
+        outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+        spawner: std::sync::Arc<dyn SubagentSpawner>,
+    ) -> Self {
+        Self {
+            session_key: Some(session_key),
+            outbound_tx: Some(outbound_tx),
+            spawner: Some(spawner),
         }
     }
 }

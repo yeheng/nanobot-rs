@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tracing::debug;
 
 use gasket_core::memory::SqliteStore;
-use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_core::search::{top_k_similar, TextEmbedder};
+use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_types::SessionEvent;
 
 use crate::agent::count_tokens;

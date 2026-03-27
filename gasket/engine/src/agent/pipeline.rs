@@ -11,10 +11,10 @@ use std::sync::Arc;
 use crate::agent::context::AgentContext;
 use crate::agent::executor_core::AgentExecutor;
 use crate::agent::loop_::AgentConfig;
-use gasket_types::SessionKey;
+use crate::tools::ToolRegistry;
 use gasket_core::error::AgentError;
 use gasket_providers::{ChatMessage, LlmProvider};
-use crate::tools::ToolRegistry;
+use gasket_types::SessionKey;
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
 /// Pipeline context - minimal dependencies

@@ -23,9 +23,8 @@ pub use context::{CompressionTask, PersistentContext};
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use gasket_history::{
-    count_tokens, process_history, HistoryConfig, ProcessedHistory,
-    HistoryQuery, HistoryQueryBuilder, HistoryResult, HistoryRetriever,
-    QueryOrder, ResultMeta, SemanticQuery, TimeRange,
+    count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
+    HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;

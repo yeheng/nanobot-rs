@@ -23,10 +23,10 @@ use crate::agent::executor::ToolExecutor;
 use crate::agent::loop_::AgentConfig;
 use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
-use gasket_core::error::AgentError;
-use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
-use gasket_core::token_tracker::{ModelPricing, TokenUsage};
 use crate::tools::{ToolContext, ToolRegistry};
+use gasket_core::error::AgentError;
+use gasket_core::token_tracker::{ModelPricing, TokenUsage};
+use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use gasket_vault::redact_secrets;
 
 /// Default response when no content is available

@@ -15,10 +15,10 @@ use crate::agent::loop_::AgentConfig;
 use crate::agent::prompt;
 use crate::agent::stream::StreamEvent;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentResult};
+use crate::tools::ToolRegistry;
 use gasket_bus::events::{OutboundMessage, SessionKey};
 use gasket_core::hooks::HookRegistry;
 use gasket_providers::{ChatMessage, LlmProvider};
-use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentLoop, AgentResponse};
 
@@ -93,6 +93,10 @@ pub struct SubagentManager {
     session_key: Arc<std::sync::Mutex<Option<SessionKey>>>,
     /// Subagent execution timeout in seconds
     timeout_secs: u64,
+    /// Optional model registry for model selection
+    model_registry: Option<Arc<gasket_core::config::ModelRegistry>>,
+    /// Optional provider registry for creating providers
+    provider_registry: Option<Arc<gasket_core::providers::ProviderRegistry>>,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -592,12 +596,26 @@ impl SubagentManager {
             outbound_tx,
             session_key: Arc::new(std::sync::Mutex::new(None)),
             timeout_secs: super::loop_::DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            model_registry: None,
+            provider_registry: None,
         }
     }
 
-    /// Create a new SubagentManager with custom timeout.
-    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
-        self.timeout_secs = timeout_secs;
+    /// Set the model registry for model selection.
+    pub fn with_model_registry(
+        mut self,
+        registry: Arc<gasket_core::config::ModelRegistry>,
+    ) -> Self {
+        self.model_registry = Some(registry);
+        self
+    }
+
+    /// Set the provider registry for creating providers.
+    pub fn with_provider_registry(
+        mut self,
+        registry: Arc<gasket_core::providers::ProviderRegistry>,
+    ) -> Self {
+        self.provider_registry = Some(registry);
         self
     }
 
@@ -972,5 +990,114 @@ impl SubagentManager {
     /// Uses try_send to avoid blocking if the channel is full.
     pub fn try_send_ws_message(&self, msg: OutboundMessage) -> bool {
         self.outbound_tx.try_send(msg).is_ok()
+    }
+}
+
+// Step 5: Implement SubagentSpawner trait for SubagentManager
+// This allows SubagentManager to be used as a spawner in ToolContext
+
+use async_trait::async_trait;
+use gasket_types::{SubagentResponse, SubagentResult as TypesSubagentResult, SubagentSpawner};
+
+#[async_trait]
+impl SubagentSpawner for SubagentManager {
+    async fn spawn(
+        &self,
+        task: String,
+        model_id: Option<String>,
+    ) -> Result<TypesSubagentResult, Box<dyn std::error::Error + Send>> {
+        use crate::agent::subagent_tracker::SubagentTracker;
+
+        // Create tracker for single task
+        let mut tracker = SubagentTracker::new();
+        let result_tx = tracker.result_sender();
+        let event_tx = tracker.event_sender();
+        let subagent_id = SubagentTracker::generate_id();
+
+        info!(
+            "[SubagentSpawner] Starting subagent {} for task: {}",
+            subagent_id, task
+        );
+
+        // Prepare spawn configuration using Builder pattern
+        let mut builder = self.task(subagent_id.clone(), task.clone());
+
+        // Model selection logic - if model_id is provided, try to use it
+        if let Some(ref mid) = model_id {
+            if let Some(ref model_registry) = self.model_registry {
+                if let Some((profile_id, profile)) =
+                    model_registry.get_profile_with_fallback(Some(mid))
+                {
+                    if let Some(ref provider_registry) = self.provider_registry {
+                        if let Ok(provider) = provider_registry.get_or_create(&profile.provider) {
+                            let agent_config = AgentConfig {
+                                model: profile.model.clone(),
+                                temperature: profile.temperature.unwrap_or(0.7),
+                                thinking_enabled: profile.thinking_enabled.unwrap_or(false),
+                                max_tokens: profile.max_tokens.unwrap_or(4096),
+                                ..Default::default()
+                            };
+
+                            builder = builder.with_provider(provider).with_config(agent_config);
+                            info!(
+                                "[SubagentSpawner] Using model profile '{}' (model: {}) for subagent {}",
+                                profile_id, profile.model, subagent_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Spawn the subagent
+        let spawn_result = builder
+            .with_streaming(event_tx.clone())
+            .spawn(result_tx.clone())
+            .await;
+
+        // Check spawn result
+        if let Err(e) = spawn_result {
+            return Err(anyhow::anyhow!("Failed to spawn subagent: {}", e).into());
+        }
+
+        // Drop original senders - channel will close when all tasks complete
+        drop(result_tx);
+        drop(event_tx);
+
+        // Wait for result
+        let results = match tracker.wait_for_all(1).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to wait for subagent results: {}", e).into())
+            }
+        };
+
+        if results.is_empty() {
+            return Err(anyhow::anyhow!("Subagent completed but no result was received").into());
+        }
+
+        let result = results.into_iter().next().unwrap();
+
+        // Convert from crate::agent::subagent_tracker::SubagentResult to gasket_types::SubagentResult
+        Ok(TypesSubagentResult {
+            id: result.id,
+            task: result.task,
+            response: SubagentResponse {
+                content: result.response.content,
+                reasoning_content: result.response.reasoning_content,
+                tools_used: result.response.tools_used,
+                model: result.response.model,
+                token_usage: result
+                    .response
+                    .token_usage
+                    .map(|t| gasket_types::tool::TokenUsage {
+                        prompt_tokens: t.input_tokens as u32,
+                        completion_tokens: t.output_tokens as u32,
+                        total_tokens: t.total_tokens as u32,
+                    }),
+                cost: result.response.cost,
+            },
+            model: result.model,
+        })
     }
 }
