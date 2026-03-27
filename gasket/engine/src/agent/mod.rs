@@ -32,4 +32,4 @@ pub use pipeline::{process_message, PipelineContext};
 pub use stream::StreamEvent;
 pub use stream_buffer::BufferedEvents;
 pub use subagent::{run_subagent, SessionKeyGuard, SubagentManager};
-pub use subagent_tracker::{SubagentResult, SubagentTracker, TrackerError};
+pub use subagent_tracker::{SubagentTracker, TrackerError};
