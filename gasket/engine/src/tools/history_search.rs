@@ -11,7 +11,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use gasket_core::memory::SqliteStore;
+use gasket_storage::SqliteStore;
 
 // ── History Search Tool ────────────────────────────────────────
 

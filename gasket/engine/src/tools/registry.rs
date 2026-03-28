@@ -7,7 +7,7 @@ use serde_json::Value;
 use tracing::{debug, info, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
-use gasket_core::search::{top_k_similar, TextEmbedder};
+use gasket_semantic::{top_k_similar, TextEmbedder};
 use gasket_providers::ToolDefinition;
 
 /// A tool bundled with its optional metadata.
