@@ -24,7 +24,7 @@ use crate::agent::loop_::AgentConfig;
 use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
 use crate::tools::{ToolContext, ToolRegistry};
-use gasket_core::error::AgentError;
+use crate::error::AgentError;
 use gasket_core::token_tracker::{ModelPricing, TokenUsage};
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use gasket_vault::redact_secrets;
@@ -40,7 +40,7 @@ const DEFAULT_MAX_ITERATIONS: &str = "Maximum iterations reached.";
 #[derive(Default)]
 pub struct ExecutorOptions<'a> {
     /// Pricing configuration for cost calculation
-    pub pricing: Option<ModelPricing>,
+    pub pricing: Option<gasket_core::token_tracker::ModelPricing>,
     /// Vault values for log redaction
     pub vault_values: &'a [String],
 }
@@ -50,7 +50,7 @@ impl<'a> ExecutorOptions<'a> {
         Self::default()
     }
 
-    pub fn with_pricing(mut self, pricing: ModelPricing) -> Self {
+    pub fn with_pricing(mut self, pricing: gasket_core::token_tracker::ModelPricing) -> Self {
         self.pricing = Some(pricing);
         self
     }
@@ -69,7 +69,7 @@ pub struct ExecutionResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
-    pub token_usage: Option<TokenUsage>,
+    pub token_usage: Option<gasket_core::token_tracker::TokenUsage>,
     pub cost: f64,
 }
 
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_model_pricing_calculate_cost() {
-        let pricing = ModelPricing::new(3.0, 15.0, "USD");
+        let pricing = gasket_core::token_tracker::ModelPricing::new(3.0, 15.0, "USD");
 
         // 1000 input tokens, 500 output tokens
         let cost = pricing.calculate_cost(1000, 500);
@@ -544,15 +544,15 @@ mod tests {
     #[test]
     fn test_execution_state_accumulate_usage() {
         let mut state = ExecutionState::new(vec![]);
-        let pricing = ModelPricing::new(1.0, 2.0, "USD");
+        let pricing = gasket_core::token_tracker::ModelPricing::new(1.0, 2.0, "USD");
 
-        let usage1 = TokenUsage::new(100, 50);
+        let usage1 = gasket_core::token_tracker::TokenUsage::new(100, 50);
         state.accumulate_usage(&usage1, Some(&pricing));
 
         assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
         assert!((state.total_cost - 0.0002).abs() < 0.00001);
 
-        let usage2 = TokenUsage::new(200, 100);
+        let usage2 = gasket_core::token_tracker::TokenUsage::new(200, 100);
         state.accumulate_usage(&usage2, Some(&pricing));
 
         assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 300);
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn test_execution_state_no_pricing() {
         let mut state = ExecutionState::new(vec![]);
-        let usage = TokenUsage::new(100, 50);
+        let usage = gasket_core::token_tracker::TokenUsage::new(100, 50);
 
         state.accumulate_usage(&usage, None);
 
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_executor_options_builder() {
-        let pricing = ModelPricing::new(1.0, 2.0, "USD");
+        let pricing = gasket_core::token_tracker::ModelPricing::new(1.0, 2.0, "USD");
         let vault = vec!["secret".to_string()];
 
         let opts = ExecutorOptions::new()
