@@ -980,7 +980,7 @@ impl SubagentSpawner for SubagentManager {
     async fn spawn(
         &self,
         task: String,
-        model_id: Option<String>,
+        _model_id: Option<String>,
     ) -> Result<TypesSubagentResult, Box<dyn std::error::Error + Send>> {
         use crate::agent::subagent_tracker::SubagentTracker;
 

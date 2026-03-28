@@ -1,5 +1,3 @@
-//! Cron service for scheduled tasks
+//! Cron module - re-exports from gasket-engine
 
-mod service;
-
-pub use service::{CronJob, CronService};
+pub use gasket_engine::{CronJob, CronService};

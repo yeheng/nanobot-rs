@@ -351,7 +351,7 @@ mod tests {
 
         // Create a message with None content
         let mut messages = vec![ChatMessage {
-            role: crate::providers::MessageRole::User,
+            role: gasket_providers::MessageRole::User,
             content: None,
             name: None,
             tool_call_id: None,

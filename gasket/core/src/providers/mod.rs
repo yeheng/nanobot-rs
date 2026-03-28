@@ -15,3 +15,6 @@ pub use gasket_providers::GeminiProvider;
 pub use gasket_providers::{
     CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
 };
+
+// Re-export ProviderRegistry from config module for backward compatibility
+pub use crate::config::ProviderRegistry;

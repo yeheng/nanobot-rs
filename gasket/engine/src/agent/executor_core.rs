@@ -24,8 +24,8 @@ use crate::agent::loop_::AgentConfig;
 use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
 use crate::error::AgentError;
-use crate::tools::{ToolContext, ToolRegistry};
 use crate::token_tracker::{ModelPricing, TokenUsage};
+use crate::tools::{ToolContext, ToolRegistry};
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use gasket_vault::redact_secrets;
 

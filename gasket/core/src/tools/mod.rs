@@ -7,4 +7,4 @@ pub use gasket_engine::{
     MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool,
     WebSearchTool, WriteFileTool,
 };
-pub use gasket_types::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
+pub use gasket_types::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
