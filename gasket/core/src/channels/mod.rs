@@ -17,3 +17,21 @@ pub use gasket_channels::{
     feature = "wecom"
 ))]
 pub use gasket_channels::webhook;
+
+// Re-export platform modules (feature-gated)
+#[cfg(feature = "dingtalk")]
+pub use gasket_channels::dingtalk;
+#[cfg(feature = "discord")]
+pub use gasket_channels::discord;
+#[cfg(feature = "email")]
+pub use gasket_channels::email;
+#[cfg(feature = "feishu")]
+pub use gasket_channels::feishu;
+#[cfg(feature = "slack")]
+pub use gasket_channels::slack;
+#[cfg(feature = "telegram")]
+pub use gasket_channels::telegram;
+#[cfg(feature = "webhook")]
+pub use gasket_channels::websocket;
+#[cfg(feature = "wecom")]
+pub use gasket_channels::wecom;

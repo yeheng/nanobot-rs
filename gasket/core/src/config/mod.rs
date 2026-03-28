@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 pub use gasket_engine::config_dir;
+pub use gasket_engine::ConfigValidationError;
+pub use gasket_engine::ModelPricing;
 pub use gasket_engine::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
     WebToolsConfig,
@@ -68,12 +70,20 @@ pub struct ProviderConfig {
     pub models: HashMap<String, ModelConfig>,
     #[serde(default)]
     pub proxy: Option<bool>,
+    #[serde(default)]
+    pub proxy_enabled: Option<bool>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default, alias = "defaultCurrency")]
+    pub default_currency: Option<String>,
 }
 
 impl ProviderConfig {
     pub fn is_available(&self, _name: &str) -> bool {
         // Local providers (ollama, lmstudio) don't need API key
-        self.api_key.is_some() || self.api_base.contains("localhost") || self.api_base.contains("127.0.0.1")
+        self.api_key.is_some()
+            || self.api_base.contains("localhost")
+            || self.api_base.contains("127.0.0.1")
     }
 
     pub fn proxy_enabled(&self) -> bool {
@@ -99,14 +109,6 @@ impl ProviderConfig {
             }
         })
     }
-}
-
-/// Model pricing information
-#[derive(Debug, Clone)]
-pub struct ModelPricing {
-    pub price_input_per_million: f64,
-    pub price_output_per_million: f64,
-    pub currency: String,
 }
 
 /// Model-specific configuration
@@ -146,22 +148,36 @@ pub struct ModelProfile {
 }
 
 /// Agent defaults configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefaults {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
-    pub temperature: Option<f32>,
+    pub temperature: f32,
     #[serde(default, alias = "maxTokens")]
-    pub max_tokens: Option<u32>,
+    pub max_tokens: u32,
     #[serde(default, alias = "maxIterations")]
-    pub max_iterations: Option<u32>,
+    pub max_iterations: u32,
     #[serde(default, alias = "memoryWindow")]
-    pub memory_window: Option<usize>,
+    pub memory_window: usize,
     #[serde(default, alias = "thinkingEnabled")]
-    pub thinking_enabled: Option<bool>,
+    pub thinking_enabled: bool,
     #[serde(default)]
-    pub streaming: Option<bool>,
+    pub streaming: bool,
+}
+
+impl Default for AgentDefaults {
+    fn default() -> Self {
+        Self {
+            model: None,
+            temperature: 0.0,
+            max_tokens: 0,
+            max_iterations: 0,
+            memory_window: 0,
+            thinking_enabled: false,
+            streaming: true,
+        }
+    }
 }
 
 /// Agents configuration section
@@ -191,11 +207,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn validate(&self) -> Result<(), Vec<crate::ConfigValidationError>> {
+    pub fn validate(&self) -> Result<(), Vec<ConfigValidationError>> {
         let mut errors = Vec::new();
         for (name, provider) in &self.providers {
             if !provider.is_available(name) {
-                errors.push(crate::ConfigValidationError::ProviderNotAvailable(name.clone()));
+                errors.push(ConfigValidationError::ProviderNotAvailable(name.clone()));
             }
         }
         if errors.is_empty() {
@@ -207,12 +223,12 @@ impl Config {
 }
 
 /// Load configuration from file
-pub fn load_config() -> anyhow::Result<Config> {
+pub async fn load_config() -> anyhow::Result<Config> {
     let config_path = config_path()?;
     if !config_path.exists() {
         return Ok(Config::default());
     }
-    let content = std::fs::read_to_string(&config_path)?;
+    let content = tokio::fs::read_to_string(&config_path).await?;
     let config: Config = serde_yaml::from_str(&content)?;
     Ok(config)
 }
@@ -223,11 +239,45 @@ pub fn config_path() -> std::io::Result<std::path::PathBuf> {
 }
 
 /// Configuration loader (deprecated)
-pub struct ConfigLoader;
+pub struct ConfigLoader {
+    config_path: std::path::PathBuf,
+}
 
 impl ConfigLoader {
-    pub fn load() -> anyhow::Result<Config> {
-        load_config()
+    pub fn new() -> Self {
+        Self {
+            config_path: config_path().unwrap_or_else(|_| config_dir().join("config.yaml")),
+        }
+    }
+
+    pub async fn load(&self) -> anyhow::Result<Config> {
+        load_config().await
+    }
+
+    pub async fn save(&self, config: &Config) -> anyhow::Result<()> {
+        let content = serde_yaml::to_string(config)?;
+        tokio::fs::write(&self.config_path, content).await?;
+        Ok(())
+    }
+
+    pub fn config_path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+
+    pub fn exists(&self) -> bool {
+        self.config_path.exists()
+    }
+
+    pub async fn init_default(&self) -> anyhow::Result<Config> {
+        let config = Config::default();
+        self.save(&config).await?;
+        Ok(config)
+    }
+}
+
+impl Default for ConfigLoader {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -258,7 +308,10 @@ impl ModelRegistry {
         self.profiles.get(id)
     }
 
-    pub fn get_profile_with_fallback<'a>(&'a self, id: Option<&'a str>) -> Option<(&'a str, &'a ModelProfile)> {
+    pub fn get_profile_with_fallback<'a>(
+        &'a self,
+        id: Option<&'a str>,
+    ) -> Option<(&'a str, &'a ModelProfile)> {
         match id {
             Some(id) => self.profiles.get(id).map(|p| (id, p)),
             None => self.get_default_profile(),
@@ -307,7 +360,9 @@ impl ProviderRegistry {
     pub fn from_config(config: &Config) -> Self {
         let mut registry = Self::default();
         for (name, provider_config) in &config.providers {
-            registry.configs.insert(name.clone(), provider_config.clone());
+            registry
+                .configs
+                .insert(name.clone(), provider_config.clone());
         }
         if let Some(ref model) = config.agents.defaults.model {
             let provider_name: Option<&str> = model.split('/').next();
@@ -318,8 +373,13 @@ impl ProviderRegistry {
         registry
     }
 
-    pub fn get_or_create(&self, name: &str) -> anyhow::Result<std::sync::Arc<dyn gasket_providers::LlmProvider>> {
-        let config = self.configs.get(name)
+    pub fn get_or_create(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<std::sync::Arc<dyn gasket_providers::LlmProvider>> {
+        let config = self
+            .configs
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Provider not found: {}", name))?;
 
         if !config.is_available(name) {
@@ -336,7 +396,9 @@ impl ProviderRegistry {
             proxy_enabled: config.proxy_enabled(),
         };
 
-        Ok(std::sync::Arc::new(gasket_providers::OpenAICompatibleProvider::new(provider_config)))
+        Ok(std::sync::Arc::new(
+            gasket_providers::OpenAICompatibleProvider::new(provider_config),
+        ))
     }
 
     pub fn get_default_provider(&self) -> Option<&str> {

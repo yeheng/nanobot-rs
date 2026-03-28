@@ -215,15 +215,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // Spawn tool
     {
-        let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-            (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnTool::with_registries(
-                Arc::clone(mgr),
-                Arc::clone(model_reg),
-                Arc::clone(provider_reg),
-            ),
-            (Some(mgr), _, _) => SpawnTool::with_manager(Arc::clone(mgr)),
-            _ => SpawnTool::new(),
-        };
+        let spawn_tool = SpawnTool::new();
         tools.register_with_metadata(
             Box::new(spawn_tool),
             ToolMetadata {
@@ -236,15 +228,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         );
 
         // Spawn parallel tool
-        let spawn_parallel_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-            (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnParallelTool::with_registries(
-                Arc::clone(mgr),
-                Arc::clone(model_reg),
-                Arc::clone(provider_reg),
-            ),
-            (Some(mgr), _, _) => SpawnParallelTool::with_manager(Arc::clone(mgr)),
-            _ => SpawnParallelTool::new(),
-        };
+        let spawn_parallel_tool = SpawnParallelTool::new();
         tools.register_with_metadata(
             Box::new(spawn_parallel_tool),
             ToolMetadata {
