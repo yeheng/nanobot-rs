@@ -3,8 +3,8 @@
 pub use gasket_engine::{
     process_message, run_subagent, AgentConfig, AgentContext, AgentExecutor, AgentLoop,
     AgentResponse, CompressionActor, EmbeddingService, ExecutionResult, ExecutorOptions,
-    MemoryStore, PipelineContext, SessionKeyGuard, StreamEvent, SubagentManager, SubagentTracker,
-    SummarizationService, TrackerError,
+    MemoryStore, ModelResolver, PipelineContext, SessionKeyGuard, StreamEvent, SubagentManager,
+    SubagentTracker, SummarizationService, TrackerError,
 };
 
 pub mod memory {
@@ -12,5 +12,5 @@ pub mod memory {
 }
 
 pub mod subagent {
-    pub use gasket_engine::{run_subagent, SessionKeyGuard, SubagentManager};
+    pub use gasket_engine::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};
 }

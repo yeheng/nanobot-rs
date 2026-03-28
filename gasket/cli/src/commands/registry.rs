@@ -17,6 +17,70 @@ use gasket_core::tools::{
 };
 use gasket_core::tools::{SpawnParallelTool, SpawnTool};
 
+/// CLI-level implementation of ModelResolver using ProviderRegistry + ModelRegistry.
+///
+/// This resolves model_id strings (e.g., "minimax", "minimax/abab6.5-chat",
+/// or named profiles like "smart-assistant") to actual provider + config pairs
+/// for subagent model switching.
+pub struct CliModelResolver {
+    pub provider_registry: ProviderRegistry,
+    pub model_registry: ModelRegistry,
+}
+
+impl gasket_core::agent::ModelResolver for CliModelResolver {
+    fn resolve_model(
+        &self,
+        model_id: &str,
+    ) -> Option<(
+        std::sync::Arc<dyn gasket_core::providers::LlmProvider>,
+        gasket_core::agent::AgentConfig,
+    )> {
+        // 1. Try to resolve from named model profiles (e.g., "smart-assistant")
+        if let Some((_id, profile)) = self
+            .model_registry
+            .get_profile_with_fallback(Some(model_id))
+        {
+            let provider_name = profile.provider.clone();
+            let provider = self.provider_registry.get_or_create(&provider_name).ok()?;
+
+            let config = gasket_core::agent::AgentConfig {
+                model: profile.model.clone(),
+                temperature: profile.temperature.unwrap_or(1.0),
+                max_tokens: profile.max_tokens.unwrap_or(65536),
+                ..Default::default()
+            };
+
+            return Some((provider, config));
+        }
+
+        // 2. Try "provider/model" format (e.g., "minimax/abab6.5-chat")
+        let parts: Vec<&str> = model_id.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let provider_name = parts[0];
+            let model_name = parts[1];
+
+            if let Ok(provider) = self.provider_registry.get_or_create(provider_name) {
+                let config = gasket_core::agent::AgentConfig {
+                    model: model_name.to_string(),
+                    ..Default::default()
+                };
+                return Some((provider, config));
+            }
+        }
+
+        // 3. Try as bare provider name (e.g., "minimax" → use provider's default model)
+        if let Ok(provider) = self.provider_registry.get_or_create(model_id) {
+            let config = gasket_core::agent::AgentConfig {
+                model: provider.default_model().to_string(),
+                ..Default::default()
+            };
+            return Some((provider, config));
+        }
+
+        None
+    }
+}
+
 /// Resolve the exec workspace directory from config or default to $HOME/.gasket.
 ///
 /// Creates the directory if it doesn't exist.

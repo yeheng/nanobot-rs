@@ -9,12 +9,13 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
 use gasket_core::agent::memory::MemoryStore;
-use gasket_core::agent::{AgentLoop, AgentResponse, StreamEvent};
+use gasket_core::agent::{AgentLoop, AgentResponse, ModelResolver, StreamEvent, SubagentManager};
 use gasket_core::bus::events::SessionKey;
 use gasket_core::config::{load_config, ModelRegistry};
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::token_tracker::ModelPricing;
 
+use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
 
 /// Run the agent command
@@ -77,7 +78,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
-        config,
+        config: config.clone(),
         workspace: workspace.clone(),
         subagent_manager: None,
         extra_tools: vec![],
@@ -85,6 +86,37 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         model_registry: Some(model_registry),
         provider_registry: Some(provider_registry),
     });
+
+    // Create SubagentManager for spawn/spawn_parallel tools (uses dummy outbound channel)
+    let (dummy_tx, _dummy_rx) = tokio::sync::mpsc::channel(16);
+    let subagent_tools = Arc::new(super::registry::build_tool_registry(
+        super::registry::ToolRegistryConfig {
+            config: config.clone(),
+            workspace: workspace.clone(),
+            subagent_manager: None,
+            extra_tools: vec![],
+            sqlite_store: None,
+            model_registry: None,
+            provider_registry: None,
+        },
+    ));
+
+    // Create model resolver for SubagentManager to support model_id switching in spawn tools
+    let model_resolver: Arc<dyn ModelResolver> = Arc::new(CliModelResolver {
+        provider_registry: ProviderRegistry::from_config(&config),
+        model_registry: ModelRegistry::from_config(&config.agents),
+    });
+
+    let subagent_manager = Arc::new(
+        SubagentManager::with_model_resolver(
+            provider_info.provider.clone(),
+            workspace.clone(),
+            subagent_tools,
+            dummy_tx,
+            Some(model_resolver),
+        )
+        .await,
+    );
 
     // Convert pricing info to ModelPricing
     let pricing = provider_info
@@ -100,7 +132,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         pricing,
     )
     .await
-    .context("Failed to initialize agent (check workspace bootstrap files)")?;
+    .context("Failed to initialize agent (check workspace bootstrap files)")?
+    .with_spawner(subagent_manager as Arc<dyn gasket_core::SubagentSpawner>);
 
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;

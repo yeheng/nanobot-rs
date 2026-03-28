@@ -47,7 +47,7 @@ use crate::hooks::{
     ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
     MutableContext, VaultHook,
 };
-use crate::tools::ToolRegistry;
+use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
@@ -203,6 +203,8 @@ pub struct AgentLoop {
     pricing: Option<crate::token_tracker::ModelPricing>,
     /// Injected vault values for log redaction (shared with VaultHook)
     vault_values: Arc<RwLock<Vec<String>>>,
+    /// Subagent spawner for spawn/spawn_parallel tools
+    spawner: Option<Arc<dyn SubagentSpawner>>,
 }
 
 impl AgentLoop {
@@ -259,6 +261,7 @@ impl AgentLoop {
             hooks,
             pricing: None,
             vault_values,
+            spawner: None,
         })
     }
 
@@ -372,6 +375,7 @@ impl AgentLoop {
             hooks,
             pricing,
             vault_values,
+            spawner: None,
         })
     }
 
@@ -401,6 +405,7 @@ impl AgentLoop {
             hooks: HookRegistry::empty(), // Empty hooks for subagents
             pricing: None,
             vault_values: Arc::new(RwLock::new(Vec::new())),
+            spawner: None,
         })
     }
 
@@ -414,6 +419,12 @@ impl AgentLoop {
     /// Used by subagents to inherit hooks from the main agent.
     pub fn with_hooks(mut self, hooks: Arc<HookRegistry>) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    /// Set the subagent spawner for spawn/spawn_parallel tools.
+    pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
+        self.spawner = Some(spawner);
         self
     }
 
@@ -777,12 +788,13 @@ impl AgentLoop {
         let pricing = self.pricing.clone();
         let hooks = self.hooks.clone();
         let context = self.context.clone();
+        let spawner = self.spawner.clone();
 
         // Spawn task to execute agent loop and handle post-processing
         let result_handle = tokio::spawn(async move {
             use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-            let executor = AgentExecutor::new(provider, tools, &config);
+            let executor = AgentExecutor::with_spawner(provider, tools, &config, spawner);
 
             let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
             if let Some(ref p) = pricing {
@@ -900,7 +912,12 @@ impl AgentLoop {
     ) -> Result<AgentLoopResult, AgentError> {
         use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
+        let executor = AgentExecutor::with_spawner(
+            self.provider.clone(),
+            self.tools.clone(),
+            &self.config,
+            self.spawner.clone(),
+        );
 
         let mut options = ExecutorOptions::new().with_vault_values(vault_values);
         if let Some(ref pricing) = self.pricing {

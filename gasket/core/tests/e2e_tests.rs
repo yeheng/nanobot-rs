@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gasket_core::bus::events::SessionKey;
-use gasket_core::providers::MessageRole;
 use gasket_core::providers::LlmProvider;
+use gasket_core::providers::MessageRole;
 use gasket_core::Tool;
 
 /// Create a test sender for inbound messages (middleware-aware).

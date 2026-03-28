@@ -25,7 +25,7 @@ use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
 use crate::error::AgentError;
 use crate::token_tracker::{ModelPricing, TokenUsage};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{SubagentSpawner, ToolContext, ToolRegistry};
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use gasket_vault::redact_secrets;
 
@@ -143,6 +143,8 @@ pub struct AgentExecutor<'a> {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
     config: &'a AgentConfig,
+    /// Subagent spawner for spawn/spawn_parallel tools
+    spawner: Option<Arc<dyn SubagentSpawner>>,
 }
 
 impl<'a> AgentExecutor<'a> {
@@ -151,10 +153,20 @@ impl<'a> AgentExecutor<'a> {
         tools: Arc<ToolRegistry>,
         config: &'a AgentConfig,
     ) -> Self {
+        Self::with_spawner(provider, tools, config, None)
+    }
+
+    pub fn with_spawner(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        config: &'a AgentConfig,
+        spawner: Option<Arc<dyn SubagentSpawner>>,
+    ) -> Self {
         Self {
             provider,
             tools,
             config,
+            spawner,
         }
     }
 
@@ -291,7 +303,8 @@ impl<'a> AgentExecutor<'a> {
         }
 
         // Step 5: Execute tool calls
-        self.handle_tool_calls(&response, executor, state).await;
+        self.handle_tool_calls(&response, executor, state, event_tx)
+            .await;
 
         // Step 6: Check max iterations
         if let Some(outcome) = self.check_max_iterations(iteration) {
@@ -356,6 +369,7 @@ impl<'a> AgentExecutor<'a> {
         response: &ChatResponse,
         executor: &ToolExecutor<'_>,
         state: &mut ExecutionState,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) {
         if response.tool_calls.is_empty() {
             if let Some(ref c) = response.content {
@@ -381,8 +395,12 @@ impl<'a> AgentExecutor<'a> {
             response.tool_calls.clone(),
         ));
 
-        // Create empty context for now - in production, this should be passed from the caller
-        let ctx = ToolContext::empty();
+        // Create context with spawner if available (needed for spawn/spawn_parallel tools)
+        let ctx = if let Some(ref spawner) = self.spawner {
+            ToolContext::with_spawner(spawner.clone())
+        } else {
+            ToolContext::empty()
+        };
 
         // Execute tool calls in parallel
         let futures: Vec<_> = response
@@ -402,11 +420,29 @@ impl<'a> AgentExecutor<'a> {
 
         for (tool_call, result, duration) in results {
             let tool_name = tool_call.function.name.clone();
+            let tool_args = tool_call.function.arguments.to_string();
+
             debug!(
                 "[Executor] Tool {} -> done ({}ms)",
                 tool_name,
                 duration.as_millis()
             );
+
+            // Emit ToolStart and ToolEnd events for streaming channels
+            if let Some(tx) = event_tx {
+                let _ = tx
+                    .send(StreamEvent::ToolStart {
+                        name: tool_name.clone(),
+                        arguments: Some(tool_args.clone()),
+                    })
+                    .await;
+                let _ = tx
+                    .send(StreamEvent::ToolEnd {
+                        name: tool_name.clone(),
+                        output: result.output.clone(),
+                    })
+                    .await;
+            }
 
             state.tools_used.push(tool_name.clone());
             state.messages.push(ChatMessage::tool_result(

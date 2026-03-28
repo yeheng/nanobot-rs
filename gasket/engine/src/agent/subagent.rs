@@ -25,6 +25,17 @@ use super::loop_::{AgentLoop, AgentResponse};
 /// Default timeout for subagent execution (10 minutes)
 const SUBAGENT_TIMEOUT_SECS: u64 = 600;
 
+/// Trait for resolving model IDs to providers and configs.
+///
+/// Implemented by the CLI layer using `ProviderRegistry` + `ModelRegistry`.
+/// This decouples the engine from configuration details.
+pub trait ModelResolver: Send + Sync {
+    /// Resolve a model ID to a provider and agent config.
+    ///
+    /// Returns `None` if the model ID is not recognized.
+    fn resolve_model(&self, model_id: &str) -> Option<(Arc<dyn LlmProvider>, AgentConfig)>;
+}
+
 /// Run a subagent with minimal overhead - pure function
 pub async fn run_subagent(
     task: &str,
@@ -93,6 +104,8 @@ pub struct SubagentManager {
     session_key: Arc<std::sync::Mutex<Option<SessionKey>>>,
     /// Subagent execution timeout in seconds
     timeout_secs: u64,
+    /// Optional model resolver for switching models in subagents.
+    model_resolver: Option<Arc<dyn ModelResolver>>,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -585,6 +598,16 @@ impl SubagentManager {
         tools: Arc<ToolRegistry>,
         outbound_tx: mpsc::Sender<OutboundMessage>,
     ) -> Self {
+        Self::with_model_resolver(provider, workspace, tools, outbound_tx, None).await
+    }
+
+    pub async fn with_model_resolver(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        tools: Arc<ToolRegistry>,
+        outbound_tx: mpsc::Sender<OutboundMessage>,
+        model_resolver: Option<Arc<dyn ModelResolver>>,
+    ) -> Self {
         Self {
             provider,
             workspace,
@@ -592,6 +615,7 @@ impl SubagentManager {
             outbound_tx,
             session_key: Arc::new(std::sync::Mutex::new(None)),
             timeout_secs: super::loop_::DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            model_resolver,
         }
     }
 
@@ -980,7 +1004,7 @@ impl SubagentSpawner for SubagentManager {
     async fn spawn(
         &self,
         task: String,
-        _model_id: Option<String>,
+        model_id: Option<String>,
     ) -> Result<TypesSubagentResult, Box<dyn std::error::Error + Send>> {
         use crate::agent::subagent_tracker::SubagentTracker;
 
@@ -991,12 +1015,35 @@ impl SubagentSpawner for SubagentManager {
         let subagent_id = SubagentTracker::generate_id();
 
         info!(
-            "[SubagentSpawner] Starting subagent {} for task: {}",
-            subagent_id, task
+            "[SubagentSpawner] Starting subagent {} for task: {} (model_id: {:?})",
+            subagent_id, task, model_id
         );
 
         // Prepare spawn configuration using Builder pattern
-        let builder = self.task(subagent_id.clone(), task.clone());
+        let mut builder = self.task(subagent_id.clone(), task.clone());
+
+        // Resolve model_id to provider and config if provided
+        if let Some(ref mid) = model_id {
+            if let Some(ref resolver) = self.model_resolver {
+                if let Some((provider, config)) = resolver.resolve_model(mid) {
+                    info!(
+                        "[SubagentSpawner] Resolved model_id '{}' to provider with model '{}'",
+                        mid, config.model
+                    );
+                    builder = builder.with_provider(provider).with_config(config);
+                } else {
+                    warn!(
+                        "[SubagentSpawner] Could not resolve model_id '{}', using default provider",
+                        mid
+                    );
+                }
+            } else {
+                warn!(
+                    "[SubagentSpawner] model_id '{}' provided but no model_resolver available, using default provider",
+                    mid
+                );
+            }
+        }
 
         // Spawn the subagent
         let spawn_result = builder

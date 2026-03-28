@@ -18,6 +18,8 @@ use gasket_core::token_tracker::ModelPricing;
 use gasket_core::tools::CronTool;
 use gasket_core::tools::{MessageTool, ToolMetadata};
 
+use super::registry::CliModelResolver;
+
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
@@ -121,11 +123,15 @@ pub async fn cmd_gateway() -> Result<()> {
     ));
 
     let subagent_manager = Arc::new(
-        SubagentManager::new(
+        SubagentManager::with_model_resolver(
             provider_info.provider.clone(),
             workspace.clone(),
             subagent_tools,
             bus.outbound_sender(),
+            Some(Arc::new(CliModelResolver {
+                provider_registry: ProviderRegistry::from_config(&config),
+                model_registry: ModelRegistry::from_config(&config.agents),
+            })),
         )
         .await,
     );
@@ -181,7 +187,8 @@ pub async fn cmd_gateway() -> Result<()> {
             pricing,
         )
         .await
-        .context("Failed to initialize agent (check workspace bootstrap files)")?,
+        .context("Failed to initialize agent (check workspace bootstrap files)")?
+        .with_spawner(subagent_manager.clone() as Arc<dyn gasket_core::SubagentSpawner>),
     );
 
     // Track running tasks
