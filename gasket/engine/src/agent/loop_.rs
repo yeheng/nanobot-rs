@@ -44,7 +44,7 @@ use crate::agent::stream::{self};
 use crate::agent::HistoryConfig;
 use crate::error::AgentError;
 use crate::tools::ToolRegistry;
-use gasket_core::hooks::{
+use crate::hooks::{
     ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
     MutableContext, VaultHook,
 };
@@ -587,10 +587,10 @@ impl AgentLoop {
         self.context.save_event(assistant_event).await?;
 
         // ── 13. AfterResponse hooks (audit, logging, etc.) ────────
-        let tools_used: Vec<gasket_core::hooks::ToolCallInfo> = result
+        let tools_used: Vec<crate::hooks::ToolCallInfo> = result
             .tools_used
             .iter()
-            .map(|name| gasket_core::hooks::ToolCallInfo {
+            .map(|name| crate::hooks::ToolCallInfo {
                 id: name.clone(),
                 name: name.clone(),
                 arguments: None,
@@ -601,7 +601,7 @@ impl AgentLoop {
             result
                 .token_usage
                 .as_ref()
-                .map(|usage| gasket_core::token_tracker::TokenUsage {
+                .map(|usage| crate::token_tracker::TokenUsage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     total_tokens: usage.total_tokens,
@@ -822,10 +822,10 @@ impl AgentLoop {
                 }
 
                 // AfterResponse hooks (audit, logging, etc.)
-                let tools_used: Vec<gasket_core::hooks::ToolCallInfo> = result
+                let tools_used: Vec<crate::hooks::ToolCallInfo> = result
                     .tools_used
                     .iter()
-                    .map(|name| gasket_core::hooks::ToolCallInfo {
+                    .map(|name| crate::hooks::ToolCallInfo {
                         id: name.clone(),
                         name: name.clone(),
                         arguments: None,
@@ -833,7 +833,7 @@ impl AgentLoop {
                     .collect();
 
                 let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
-                    gasket_core::token_tracker::TokenUsage {
+                    crate::token_tracker::TokenUsage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
                         total_tokens: usage.total_tokens,

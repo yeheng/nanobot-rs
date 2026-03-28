@@ -17,7 +17,7 @@ use crate::agent::stream::StreamEvent;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentResult};
 use crate::tools::ToolRegistry;
 use gasket_bus::events::{OutboundMessage, SessionKey};
-use gasket_core::hooks::HookRegistry;
+use crate::hooks::HookRegistry;
 use gasket_providers::{ChatMessage, LlmProvider};
 
 use super::loop_::{AgentLoop, AgentResponse};
