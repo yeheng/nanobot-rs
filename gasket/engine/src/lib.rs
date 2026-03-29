@@ -14,28 +14,59 @@ pub mod vault;
 
 // ── Agent ──────────────────────────────────────────────────
 pub use agent::{
-    // Core loop
-    AgentConfig, AgentLoop, AgentResponse,
-    // Context (enum dispatch)
-    AgentContext, CompressionTask, PersistentContext,
-    // Execution
-    AgentExecutor, ExecutionResult, ExecutorOptions, ToolExecutor,
-    // Subagents
-    run_subagent, ModelResolver, SessionKeyGuard, SubagentManager, SubagentTracker, TrackerError,
-    // Pipeline & stream
-    process_message, PipelineContext, StreamEvent, BufferedEvents,
     // History
-    count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
-    HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
+    count_tokens,
+    process_history,
+    // Pipeline & stream
+    process_message,
+    // Subagents
+    run_subagent,
+    // Core loop
+    AgentConfig,
+    // Context (enum dispatch)
+    AgentContext,
+    // Execution
+    AgentExecutor,
+    AgentLoop,
+    AgentResponse,
+    BufferedEvents,
+    CompressionActor,
+    CompressionTask,
+    EmbeddingService,
+    ExecutionResult,
+    ExecutorOptions,
+    HistoryConfig,
+    HistoryQuery,
+    HistoryQueryBuilder,
+    HistoryResult,
+    HistoryRetriever,
     // Memory & compression
-    MemoryStore, CompressionActor, EmbeddingService, SummarizationService,
+    MemoryStore,
+    ModelResolver,
+    PersistentContext,
+    PipelineContext,
+    ProcessedHistory,
+    QueryOrder,
+    ResultMeta,
+    SemanticQuery,
+    SessionKeyGuard,
+    StreamEvent,
+    SubagentManager,
+    SubagentTracker,
+    SummarizationService,
+    TimeRange,
+    ToolExecutor,
+    TrackerError,
 };
 
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
 
 // ── Config ─────────────────────────────────────────────────
-pub use config::{config_dir, CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig, WebToolsConfig};
+pub use config::{
+    config_dir, CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig,
+    ToolsConfig, WebToolsConfig,
+};
 
 // ── Cron ───────────────────────────────────────────────────
 pub use cron::{CronJob, CronService};
@@ -45,9 +76,9 @@ pub use error::{AgentError, ChannelError, ConfigValidationError, PipelineError, 
 
 // ── Hooks ──────────────────────────────────────────────────
 pub use hooks::{
-    ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook,
-    HistoryRecallHook, HookBuilder, HookRegistry, PipelineHook, ExecutionStrategy, HookAction,
-    HookContext, HookPoint, MutableContext, ReadonlyContext, ToolCallInfo, VaultHook,
+    ExecutionStrategy, ExternalHookInput, ExternalHookOutput, ExternalHookRunner,
+    ExternalShellHook, HistoryRecallHook, HookAction, HookBuilder, HookContext, HookPoint,
+    HookRegistry, MutableContext, PipelineHook, ReadonlyContext, ToolCallInfo, VaultHook,
 };
 
 // ── Search ─────────────────────────────────────────────────

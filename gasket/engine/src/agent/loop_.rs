@@ -782,13 +782,15 @@ async fn finalize_response(
         })
         .collect();
 
-    let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
-        crate::token_tracker::TokenUsage {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-        }
-    });
+    let token_usage_for_hooks =
+        result
+            .token_usage
+            .as_ref()
+            .map(|usage| crate::token_tracker::TokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+            });
 
     let mut ctx = MutableContext {
         session_key: session_key_str,
