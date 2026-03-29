@@ -268,71 +268,9 @@ pub async fn cmd_gateway() -> Result<()> {
         )));
     }
 
-    // --- Heartbeat service ---
-    {
-        let heartbeat = gasket_core::heartbeat::HeartbeatService::new(workspace.clone());
-        let bus_for_heartbeat = bus.clone();
-        tasks.push(tokio::spawn(async move {
-            heartbeat
-                .run(|task_text| {
-                    let bus_inner = bus_for_heartbeat.clone();
-                    async move {
-                        let inbound = gasket_core::bus::events::InboundMessage {
-                            channel: gasket_core::bus::ChannelType::Cli,
-                            sender_id: "heartbeat".to_string(),
-                            chat_id: "heartbeat".to_string(),
-                            content: task_text,
-                            media: None,
-                            metadata: None,
-                            timestamp: chrono::Utc::now(),
-                            trace_id: None,
-                        };
-                        bus_inner.publish_inbound(inbound).await;
-                    }
-                })
-                .await;
-        }));
-    }
-
-    // --- Cron checking loop ---
-    {
-        let cron_svc = cron_service.clone();
-        let bus_for_cron = bus.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                match cron_svc.get_due_jobs().await {
-                    Ok(due) => {
-                        for job in due {
-                            tracing::info!("Cron job due: {} ({})", job.name, job.id);
-                            let channel = job
-                                .channel
-                                .as_deref()
-                                .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                                .unwrap_or(gasket_core::bus::ChannelType::Cli);
-                            let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
-                            let inbound = gasket_core::bus::events::InboundMessage {
-                                channel,
-                                sender_id: "cron".to_string(),
-                                chat_id,
-                                content: job.message.clone(),
-                                media: None,
-                                metadata: None,
-                                timestamp: chrono::Utc::now(),
-                                trace_id: None,
-                            };
-                            bus_for_cron.publish_inbound(inbound).await;
-                            cron_svc.mark_job_run(&job.id).await;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get due cron jobs: {}", e);
-                    }
-                }
-            }
-        }));
-    }
+    // --- Background services ---
+    start_heartbeat_service(&bus, &workspace, &mut tasks);
+    start_cron_checker(&cron_service, &bus, &mut tasks);
 
     // --- Start all configured channels using unified initializer ---
     let channel_errors = start_channels(&config, &inbound_processor, &mut tasks);
@@ -628,4 +566,78 @@ fn start_dingtalk_channel(
     }));
 
     Ok(())
+}
+
+/// Start heartbeat service that periodically sends heartbeat tasks through the bus.
+fn start_heartbeat_service(
+    bus: &Arc<gasket_core::bus::MessageBus>,
+    workspace: &std::path::PathBuf,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    let heartbeat = gasket_core::heartbeat::HeartbeatService::new(workspace.clone());
+    let bus_for_heartbeat = bus.clone();
+    tasks.push(tokio::spawn(async move {
+        heartbeat
+            .run(|task_text| {
+                let bus_inner = bus_for_heartbeat.clone();
+                async move {
+                    let inbound = gasket_core::bus::events::InboundMessage {
+                        channel: gasket_core::bus::ChannelType::Cli,
+                        sender_id: "heartbeat".to_string(),
+                        chat_id: "heartbeat".to_string(),
+                        content: task_text,
+                        media: None,
+                        metadata: None,
+                        timestamp: chrono::Utc::now(),
+                        trace_id: None,
+                    };
+                    bus_inner.publish_inbound(inbound).await;
+                }
+            })
+            .await;
+    }));
+}
+
+/// Start cron checker that polls for due jobs every 60 seconds.
+fn start_cron_checker(
+    cron_service: &Arc<CronService>,
+    bus: &Arc<gasket_core::bus::MessageBus>,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    let cron_svc = cron_service.clone();
+    let bus_for_cron = bus.clone();
+    tasks.push(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            match cron_svc.get_due_jobs().await {
+                Ok(due) => {
+                    for job in due {
+                        tracing::info!("Cron job due: {} ({})", job.name, job.id);
+                        let channel = job
+                            .channel
+                            .as_deref()
+                            .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
+                            .unwrap_or(gasket_core::bus::ChannelType::Cli);
+                        let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
+                        let inbound = gasket_core::bus::events::InboundMessage {
+                            channel,
+                            sender_id: "cron".to_string(),
+                            chat_id,
+                            content: job.message.clone(),
+                            media: None,
+                            metadata: None,
+                            timestamp: chrono::Utc::now(),
+                            trace_id: None,
+                        };
+                        bus_for_cron.publish_inbound(inbound).await;
+                        cron_svc.mark_job_run(&job.id).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get due cron jobs: {}", e);
+                }
+            }
+        }
+    }));
 }

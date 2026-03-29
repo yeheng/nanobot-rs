@@ -130,20 +130,17 @@ pub struct AgentResponse {
     pub cost: f64,
 }
 
-/// Result from the agent loop execution.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct AgentLoopResult {
-    /// Main response content
+/// State produced by the common pipeline preparation.
+///
+/// Contains all data needed for execution and post-processing,
+/// extracted from the shared pre-processing steps (hooks, history, prompt assembly).
+struct PipelineState {
+    session_key_str: String,
     content: String,
-    /// Reasoning/thinking content (if thinking mode enabled)
-    reasoning_content: Option<String>,
-    /// Tools used during processing
-    tools_used: Vec<String>,
-    /// Token usage for this request
-    token_usage: Option<crate::token_tracker::TokenUsage>,
-    /// Cost for this request
-    cost: f64,
+    messages: Vec<ChatMessage>,
+    local_vault_values: Vec<String>,
+    /// Set when BeforeRequest hook aborts the pipeline.
+    abort_message: Option<String>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -462,15 +459,21 @@ impl AgentLoop {
         }
     }
 
-    /// Process a message and return response.
-    pub async fn process_direct(
+    // ── Common Pipeline ──────────────────────────────────────────
+
+    /// Common pre-processing pipeline for both direct and streaming execution.
+    ///
+    /// Executes the shared steps: BeforeRequest hook, history load/save,
+    /// prompt assembly, AfterHistory/BeforeLLM hooks, vault value extraction.
+    /// Returns `PipelineState` with `abort_message` set if the request was aborted.
+    async fn prepare_pipeline(
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<AgentResponse, AgentError> {
+    ) -> Result<PipelineState, AgentError> {
         let session_key_str = session_key.to_string();
 
-        // ── 1. Build initial mutable context for hooks ─────────────
+        // ── 1. BeforeRequest hooks (can modify input or abort) ─────
         let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
         let mut ctx = MutableContext {
             session_key: &session_key_str,
@@ -481,20 +484,18 @@ impl AgentLoop {
             token_usage: None,
         };
 
-        // ── 2. BeforeRequest hooks (can modify input or abort) ─────
         match self
             .hooks
             .execute(HookPoint::BeforeRequest, &mut ctx)
             .await?
         {
             HookAction::Abort(msg) => {
-                return Ok(AgentResponse {
-                    content: msg,
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(self.config.model.clone()),
-                    token_usage: None,
-                    cost: 0.0,
+                return Ok(PipelineState {
+                    session_key_str,
+                    content: String::new(),
+                    messages: vec![],
+                    local_vault_values: vec![],
+                    abort_message: Some(msg),
                 });
             }
             HookAction::Continue => {}
@@ -508,10 +509,10 @@ impl AgentLoop {
             .and_then(|m| m.content.clone())
             .unwrap_or_else(|| content.to_string());
 
-        // ── 3. Load session history (enum dispatch) ─────
+        // ── 2. Load session history (enum dispatch) ─────
         let history_events = self.context.get_history(&session_key_str, None).await;
 
-        // ── 4. Save user event ────────────────
+        // ── 3. Save user event ────────────────
         let user_event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: session_key_str.clone(),
@@ -524,8 +525,7 @@ impl AgentLoop {
         };
         self.context.save_event(user_event).await?;
 
-        // ── 5. Truncate history (pure computation) ─────────────────
-        // TODO: Implement event-based history processing
+        // ── 4. Truncate history (pure computation) ─────────────────
         let history_snapshot: Vec<SessionEvent> = history_events
             .into_iter()
             .rev()
@@ -533,11 +533,7 @@ impl AgentLoop {
             .rev()
             .collect();
 
-        // ── 6. TODO: Load existing summary + spawn background compression ─────
-        // Summaries are now stored as events - need to query for summary events
-        let summary: Option<String> = None;
-
-        // ── 7. Inject system prompts (direct) ──────────────────────
+        // ── 5. System prompts + prompt assembly ─────────────────────
         let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
             system_prompts.push(self.system_prompt.clone());
@@ -546,16 +542,15 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
-        // ── 8. Assemble prompt (pure, synchronous) ─────────────────
         let mut messages = Self::assemble_prompt(
             history_snapshot,
             &content,
             &system_prompts,
-            summary.as_deref(),
-            None, // History recall is now handled by hooks
+            None, // Summary: TODO - query for summary events
+            None, // History recall handled by hooks
         );
 
-        // ── 9. AfterHistory hooks (semantic recall, etc.) ───────────
+        // ── 6. AfterHistory + BeforeLLM hooks ─────────────────────
         let mut ctx = MutableContext {
             session_key: &session_key_str,
             messages: &mut messages,
@@ -567,91 +562,53 @@ impl AgentLoop {
         self.hooks
             .execute(HookPoint::AfterHistory, &mut ctx)
             .await?;
-
-        // ── 10. BeforeLLM hooks (vault injection, etc.) ────────────
         self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
 
-        // Get vault values for log redaction
         let local_vault_values = self.vault_values.read().await.clone();
 
-        // ── 11. Run agent loop ─────────────────────────────────────
-        let result = self.run_agent_loop(messages, &local_vault_values).await?;
+        Ok(PipelineState {
+            session_key_str,
+            content,
+            messages,
+            local_vault_values,
+            abort_message: None,
+        })
+    }
 
-        // ── 12. Save assistant event FIRST (critical data safety) ───────
-        // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
-        // This ensures that if external shell hooks hang or panic, the expensive
-        // LLM response is already saved to SQLite and won't be lost.
-        let history_content = redact_secrets(&result.content, &local_vault_values);
-        let assistant_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: session_key_str.clone(),
-            parent_id: None,
-            event_type: EventType::AssistantMessage,
-            content: history_content,
-            embedding: None,
-            metadata: EventMetadata {
-                tools_used: result.tools_used.clone(),
-                ..Default::default()
-            },
-            created_at: chrono::Utc::now(),
-        };
-        self.context.save_event(assistant_event).await?;
+    /// Process a message and return response.
+    pub async fn process_direct(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+    ) -> Result<AgentResponse, AgentError> {
+        let state = self.prepare_pipeline(content, session_key).await?;
 
-        // ── 13. AfterResponse hooks (audit, logging, etc.) ────────
-        let tools_used: Vec<crate::hooks::ToolCallInfo> = result
-            .tools_used
-            .iter()
-            .map(|name| crate::hooks::ToolCallInfo {
-                id: name.clone(),
-                name: name.clone(),
-                arguments: None,
-            })
-            .collect();
-
-        let token_usage_for_hooks =
-            result
-                .token_usage
-                .as_ref()
-                .map(|usage| crate::token_tracker::TokenUsage {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    total_tokens: usage.total_tokens,
-                });
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut vec![],
-            user_input: Some(&content),
-            response: Some(&result.content),
-            tool_calls: Some(&tools_used),
-            token_usage: token_usage_for_hooks.as_ref(),
-        };
-        self.hooks
-            .execute(HookPoint::AfterResponse, &mut ctx)
-            .await?;
-
-        // Log token usage if available
-        if let Some(ref usage) = result.token_usage {
-            info!(
-                "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-                usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
-            );
+        if let Some(msg) = state.abort_message {
+            return Ok(AgentResponse {
+                content: msg,
+                reasoning_content: None,
+                tools_used: vec![],
+                model: Some(self.config.model.clone()),
+                token_usage: None,
+                cost: 0.0,
+            });
         }
 
-        Ok(AgentResponse {
-            content: result.content.clone(),
-            reasoning_content: result.reasoning_content.clone(),
-            tools_used: result.tools_used.clone(),
-            model: Some(self.config.model.clone()),
-            token_usage: result
-                .token_usage
-                .clone()
-                .map(|usage| crate::token_tracker::TokenUsage {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    total_tokens: usage.total_tokens,
-                }),
-            cost: result.cost,
-        })
+        let model = self.config.model.clone();
+        let result = self
+            .run_agent_loop(state.messages, &state.local_vault_values)
+            .await?;
+
+        Ok(finalize_response(
+            result,
+            &state.session_key_str,
+            &state.content,
+            &state.local_vault_values,
+            &self.context,
+            &self.hooks,
+            &model,
+        )
+        .await)
     }
 
     /// Process a message with streaming and return a channel for events.
@@ -672,116 +629,26 @@ impl AgentLoop {
         ),
         AgentError,
     > {
-        let session_key_str = session_key.to_string();
+        let state = self.prepare_pipeline(content, session_key).await?;
 
-        // ── 1. Build initial mutable context for hooks ─────────────
-        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(content),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-        };
-
-        // ── 2. BeforeRequest hooks (can modify input or abort) ─────
-        match self
-            .hooks
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await?
-        {
-            HookAction::Abort(msg) => {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                let handle = tokio::spawn(async move {
-                    Ok(AgentResponse {
-                        content: msg,
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        model: Some("error".to_string()),
-                        token_usage: None,
-                        cost: 0.0,
-                    })
-                });
-                return Ok((rx, handle));
-            }
-            HookAction::Continue => {}
+        // Handle abort — return closed channel + immediate response
+        if let Some(msg) = state.abort_message {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            let model = self.config.model.clone();
+            let handle = tokio::spawn(async move {
+                Ok(AgentResponse {
+                    content: msg,
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(model),
+                    token_usage: None,
+                    cost: 0.0,
+                })
+            });
+            return Ok((rx, handle));
         }
 
-        // Get the (possibly modified) user content
-        let content_str = ctx
-            .messages
-            .iter()
-            .find(|m| m.role == gasket_providers::MessageRole::User)
-            .and_then(|m| m.content.clone())
-            .unwrap_or_else(|| content.to_string());
-
-        // ── 3. Load session history (enum dispatch) ─────
-        let history_events = self.context.get_history(&session_key_str, None).await;
-
-        // ── 4. Save user event ────────────────
-        let user_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: session_key_str.clone(),
-            parent_id: None,
-            event_type: EventType::UserMessage,
-            content: content_str.clone(),
-            embedding: None,
-            metadata: EventMetadata::default(),
-            created_at: chrono::Utc::now(),
-        };
-        self.context.save_event(user_event).await?;
-
-        // ── 5. Truncate history (pure computation) ─────────────────
-        // TODO: Implement event-based history processing
-        let history_snapshot: Vec<SessionEvent> = history_events
-            .into_iter()
-            .rev()
-            .take(self.config.memory_window)
-            .rev()
-            .collect();
-
-        // ── 6. TODO: Load existing summary + spawn background compression ─────
-        let summary: Option<String> = None;
-
-        let mut system_prompts = Vec::new();
-        if !self.system_prompt.is_empty() {
-            system_prompts.push(self.system_prompt.clone());
-        }
-        if let Some(ref skills) = self.skills_context {
-            system_prompts.push(skills.clone());
-        }
-
-        // ── Assemble prompt ──────────────────────────────────────
-        let mut messages = Self::assemble_prompt(
-            history_snapshot,
-            &content_str,
-            &system_prompts,
-            summary.as_deref(),
-            None, // History recall handled by hooks
-        );
-
-        // ── AfterHistory and BeforeLLM hooks ─────────────────────
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(&content_str),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-        };
-        self.hooks
-            .execute(HookPoint::AfterHistory, &mut ctx)
-            .await?;
-        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
-
-        // Get vault values for log redaction
-        let local_vault_values = self.vault_values.read().await.clone();
-
-        // Create channel for stream events
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
-
-        // Clone data needed for the spawned task
+        // Clone Arc fields for the spawned task
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let config = self.config.clone();
@@ -790,13 +657,14 @@ impl AgentLoop {
         let context = self.context.clone();
         let spawner = self.spawner.clone();
 
-        // Spawn task to execute agent loop and handle post-processing
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
+
         let result_handle = tokio::spawn(async move {
             use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
             let executor = AgentExecutor::with_spawner(provider, tools, &config, spawner);
 
-            let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
+            let mut options = ExecutorOptions::new().with_vault_values(&state.local_vault_values);
             if let Some(ref p) = pricing {
                 options = options.with_pricing(crate::token_tracker::ModelPricing {
                     price_input_per_million: p.price_input_per_million,
@@ -805,87 +673,20 @@ impl AgentLoop {
                 });
             }
 
-            // Execute with streaming
             let result = executor
-                .execute_stream_with_options(messages, event_tx, &options)
+                .execute_stream_with_options(state.messages, event_tx, &options)
                 .await?;
 
-            // Save to history FIRST (critical data safety)
-            // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
-            // This ensures that if external shell hooks hang or panic, the expensive
-            // LLM response is already saved to SQLite and won't be lost.
-            let history_content = redact_secrets(&result.content, &local_vault_values);
-            let assistant_event = SessionEvent {
-                id: uuid::Uuid::now_v7(),
-                session_key: session_key_str.clone(),
-                parent_id: None,
-                event_type: EventType::AssistantMessage,
-                content: history_content,
-                embedding: None,
-                metadata: EventMetadata {
-                    tools_used: result.tools_used.clone(),
-                    ..Default::default()
-                },
-                created_at: chrono::Utc::now(),
-            };
-            if let Err(e) = context.save_event(assistant_event).await {
-                warn!("Failed to persist assistant event: {}", e);
-            }
-
-            // AfterResponse hooks (audit, logging, etc.)
-            let tools_used: Vec<crate::hooks::ToolCallInfo> = result
-                .tools_used
-                .iter()
-                .map(|name| crate::hooks::ToolCallInfo {
-                    id: name.clone(),
-                    name: name.clone(),
-                    arguments: None,
-                })
-                .collect();
-
-            let token_usage_for_hooks =
-                result
-                    .token_usage
-                    .as_ref()
-                    .map(|usage| crate::token_tracker::TokenUsage {
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        total_tokens: usage.total_tokens,
-                    });
-            let mut ctx = MutableContext {
-                session_key: &session_key_str,
-                messages: &mut vec![],
-                user_input: Some(&content_str),
-                response: Some(&result.content),
-                tool_calls: Some(&tools_used),
-                token_usage: token_usage_for_hooks.as_ref(),
-            };
-            if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
-                warn!("AfterResponse hook failed (ignored): {}", e);
-            }
-
-            // Log token usage if available
-            if let Some(ref usage) = result.token_usage {
-                info!(
-                    "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-                    usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
-                );
-            }
-
-            Ok(AgentResponse {
-                content: result.content,
-                reasoning_content: result.reasoning_content,
-                tools_used: result.tools_used,
-                model: Some(config.model.clone()),
-                token_usage: result.token_usage.clone().map(|usage| {
-                    crate::token_tracker::TokenUsage {
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        total_tokens: usage.total_tokens,
-                    }
-                }),
-                cost: result.cost,
-            })
+            Ok(finalize_response(
+                result,
+                &state.session_key_str,
+                &state.content,
+                &state.local_vault_values,
+                &context,
+                &hooks,
+                &config.model,
+            )
+            .await)
         });
 
         Ok((event_rx, result_handle))
@@ -909,7 +710,7 @@ impl AgentLoop {
         &self,
         messages: Vec<ChatMessage>,
         vault_values: &[String],
-    ) -> Result<AgentLoopResult, AgentError> {
+    ) -> Result<crate::agent::executor_core::ExecutionResult, AgentError> {
         use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
         let executor = AgentExecutor::with_spawner(
@@ -929,23 +730,94 @@ impl AgentLoop {
         }
 
         let result = executor.execute_with_options(messages, &options).await?;
-
-        Ok(AgentLoopResult {
-            content: result.content,
-            reasoning_content: result.reasoning_content,
-            tools_used: result.tools_used,
-            token_usage: result
-                .token_usage
-                .map(|usage| crate::token_tracker::TokenUsage {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    total_tokens: usage.total_tokens,
-                }),
-            cost: result.cost,
-        })
+        Ok(result)
     }
 
     // Note: handle_tool_calls was moved to executor_core.rs as part of the AgentExecutor refactoring.
+}
+
+// ── Post-processing ─────────────────────────────────────────
+
+/// Shared post-processing for both direct and streaming execution.
+///
+/// Handles: save assistant event → AfterResponse hooks → token logging → build response.
+/// Errors in save_event and AfterResponse are logged and swallowed — the expensive LLM
+/// response must not be lost because SQLite had a hiccup or a hook misbehaved.
+async fn finalize_response(
+    result: crate::agent::executor_core::ExecutionResult,
+    session_key_str: &str,
+    content: &str,
+    local_vault_values: &[String],
+    context: &AgentContext,
+    hooks: &HookRegistry,
+    model: &str,
+) -> AgentResponse {
+    // ── Save assistant event (critical data safety) ────────
+    let history_content = redact_secrets(&result.content, local_vault_values);
+    let assistant_event = SessionEvent {
+        id: uuid::Uuid::now_v7(),
+        session_key: session_key_str.to_string(),
+        parent_id: None,
+        event_type: EventType::AssistantMessage,
+        content: history_content,
+        embedding: None,
+        metadata: EventMetadata {
+            tools_used: result.tools_used.clone(),
+            ..Default::default()
+        },
+        created_at: chrono::Utc::now(),
+    };
+    if let Err(e) = context.save_event(assistant_event).await {
+        warn!("Failed to persist assistant event: {}", e);
+    }
+
+    // ── AfterResponse hooks (audit, logging, etc.) ────────
+    let tools_used: Vec<crate::hooks::ToolCallInfo> = result
+        .tools_used
+        .iter()
+        .map(|name| crate::hooks::ToolCallInfo {
+            id: name.clone(),
+            name: name.clone(),
+            arguments: None,
+        })
+        .collect();
+
+    let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
+        crate::token_tracker::TokenUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+        }
+    });
+
+    let mut ctx = MutableContext {
+        session_key: session_key_str,
+        messages: &mut vec![],
+        user_input: Some(content),
+        response: Some(&result.content),
+        tool_calls: Some(&tools_used),
+        token_usage: token_usage_for_hooks.as_ref(),
+    };
+    if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
+        warn!("AfterResponse hook failed (ignored): {}", e);
+    }
+
+    // ── Log token usage ────────────────────────────────────
+    if let Some(ref usage) = result.token_usage {
+        info!(
+            "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+            usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+        );
+    }
+
+    AgentResponse {
+        content: result.content,
+        reasoning_content: result.reasoning_content,
+        tools_used: result.tools_used,
+        model: Some(model.to_string()),
+        token_usage: result.token_usage,
+        cost: result.cost,
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────
