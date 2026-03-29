@@ -188,7 +188,7 @@ impl LlmProvider for CopilotProvider {
     }
 
     #[instrument(skip(self, request), fields(provider = "copilot", model = %request.model))]
-    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         // Get valid Copilot token (auto-refresh if needed)
         let copilot_token = self.get_copilot_token().await?;
 
@@ -216,7 +216,10 @@ impl LlmProvider for CopilotProvider {
             .headers(self.build_headers(&copilot_token))
             .json(&openai_request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Copilot request failed: {}", e))
+            })?;
 
         let status = response.status();
         info!("[copilot] response status: {}", status);
@@ -224,7 +227,12 @@ impl LlmProvider for CopilotProvider {
         // Handle 401 - token might have expired, try once more
         if status == reqwest::StatusCode::UNAUTHORIZED {
             warn!("[copilot] Token unauthorized, attempting refresh");
-            let copilot_token = self.refresh_copilot_token().await?;
+            let copilot_token = self.refresh_copilot_token().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!(
+                    "Failed to refresh Copilot token: {}",
+                    e
+                ))
+            })?;
 
             let response = self
                 .client
@@ -232,34 +240,49 @@ impl LlmProvider for CopilotProvider {
                 .headers(self.build_headers(&copilot_token))
                 .json(&openai_request)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| {
+                    crate::ProviderError::NetworkError(format!(
+                        "Copilot retry request failed: {}",
+                        e
+                    ))
+                })?;
 
             let status = response.status();
-            let body = response.text().await?;
+            let body = response.text().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!(
+                    "Failed to read Copilot retry response: {}",
+                    e
+                ))
+            })?;
 
             if !status.is_success() {
-                anyhow::bail!(
-                    "Copilot API error after token refresh: {} - {}",
-                    status,
-                    body
-                );
+                return Err(crate::ProviderError::ApiError {
+                    status_code: status.as_u16(),
+                    message: format!("{} - {}", status, body),
+                });
             }
 
             return parse_copilot_response(&body);
         }
 
-        let body = response.text().await?;
+        let body = response.text().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Failed to read Copilot response: {}", e))
+        })?;
         info!("[copilot] response body:\n{}", body);
 
         if !status.is_success() {
-            anyhow::bail!("Copilot API error: {} - {}", status, body);
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("{} - {}", status, body),
+            });
         }
 
         parse_copilot_response(&body)
     }
 
     #[instrument(skip(self, request), fields(provider = "copilot", model = %request.model))]
-    async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
         // Get valid Copilot token (auto-refresh if needed)
         let copilot_token = self.get_copilot_token().await?;
 
@@ -287,14 +310,25 @@ impl LlmProvider for CopilotProvider {
             .headers(self.build_headers(&copilot_token))
             .json(&openai_request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Copilot stream request failed: {}", e))
+            })?;
 
         let status = response.status();
         debug!("[copilot] stream response status: {}", status);
 
         if !status.is_success() {
-            let body = response.text().await?;
-            anyhow::bail!("Copilot API error: {} - {}", status, body);
+            let body = response.text().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!(
+                    "Failed to read Copilot stream response: {}",
+                    e
+                ))
+            })?;
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("{} - {}", status, body),
+            });
         }
 
         let byte_stream = response.bytes_stream();
@@ -305,15 +339,17 @@ impl LlmProvider for CopilotProvider {
 }
 
 /// Parse Copilot API response
-fn parse_copilot_response(body: &str) -> anyhow::Result<ChatResponse> {
-    let api_response: CopilotResponse = serde_json::from_str(body)
-        .map_err(|e| anyhow::anyhow!("Copilot API response parse error: {} | body: {}", e, body))?;
+fn parse_copilot_response(body: &str) -> Result<ChatResponse, crate::ProviderError> {
+    let api_response: CopilotResponse = serde_json::from_str(body).map_err(|e| {
+        crate::ProviderError::ParseError(format!(
+            "Copilot API response parse error: {} | body: {}",
+            e, body
+        ))
+    })?;
 
-    let choice = api_response
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No choices in Copilot response"))?;
+    let choice = api_response.choices.into_iter().next().ok_or_else(|| {
+        crate::ProviderError::ParseError("No choices in Copilot response".to_string())
+    })?;
 
     let tool_calls: Vec<ToolCall> = choice
         .message

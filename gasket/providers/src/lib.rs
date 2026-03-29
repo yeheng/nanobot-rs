@@ -6,6 +6,52 @@
 //! Gemini for native Google format, Copilot for OAuth token management) retain
 //! their own modules.
 
+use thiserror::Error;
+
+/// Structured error type for LLM provider operations.
+#[derive(Debug, Error)]
+pub enum ProviderError {
+    #[error("Authentication failed: {0}")]
+    AuthError(String),
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitError(String),
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    #[error("API error (status {status_code}): {message}")]
+    ApiError { status_code: u16, message: String },
+    #[error("Failed to parse response: {0}")]
+    ParseError(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<anyhow::Error> for ProviderError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Other(err.to_string())
+    }
+}
+
+impl ProviderError {
+    pub fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::ApiError { status_code, .. } => Some(*status_code),
+            _ => None,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::RateLimitError(_) | Self::NetworkError(_) => true,
+            Self::ApiError { status_code, .. } => *status_code == 429 || *status_code >= 500,
+            _ => false,
+        }
+    }
+}
+
 mod base;
 mod common;
 #[cfg(feature = "provider-copilot")]

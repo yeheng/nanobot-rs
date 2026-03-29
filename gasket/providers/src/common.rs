@@ -233,7 +233,7 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
-    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let url = format!("{}/chat/completions", self.config.api_base);
 
         let openai_request = OpenAICompatibleRequest {
@@ -265,32 +265,36 @@ impl LlmProvider for OpenAICompatibleProvider {
             req = req.header(key, value);
         }
 
-        let response = req.json(&openai_request).send().await?;
+        let response =
+            req.json(&openai_request).send().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Request failed: {}", e))
+            })?;
 
         let status = response.status();
         info!("[{}] response status: {}", self.config.name, status);
 
-        let body = response.text().await?;
+        let body = response.text().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Failed to read response: {}", e))
+        })?;
         info!("[{}] response body:\n{}", self.config.name, body);
 
         if !status.is_success() {
-            anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("{} - {}", status, body),
+            });
         }
 
         let api_response: OpenAICompatibleResponse = serde_json::from_str(&body).map_err(|e| {
-            anyhow::anyhow!(
+            crate::ProviderError::ParseError(format!(
                 "{} API response parse error: {} | body: {}",
-                self.config.name,
-                e,
-                body
-            )
+                self.config.name, e, body
+            ))
         })?;
 
-        let choice = api_response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No choices in {} response", self.config.name))?;
+        let choice = api_response.choices.into_iter().next().ok_or_else(|| {
+            crate::ProviderError::ParseError(format!("No choices in {} response", self.config.name))
+        })?;
 
         let tool_calls: Vec<ToolCall> = choice
             .message
@@ -322,7 +326,7 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
-    async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
         let url = format!("{}/chat/completions", self.config.api_base);
 
         let openai_request = OpenAICompatibleRequest {
@@ -353,14 +357,22 @@ impl LlmProvider for OpenAICompatibleProvider {
             req = req.header(key, value);
         }
 
-        let response = req.json(&openai_request).send().await?;
+        let response =
+            req.json(&openai_request).send().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Request failed: {}", e))
+            })?;
 
         let status = response.status();
         info!("[{}] stream response status: {}", self.config.name, status);
 
         if !status.is_success() {
-            let body = response.text().await?;
-            anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
+            let body = response.text().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
+            })?;
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: body,
+            });
         }
 
         let byte_stream = response.bytes_stream();

@@ -111,6 +111,63 @@ impl Default for ToolCallAccumulator {
     }
 }
 
+/// Accumulator for streaming response data.
+///
+/// Eliminates duplication between `stream_events()` and `collect_stream_response()`.
+struct StreamAccumulator {
+    content: String,
+    reasoning_content: String,
+    tool_acc: ToolCallAccumulator,
+    accumulated_usage: Option<gasket_providers::Usage>,
+}
+
+impl StreamAccumulator {
+    fn new() -> Self {
+        Self {
+            content: String::new(),
+            reasoning_content: String::new(),
+            tool_acc: ToolCallAccumulator::new(),
+            accumulated_usage: None,
+        }
+    }
+
+    fn feed(&mut self, chunk: &gasket_providers::ChatStreamChunk) {
+        if let Some(ref text) = chunk.delta.content {
+            if !text.is_empty() {
+                self.content.push_str(text);
+            }
+        }
+        if let Some(ref reasoning) = chunk.delta.reasoning_content {
+            if !reasoning.is_empty() {
+                self.reasoning_content.push_str(reasoning);
+            }
+        }
+        for tc_delta in &chunk.delta.tool_calls {
+            self.tool_acc.feed(tc_delta);
+        }
+        if let Some(ref usage) = chunk.usage {
+            self.accumulated_usage = Some(usage.clone());
+        }
+    }
+
+    fn finalize(self) -> gasket_providers::ChatResponse {
+        gasket_providers::ChatResponse {
+            content: if self.content.is_empty() {
+                None
+            } else {
+                Some(self.content)
+            },
+            tool_calls: self.tool_acc.finalize(),
+            reasoning_content: if self.reasoning_content.is_empty() {
+                None
+            } else {
+                Some(self.reasoning_content)
+            },
+            usage: self.accumulated_usage,
+        }
+    }
+}
+
 /// Convert LLM stream to event stream with backpressure support.
 ///
 /// Returns (event_stream, final_response_handle).
@@ -214,7 +271,7 @@ pub fn stream_events(
                 }
                 Err(e) => {
                     debug!("[StreamEvents] Error in stream: {}", e);
-                    let _ = response_tx.send(Err(e));
+                    let _ = response_tx.send(Err(e.into()));
                     return;
                 }
             }
@@ -264,49 +321,14 @@ pub fn stream_events(
 pub async fn collect_stream_response(
     mut llm_stream: gasket_providers::ChatStream,
 ) -> Result<ChatResponse> {
-    let mut content = String::new();
-    let mut reasoning_content = String::new();
-    let mut tool_acc = ToolCallAccumulator::new();
-    let mut accumulated_usage = None;
+    let mut acc = StreamAccumulator::new();
 
     while let Some(chunk_result) = llm_stream.next().await {
         let chunk = chunk_result?;
-
-        if let Some(ref text) = chunk.delta.content {
-            if !text.is_empty() {
-                content.push_str(text);
-            }
-        }
-
-        if let Some(ref reasoning) = chunk.delta.reasoning_content {
-            if !reasoning.is_empty() {
-                reasoning_content.push_str(reasoning);
-            }
-        }
-
-        for tc_delta in &chunk.delta.tool_calls {
-            tool_acc.feed(tc_delta);
-        }
-
-        if let Some(ref usage) = chunk.usage {
-            accumulated_usage = Some(usage.clone());
-        }
+        acc.feed(&chunk);
     }
 
-    Ok(ChatResponse {
-        content: if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        },
-        tool_calls: tool_acc.finalize(),
-        reasoning_content: if reasoning_content.is_empty() {
-            None
-        } else {
-            Some(reasoning_content)
-        },
-        usage: accumulated_usage,
-    })
+    Ok(acc.finalize())
 }
 
 #[cfg(test)]

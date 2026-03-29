@@ -1,4 +1,19 @@
-//! Core execution engine for gasket AI assistant
+//! # Gasket Engine
+//!
+//! This crate serves as the **orchestration facade** for the gasket system.
+//!
+//! ## Architecture
+//!
+//! - **engine**: Orchestration layer (AgentLoop, executor, tools, hooks)
+//! - **core**: Convenience re-export layer (pub use of common types)
+//! - **providers**: LLM provider abstractions
+//! - **storage**: Event sourcing and persistence
+//!
+//! ## Design Principles
+//!
+//! - **Enum-based dispatch**: `AgentContext` enum instead of trait objects
+//! - **Event sourcing**: All state changes persisted as events
+//! - **Streaming-first**: SSE streaming with backpressure support
 
 pub mod agent;
 pub mod bus_adapter;
@@ -17,8 +32,7 @@ pub use agent::{
     // History
     count_tokens,
     process_history,
-    // Pipeline & stream
-    process_message,
+    // Stream
     // Subagents
     run_subagent,
     // Core loop
@@ -44,7 +58,6 @@ pub use agent::{
     MemoryStore,
     ModelResolver,
     PersistentContext,
-    PipelineContext,
     ProcessedHistory,
     QueryOrder,
     ResultMeta,

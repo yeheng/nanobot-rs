@@ -182,6 +182,28 @@ impl EventStore {
         let rows = sql_query.fetch_all(&self.pool).await?;
         rows.into_iter().map(|r| r.try_into()).collect()
     }
+
+    /// Clear all events for a session from the database.
+    ///
+    /// This is a destructive operation - all events will be permanently deleted.
+    pub async fn clear_session(&self, session_key: &str) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Delete all events for this session
+        sqlx::query("DELETE FROM session_events WHERE session_key = ?")
+            .bind(session_key)
+            .execute(&mut *tx)
+            .await?;
+
+        // Delete the session record
+        sqlx::query("DELETE FROM sessions_v2 WHERE key = ?")
+            .bind(session_key)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// Database row representation for session events.
@@ -1031,5 +1053,66 @@ mod tests {
         // Query with empty list
         let events = store.get_events_by_ids("test:session", &[]).await.unwrap();
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_clear_session() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool.clone());
+
+        // Add multiple events to a session
+        let e1 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Event 1".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: Some(e1.id),
+            event_type: EventType::AssistantMessage,
+            content: "Event 2".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&e2).await.unwrap();
+
+        // Verify events exist
+        let count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM session_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 2);
+
+        let session_count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM sessions_v2")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(session_count.0, 1);
+
+        // Clear the session
+        store.clear_session("test:session").await.unwrap();
+
+        // Verify all events are deleted
+        let count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM session_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
+
+        // Verify session record is deleted
+        let session_count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM sessions_v2")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(session_count.0, 0);
     }
 }

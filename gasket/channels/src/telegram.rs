@@ -99,6 +99,10 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
+    /// **KNOWN INCONSISTENCY**: This trait `start()` method is a no-op that returns `Ok(())`.
+    /// Actual startup logic is in the inherent `pub async fn start(self)` method.
+    /// This affects: Telegram, Discord, Slack channels.
+    /// See: opencode.md for details.
     async fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }

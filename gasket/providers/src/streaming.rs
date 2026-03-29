@@ -1,12 +1,12 @@
 //! SSE (Server-Sent Events) parsing utilities for LLM streaming responses
 
-use anyhow::Result;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use tracing::{debug, trace};
 
 use crate::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
+use crate::ProviderError;
 
 /// Parse a raw SSE byte stream into `ChatStreamChunk`s.
 ///
@@ -21,14 +21,17 @@ use crate::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta}
 /// The stream terminates on `data: [DONE]`.
 pub fn parse_sse_stream(
     byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
-) -> impl Stream<Item = Result<ChatStreamChunk>> + Send + 'static {
+) -> impl Stream<Item = Result<ChatStreamChunk, ProviderError>> + Send + 'static {
     // SSE events can be split across multiple byte chunks. We accumulate a
     // buffer and split on double-newline boundaries.
     let lines_stream = sse_lines(byte_stream);
 
     lines_stream.filter_map(|line_result| async move {
         match line_result {
-            Err(e) => Some(Err(e)),
+            Err(e) => Some(Err(ProviderError::NetworkError(format!(
+                "SSE stream error: {}",
+                e
+            )))),
             Ok(line) => {
                 // Skip empty lines and comments
                 let line = line.trim();
@@ -71,7 +74,7 @@ pub fn parse_sse_stream(
 /// that may be split across network chunks.
 pub fn sse_lines(
     byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
-) -> impl Stream<Item = Result<String>> + Send + 'static {
+) -> impl Stream<Item = Result<String, anyhow::Error>> + Send + 'static {
     debug!("[SSE] Starting to parse byte stream");
 
     futures::stream::unfold(

@@ -1,17 +1,13 @@
-//! gasket-core: Facade for gasket AI assistant framework
+//! # Gasket Core
 //!
-//! This crate provides a unified API for the gasket assistant framework.
-//! All implementation is delegated to specialized crates.
+//! This crate is a **convenience re-export layer** (facade) for the gasket framework.
 //!
-//! # Architecture
+//! All implementation lives in specialized crates (engine, providers, storage, etc.).
+//! This crate re-exports commonly used types for ergonomic imports:
 //!
-//! This is a pure facade crate - all implementation lives in:
-//! - `gasket-engine`: Core agent loop, tools, pipeline
-//! - `gasket-bus`: Message bus for inter-component communication
-//! - `gasket-providers`: LLM provider implementations
-//! - `gasket-channels`: Communication channels (Telegram, Discord, etc.)
-//! - `gasket-vault`: Secret management
-//! - `gasket-types`: Shared type definitions
+//! ```ignore
+//! use gasket_core::agent::AgentLoop;  // instead of gasket_engine::agent::AgentLoop
+//! ```
 
 // Modules with local implementations or needed for path-based imports
 pub mod agent;

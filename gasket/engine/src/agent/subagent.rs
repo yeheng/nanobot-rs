@@ -225,41 +225,90 @@ impl<'a> SubagentTaskBuilder<'a> {
         self
     }
 
+    /// Resolve the provider for this subagent task.
+    fn resolve_provider(&self) -> Arc<dyn LlmProvider> {
+        self.provider
+            .clone()
+            .unwrap_or_else(|| self.manager.provider.clone())
+    }
+
+    /// Resolve or default the agent configuration.
+    fn resolve_agent_config(&self, provider: &dyn LlmProvider) -> AgentConfig {
+        self.agent_config.clone().unwrap_or_else(|| AgentConfig {
+            model: provider.default_model().to_string(),
+            max_iterations: 10,
+            ..Default::default()
+        })
+    }
+
+    /// Build an AgentLoop with the given configuration.
+    #[allow(dead_code)]
+    fn build_agent(
+        &self,
+        provider: Arc<dyn LlmProvider>,
+        agent_config: AgentConfig,
+    ) -> anyhow::Result<AgentLoop> {
+        let workspace = self.manager.workspace.clone();
+        let tools = self.manager.tools.clone();
+
+        AgentLoop::builder(provider, workspace, agent_config, tools)
+            .map_err(|e| anyhow::anyhow!("Agent initialization failed: {}", e))
+    }
+
+    /// Apply hooks to the agent if provided.
+    #[allow(dead_code)]
+    fn apply_hooks(&self, agent: AgentLoop) -> AgentLoop {
+        if let Some(ref hooks) = self.hooks {
+            agent.with_hooks(hooks.clone())
+        } else {
+            agent
+        }
+    }
+
+    /// Load the system prompt, with fallback to minimal bootstrap.
+    #[allow(dead_code)]
+    async fn load_system_prompt(&self) -> anyhow::Result<String> {
+        match &self.system_prompt {
+            Some(prompt) => Ok(prompt.clone()),
+            None => {
+                let workspace = self.manager.workspace.clone();
+                prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("System prompt load failed: {}", e))
+            }
+        }
+    }
+
     /// Spawn the subagent task and return its ID.
     ///
     /// The task runs in the background and sends its result to `result_tx`
     /// when complete. If streaming is enabled, events are sent to `event_tx`.
     #[instrument(name = "subagent.spawn", skip_all)]
     pub async fn spawn(self, result_tx: mpsc::Sender<SubagentResult>) -> anyhow::Result<String> {
-        let provider = self
-            .provider
-            .unwrap_or_else(|| self.manager.provider.clone());
+        // Resolve configuration
+        let provider = self.resolve_provider();
+        let agent_config = self.resolve_agent_config(provider.as_ref());
+        let model_name = agent_config.model.clone();
         let workspace = self.manager.workspace.clone();
         let tools = self.manager.tools.clone();
-        let task_clone = self.task.clone();
-        let id_clone = self.subagent_id.clone();
+        let task = self.task.clone();
+        let subagent_id = self.subagent_id.clone();
         let cancellation_token = self.cancellation_token.clone();
         let hooks = self.hooks.clone();
-
-        let agent_config = self.agent_config.unwrap_or_else(|| AgentConfig {
-            model: provider.default_model().to_string(),
-            max_iterations: 10,
-            ..Default::default()
-        });
-
-        let event_tx = self.event_tx;
+        let event_tx = self.event_tx.clone();
         let system_prompt_override = self.system_prompt;
 
+        // Spawn background task
         tokio::spawn(async move {
             info!(
                 "[Subagent {}] Task started with model '{}': {}",
-                &self.subagent_id, &agent_config.model, &self.task
+                &subagent_id, &model_name, &task
             );
 
             // Check cancellation at startup
             if let Some(ref token) = cancellation_token {
                 if token.is_cancelled() {
-                    warn!("[Subagent {}] Cancelled before starting", self.subagent_id);
+                    warn!("[Subagent {}] Cancelled before starting", subagent_id);
                     return;
                 }
             }
@@ -267,57 +316,25 @@ impl<'a> SubagentTaskBuilder<'a> {
             // Send started event
             if let Some(ref tx) = event_tx {
                 let _ = tx.try_send(SubagentEvent::Started {
-                    id: self.subagent_id.clone(),
-                    task: task_clone.clone(),
+                    id: subagent_id.clone(),
+                    task: task.clone(),
                 });
             }
 
-            // Helper to send error result
-            let model_name = agent_config.model.clone();
-            let send_error = |error_msg: &str, model: &str| -> AgentResponse {
-                AgentResponse {
-                    content: format!("Error: {}", error_msg),
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(model.to_string()),
-                    token_usage: None,
-                    cost: 0.0,
-                }
-            };
-
-            // Helper to send error event
-            let send_error_event = |tx: &mpsc::Sender<SubagentEvent>, id: &str, error: &str| {
-                let _ = tx.try_send(SubagentEvent::Error {
-                    id: id.to_string(),
-                    error: error.to_string(),
-                });
-            };
-
+            // Initialize agent
             let agent = match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
                 Ok(a) => a,
                 Err(e) => {
-                    warn!(
-                        "[Subagent {}] Failed to initialize: {}",
-                        self.subagent_id, e
-                    );
-                    if let Some(ref tx) = event_tx {
-                        send_error_event(
-                            tx,
-                            &self.subagent_id,
-                            &format!("Agent initialization failed: {}", e),
-                        );
-                    }
-                    let _ = result_tx
-                        .send(SubagentResult {
-                            id: self.subagent_id.clone(),
-                            task: task_clone.clone(),
-                            response: send_error(
-                                &format!("Agent initialization failed: {}", e),
-                                &model_name,
-                            ),
-                            model: Some(model_name.clone()),
-                        })
-                        .await;
+                    warn!("[Subagent {}] Failed to initialize: {}", subagent_id, e);
+                    Self::send_initialization_error(
+                        &subagent_id,
+                        &task,
+                        &model_name,
+                        &e.to_string(),
+                        &event_tx,
+                        &result_tx,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -329,6 +346,7 @@ impl<'a> SubagentTaskBuilder<'a> {
                 agent
             };
 
+            // Load system prompt
             let system_prompt = match system_prompt_override {
                 Some(p) => p,
                 None => {
@@ -339,26 +357,17 @@ impl<'a> SubagentTaskBuilder<'a> {
                         Err(e) => {
                             warn!(
                                 "[Subagent {}] Failed to load system prompt: {}",
-                                self.subagent_id, e
+                                subagent_id, e
                             );
-                            if let Some(ref tx) = event_tx {
-                                send_error_event(
-                                    tx,
-                                    &self.subagent_id,
-                                    &format!("System prompt load failed: {}", e),
-                                );
-                            }
-                            let _ = result_tx
-                                .send(SubagentResult {
-                                    id: self.subagent_id.clone(),
-                                    task: task_clone.clone(),
-                                    response: send_error(
-                                        &format!("System prompt load failed: {}", e),
-                                        &model_name,
-                                    ),
-                                    model: Some(model_name.clone()),
-                                })
-                                .await;
+                            Self::send_initialization_error(
+                                &subagent_id,
+                                &task,
+                                &model_name,
+                                &format!("System prompt load failed: {}", e),
+                                &event_tx,
+                                &result_tx,
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -366,228 +375,235 @@ impl<'a> SubagentTaskBuilder<'a> {
             };
             agent.set_system_prompt(system_prompt);
 
-            let session_key = SessionKey::new(gasket_types::ChannelType::Cli, &self.subagent_id);
-            let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
+            // Execute with timeout
+            let session_key = SessionKey::new(gasket_types::ChannelType::Cli, &subagent_id);
+            let response = Self::execute_with_timeout(
+                agent,
+                &task,
+                &session_key,
+                &event_tx,
+                &subagent_id,
+                &cancellation_token,
+            )
+            .await;
 
-            // Use streaming if event_tx is provided
-            let response: Result<
-                Result<crate::agent::AgentResponse, crate::error::AgentError>,
-                anyhow::Error,
-            > = if let Some(ref tx) = event_tx {
-                let tx_clone = tx.clone();
-                let id_clone = self.subagent_id.clone();
-                let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let cancellation_token_clone = cancellation_token.clone();
+            // Dispatch result
+            Self::dispatch_result(
+                response,
+                result_tx,
+                &event_tx,
+                &subagent_id,
+                task,
+                model_name,
+            )
+            .await;
+        });
 
-                // Use channel-based streaming API
-                let (mut event_rx, result_handle) = agent
-                    .process_direct_streaming_with_channel(&self.task, &session_key)
-                    .await
-                    .expect("Failed to create streaming channel");
+        Ok(self.subagent_id)
+    }
 
-                // Spawn task to forward events from channel to callback logic
-                let forward_handle = tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        match event {
-                            StreamEvent::Content(content) => {
-                                let _ = tx_clone.try_send(SubagentEvent::Content {
-                                    id: id_clone.clone(),
-                                    content,
-                                });
-                            }
-                            StreamEvent::Reasoning(content) => {
-                                let _ = tx_clone.try_send(SubagentEvent::Thinking {
-                                    id: id_clone.clone(),
-                                    content,
-                                });
-                            }
-                            StreamEvent::ToolStart { name, arguments } => {
-                                let _ = tx_clone.try_send(SubagentEvent::ToolStart {
-                                    id: id_clone.clone(),
-                                    tool_name: name,
-                                    arguments,
-                                });
-                            }
-                            StreamEvent::ToolEnd { name, output } => {
-                                let _ = tx_clone.try_send(SubagentEvent::ToolEnd {
-                                    id: id_clone.clone(),
-                                    tool_name: name,
-                                    output,
-                                });
-                            }
-                            StreamEvent::Done => {
-                                let iter = iteration_counter
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                    + 1;
-                                let _ = tx_clone.try_send(SubagentEvent::Iteration {
-                                    id: id_clone.clone(),
-                                    iteration: iter,
-                                });
-                            }
-                            StreamEvent::TokenStats { .. } => {}
-                        }
-                    }
-                });
+    /// Send initialization error to both event and result channels.
+    async fn send_initialization_error(
+        subagent_id: &str,
+        task: &str,
+        model_name: &str,
+        error: &str,
+        event_tx: &Option<mpsc::Sender<SubagentEvent>>,
+        result_tx: &mpsc::Sender<SubagentResult>,
+    ) {
+        if let Some(ref tx) = event_tx {
+            let _ = tx.try_send(SubagentEvent::Error {
+                id: subagent_id.to_string(),
+                error: error.to_string(),
+            });
+        }
 
-                // Use tokio::select! to handle both timeout and cancellation
-                let result = if let Some(ref token) = cancellation_token_clone {
-                    let token_clone = token.clone();
-                    tokio::select! {
-                        biased;
-                        _ = token_clone.cancelled() => {
-                            warn!("[Subagent {}] Cancelled during execution", self.subagent_id);
-                            Err(anyhow::anyhow!("cancelled"))
-                        }
-                        result = tokio::time::timeout(timeout_duration, result_handle) => {
-                            result.map_err(|_| anyhow::anyhow!("timed out"))
-                        }
-                    }
-                } else {
-                    tokio::time::timeout(timeout_duration, result_handle)
-                        .await
-                        .map_err(|_| anyhow::anyhow!("timed out"))
-                };
+        let error_response = AgentResponse {
+            content: format!("Error: {}", error),
+            reasoning_content: None,
+            tools_used: vec![],
+            model: Some(model_name.to_string()),
+            token_usage: None,
+            cost: 0.0,
+        };
 
-                // Wait for forward task to complete
-                let _ = forward_handle.await;
+        let _ = result_tx
+            .send(SubagentResult {
+                id: subagent_id.to_string(),
+                task: task.to_string(),
+                response: error_response,
+                model: Some(model_name.to_string()),
+            })
+            .await;
+    }
 
-                Ok(match result {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(e)) => {
-                        warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
-                        send_error_event(
-                            tx,
-                            &self.subagent_id,
-                            &format!("Execution failed: {}", e),
-                        );
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: self.subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Execution failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                    Err(_) => {
-                        // Check if it was cancelled or timed out
-                        let was_cancelled = cancellation_token_clone
-                            .as_ref()
-                            .map(|t| t.is_cancelled())
-                            .unwrap_or(false);
+    /// Execute agent with timeout and cancellation support.
+    async fn execute_with_timeout(
+        agent: AgentLoop,
+        task: &str,
+        session_key: &SessionKey,
+        event_tx: &Option<mpsc::Sender<SubagentEvent>>,
+        subagent_id: &str,
+        cancellation_token: &Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<AgentResponse, anyhow::Error> {
+        let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
 
-                        if was_cancelled {
-                            warn!("[Subagent {}] Cancelled by user", self.subagent_id);
-                            let _ = result_tx
-                                .send(SubagentResult {
-                                    id: self.subagent_id.clone(),
-                                    task: task_clone.clone(),
-                                    response: send_error("Cancelled by user", &model_name),
-                                    model: Some(model_name.clone()),
-                                })
-                                .await;
-                            return;
-                        } else {
-                            warn!(
-                                "[Subagent {}] Timed out after {:?}",
-                                self.subagent_id, timeout_duration
-                            );
-                            send_error_event(
-                                tx,
-                                &self.subagent_id,
-                                &format!("Timed out after {:?}", timeout_duration),
-                            );
-                            let _ = result_tx
-                                .send(SubagentResult {
-                                    id: self.subagent_id.clone(),
-                                    task: task_clone.clone(),
-                                    response: send_error(
-                                        &format!("Timed out after {:?}", timeout_duration),
-                                        &model_name,
-                                    ),
-                                    model: Some(model_name.clone()),
-                                })
-                                .await;
-                            return;
-                        }
-                    }
-                })
-            } else {
-                // Non-streaming path
-                let result = tokio::time::timeout(
-                    timeout_duration,
-                    agent.process_direct(&self.task, &session_key),
-                )
-                .await;
-
-                Ok(Ok(match result {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(e)) => {
-                        warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: self.subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Execution failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                    Err(_) => {
-                        warn!(
-                            "[Subagent {}] Timed out after {:?}",
-                            self.subagent_id, timeout_duration
-                        );
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: self.subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Timed out after {:?}", timeout_duration),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
-                    }
-                }))
-            };
-
-            let subagent_result = SubagentResult {
-                id: self.subagent_id.clone(),
-                task: task_clone,
-                response: response
-                    .expect("Failed to get response")
-                    .expect("Response is Ok"),
-                model: Some(model_name),
-            };
-
-            // Send completed event
-            if let Some(ref tx) = event_tx {
-                let _ = tx.try_send(SubagentEvent::Completed {
-                    id: self.subagent_id.clone(),
-                    result: subagent_result.clone(),
-                });
+        if let Some(tx) = event_tx {
+            // Streaming path
+            Self::execute_streaming(
+                agent,
+                task,
+                session_key,
+                tx,
+                subagent_id,
+                cancellation_token,
+                timeout_duration,
+            )
+            .await
+        } else {
+            // Non-streaming path
+            match tokio::time::timeout(timeout_duration, agent.process_direct(task, session_key))
+                .await
+            {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(e)) => Err(anyhow::anyhow!("Execution failed: {}", e)),
+                Err(_) => Err(anyhow::anyhow!("Timed out after {:?}", timeout_duration)),
             }
+        }
+    }
 
-            if let Err(e) = result_tx.send(subagent_result).await {
-                warn!(
-                    "[Subagent {}] Failed to send result: {}",
-                    self.subagent_id, e
-                );
+    /// Execute agent with streaming support.
+    async fn execute_streaming(
+        agent: AgentLoop,
+        task: &str,
+        session_key: &SessionKey,
+        event_tx: &mpsc::Sender<SubagentEvent>,
+        subagent_id: &str,
+        cancellation_token: &Option<tokio_util::sync::CancellationToken>,
+        timeout_duration: std::time::Duration,
+    ) -> Result<AgentResponse, anyhow::Error> {
+        let tx_clone = event_tx.clone();
+        let id_clone = subagent_id.to_string();
+        let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cancellation_token_clone = cancellation_token.clone();
+
+        let (mut event_rx, result_handle) = agent
+            .process_direct_streaming_with_channel(task, session_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create streaming channel: {}", e))?;
+
+        let forward_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    StreamEvent::Content(content) => {
+                        let _ = tx_clone.try_send(SubagentEvent::Content {
+                            id: id_clone.clone(),
+                            content,
+                        });
+                    }
+                    StreamEvent::Reasoning(content) => {
+                        let _ = tx_clone.try_send(SubagentEvent::Thinking {
+                            id: id_clone.clone(),
+                            content,
+                        });
+                    }
+                    StreamEvent::ToolStart { name, arguments } => {
+                        let _ = tx_clone.try_send(SubagentEvent::ToolStart {
+                            id: id_clone.clone(),
+                            tool_name: name,
+                            arguments,
+                        });
+                    }
+                    StreamEvent::ToolEnd { name, output } => {
+                        let _ = tx_clone.try_send(SubagentEvent::ToolEnd {
+                            id: id_clone.clone(),
+                            tool_name: name,
+                            output,
+                        });
+                    }
+                    StreamEvent::Done => {
+                        let iter = iteration_counter
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        let _ = tx_clone.try_send(SubagentEvent::Iteration {
+                            id: id_clone.clone(),
+                            iteration: iter,
+                        });
+                    }
+                    StreamEvent::TokenStats { .. } => {}
+                }
             }
         });
 
-        Ok(id_clone)
+        let result = if let Some(token) = cancellation_token_clone {
+            let token_clone = token.clone();
+            tokio::select! {
+                biased;
+                _ = token_clone.cancelled() => {
+                    warn!("[Subagent {}] Cancelled during execution", subagent_id);
+                    Err(anyhow::anyhow!("cancelled"))
+                }
+                result = tokio::time::timeout(timeout_duration, result_handle) => {
+                    result
+                        .map_err(|_| anyhow::anyhow!("timed out"))
+                        .and_then(|r| r.map_err(|e| anyhow::anyhow!("Task join error: {}", e)))
+                        .and_then(|r| r.map_err(|e| anyhow::anyhow!("Execution failed: {}", e)))
+                }
+            }
+        } else {
+            tokio::time::timeout(timeout_duration, result_handle)
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out"))
+                .and_then(|r| r.map_err(|e| anyhow::anyhow!("Task join error: {}", e)))
+                .and_then(|r| r.map_err(|e| anyhow::anyhow!("Execution failed: {}", e)))
+        };
+
+        let _ = forward_handle.await;
+
+        result
+    }
+
+    /// Dispatch result to channels.
+    async fn dispatch_result(
+        response: Result<AgentResponse, anyhow::Error>,
+        result_tx: mpsc::Sender<SubagentResult>,
+        event_tx: &Option<mpsc::Sender<SubagentEvent>>,
+        subagent_id: &str,
+        task: String,
+        model_name: String,
+    ) {
+        let response = match response {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("[Subagent {}] Execution failed: {}", subagent_id, e);
+                AgentResponse {
+                    content: format!("Error: {}", e),
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(model_name.clone()),
+                    token_usage: None,
+                    cost: 0.0,
+                }
+            }
+        };
+
+        let subagent_result = SubagentResult {
+            id: subagent_id.to_string(),
+            task,
+            response,
+            model: Some(model_name),
+        };
+
+        if let Some(ref tx) = event_tx {
+            let _ = tx.try_send(SubagentEvent::Completed {
+                id: subagent_id.to_string(),
+                result: subagent_result.clone(),
+            });
+        }
+
+        if let Err(e) = result_tx.send(subagent_result).await {
+            warn!("[Subagent {}] Failed to send result: {}", subagent_id, e);
+        }
     }
 }
 

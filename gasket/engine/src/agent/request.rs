@@ -8,7 +8,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::tools::ToolRegistry;
-use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ThinkingConfig};
+use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ProviderError, ThinkingConfig};
 
 use super::loop_::AgentConfig;
 
@@ -64,7 +64,13 @@ impl<'a> RequestHandler<'a> {
     /// - HTTP 401 (Unauthorized) - authentication error
     /// - HTTP 403 (Forbidden) - permission denied
     /// - HTTP 404 (Not Found) - resource not found
+    #[allow(dead_code)]
     fn is_retryable_error(error: &anyhow::Error) -> bool {
+        // First check for structured ProviderError via downcast
+        if let Some(provider_err) = error.downcast_ref::<ProviderError>() {
+            return provider_err.is_retryable();
+        }
+
         let error_str = error.to_string().to_lowercase();
 
         // Check for HTTP status codes in error message
@@ -111,9 +117,10 @@ impl<'a> RequestHandler<'a> {
         loop {
             match self.provider.chat_stream(request.clone()).await {
                 Ok(stream) => return Ok(stream),
-                Err(e) => {
+                Err(provider_err) => {
+                    let e = anyhow::anyhow!("{}", provider_err);
                     // Check if error is retryable
-                    if !Self::is_retryable_error(&e) {
+                    if !provider_err.is_retryable() {
                         // Non-retryable error: fail immediately
                         return Err(e.context("Provider request failed (non-retryable)"));
                     }
@@ -136,6 +143,7 @@ impl<'a> RequestHandler<'a> {
 /// Extract HTTP status code from error message.
 ///
 /// Looks for patterns like "401 unauthorized", "500 internal server error", etc.
+#[allow(dead_code)]
 fn extract_http_status(error_str: &str) -> Option<u16> {
     // Common patterns in error messages:
     // - "API error: 401 - ..."
@@ -166,6 +174,7 @@ fn extract_http_status(error_str: &str) -> Option<u16> {
 }
 
 /// Check if an HTTP status code indicates a retryable error.
+#[allow(dead_code)]
 fn is_retryable_http_status(status: u16) -> bool {
     match status {
         // Client errors: never retry (except 429)

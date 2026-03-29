@@ -4,7 +4,7 @@ use crate::base::{ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, To
 use crate::common::build_http_client;
 use crate::streaming::sse_lines;
 use crate::{ChatRequest, ChatResponse, LlmProvider};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use reqwest::Client;
@@ -196,7 +196,7 @@ impl GeminiProvider {
     }
 
     /// Parse Gemini response
-    fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse> {
+    fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse, crate::ProviderError> {
         debug!(
             "Gemini response: {}",
             serde_json::to_string(&response)
@@ -205,16 +205,21 @@ impl GeminiProvider {
 
         // Check for errors
         if let Some(error) = response.get("error") {
-            return Err(anyhow!("Gemini API error: {}", error));
+            return Err(crate::ProviderError::ApiError {
+                status_code: 500,
+                message: format!("Gemini API error: {}", error),
+            });
         }
 
         // Extract candidates
-        let candidates = response["candidates"]
-            .as_array()
-            .ok_or_else(|| anyhow!("No candidates in response"))?;
+        let candidates = response["candidates"].as_array().ok_or_else(|| {
+            crate::ProviderError::ParseError("No candidates in response".to_string())
+        })?;
 
         if candidates.is_empty() {
-            return Err(anyhow!("Empty candidates in response"));
+            return Err(crate::ProviderError::ParseError(
+                "Empty candidates in response".to_string(),
+            ));
         }
 
         let first_candidate = &candidates[0];
@@ -264,7 +269,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     #[instrument(skip(self, request), fields(provider = "gemini", model = %request.model))]
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let model = if request.model.is_empty() {
             &self.default_model
         } else {
@@ -284,31 +289,38 @@ impl LlmProvider for GeminiProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Gemini request failed: {}", e))
+            })?;
 
         let status = response.status();
         debug!("[gemini] response status: {}", status);
 
-        let response_text = response.text().await?;
+        let response_text = response.text().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Failed to read Gemini response: {}", e))
+        })?;
         debug!("[gemini] response body:\n{}", response_text);
 
         if !status.is_success() {
-            anyhow::bail!("Gemini API error: {} - {}", status, response_text);
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("{} - {}", status, response_text),
+            });
         }
 
         let response_value: Value = serde_json::from_str(&response_text).map_err(|e| {
-            anyhow!(
+            crate::ProviderError::ParseError(format!(
                 "Gemini API response parse error: {} | body: {}",
-                e,
-                response_text
-            )
+                e, response_text
+            ))
         })?;
 
         self.parse_gemini_response(response_value)
     }
 
     #[instrument(skip(self, request), fields(provider = "gemini", model = %request.model))]
-    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream> {
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
         let model = if request.model.is_empty() {
             &self.default_model
         } else {
@@ -332,14 +344,25 @@ impl LlmProvider for GeminiProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                crate::ProviderError::NetworkError(format!("Gemini stream request failed: {}", e))
+            })?;
 
         let status = response.status();
         debug!("[gemini] stream response status: {}", status);
 
         if !status.is_success() {
-            let body = response.text().await?;
-            anyhow::bail!("Gemini API error: {} - {}", status, body);
+            let body = response.text().await.map_err(|e| {
+                crate::ProviderError::NetworkError(format!(
+                    "Failed to read Gemini stream response: {}",
+                    e
+                ))
+            })?;
+            return Err(crate::ProviderError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("{} - {}", status, body),
+            });
         }
 
         // Gemini SSE stream: each event has `data: <gemini-json>` lines.
@@ -356,14 +379,17 @@ impl LlmProvider for GeminiProvider {
 /// a Gemini-format JSON response (with `candidates[].content.parts`).
 fn parse_gemini_sse_stream(
     byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-) -> impl futures::Stream<Item = Result<ChatStreamChunk>> + Send + 'static {
+) -> impl futures::Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send + 'static {
     // Re-use the generic SSE line splitter from the streaming module,
     // but parse the JSON payload as Gemini format instead of OpenAI.
     let lines = sse_lines(byte_stream);
 
     lines.filter_map(|line_result| async move {
         match line_result {
-            Err(e) => Some(Err(e)),
+            Err(e) => Some(Err(crate::ProviderError::NetworkError(format!(
+                "Gemini SSE stream error: {}",
+                e
+            )))),
             Ok(line) => {
                 let line = line.trim().to_string();
                 if line.is_empty() || line.starts_with(':') {

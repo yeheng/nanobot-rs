@@ -7,7 +7,8 @@ use futures::stream::{self, Stream};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Type alias for a boxed stream of chat stream chunks
-pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<ChatStreamChunk>> + Send>>;
+pub type ChatStream =
+    Pin<Box<dyn Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send>>;
 
 /// LLM Provider trait
 #[async_trait]
@@ -22,13 +23,13 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Observability is handled automatically via the `tracing` crate's
     /// implicit span context — no manual context passing needed.
-    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse>;
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError>;
 
     /// Send a streaming chat completion request.
     ///
     /// The default implementation falls back to `chat()` and wraps the
     /// complete response in a single-chunk stream.
-    async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
         let response = self.chat(request).await?;
         Ok(Box::pin(stream::once(async move {
             Ok(ChatStreamChunk::from_response(response))

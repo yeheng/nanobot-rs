@@ -202,6 +202,41 @@ impl Session {
     pub fn main_head(&self) -> Option<Uuid> {
         self.get_branch_head("main")
     }
+
+    /// Update session state from events loaded from EventStore.
+    ///
+    /// This method reconstructs session metadata by:
+    /// 1. Updating branch pointers from event metadata
+    /// 2. Updating session metadata (total_events, total_tokens)
+    ///
+    /// Note: Events are NOT stored in Session - they remain in EventStore.
+    /// This method only updates the aggregate metadata.
+    pub fn update_from_events(&mut self, events: &[SessionEvent]) {
+        for event in events {
+            // Update branch pointer
+            if let Some(ref branch) = event.metadata.branch {
+                self.branches.insert(branch.clone(), event.id);
+            }
+
+            // Update metadata
+            self.metadata.total_events += 1;
+            if let Some(ref usage) = event.metadata.token_usage {
+                self.metadata.total_tokens += (usage.input_tokens + usage.output_tokens) as u64;
+            }
+        }
+
+        // Update timestamp
+        self.metadata.updated_at = Utc::now();
+    }
+
+    /// Create a session from a list of events.
+    ///
+    /// Convenience constructor combining `new()` and `update_from_events()`.
+    pub fn from_events(key: impl Into<String>, events: Vec<SessionEvent>) -> Self {
+        let mut session = Self::new(key);
+        session.update_from_events(&events);
+        session
+    }
 }
 
 #[cfg(test)]

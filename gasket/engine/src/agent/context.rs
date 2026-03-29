@@ -124,11 +124,23 @@ impl AgentContext {
 
     /// Load a session for the given key.
     ///
-    /// For `Persistent` context, creates a new session (future: will load from storage).
+    /// For `Persistent` context, loads events from EventStore and reconstructs session state.
     /// For `Stateless` context, creates a new in-memory session.
     pub async fn load_session(&self, key: &SessionKey) -> Session {
         match self {
-            Self::Persistent(_) => Session::new(key.to_string()),
+            Self::Persistent(ctx) => {
+                // Load events from EventStore and reconstruct session state
+                let events = ctx
+                    .event_store
+                    .get_branch_history(&key.to_string(), "main")
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load session history for '{}': {}", key, e);
+                        Vec::new()
+                    });
+
+                Session::from_events(key.to_string(), events)
+            }
             Self::Stateless => Session::new(key.to_string()),
         }
     }
@@ -202,20 +214,84 @@ impl AgentContext {
         }
     }
 
-    /// Recall relevant historical messages based on semantic similarity.
+    /// Recall relevant historical messages based on recency and content heuristics.
     ///
-    /// Returns the top-K most relevant messages from the embedding store.
+    /// Returns the top-K most relevant messages from the event store using
+    /// a scoring function that combines recency and content length.
     /// For `Stateless` context, returns an empty vector.
     ///
-    /// TODO: Implement actual semantic recall with embeddings.
+    /// # Arguments
+    ///
+    /// * `key` - Session key to retrieve history for
+    /// * `_query_embedding` - Query embedding (currently unused, reserved for future semantic search)
+    /// * `top_k` - Maximum number of messages to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of message contents, sorted by relevance score (highest first).
     pub async fn recall_history(
         &self,
-        _key: &str,
+        key: &str,
         _query_embedding: &[f32],
-        _top_k: usize,
+        top_k: usize,
     ) -> anyhow::Result<Vec<String>> {
-        // Default: no semantic recall available
-        Ok(Vec::new())
+        match self {
+            Self::Persistent(ctx) => {
+                let events = ctx
+                    .event_store
+                    .get_branch_history(key, "main")
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load events for recall: {}", e);
+                        Vec::new()
+                    });
+
+                if events.is_empty() {
+                    return Ok(Vec::new());
+                }
+
+                // Score by recency (more recent = higher) and content length
+                let mut scored: Vec<(f32, String)> = events
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, event)| {
+                        let recency = idx as f32 / events.len() as f32;
+                        let length = (event.content.len() as f32).ln() / 10.0;
+                        (recency + length, event.content.clone())
+                    })
+                    .collect();
+
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+                Ok(scored.into_iter().take(top_k).map(|(_, c)| c).collect())
+            }
+            Self::Stateless => Ok(Vec::new()),
+        }
+    }
+
+    /// Clear session data from the event store.
+    ///
+    /// For `Persistent` context, clears all events and session data from the EventStore.
+    /// For `Stateless` context, this is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_key` - The session key to clear
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session cannot be cleared from the database.
+    pub async fn clear_session(&self, session_key: &str) -> Result<(), AgentError> {
+        match self {
+            Self::Persistent(ctx) => {
+                ctx.event_store
+                    .clear_session(session_key)
+                    .await
+                    .map_err(|e| AgentError::Other(format!("Failed to clear session: {}", e)))?;
+                Ok(())
+            }
+            Self::Stateless => Ok(()),
+        }
     }
 }
 
@@ -527,5 +603,49 @@ mod tests {
         let history = context.get_history("test:session", None).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "Hello");
+    }
+
+    #[tokio::test]
+    async fn test_persistent_context_clear_session() {
+        let pool = setup_test_db().await;
+        let event_store = Arc::new(EventStore::new(pool));
+        let (tx, _rx) = mpsc::channel(1);
+
+        let context = AgentContext::persistent(event_store, tx);
+        assert!(context.is_persistent());
+
+        // Save event
+        let event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Hello".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        context.save_event(event).await.unwrap();
+
+        // Verify history exists
+        let history = context.get_history("test:session", None).await;
+        assert_eq!(history.len(), 1);
+
+        // Clear session
+        let result = context.clear_session("test:session").await;
+        assert!(result.is_ok());
+
+        // Verify history is cleared
+        let history = context.get_history("test:session", None).await;
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stateless_context_clear_session() {
+        let context = AgentContext::Stateless;
+
+        // Clear session should be a no-op for stateless context
+        let result = context.clear_session("test:session").await;
+        assert!(result.is_ok());
     }
 }

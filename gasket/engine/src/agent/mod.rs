@@ -6,7 +6,6 @@ pub mod executor;
 pub mod executor_core;
 pub mod loop_;
 pub mod memory;
-pub mod pipeline;
 pub mod prompt;
 pub mod request;
 pub mod skill_loader;
@@ -28,7 +27,6 @@ pub use gasket_history::{
 };
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
-pub use pipeline::{process_message, PipelineContext};
 pub use stream::StreamEvent;
 pub use stream_buffer::BufferedEvents;
 pub use subagent::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};

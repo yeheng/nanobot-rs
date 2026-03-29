@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{ToolContext, ToolRegistry};
@@ -98,53 +97,6 @@ impl<'a> ToolExecutor<'a> {
             output: result_str,
         }
     }
-
-    /// Execute a single tool call by name and raw arguments (convenience method).
-    pub async fn execute_raw(&self, name: &str, args: Value, ctx: &ToolContext) -> String {
-        let start = Instant::now();
-        let result = self
-            .registry
-            .execute(name, args, ctx)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e));
-        let elapsed = start.elapsed();
-
-        match &result {
-            Ok(output) => {
-                debug!(
-                    tool = %name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    output_len = output.len(),
-                    "Tool completed"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    tool = %name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    error = %e,
-                    "Tool error"
-                );
-            }
-        }
-
-        let mut result_str = match result {
-            Ok(r) => r,
-            Err(e) => format!("Error: {}", e),
-        };
-
-        if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
-            // O(1) UTF-8 boundary check: walk backwards to find a valid char boundary
-            let mut end = self.max_result_chars;
-            while !result_str.is_char_boundary(end) {
-                end -= 1;
-            }
-            result_str.truncate(end);
-            result_str.push_str("\n\n[... truncated]");
-        }
-
-        result_str
-    }
 }
 
 #[cfg(test)]
@@ -152,6 +104,7 @@ mod tests {
     use super::*;
     use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult as TResult};
     use async_trait::async_trait;
+    use serde_json::Value;
 
     struct EchoTool;
 

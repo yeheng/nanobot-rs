@@ -152,6 +152,19 @@ enum PipelineOutcome {
     Aborted(String),
 }
 
+/// Initialization state returned by `build_internal()`.
+///
+/// Groups all values created during agent initialization,
+/// avoiding a multi-tuple return type.
+struct AgentInitState {
+    context: AgentContext,
+    system_prompt: String,
+    skills_context: Option<String>,
+    hooks: Arc<crate::hooks::HookRegistry>,
+    vault_values: Arc<tokio::sync::RwLock<Vec<String>>>,
+    compression_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
 // ── AgentLoop ───────────────────────────────────────────────
 
 /// The agent loop - core processing engine.
@@ -211,6 +224,8 @@ pub struct AgentLoop {
     vault_values: Arc<RwLock<Vec<String>>>,
     /// Subagent spawner for spawn/spawn_parallel tools
     spawner: Option<Arc<dyn SubagentSpawner>>,
+    /// Handle for the compression background actor (for graceful shutdown)
+    compression_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AgentLoop {
@@ -245,15 +260,14 @@ impl AgentLoop {
     ) -> Result<Self, AgentError> {
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
-        // Create compression channel for background summarization
-        let (compression_tx, _compression_rx) = tokio::sync::mpsc::channel(64);
-
-        let context = AgentContext::persistent(event_store, compression_tx);
-
-        let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-
-        // Build hooks using HookBuilder
-        let (hooks, vault_values) = Self::build_hooks();
+        let AgentInitState {
+            context,
+            system_prompt,
+            skills_context,
+            hooks,
+            vault_values,
+            compression_handle,
+        } = Self::build_internal(event_store, &workspace).await?;
 
         Ok(Self {
             provider,
@@ -268,6 +282,7 @@ impl AgentLoop {
             pricing: None,
             vault_values,
             spawner: None,
+            compression_handle,
         })
     }
 
@@ -323,6 +338,68 @@ impl AgentLoop {
         (builder.build_shared(), vault_values)
     }
 
+    /// Internal builder: common initialization for all constructors.
+    ///
+    /// Extracts shared logic from `with_services()` and `with_memory_store_and_pricing()`.
+    async fn build_internal(
+        event_store: Arc<EventStore>,
+        workspace: &Path,
+    ) -> Result<AgentInitState, AgentError> {
+        // Spawn the compression actor (returns the sender for submitting tasks)
+        let compression_tx = Self::spawn_compression_actor(event_store.clone());
+
+        // Create persistent context for main agents
+        let context = AgentContext::persistent(event_store, compression_tx);
+
+        // Load system prompt and skills context
+        let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
+
+        // Build hooks using unified registry
+        let (hooks, vault_values) = Self::build_hooks();
+
+        Ok(AgentInitState {
+            context,
+            system_prompt,
+            skills_context,
+            hooks,
+            vault_values,
+            compression_handle: None,
+        })
+    }
+
+    /// Spawn the compression actor with placeholder services.
+    ///
+    /// NOTE: Placeholder implementations are used for summarization and embedding.
+    /// Real implementations require external service integration.
+    fn spawn_compression_actor(
+        event_store: Arc<gasket_storage::EventStore>,
+    ) -> tokio::sync::mpsc::Sender<crate::agent::context::CompressionTask> {
+        // Placeholder implementations
+        struct PlaceholderSummarizer;
+        #[async_trait::async_trait]
+        impl crate::agent::compression::SummarizationService for PlaceholderSummarizer {
+            async fn summarize(
+                &self,
+                events: &[gasket_types::SessionEvent],
+            ) -> anyhow::Result<String> {
+                Ok(format!("Compressed {} events (placeholder)", events.len()))
+            }
+        }
+
+        struct PlaceholderEmbedder;
+        #[async_trait::async_trait]
+        impl crate::agent::compression::EmbeddingService for PlaceholderEmbedder {
+            async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+                Ok(vec![0.0_f32; 384])
+            }
+        }
+
+        let summarizer = std::sync::Arc::new(PlaceholderSummarizer);
+        let embedder = std::sync::Arc::new(PlaceholderEmbedder);
+
+        crate::agent::compression::CompressionActor::spawn(event_store, summarizer, embedder)
+    }
+
     /// Create a new agent loop with MemoryStore and pricing configuration.
     ///
     /// Uses **PersistentContext** for full session persistence and compression.
@@ -336,19 +413,14 @@ impl AgentLoop {
     ) -> Result<Self, AgentError> {
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
-        // Create compression channel for background summarization
-        let (compression_tx, _compression_rx) = tokio::sync::mpsc::channel(64);
-
-        // Create persistent context for main agents
-        let context = AgentContext::persistent(event_store, compression_tx);
-
-        // Load system prompt and skills directly — no hook indirection
-        let system_prompt =
-            prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
-        let skills_context = prompt::load_skills_context(&workspace).await;
-
-        // Build hooks using unified registry
-        let (hooks, vault_values) = Self::build_hooks();
+        let AgentInitState {
+            context,
+            system_prompt,
+            skills_context,
+            hooks,
+            vault_values,
+            compression_handle,
+        } = Self::build_internal(event_store, &workspace).await?;
 
         Ok(Self {
             provider,
@@ -363,6 +435,7 @@ impl AgentLoop {
             pricing,
             vault_values,
             spawner: None,
+            compression_handle,
         })
     }
 
@@ -393,6 +466,7 @@ impl AgentLoop {
             pricing: None,
             vault_values: Arc::new(RwLock::new(Vec::new())),
             spawner: None,
+            compression_handle: None,
         })
     }
 
@@ -440,17 +514,26 @@ impl AgentLoop {
     /// This resets the conversation history so the next message starts fresh.
     /// For stateless contexts (subagents), this is a no-op.
     pub async fn clear_session(&self, session_key: &SessionKey) {
-        // Only clear if we have persistence
         if self.context.is_persistent() {
-            self.context.load_session(session_key).await;
-            // Note: SessionManager has a clear_session method, but AgentContext
-            // doesn't expose it directly. For now, we skip this optimization
-            // since the session will be fresh on next load anyway.
+            match self.context.clear_session(&session_key.to_string()).await {
+                Ok(_) => tracing::info!("Session '{}' cleared", session_key),
+                Err(e) => tracing::warn!("Failed to clear session '{}': {}", session_key, e),
+            }
         }
     }
+}
 
-    // ── Common Pipeline ──────────────────────────────────────────
+impl Drop for AgentLoop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.compression_handle.take() {
+            handle.abort();
+        }
+    }
+}
 
+// ── Common Pipeline ──────────────────────────────────────────
+
+impl AgentLoop {
     /// Common pre-processing pipeline for both direct and streaming execution.
     ///
     /// Executes the shared steps: BeforeRequest hook, history load/save,
@@ -889,9 +972,7 @@ impl AgentLoop {
 ///
 /// Extracted as a standalone function to keep the spawned task flat
 /// and avoid exceeding the 3-layer indentation rule.
-fn convert_stream_event(
-    event: crate::agent::stream::StreamEvent,
-) -> gasket_bus::StreamEvent {
+fn convert_stream_event(event: crate::agent::stream::StreamEvent) -> gasket_bus::StreamEvent {
     use crate::agent::stream::StreamEvent as AgentStreamEvent;
     use gasket_bus::StreamEvent as BusStreamEvent;
 
