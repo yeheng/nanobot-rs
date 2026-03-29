@@ -139,8 +139,17 @@ struct PipelineState {
     content: String,
     messages: Vec<ChatMessage>,
     local_vault_values: Vec<String>,
-    /// Set when BeforeRequest hook aborts the pipeline.
-    abort_message: Option<String>,
+}
+
+/// Outcome of the pipeline preparation.
+///
+/// Uses a proper enum instead of `Option<String>` to make the two
+/// mutually-exclusive paths explicit at the type level.
+enum PipelineOutcome {
+    /// Pipeline completed normally — ready for execution.
+    Ready(PipelineState),
+    /// BeforeRequest hook aborted the pipeline with a message.
+    Aborted(String),
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -314,25 +323,6 @@ impl AgentLoop {
         (builder.build_shared(), vault_values)
     }
 
-    /// Create a new agent loop with an **externally created** 'MemoryStore'.
-    ///
-    /// Uses **PersistentContext** for full session persistence and compression.
-    /// Use this when the 'MemoryStore' must be shared with other components.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace bootstrap files exist but cannot be read.
-    pub async fn with_memory_store(
-        provider: Arc<dyn LlmProvider>,
-        workspace: PathBuf,
-        config: AgentConfig,
-        tools: ToolRegistry,
-        memory_store: Arc<MemoryStore>,
-    ) -> Result<Self, AgentError> {
-        Self::with_memory_store_and_pricing(provider, workspace, config, tools, memory_store, None)
-            .await
-    }
-
     /// Create a new agent loop with MemoryStore and pricing configuration.
     ///
     /// Uses **PersistentContext** for full session persistence and compression.
@@ -465,12 +455,12 @@ impl AgentLoop {
     ///
     /// Executes the shared steps: BeforeRequest hook, history load/save,
     /// prompt assembly, AfterHistory/BeforeLLM hooks, vault value extraction.
-    /// Returns `PipelineState` with `abort_message` set if the request was aborted.
+    /// Returns `PipelineOutcome::Aborted` if the BeforeRequest hook aborts.
     async fn prepare_pipeline(
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<PipelineState, AgentError> {
+    ) -> Result<PipelineOutcome, AgentError> {
         let session_key_str = session_key.to_string();
 
         // ── 1. BeforeRequest hooks (can modify input or abort) ─────
@@ -490,13 +480,7 @@ impl AgentLoop {
             .await?
         {
             HookAction::Abort(msg) => {
-                return Ok(PipelineState {
-                    session_key_str,
-                    content: String::new(),
-                    messages: vec![],
-                    local_vault_values: vec![],
-                    abort_message: Some(msg),
-                });
+                return Ok(PipelineOutcome::Aborted(msg));
             }
             HookAction::Continue => {}
         }
@@ -566,13 +550,12 @@ impl AgentLoop {
 
         let local_vault_values = self.vault_values.read().await.clone();
 
-        Ok(PipelineState {
+        Ok(PipelineOutcome::Ready(PipelineState {
             session_key_str,
             content,
             messages,
             local_vault_values,
-            abort_message: None,
-        })
+        }))
     }
 
     /// Process a message and return response.
@@ -583,16 +566,19 @@ impl AgentLoop {
     ) -> Result<AgentResponse, AgentError> {
         let state = self.prepare_pipeline(content, session_key).await?;
 
-        if let Some(msg) = state.abort_message {
-            return Ok(AgentResponse {
-                content: msg,
-                reasoning_content: None,
-                tools_used: vec![],
-                model: Some(self.config.model.clone()),
-                token_usage: None,
-                cost: 0.0,
-            });
-        }
+        let state = match state {
+            PipelineOutcome::Aborted(msg) => {
+                return Ok(AgentResponse {
+                    content: msg,
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(self.config.model.clone()),
+                    token_usage: None,
+                    cost: 0.0,
+                });
+            }
+            PipelineOutcome::Ready(s) => s,
+        };
 
         let model = self.config.model.clone();
         let result = self
@@ -629,24 +615,27 @@ impl AgentLoop {
         ),
         AgentError,
     > {
-        let state = self.prepare_pipeline(content, session_key).await?;
+        let outcome = self.prepare_pipeline(content, session_key).await?;
 
         // Handle abort — return closed channel + immediate response
-        if let Some(msg) = state.abort_message {
-            let (_tx, rx) = tokio::sync::mpsc::channel(1);
-            let model = self.config.model.clone();
-            let handle = tokio::spawn(async move {
-                Ok(AgentResponse {
-                    content: msg,
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(model),
-                    token_usage: None,
-                    cost: 0.0,
-                })
-            });
-            return Ok((rx, handle));
-        }
+        let state = match outcome {
+            PipelineOutcome::Aborted(msg) => {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                let model = self.config.model.clone();
+                let handle = tokio::spawn(async move {
+                    Ok(AgentResponse {
+                        content: msg,
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        model: Some(model),
+                        token_usage: None,
+                        cost: 0.0,
+                    })
+                });
+                return Ok((rx, handle));
+            }
+            PipelineOutcome::Ready(s) => s,
+        };
 
         // Clone Arc fields for the spawned task
         let provider = self.provider.clone();
@@ -894,6 +883,41 @@ impl AgentLoop {
     }
 }
 
+// ── Stream Event Conversion ──────────────────────────────────────────────────
+
+/// Convert an engine StreamEvent to a bus StreamEvent.
+///
+/// Extracted as a standalone function to keep the spawned task flat
+/// and avoid exceeding the 3-layer indentation rule.
+fn convert_stream_event(
+    event: crate::agent::stream::StreamEvent,
+) -> gasket_bus::StreamEvent {
+    use crate::agent::stream::StreamEvent as AgentStreamEvent;
+    use gasket_bus::StreamEvent as BusStreamEvent;
+
+    match event {
+        AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
+        AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
+        AgentStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
+            name,
+            arguments: arguments.unwrap_or_default(),
+        },
+        AgentStreamEvent::ToolEnd { name, output } => BusStreamEvent::ToolEnd { name, output },
+        AgentStreamEvent::Done => BusStreamEvent::Done,
+        AgentStreamEvent::TokenStats {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost: _,
+            currency: _,
+        } => BusStreamEvent::TokenStats {
+            prompt: input_tokens,
+            completion: output_tokens,
+            total: total_tokens,
+        },
+    }
+}
+
 // ── MessageHandler Implementation ───────────────────────────────────────────
 
 #[async_trait::async_trait]
@@ -938,35 +962,8 @@ impl gasket_bus::MessageHandler for AgentLoop {
 
         // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
-            use crate::agent::stream::StreamEvent as AgentStreamEvent;
-            use gasket_bus::StreamEvent as BusStreamEvent;
-
             while let Some(event) = agent_event_rx.recv().await {
-                let bus_event = match event {
-                    AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
-                    AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
-                    AgentStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
-                        name,
-                        arguments: arguments.unwrap_or_default(),
-                    },
-                    AgentStreamEvent::ToolEnd { name, output } => {
-                        BusStreamEvent::ToolEnd { name, output }
-                    }
-                    AgentStreamEvent::Done => BusStreamEvent::Done,
-                    AgentStreamEvent::TokenStats {
-                        input_tokens,
-                        output_tokens,
-                        total_tokens,
-                        cost: _,
-                        currency: _,
-                    } => BusStreamEvent::TokenStats {
-                        prompt: input_tokens,
-                        completion: output_tokens,
-                        total: total_tokens,
-                    },
-                };
-
-                if event_tx.send(bus_event).await.is_err() {
+                if event_tx.send(convert_stream_event(event)).await.is_err() {
                     break;
                 }
             }
