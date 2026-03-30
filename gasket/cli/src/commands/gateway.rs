@@ -1,5 +1,6 @@
 //! Gateway 命令实现
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -571,10 +572,10 @@ fn start_dingtalk_channel(
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(
     bus: &Arc<gasket_core::bus::MessageBus>,
-    workspace: &std::path::PathBuf,
+    workspace: &Path,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
-    let heartbeat = gasket_core::heartbeat::HeartbeatService::new(workspace.clone());
+    let heartbeat = gasket_core::heartbeat::HeartbeatService::new(workspace.to_path_buf());
     let bus_for_heartbeat = bus.clone();
     tasks.push(tokio::spawn(async move {
         heartbeat
