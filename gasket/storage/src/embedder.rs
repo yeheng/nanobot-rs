@@ -221,7 +221,7 @@ impl TextEmbedder {
     /// # Example
     ///
     /// ```no_run
-    /// use gasket_semantic::{TextEmbedder, EmbeddingConfig};
+    /// use gasket_storage::{TextEmbedder, EmbeddingConfig};
     ///
     /// let config = EmbeddingConfig {
     ///     model_name: "BAAI/bge-base-en-v1.5".to_string(),
