@@ -460,7 +460,7 @@ mod tests {
             "content": "Hello, World!"
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
 
         // Verify file was written
@@ -487,7 +487,7 @@ mod tests {
             "instruction": "Replace World with Rust"
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
 
         // Verify edit
@@ -513,7 +513,7 @@ mod tests {
             "instruction": "test"
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
     }
 
@@ -526,7 +526,7 @@ mod tests {
             "path": temp_dir.to_str().unwrap()
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
     }
 
@@ -552,7 +552,7 @@ mod tests {
             "limit": 3
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
+        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
         assert!(result.contains("Line 2"));
         assert!(result.contains("Line 3"));
         assert!(result.contains("Line 4"));
@@ -586,7 +586,7 @@ mod tests {
                 "absolute_path": symlink_path.to_str().unwrap()
             });
 
-            let result = tool.execute(args, &ToolContext::empty()).await;
+            let result = tool.execute(args, &ToolContext::default()).await;
             assert!(
                 result.is_err(),
                 "Should reject symlink pointing outside workspace"
@@ -611,7 +611,7 @@ mod tests {
                 "absolute_path": external_canonical.to_str().unwrap()
             });
 
-            let result = tool.execute(args, &ToolContext::empty()).await;
+            let result = tool.execute(args, &ToolContext::default()).await;
             assert!(result.is_err(), "Should reject path outside workspace");
         }
 
@@ -628,7 +628,7 @@ mod tests {
                 "absolute_path": test_file.to_str().unwrap()
             });
 
-            let result = tool.execute(args, &ToolContext::empty()).await;
+            let result = tool.execute(args, &ToolContext::default()).await;
             assert!(result.is_ok(), "Should allow legitimate path");
             assert_eq!(result.unwrap(), "legitimate content");
         }

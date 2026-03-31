@@ -91,64 +91,19 @@ impl std::fmt::Debug for ToolContext {
 }
 
 impl ToolContext {
-    /// Create an empty context (for non-streaming or test scenarios).
-    pub fn empty() -> Self {
-        Self::default()
+    pub fn session_key(mut self, key: SessionKey) -> Self {
+        self.session_key = Some(key);
+        self
     }
 
-    /// Create a context with session key only.
-    pub fn with_session_key(session_key: SessionKey) -> Self {
-        Self {
-            session_key: Some(session_key),
-            outbound_tx: None,
-            spawner: None,
-        }
+    pub fn outbound_tx(mut self, tx: tokio::sync::mpsc::Sender<OutboundMessage>) -> Self {
+        self.outbound_tx = Some(tx);
+        self
     }
 
-    /// Create a context with both session key and outbound channel.
-    pub fn new(
-        session_key: SessionKey,
-        outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
-    ) -> Self {
-        Self {
-            session_key: Some(session_key),
-            outbound_tx: Some(outbound_tx),
-            spawner: None,
-        }
-    }
-
-    /// Create a context with spawner only.
-    pub fn with_spawner(spawner: std::sync::Arc<dyn SubagentSpawner>) -> Self {
-        Self {
-            session_key: None,
-            outbound_tx: None,
-            spawner: Some(spawner),
-        }
-    }
-
-    /// Create a context with session key and spawner.
-    pub fn with_session_and_spawner(
-        session_key: SessionKey,
-        spawner: std::sync::Arc<dyn SubagentSpawner>,
-    ) -> Self {
-        Self {
-            session_key: Some(session_key),
-            outbound_tx: None,
-            spawner: Some(spawner),
-        }
-    }
-
-    /// Create a complete context with all fields set.
-    pub fn complete(
-        session_key: SessionKey,
-        outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
-        spawner: std::sync::Arc<dyn SubagentSpawner>,
-    ) -> Self {
-        Self {
-            session_key: Some(session_key),
-            outbound_tx: Some(outbound_tx),
-            spawner: Some(spawner),
-        }
+    pub fn spawner(mut self, s: std::sync::Arc<dyn SubagentSpawner>) -> Self {
+        self.spawner = Some(s);
+        self
     }
 }
 

@@ -123,7 +123,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
-    let agent = AgentLoop::with_memory_store_and_pricing(
+    let agent = AgentLoop::with_pricing(
         provider_info.provider,
         workspace,
         agent_config,

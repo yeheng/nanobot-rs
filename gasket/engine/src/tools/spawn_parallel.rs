@@ -223,7 +223,7 @@ mod tests {
             "tasks": []
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
     }
 
@@ -235,7 +235,7 @@ mod tests {
             "tasks": tasks
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
     }
 
@@ -246,7 +246,7 @@ mod tests {
             "tasks": ["Task 1"]
         });
 
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No spawner"));
     }

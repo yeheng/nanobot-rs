@@ -155,7 +155,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("call_1", "echo", serde_json::json!({"msg": "hi"}));
-        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
+        let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
         assert_eq!(result.tool_call_id, "call_1");
         assert_eq!(result.tool_name, "echo");
@@ -168,7 +168,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("call_2", "fail", serde_json::json!({}));
-        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
+        let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
         assert!(result.output.starts_with("Error:"));
     }
@@ -183,7 +183,7 @@ mod tests {
             "echo",
             serde_json::json!({"long": "abcdefghijklmnopqrstuvwxyz"}),
         );
-        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
+        let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
         assert!(result.output.len() <= 10 + "\n\n[... truncated]".len());
         assert!(result.output.ends_with("[... truncated]"));
@@ -195,7 +195,7 @@ mod tests {
         let executor = ToolExecutor::new(&reg, 0);
 
         let tc = ToolCall::new("c1", "nonexistent", serde_json::json!({}));
-        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
+        let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
         assert!(result.output.starts_with("Error:"));
     }
@@ -214,7 +214,7 @@ mod tests {
             // Each Chinese character is 3 bytes in UTF-8
             serde_json::json!({"text": "你好世界测试数据更多内容"}),
         );
-        let result = executor.execute_one(&tc, &ToolContext::empty()).await;
+        let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
         // Should not panic and should end with truncated marker
         assert!(result.output.ends_with("[... truncated]"));

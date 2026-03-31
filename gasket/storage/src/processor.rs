@@ -153,7 +153,6 @@ mod tests {
         SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test".into(),
-            parent_id: None,
             event_type,
             content: content.to_string().into(),
             embedding: None,

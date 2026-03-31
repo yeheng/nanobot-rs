@@ -180,7 +180,7 @@ pub async fn cmd_gateway() -> Result<()> {
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
     let agent = Arc::new(
-        AgentLoop::with_memory_store_and_pricing(
+        AgentLoop::with_pricing(
             provider_info.provider,
             workspace.clone(),
             agent_config,

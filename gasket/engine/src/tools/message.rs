@@ -132,7 +132,7 @@ mod tests {
             "channel": "telegram"
             // Missing chat_id and content
         });
-        let result = tool.execute(params, &ToolContext::empty()).await;
+        let result = tool.execute(params, &ToolContext::default()).await;
         assert!(result.is_err());
     }
 
@@ -144,7 +144,7 @@ mod tests {
             "chat_id": "12345",
             "content": "Hello!"
         });
-        let result = tool.execute(params, &ToolContext::empty()).await;
+        let result = tool.execute(params, &ToolContext::default()).await;
         assert!(result.is_ok());
 
         // Verify the message was routed to the outbound channel

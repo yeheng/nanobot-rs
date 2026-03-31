@@ -229,17 +229,6 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    /// Create a new agent loop with a pre-built tool registry.
-    ///
-    /// Uses **PersistentContext** for full session persistence and compression.
-    ///
-    /// Loads system prompt and skills context **once** at initialization.
-    /// Logging is inlined directly — no hook indirection.
-    /// External shell hooks are loaded from '~/.gasket/hooks/'.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace bootstrap files exist but cannot be read.
     pub async fn new(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
@@ -247,16 +236,16 @@ impl AgentLoop {
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let memory_store = Arc::new(MemoryStore::new().await);
-        Self::with_services(provider, workspace, config, tools, memory_store).await
+        Self::with_services(provider, workspace, config, tools, memory_store, None).await
     }
 
-    /// Internal helper: create AgentLoop with pre-created services.
     async fn with_services(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
         memory_store: Arc<MemoryStore>,
+        pricing: Option<crate::token_tracker::ModelPricing>,
     ) -> Result<Self, AgentError> {
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
@@ -279,14 +268,32 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
-            pricing: None,
+            pricing,
             vault_values,
             spawner: None,
             compression_handle,
         })
     }
 
-    /// Load system prompt and skills context from workspace.
+    pub async fn with_pricing(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        memory_store: Arc<MemoryStore>,
+        pricing: Option<crate::token_tracker::ModelPricing>,
+    ) -> Result<Self, AgentError> {
+        Self::with_services(
+            provider,
+            workspace,
+            config,
+            Arc::new(tools),
+            memory_store,
+            pricing,
+        )
+        .await
+    }
+
     async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
         let system_prompt =
             prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
@@ -400,69 +407,22 @@ impl AgentLoop {
         crate::agent::compression::CompressionActor::spawn(event_store, summarizer, embedder)
     }
 
-    /// Create a new agent loop with MemoryStore and pricing configuration.
-    ///
-    /// Uses **PersistentContext** for full session persistence and compression.
-    pub async fn with_memory_store_and_pricing(
-        provider: Arc<dyn LlmProvider>,
-        workspace: PathBuf,
-        config: AgentConfig,
-        tools: ToolRegistry,
-        memory_store: Arc<MemoryStore>,
-        pricing: Option<crate::token_tracker::ModelPricing>,
-    ) -> Result<Self, AgentError> {
-        let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
-
-        let AgentInitState {
-            context,
-            system_prompt,
-            skills_context,
-            hooks,
-            vault_values,
-            compression_handle,
-        } = Self::build_internal(event_store, &workspace).await?;
-
-        Ok(Self {
-            provider,
-            tools: Arc::new(tools),
-            config,
-            workspace,
-            history_config: HistoryConfig::default(),
-            context,
-            system_prompt,
-            skills_context,
-            hooks,
-            pricing,
-            vault_values,
-            spawner: None,
-            compression_handle,
-        })
-    }
-
-    /// Create a new agent loop for subagents without default hooks or services.
-    ///
-    /// Uses **AgentContext::Stateless** — no persistence, all operations are no-ops.
-    /// System prompt is empty by default; use 'set_system_prompt()' to configure.
-    /// No hooks for subagents by default; use 'with_hooks()' to customize.
-    pub fn builder(
+    pub fn for_subagent(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
-        // Use stateless context for subagents
-        let context = AgentContext::Stateless;
-
         Ok(Self {
             provider,
             tools,
             config,
             workspace,
             history_config: HistoryConfig::default(),
-            context,
+            context: AgentContext::Stateless,
             system_prompt: String::new(),
             skills_context: None,
-            hooks: HookRegistry::empty(), // Empty hooks for subagents
+            hooks: HookRegistry::empty(),
             pricing: None,
             vault_values: Arc::new(RwLock::new(Vec::new())),
             spawner: None,
@@ -583,7 +543,6 @@ impl AgentLoop {
         let user_event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: session_key_str.clone(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: content.clone(),
             embedding: None,
@@ -829,7 +788,6 @@ async fn finalize_response(
     let assistant_event = SessionEvent {
         id: uuid::Uuid::now_v7(),
         session_key: session_key_str.to_string(),
-        parent_id: None,
         event_type: EventType::AssistantMessage,
         content: history_content,
         embedding: None,

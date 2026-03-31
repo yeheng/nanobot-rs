@@ -397,9 +397,9 @@ impl<'a> AgentExecutor<'a> {
 
         // Create context with spawner if available (needed for spawn/spawn_parallel tools)
         let ctx = if let Some(ref spawner) = self.spawner {
-            ToolContext::with_spawner(spawner.clone())
+            ToolContext::default().spawner(spawner.clone())
         } else {
-            ToolContext::empty()
+            ToolContext::default()
         };
 
         // Execute tool calls in parallel

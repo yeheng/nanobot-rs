@@ -284,7 +284,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             serde_json::json!({"command": "echo hi"}),
-            &ToolContext::empty(),
+            &ToolContext::default(),
         ));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("disabled"));
@@ -296,7 +296,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             serde_json::json!({"command": "echo hi"}),
-            &ToolContext::empty(),
+            &ToolContext::default(),
         ));
         assert!(result.is_ok());
         assert!(result.unwrap().contains("hi"));
@@ -308,7 +308,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             serde_json::json!({"command": "ls -la"}),
-            &ToolContext::empty(),
+            &ToolContext::default(),
         ));
         assert!(result.is_ok());
     }
@@ -320,7 +320,7 @@ mod tests {
             "command": "sleep 10",
             "description": "should timeout"
         });
-        let result = tool.execute(args, &ToolContext::empty()).await;
+        let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("timed out"));
@@ -348,7 +348,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             serde_json::json!({"command": "rm -rf /"}),
-            &ToolContext::empty(),
+            &ToolContext::default(),
         ));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("denied"));
@@ -373,7 +373,7 @@ mod tests {
 
         for cmd in injection_attempts {
             let result = rt
-                .block_on(tool.execute(serde_json::json!({"command": cmd}), &ToolContext::empty()));
+                .block_on(tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()));
             assert!(
                 result.is_err(),
                 "Command '{}' should have been blocked",

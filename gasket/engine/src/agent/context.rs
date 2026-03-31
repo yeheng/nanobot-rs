@@ -129,7 +129,6 @@ impl AgentContext {
     pub async fn load_session(&self, key: &SessionKey) -> Session {
         match self {
             Self::Persistent(ctx) => {
-                // Load events from EventStore and reconstruct session state
                 let events = ctx
                     .event_store
                     .get_branch_history(&key.to_string(), "main")
@@ -139,7 +138,9 @@ impl AgentContext {
                         Vec::new()
                     });
 
-                Session::from_events(key.to_string(), events)
+                let mut session = Session::new(key.to_string());
+                session.update_from_events(&events);
+                session
             }
             Self::Stateless => Session::new(key.to_string()),
         }
@@ -331,22 +332,13 @@ mod tests {
             CREATE TABLE session_events (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
-                parent_id TEXT,
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,
                 branch TEXT DEFAULT 'main',
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
-                tool_name TEXT,
-                tool_arguments TEXT,
-                tool_call_id TEXT,
-                is_error INTEGER DEFAULT 0,
-                summary_type TEXT,
-                summary_topic TEXT,
-                covered_events TEXT,
-                merge_source TEXT,
-                merge_head TEXT,
+                event_data TEXT,
                 extra TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL
             )
@@ -379,7 +371,6 @@ mod tests {
         let event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "test".into(),
             embedding: None,
@@ -438,7 +429,6 @@ mod tests {
         let event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Hello, world!".into(),
             embedding: None,
@@ -462,7 +452,6 @@ mod tests {
         let e1 = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Hello".into(),
             embedding: None,
@@ -477,7 +466,6 @@ mod tests {
         let e2 = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: Some(e1.id),
             event_type: EventType::AssistantMessage,
             content: "Hi there!".into(),
             embedding: None,
@@ -508,7 +496,6 @@ mod tests {
         let main_event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Main branch message".into(),
             embedding: None,
@@ -524,7 +511,6 @@ mod tests {
         let feature_event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Feature branch message".into(),
             embedding: None,
@@ -589,7 +575,6 @@ mod tests {
         let event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Hello".into(),
             embedding: None,
@@ -618,7 +603,6 @@ mod tests {
         let event = SessionEvent {
             id: uuid::Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Hello".into(),
             embedding: None,

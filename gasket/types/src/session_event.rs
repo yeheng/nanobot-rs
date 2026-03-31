@@ -2,7 +2,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Session event - immutable fact record.
@@ -13,9 +12,6 @@ pub struct SessionEvent {
 
     /// Session this event belongs to
     pub session_key: String,
-
-    /// Parent event ID (supports branching and version control)
-    pub parent_id: Option<Uuid>,
 
     /// Event type
     pub event_type: EventType,
@@ -60,41 +56,12 @@ pub enum EventType {
         summary_type: SummaryType,
         covered_event_ids: Vec<Uuid>,
     },
-
-    /// Branch merge
-    Merge {
-        source_branch: String,
-        source_head: Uuid,
-    },
-}
-
-/// Event type category (for query filtering).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EventTypeCategory {
-    UserMessage,
-    AssistantMessage,
-    ToolCall,
-    ToolResult,
-    Summary,
-    Merge,
 }
 
 impl EventType {
     /// Check if this is a summary type event.
     pub fn is_summary(&self) -> bool {
         matches!(self, EventType::Summary { .. })
-    }
-
-    /// Get the event type category.
-    pub fn category(&self) -> EventTypeCategory {
-        match self {
-            EventType::UserMessage => EventTypeCategory::UserMessage,
-            EventType::AssistantMessage => EventTypeCategory::AssistantMessage,
-            EventType::ToolCall { .. } => EventTypeCategory::ToolCall,
-            EventType::ToolResult { .. } => EventTypeCategory::ToolResult,
-            EventType::Summary { .. } => EventTypeCategory::Summary,
-            EventType::Merge { .. } => EventTypeCategory::Merge,
-        }
     }
 }
 
@@ -142,12 +109,6 @@ pub struct Session {
     /// Session identifier
     pub key: String,
 
-    /// Current active branch
-    pub current_branch: String,
-
-    /// All branch pointers (branch_name -> latest_event_id)
-    pub branches: HashMap<String, Uuid>,
-
     /// Session metadata
     pub metadata: SessionMetadata,
 }
@@ -178,8 +139,6 @@ impl Session {
         let now = Utc::now();
         Self {
             key,
-            current_branch: "main".to_string(),
-            branches: HashMap::new(),
             metadata: SessionMetadata {
                 created_at: now,
                 updated_at: now,
@@ -193,49 +152,14 @@ impl Session {
         Self::new(key.to_string())
     }
 
-    /// Get branch head event ID.
-    pub fn get_branch_head(&self, branch: &str) -> Option<Uuid> {
-        self.branches.get(branch).copied()
-    }
-
-    /// Get main branch head event ID.
-    pub fn main_head(&self) -> Option<Uuid> {
-        self.get_branch_head("main")
-    }
-
-    /// Update session state from events loaded from EventStore.
-    ///
-    /// This method reconstructs session metadata by:
-    /// 1. Updating branch pointers from event metadata
-    /// 2. Updating session metadata (total_events, total_tokens)
-    ///
-    /// Note: Events are NOT stored in Session - they remain in EventStore.
-    /// This method only updates the aggregate metadata.
     pub fn update_from_events(&mut self, events: &[SessionEvent]) {
         for event in events {
-            // Update branch pointer
-            if let Some(ref branch) = event.metadata.branch {
-                self.branches.insert(branch.clone(), event.id);
-            }
-
-            // Update metadata
             self.metadata.total_events += 1;
             if let Some(ref usage) = event.metadata.token_usage {
                 self.metadata.total_tokens += (usage.input_tokens + usage.output_tokens) as u64;
             }
         }
-
-        // Update timestamp
         self.metadata.updated_at = Utc::now();
-    }
-
-    /// Create a session from a list of events.
-    ///
-    /// Convenience constructor combining `new()` and `update_from_events()`.
-    pub fn from_events(key: impl Into<String>, events: Vec<SessionEvent>) -> Self {
-        let mut session = Self::new(key);
-        session.update_from_events(&events);
-        session
     }
 }
 
@@ -247,7 +171,6 @@ mod tests {
     fn test_event_type_serialization() {
         let event_type = EventType::UserMessage;
         let json = serde_json::to_string(&event_type).unwrap();
-        // Unit variants serialize as simple strings in serde
         assert!(json.contains("UserMessage"));
     }
 
@@ -256,7 +179,6 @@ mod tests {
         let event = SessionEvent {
             id: Uuid::now_v7(),
             session_key: "test:session".into(),
-            parent_id: None,
             event_type: EventType::UserMessage,
             content: "Hello".into(),
             embedding: None,
@@ -270,36 +192,8 @@ mod tests {
     }
 
     #[test]
-    fn test_event_type_category() {
-        assert_eq!(
-            EventType::UserMessage.category(),
-            EventTypeCategory::UserMessage
-        );
-        assert_eq!(
-            EventType::ToolCall {
-                tool_name: "test".into(),
-                arguments: serde_json::json!({})
-            }
-            .category(),
-            EventTypeCategory::ToolCall
-        );
-    }
-
-    #[test]
     fn test_session_new() {
         let session = Session::new("test:session");
         assert_eq!(session.key, "test:session");
-        assert_eq!(session.current_branch, "main");
-        assert!(session.branches.is_empty());
-    }
-
-    #[test]
-    fn test_session_branch_head() {
-        let mut session = Session::new("test:session");
-        let event_id = Uuid::now_v7();
-        session.branches.insert("main".into(), event_id);
-
-        assert_eq!(session.main_head(), Some(event_id));
-        assert_eq!(session.get_branch_head("nonexistent"), None);
     }
 }

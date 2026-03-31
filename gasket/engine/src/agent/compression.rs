@@ -177,7 +177,6 @@ impl CompressionActor {
         let summary_event = SessionEvent {
             id: Uuid::now_v7(),
             session_key: task.session_key,
-            parent_id: events.last().map(|e| e.id),
             event_type: EventType::Summary {
                 summary_type: task.compression_type,
                 covered_event_ids: task.evicted_events,

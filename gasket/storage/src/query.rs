@@ -20,8 +20,7 @@ pub struct HistoryQuery {
     /// 时间范围
     pub time_range: Option<TimeRange>,
 
-    /// 事件类型过滤 (使用 category)
-    pub event_categories: Vec<gasket_types::EventTypeCategory>,
+    pub event_types: Vec<String>,
 
     /// 语义搜索
     pub semantic_query: Option<SemanticQuery>,
@@ -70,8 +69,8 @@ impl HistoryQueryBuilder {
         self
     }
 
-    pub fn categories(mut self, cats: Vec<gasket_types::EventTypeCategory>) -> Self {
-        self.query.event_categories = cats;
+    pub fn event_types(mut self, types: Vec<String>) -> Self {
+        self.query.event_types = types;
         self
     }
 
@@ -164,14 +163,14 @@ mod tests {
     }
 
     #[test]
-    fn test_query_builder_with_categories() {
+    fn test_query_builder_with_event_types() {
         let query = HistoryQuery::builder("test:session")
-            .categories(vec![
-                gasket_types::EventTypeCategory::UserMessage,
-                gasket_types::EventTypeCategory::AssistantMessage,
+            .event_types(vec![
+                "user_message".to_string(),
+                "assistant_message".to_string(),
             ])
             .build();
 
-        assert_eq!(query.event_categories.len(), 2);
+        assert_eq!(query.event_types.len(), 2);
     }
 }

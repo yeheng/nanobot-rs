@@ -388,22 +388,13 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS session_events (
                 id              TEXT PRIMARY KEY,
                 session_key     TEXT NOT NULL,
-                parent_id       TEXT,
                 event_type      TEXT NOT NULL,
                 content         TEXT NOT NULL,
                 embedding       BLOB,
                 branch          TEXT DEFAULT 'main',
                 tools_used      TEXT DEFAULT '[]',
                 token_usage     TEXT,
-                tool_name       TEXT,
-                tool_arguments  TEXT,
-                tool_call_id    TEXT,
-                is_error        INTEGER DEFAULT 0,
-                summary_type    TEXT,
-                summary_topic   TEXT,
-                covered_events  TEXT,
-                merge_source    TEXT,
-                merge_head      TEXT,
+                event_data      TEXT,
                 extra           TEXT DEFAULT '{}',
                 created_at      TEXT NOT NULL,
                 FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
@@ -419,10 +410,6 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_parent ON session_events(parent_id)")
-            .execute(&self.pool)
-            .await?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
             .execute(&self.pool)
