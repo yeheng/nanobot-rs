@@ -23,12 +23,14 @@
 //!   Hooks run concurrently with readonly access, fire-and-forget.
 
 mod external;
+#[cfg(feature = "local-embedding")]
 mod history;
 mod registry;
 mod types;
 mod vault;
 
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
+#[cfg(feature = "local-embedding")]
 pub use history::HistoryRecallHook;
 pub use registry::{HookBuilder, HookRegistry, PipelineHook};
 pub use types::{

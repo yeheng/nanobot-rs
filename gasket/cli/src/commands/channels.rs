@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use gasket_core::config::load_config;
+use gasket_engine::config::load_config;
 
 /// Show status of all configured channels
 #[allow(unused_variables)]

@@ -1,11 +1,10 @@
-//! SQLite-backed storage for gasket machine-state persistence.
+//! SQLite-backed storage, history processing, and semantic embedding for gasket.
 //!
-//! This crate provides persistent storage for machine-state:
-//! - Sessions and conversation messages
-//! - Session summaries
-//! - Cron jobs
-//! - Key-value store
-//! - Session embeddings (for semantic history recall)
+//! This crate provides:
+//! - **Persistence:** Sessions, conversation messages, summaries, cron jobs, key-value store
+//! - **History:** Token-budget-aware history truncation and multi-dimensional retrieval
+//! - **Search:** Full-text search types and semantic embedding
+//! - **Vector math:** Cosine similarity and top-K retrieval
 //!
 //! **Note:** Explicit long-term memory (facts, preferences, decisions) lives
 //! exclusively in `~/.gasket/memory/*.md` files. SQLite only stores
@@ -15,6 +14,16 @@ mod cron;
 mod event_store;
 mod kv;
 
+// ── Merged from gasket-history ──
+pub mod processor;
+pub mod query;
+pub mod search;
+
+// ── Merged from gasket-semantic ──
+#[cfg(feature = "local-embedding")]
+mod embedder;
+mod vector_math;
+
 use std::path::PathBuf;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -23,9 +32,25 @@ use tracing::debug;
 pub use cron::CronJobRow;
 pub use event_store::{EventStore, StoreError};
 
+// ── History re-exports ──
+pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
+pub use query::{
+    HistoryQuery, HistoryQueryBuilder, HistoryResult, HistoryRetriever, QueryOrder, ResultMeta,
+    SemanticQuery, TimeRange,
+};
+
+// ── Semantic re-exports (always available) ──
+pub use vector_math::{cosine_similarity, top_k_similar};
+
+// ── Semantic re-exports (feature-gated) ──
+#[cfg(feature = "local-embedding")]
+pub use embedder::{EmbeddingConfig, TextEmbedder, DEFAULT_CACHE_DIR, DEFAULT_MODEL};
+#[cfg(feature = "local-embedding")]
+pub use vector_math::{bytes_to_embedding, embedding_to_bytes};
+
 // Re-export sqlx types for consumers that need direct pool access
 pub use sqlx::sqlite::SqliteRow;
-pub use sqlx::{query, query_as, Row, SqlitePool};
+pub use sqlx::{query as sql_query, query_as, Row, SqlitePool};
 
 /// Get the default configuration directory (`~/.gasket`).
 pub fn config_dir() -> PathBuf {

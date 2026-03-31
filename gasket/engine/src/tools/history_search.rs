@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use gasket_storage::{query, Row, SqliteRow};
+use gasket_storage::{sql_query, Row, SqliteRow};
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
@@ -185,7 +185,7 @@ impl HistorySearchTool {
         debug!("history_search: executing SQL: {}", sql);
 
         // Build query
-        let mut query = query(&sql);
+        let mut query = sql_query(&sql);
 
         // Bind parameters
         if let Some(ref q) = parsed.query {

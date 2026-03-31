@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use dialoguer::Password;
 
-use gasket_core::vault::VaultStore;
+use gasket_engine::vault::VaultStore;
 use tracing::debug;
 
 /// Environment variable for vault password
@@ -297,7 +297,7 @@ pub async fn cmd_vault_import(file_path: String, merge: bool) -> Result<()> {
 
     let content = std::fs::read_to_string(&file_path).context("Failed to read import file")?;
 
-    let imported: gasket_core::vault::VaultFileV2 = serde_json::from_str(&content)
+    let imported: gasket_engine::vault::VaultFileV2 = serde_json::from_str(&content)
         .context("Failed to parse import file (expected v2 format)")?;
 
     let existing_count = store.len();

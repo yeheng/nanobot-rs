@@ -38,7 +38,7 @@ impl WorkspaceDownloader {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            target_dir: gasket_core::config::config_dir(),
+            target_dir: gasket_engine::config::config_dir(),
             overwrite_existing: false,
         }
     }

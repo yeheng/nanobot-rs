@@ -20,18 +20,18 @@ markdown = ["termimad"]
 telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 
 # Channels (for gateway mode)
-telegram = ["gasket-core/telegram"]
-discord = ["gasket-core/discord"]
-slack = ["gasket-core/slack"]
-email = ["gasket-core/email"]
-feishu = ["gasket-core/feishu"]
-dingtalk = ["gasket-core/dingtalk"]
-wecom = ["gasket-core/wecom"]
-all-channels = ["gasket-core/all-channels", "axum", "teloxide"]
+telegram = ["gasket-engine/telegram"]
+discord = ["gasket-engine/discord"]
+slack = ["gasket-engine/slack"]
+email = ["gasket-engine/email"]
+feishu = ["gasket-engine/feishu"]
+dingtalk = ["gasket-engine/dingtalk"]
+wecom = ["gasket-engine/wecom"]
+all-channels = ["gasket-engine/all-channels", "axum", "teloxide"]
 
 # Providers
-provider-gemini = ["gasket-core/provider-gemini"]
-provider-copilot = ["gasket-core/provider-copilot"]
+provider-gemini = ["gasket-engine/provider-gemini"]
+provider-copilot = ["gasket-engine/provider-copilot"]
 all-providers = ["provider-gemini", "provider-copilot"]
 
 # Workspace template download (now in CLI, not core)
@@ -41,7 +41,7 @@ workspace-download = ["dep:tar", "dep:flate2"]
 full = ["default", "all-channels", "telemetry"]
 
 [dependencies]
-gasket-core = { path = "../core" }
+gasket-engine = { path = "../engine" }
 gasket-sandbox = { path = "../sandbox" }
 
 # Async

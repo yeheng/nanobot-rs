@@ -1,9 +1,7 @@
-//! Configuration types
+//! Application-level configuration types
 //!
-//! This module re-exports configuration types.
-//!
-//! NOTE: The full Config struct and related types are deprecated and will be removed
-//! in a future version. Use the individual config types from their respective crates:
+//! NOTE: Many of these types are deprecated and will be removed in a future version.
+//! Use the individual config types from their respective crates:
 //! - Provider config: `gasket_providers::ProviderConfig`
 //! - Channel config: `gasket_channels::ChannelsConfig`
 //! - Tools config: `gasket_engine::ToolsConfig`
@@ -12,19 +10,14 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use gasket_engine::config_dir;
-pub use gasket_engine::ConfigValidationError;
-pub use gasket_engine::ModelPricing;
-pub use gasket_engine::{
-    CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
-    WebToolsConfig,
-};
+use crate::config_dir;
+use crate::error::ConfigValidationError;
+use crate::token_tracker::ModelPricing;
 
 // Re-export channel config types
-pub use gasket_channels::{
-    ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
-    TelegramConfig,
-};
+pub use gasket_channels::ChannelsConfig;
+// Re-export tools config
+use crate::config::ToolsConfig;
 
 /// Embedding configuration (simplified version for config file)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,9 +28,10 @@ pub struct EmbeddingConfig {
     pub cache_dir: Option<String>,
 }
 
-impl From<EmbeddingConfig> for gasket_semantic::EmbeddingConfig {
+#[cfg(feature = "local-embedding")]
+impl From<EmbeddingConfig> for gasket_storage::EmbeddingConfig {
     fn from(config: EmbeddingConfig) -> Self {
-        let mut result = gasket_semantic::EmbeddingConfig::default();
+        let mut result = gasket_storage::EmbeddingConfig::default();
         if !config.model_name.is_empty() {
             result.model_name = config.model_name;
         }
@@ -80,7 +74,6 @@ pub struct ProviderConfig {
 
 impl ProviderConfig {
     pub fn is_available(&self, _name: &str) -> bool {
-        // Local providers (ollama, lmstudio) don't need API key
         self.api_key.is_some()
             || self.api_base.contains("localhost")
             || self.api_base.contains("127.0.0.1")

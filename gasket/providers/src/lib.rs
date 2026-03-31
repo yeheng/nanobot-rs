@@ -27,11 +27,15 @@ pub enum ProviderError {
     ParseError(String),
     #[error("{0}")]
     Other(String),
+
+    /// Internal error preserving the full error chain
+    #[error(transparent)]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl From<anyhow::Error> for ProviderError {
     fn from(err: anyhow::Error) -> Self {
-        Self::Other(err.to_string())
+        Self::Internal(err.into())
     }
 }
 

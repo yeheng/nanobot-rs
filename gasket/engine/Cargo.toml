@@ -9,9 +9,7 @@ description = "Core execution engine for gasket"
 [dependencies]
 gasket-types = { path = "../types" }
 gasket-bus = { path = "../bus" }
-gasket-history = { path = "../history" }
 gasket-storage = { path = "../storage" }
-gasket-semantic = { path = "../semantic" }
 gasket-providers = { path = "../providers" }
 gasket-sandbox = { path = "../sandbox" }
 gasket-vault = { path = "../vault" }
@@ -50,6 +48,16 @@ smart-model-selection = []
 provider-gemini = ["gasket-providers/provider-gemini"]
 provider-copilot = ["gasket-providers/provider-copilot"]
 all-providers = ["gasket-providers/all-providers"]
+telegram = ["gasket-channels/telegram"]
+discord = ["gasket-channels/discord"]
+slack = ["gasket-channels/slack"]
+email = ["gasket-channels/email"]
+dingtalk = ["gasket-channels/dingtalk"]
+feishu = ["gasket-channels/feishu"]
+wecom = ["gasket-channels/wecom"]
+webhook = ["gasket-channels/webhook"]
+all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
+local-embedding = ["gasket-storage/local-embedding"]
 
 [dev-dependencies]
 tokio-test = "0.4"

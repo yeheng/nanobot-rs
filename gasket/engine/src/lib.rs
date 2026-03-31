@@ -20,6 +20,7 @@ pub mod bus_adapter;
 pub mod config;
 pub mod cron;
 pub mod error;
+pub mod heartbeat;
 pub mod hooks;
 pub mod search;
 pub mod skills;
@@ -77,8 +78,9 @@ pub use bus_adapter::EngineHandler;
 
 // ── Config ─────────────────────────────────────────────────
 pub use config::{
-    config_dir, CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig,
-    ToolsConfig, WebToolsConfig,
+    config_dir, load_config, CommandPolicyConfig, Config, ConfigLoader, EmbeddingConfig,
+    ExecToolConfig, ModelConfig, ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry,
+    ProviderType, ResourceLimitsConfig, SandboxConfig, ToolsConfig, WebToolsConfig,
 };
 
 // ── Cron ───────────────────────────────────────────────────
@@ -88,16 +90,18 @@ pub use cron::{CronJob, CronService};
 pub use error::{AgentError, ChannelError, ConfigValidationError, PipelineError, ProviderError};
 
 // ── Hooks ──────────────────────────────────────────────────
+#[cfg(feature = "local-embedding")]
+pub use hooks::HistoryRecallHook;
 pub use hooks::{
     ExecutionStrategy, ExternalHookInput, ExternalHookOutput, ExternalHookRunner,
-    ExternalShellHook, HistoryRecallHook, HookAction, HookBuilder, HookContext, HookPoint,
-    HookRegistry, MutableContext, PipelineHook, ReadonlyContext, ToolCallInfo, VaultHook,
+    ExternalShellHook, HookAction, HookBuilder, HookContext, HookPoint, HookRegistry,
+    MutableContext, PipelineHook, ReadonlyContext, ToolCallInfo, VaultHook,
 };
 
 // ── Search ─────────────────────────────────────────────────
-pub use search::{
-    bytes_to_embedding, cosine_similarity, embedding_to_bytes, top_k_similar, TextEmbedder,
-};
+#[cfg(feature = "local-embedding")]
+pub use search::{bytes_to_embedding, embedding_to_bytes, TextEmbedder};
+pub use search::{cosine_similarity, top_k_similar};
 
 // ── Skills ─────────────────────────────────────────────────
 pub use skills::{parse_skill_file, Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
@@ -111,8 +115,8 @@ pub use token_tracker::{
 // ── Tools ──────────────────────────────────────────────────
 pub use tools::{
     CronTool, EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool,
-    MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool,
-    WebSearchTool, WriteFileTool,
+    MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, SubagentSpawner, ToolRegistry,
+    WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 // ── Vault ──────────────────────────────────────────────────
@@ -122,3 +126,68 @@ pub use vault::{
     KdfParams, Placeholder, VaultCrypto, VaultEntryV2, VaultError, VaultFileV2, VaultInjector,
     VaultMetadata, VaultStore,
 };
+
+// ── Facade re-exports (merged from gasket-core) ─────────────
+
+// Bus
+pub mod bus {
+    pub use gasket_bus::*;
+}
+
+// Channels
+pub mod channels {
+    #[cfg(feature = "dingtalk")]
+    pub use gasket_channels::dingtalk;
+    #[cfg(feature = "discord")]
+    pub use gasket_channels::discord;
+    #[cfg(feature = "email")]
+    pub use gasket_channels::email;
+    #[cfg(feature = "feishu")]
+    pub use gasket_channels::feishu;
+    #[cfg(feature = "slack")]
+    pub use gasket_channels::slack;
+    #[cfg(feature = "telegram")]
+    pub use gasket_channels::telegram;
+    #[cfg(any(
+        feature = "webhook",
+        feature = "dingtalk",
+        feature = "feishu",
+        feature = "wecom"
+    ))]
+    pub use gasket_channels::webhook;
+    #[cfg(feature = "webhook")]
+    pub use gasket_channels::websocket;
+    #[cfg(feature = "wecom")]
+    pub use gasket_channels::wecom;
+    pub use gasket_channels::{
+        base, log_inbound, middleware, outbound, Channel, ChannelConfigError, ChannelType,
+        ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, InboundMessage,
+        InboundSender, MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry,
+        SessionKey, SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig,
+        TelegramConfig, WebSocketMessage,
+    };
+}
+
+// Providers
+pub mod providers {
+    pub use crate::config::app_config::ProviderRegistry;
+    #[cfg(feature = "provider-gemini")]
+    pub use gasket_providers::GeminiProvider;
+    pub use gasket_providers::{
+        build_http_client, parse_json_args, streaming, ChatMessage, ChatRequest, ChatResponse,
+        ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall,
+        FunctionDefinition, LlmProvider, MessageRole, ModelSpec, OpenAICompatibleProvider,
+        ProviderBuildError, ProviderConfig, ProviderResult, ThinkingConfig, ToolCall,
+        ToolCallDelta, ToolDefinition, Usage,
+    };
+    #[cfg(feature = "provider-copilot")]
+    pub use gasket_providers::{
+        CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
+    };
+}
+
+// Memory
+pub mod memory {
+    pub use crate::agent::MemoryStore;
+    pub use gasket_storage::{EventStore, SqliteStore, StoreError};
+}

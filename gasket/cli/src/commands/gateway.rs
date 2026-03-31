@@ -7,17 +7,17 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use tracing::info;
 
-use gasket_core::agent::memory::MemoryStore;
-use gasket_core::agent::{AgentLoop, SubagentManager};
+use gasket_engine::agent::memory::MemoryStore;
+use gasket_engine::agent::{AgentLoop, SubagentManager};
 #[allow(unused_imports)]
-use gasket_core::channels::Channel;
-use gasket_core::channels::OutboundSenderRegistry;
-use gasket_core::config::{load_config, ModelRegistry};
-use gasket_core::cron::CronService;
-use gasket_core::providers::ProviderRegistry;
-use gasket_core::token_tracker::ModelPricing;
-use gasket_core::tools::CronTool;
-use gasket_core::tools::{MessageTool, ToolMetadata};
+use gasket_engine::channels::Channel;
+use gasket_engine::channels::OutboundSenderRegistry;
+use gasket_engine::config::{load_config, ModelRegistry};
+use gasket_engine::cron::CronService;
+use gasket_engine::providers::ProviderRegistry;
+use gasket_engine::token_tracker::ModelPricing;
+use gasket_engine::tools::CronTool;
+use gasket_engine::tools::{MessageTool, ToolMetadata};
 
 use super::registry::CliModelResolver;
 
@@ -72,7 +72,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Create message bus — receivers are split out at creation time, no Mutex needed
     // Increased buffer size from 100 to 512 to handle burst traffic from parallel subagents
-    let (bus, inbound_rx, outbound_rx) = gasket_core::bus::MessageBus::new(512);
+    let (bus, inbound_rx, outbound_rx) = gasket_engine::bus::MessageBus::new(512);
     let bus = Arc::new(bus);
 
     // MemoryStore provides the underlying SqliteStore for session management
@@ -143,9 +143,9 @@ pub async fn cmd_gateway() -> Result<()> {
         workspace: workspace.clone(),
         subagent_manager: Some(subagent_manager.clone()),
         extra_tools: {
-            let mut ext: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)> = vec![(
+            let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
                 Box::new(MessageTool::new(bus.outbound_sender()))
-                    as Box<dyn gasket_core::tools::Tool>,
+                    as Box<dyn gasket_engine::tools::Tool>,
                 ToolMetadata {
                     display_name: "Send Message".to_string(),
                     category: "communication".to_string(),
@@ -156,7 +156,8 @@ pub async fn cmd_gateway() -> Result<()> {
             )];
 
             ext.push((
-                Box::new(CronTool::new(cron_service.clone())) as Box<dyn gasket_core::tools::Tool>,
+                Box::new(CronTool::new(cron_service.clone()))
+                    as Box<dyn gasket_engine::tools::Tool>,
                 ToolMetadata {
                     display_name: "Schedule Task".to_string(),
                     category: "system".to_string(),
@@ -189,7 +190,7 @@ pub async fn cmd_gateway() -> Result<()> {
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
-        .with_spawner(subagent_manager.clone() as Arc<dyn gasket_core::SubagentSpawner>),
+        .with_spawner(subagent_manager.clone() as Arc<dyn gasket_engine::SubagentSpawner>),
     );
 
     // Track running tasks
@@ -197,7 +198,7 @@ pub async fn cmd_gateway() -> Result<()> {
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     // Build InboundSender with auth/rate-limit middleware applied.
-    let inbound_sender = gasket_core::channels::InboundSender::new(bus.inbound_sender());
+    let inbound_sender = gasket_engine::channels::InboundSender::new(bus.inbound_sender());
     // TODO: wire up rate_limiter and auth_checker from config if needed
     #[allow(unused_variables)]
     let inbound_processor = inbound_sender.clone();
@@ -214,7 +215,7 @@ pub async fn cmd_gateway() -> Result<()> {
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
         let inbound_tx = bus.inbound_sender();
-        Arc::new(gasket_core::channels::websocket::WebSocketManager::new(
+        Arc::new(gasket_engine::channels::websocket::WebSocketManager::new(
             inbound_tx,
         ))
     };
@@ -227,7 +228,7 @@ pub async fn cmd_gateway() -> Result<()> {
                 .route(
                     "/ws",
                     axum::routing::get(
-                        gasket_core::channels::websocket::WebSocketManager::handle_connection,
+                        gasket_engine::channels::websocket::WebSocketManager::handle_connection,
                     ),
                 )
                 .with_state(manager);
@@ -251,7 +252,7 @@ pub async fn cmd_gateway() -> Result<()> {
     #[cfg(feature = "all-channels")]
     let ws_manager_for_router = Some(websocket_manager.clone());
 
-    tasks.push(tokio::spawn(gasket_core::bus::run_outbound_actor(
+    tasks.push(tokio::spawn(gasket_engine::bus::run_outbound_actor(
         outbound_rx,
         outbound_registry,
         #[cfg(feature = "all-channels")]
@@ -262,7 +263,7 @@ pub async fn cmd_gateway() -> Result<()> {
     {
         let outbound_tx = bus.outbound_sender();
         // AgentLoop implements MessageHandler, so we can pass it directly
-        tasks.push(tokio::spawn(gasket_core::bus::run_router_actor(
+        tasks.push(tokio::spawn(gasket_engine::bus::run_router_actor(
             inbound_rx,
             outbound_tx,
             agent.clone(),
@@ -311,8 +312,8 @@ pub async fn cmd_gateway() -> Result<()> {
 /// Returns a list of initialization errors for channels that failed to start.
 #[allow(unused_variables, clippy::ptr_arg)]
 fn start_channels(
-    config: &gasket_core::Config,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    config: &gasket_engine::Config,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Vec<String> {
     #[allow(unused_mut)]
@@ -394,18 +395,18 @@ fn start_channels(
 /// Start a single Telegram channel
 #[cfg(feature = "telegram")]
 fn start_telegram_channel(
-    telegram_config: &gasket_core::config::TelegramConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    telegram_config: &gasket_engine::config::TelegramConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Telegram channel", "✓".green());
 
-    let telegram_cfg = gasket_core::channels::telegram::TelegramConfig {
+    let telegram_cfg = gasket_engine::channels::telegram::TelegramConfig {
         token: telegram_config.token.clone(),
         allow_from: telegram_config.allow_from.clone(),
     };
 
-    let telegram_channel = gasket_core::channels::telegram::TelegramChannel::new(
+    let telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
         telegram_cfg,
         inbound_processor.raw_sender(),
     );
@@ -422,18 +423,18 @@ fn start_telegram_channel(
 /// Start a single Discord channel
 #[cfg(feature = "discord")]
 fn start_discord_channel(
-    discord_config: &gasket_core::config::DiscordConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    discord_config: &gasket_engine::config::DiscordConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Discord channel", "✓".green());
 
-    let discord_cfg = gasket_core::channels::discord::DiscordConfig {
+    let discord_cfg = gasket_engine::channels::discord::DiscordConfig {
         token: discord_config.token.clone(),
         allow_from: discord_config.allow_from.clone(),
     };
 
-    let discord_channel = gasket_core::channels::discord::DiscordChannel::new(
+    let discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
         discord_cfg,
         inbound_processor.raw_sender(),
     );
@@ -450,21 +451,23 @@ fn start_discord_channel(
 /// Start a single Slack channel
 #[cfg(feature = "slack")]
 fn start_slack_channel(
-    slack_config: &gasket_core::config::SlackConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    slack_config: &gasket_engine::config::SlackConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Slack channel", "✓".green());
 
-    let slack_cfg = gasket_core::channels::slack::SlackConfig {
+    let slack_cfg = gasket_engine::channels::slack::SlackConfig {
         bot_token: slack_config.bot_token.clone(),
         app_token: slack_config.app_token.clone(),
         group_policy: slack_config.group_policy.clone(),
         allow_from: slack_config.allow_from.clone(),
     };
 
-    let slack_channel =
-        gasket_core::channels::slack::SlackChannel::new(slack_cfg, inbound_processor.raw_sender());
+    let slack_channel = gasket_engine::channels::slack::SlackChannel::new(
+        slack_cfg,
+        inbound_processor.raw_sender(),
+    );
 
     tasks.push(tokio::spawn(async move {
         if let Err(e) = slack_channel.start_bot().await {
@@ -478,13 +481,13 @@ fn start_slack_channel(
 /// Start a single Feishu channel
 #[cfg(feature = "feishu")]
 fn start_feishu_channel(
-    feishu_config: &gasket_core::config::FeishuConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    feishu_config: &gasket_engine::config::FeishuConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Feishu channel", "✓".green());
 
-    let feishu_cfg = gasket_core::channels::feishu::FeishuConfig {
+    let feishu_cfg = gasket_engine::channels::feishu::FeishuConfig {
         app_id: feishu_config.app_id.clone(),
         app_secret: feishu_config.app_secret.clone(),
         verification_token: feishu_config.verification_token.clone(),
@@ -493,7 +496,7 @@ fn start_feishu_channel(
     };
 
     let mut feishu_channel =
-        gasket_core::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
+        gasket_engine::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
 
     tasks.push(tokio::spawn(async move {
         if let Err(e) = feishu_channel.start().await {
@@ -507,13 +510,13 @@ fn start_feishu_channel(
 /// Start a single Email channel
 #[cfg(feature = "email")]
 fn start_email_channel(
-    email_config: &gasket_core::config::EmailConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    email_config: &gasket_engine::config::EmailConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Email channel", "✓".green());
 
-    let email_cfg = gasket_core::channels::email::EmailConfig {
+    let email_cfg = gasket_engine::channels::email::EmailConfig {
         imap_host: email_config.imap_host.clone().unwrap_or_default(),
         imap_port: email_config.imap_port,
         imap_username: email_config.imap_username.clone().unwrap_or_default(),
@@ -527,8 +530,10 @@ fn start_email_channel(
         consent_granted: email_config.consent_granted,
     };
 
-    let email_channel =
-        gasket_core::channels::email::EmailChannel::new(email_cfg, inbound_processor.raw_sender());
+    let email_channel = gasket_engine::channels::email::EmailChannel::new(
+        email_cfg,
+        inbound_processor.raw_sender(),
+    );
 
     tasks.push(tokio::spawn(async move {
         if let Err(e) = email_channel.start_polling().await {
@@ -542,20 +547,20 @@ fn start_email_channel(
 /// Start a single DingTalk channel
 #[cfg(feature = "dingtalk")]
 fn start_dingtalk_channel(
-    dingtalk_config: &gasket_core::config::DingTalkConfig,
-    inbound_processor: &gasket_core::channels::InboundSender,
+    dingtalk_config: &gasket_engine::config::DingTalkConfig,
+    inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} DingTalk channel", "✓".green());
 
-    let dingtalk_cfg = gasket_core::channels::dingtalk::DingTalkConfig {
+    let dingtalk_cfg = gasket_engine::channels::dingtalk::DingTalkConfig {
         webhook_url: dingtalk_config.webhook_url.clone(),
         secret: dingtalk_config.secret.clone(),
         access_token: dingtalk_config.access_token.clone(),
         allow_from: dingtalk_config.allow_from.clone(),
     };
 
-    let mut dingtalk_channel = gasket_core::channels::dingtalk::DingTalkChannel::new(
+    let mut dingtalk_channel = gasket_engine::channels::dingtalk::DingTalkChannel::new(
         dingtalk_cfg,
         inbound_processor.clone(),
     );
@@ -571,19 +576,19 @@ fn start_dingtalk_channel(
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(
-    bus: &Arc<gasket_core::bus::MessageBus>,
+    bus: &Arc<gasket_engine::bus::MessageBus>,
     workspace: &Path,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
-    let heartbeat = gasket_core::heartbeat::HeartbeatService::new(workspace.to_path_buf());
+    let heartbeat = gasket_engine::heartbeat::HeartbeatService::new(workspace.to_path_buf());
     let bus_for_heartbeat = bus.clone();
     tasks.push(tokio::spawn(async move {
         heartbeat
             .run(|task_text| {
                 let bus_inner = bus_for_heartbeat.clone();
                 async move {
-                    let inbound = gasket_core::bus::events::InboundMessage {
-                        channel: gasket_core::bus::ChannelType::Cli,
+                    let inbound = gasket_engine::bus::events::InboundMessage {
+                        channel: gasket_engine::bus::ChannelType::Cli,
                         sender_id: "heartbeat".to_string(),
                         chat_id: "heartbeat".to_string(),
                         content: task_text,
@@ -602,7 +607,7 @@ fn start_heartbeat_service(
 /// Start cron checker that polls for due jobs every 60 seconds.
 fn start_cron_checker(
     cron_service: &Arc<CronService>,
-    bus: &Arc<gasket_core::bus::MessageBus>,
+    bus: &Arc<gasket_engine::bus::MessageBus>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let cron_svc = cron_service.clone();
@@ -619,9 +624,9 @@ fn start_cron_checker(
                             .channel
                             .as_deref()
                             .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                            .unwrap_or(gasket_core::bus::ChannelType::Cli);
+                            .unwrap_or(gasket_engine::bus::ChannelType::Cli);
                         let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
-                        let inbound = gasket_core::bus::events::InboundMessage {
+                        let inbound = gasket_engine::bus::events::InboundMessage {
                             channel,
                             sender_id: "cron".to_string(),
                             chat_id,

@@ -4,18 +4,18 @@
 
 use std::sync::Arc;
 
-use gasket_core::agent::subagent::SubagentManager;
-use gasket_core::agent::AgentConfig;
-use gasket_core::config::{Config, ModelRegistry};
-use gasket_core::memory::SqliteStore;
-use gasket_core::providers::ProviderRegistry;
-use gasket_core::tools::WebFetchTool;
-use gasket_core::tools::WebSearchTool;
-use gasket_core::tools::{
+use gasket_engine::agent::subagent::SubagentManager;
+use gasket_engine::agent::AgentConfig;
+use gasket_engine::config::{Config, ModelRegistry};
+use gasket_engine::memory::SqliteStore;
+use gasket_engine::providers::ProviderRegistry;
+use gasket_engine::tools::WebFetchTool;
+use gasket_engine::tools::WebSearchTool;
+use gasket_engine::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
     ToolMetadata, ToolRegistry, WriteFileTool,
 };
-use gasket_core::tools::{SpawnParallelTool, SpawnTool};
+use gasket_engine::tools::{SpawnParallelTool, SpawnTool};
 
 /// CLI-level implementation of ModelResolver using ProviderRegistry + ModelRegistry.
 ///
@@ -27,13 +27,13 @@ pub struct CliModelResolver {
     pub model_registry: ModelRegistry,
 }
 
-impl gasket_core::agent::ModelResolver for CliModelResolver {
+impl gasket_engine::agent::ModelResolver for CliModelResolver {
     fn resolve_model(
         &self,
         model_id: &str,
     ) -> Option<(
-        std::sync::Arc<dyn gasket_core::providers::LlmProvider>,
-        gasket_core::agent::AgentConfig,
+        std::sync::Arc<dyn gasket_engine::providers::LlmProvider>,
+        gasket_engine::agent::AgentConfig,
     )> {
         // 1. Try to resolve from named model profiles (e.g., "smart-assistant")
         if let Some((_id, profile)) = self
@@ -43,7 +43,7 @@ impl gasket_core::agent::ModelResolver for CliModelResolver {
             let provider_name = profile.provider.clone();
             let provider = self.provider_registry.get_or_create(&provider_name).ok()?;
 
-            let config = gasket_core::agent::AgentConfig {
+            let config = gasket_engine::agent::AgentConfig {
                 model: profile.model.clone(),
                 temperature: profile.temperature.unwrap_or(1.0),
                 max_tokens: profile.max_tokens.unwrap_or(65536),
@@ -60,7 +60,7 @@ impl gasket_core::agent::ModelResolver for CliModelResolver {
             let model_name = parts[1];
 
             if let Ok(provider) = self.provider_registry.get_or_create(provider_name) {
-                let config = gasket_core::agent::AgentConfig {
+                let config = gasket_engine::agent::AgentConfig {
                     model: model_name.to_string(),
                     ..Default::default()
                 };
@@ -70,7 +70,7 @@ impl gasket_core::agent::ModelResolver for CliModelResolver {
 
         // 3. Try as bare provider name (e.g., "minimax" → use provider's default model)
         if let Ok(provider) = self.provider_registry.get_or_create(model_id) {
-            let config = gasket_core::agent::AgentConfig {
+            let config = gasket_engine::agent::AgentConfig {
                 model: provider.default_model().to_string(),
                 ..Default::default()
             };
@@ -146,7 +146,7 @@ pub struct ToolRegistryConfig {
     /// Optional subagent manager for spawn tool
     pub subagent_manager: Option<Arc<SubagentManager>>,
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
-    pub extra_tools: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)>,
+    pub extra_tools: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)>,
     /// SQLite store for history search (optional)
     pub sqlite_store: Option<SqliteStore>,
     /// Model registry for switch_model tool (optional)

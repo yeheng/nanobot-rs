@@ -8,8 +8,10 @@ use std::sync::Arc;
 use tracing::debug;
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_semantic::{top_k_similar, TextEmbedder};
+use gasket_storage::top_k_similar;
 use gasket_storage::SqliteStore;
+#[cfg(feature = "local-embedding")]
+use gasket_storage::TextEmbedder;
 use gasket_types::SessionEvent;
 
 use crate::agent::count_tokens;
@@ -34,6 +36,7 @@ pub struct SummarizationService {
     store: Arc<SqliteStore>,
     model: String,
     /// Optional text embedder for semantic history recall
+    #[cfg(feature = "local-embedding")]
     embedder: Option<Arc<TextEmbedder>>,
 }
 
@@ -44,11 +47,13 @@ impl SummarizationService {
             provider,
             store,
             model,
+            #[cfg(feature = "local-embedding")]
             embedder: None,
         }
     }
 
     /// Create a new summarization service with embedding support.
+    #[cfg(feature = "local-embedding")]
     pub fn with_embedder(
         provider: Arc<dyn LlmProvider>,
         store: Arc<SqliteStore>,
@@ -64,6 +69,7 @@ impl SummarizationService {
     }
 
     /// Set the embedder for semantic history recall.
+    #[cfg(feature = "local-embedding")]
     pub fn set_embedder(&mut self, embedder: Arc<TextEmbedder>) {
         self.embedder = Some(embedder);
     }
@@ -83,6 +89,7 @@ impl SummarizationService {
     ///
     /// This enables semantic recall of old conversations that were
     /// dropped from the context window.
+    #[cfg(feature = "local-embedding")]
     async fn save_evicted_embeddings(&self, session_key: &str, evicted_events: &[SessionEvent]) {
         let Some(ref embedder) = self.embedder else {
             debug!("No embedder configured, skipping embedding generation");
@@ -196,6 +203,7 @@ impl SummarizationService {
     ) -> anyhow::Result<Option<String>> {
         if !evicted_events.is_empty() {
             // Save embeddings for evicted events (enables semantic recall)
+            #[cfg(feature = "local-embedding")]
             self.save_evicted_embeddings(session_key, evicted_events)
                 .await;
 

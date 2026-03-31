@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use gasket_core::config::ConfigLoader;
+use gasket_engine::config::ConfigLoader;
 
 /// Initialize gasket configuration
 pub async fn cmd_onboard() -> Result<()> {
@@ -10,7 +10,7 @@ pub async fn cmd_onboard() -> Result<()> {
 
     let loader = ConfigLoader::new();
     let config_path = loader.config_path();
-    let workspace = gasket_core::config::config_dir();
+    let workspace = gasket_engine::config::config_dir();
 
     if loader.exists() {
         println!("Configuration already exists at: {:?}", config_path);

@@ -14,16 +14,13 @@ members = [
     "types",
     "vault",
     "storage",
-    "semantic",
     "bus",
     "engine",
-    "core",
     "cli",
     "providers",
     "channels",
     "sandbox",
     "tantivy",
-    "history",
 ]
 
 [profile.release]
@@ -101,13 +98,10 @@ rustls-native-certs = "0.8"
 # Internal crates
 gasket-types = { path = "types" }
 gasket-storage = { path = "storage" }
-gasket-semantic = { path = "semantic" }
-gasket-core = { path = "core" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }
 gasket-bus = { path = "bus" }
-gasket-history = { path = "history" }
 gasket-engine = { path = "engine" }
 
 # Markdown rendering

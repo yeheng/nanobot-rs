@@ -1,12 +1,23 @@
 //! Configuration types for gasket-engine
 
+pub mod app_config;
 mod tools;
 
 use std::path::PathBuf;
 
+pub use app_config::{
+    config_path, load_config, AgentDefaults, AgentsConfig, Config, ConfigLoader, EmbeddingConfig,
+    ModelConfig, ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,
+};
 pub use tools::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
     WebToolsConfig,
+};
+
+// Re-export channel config types (merged from gasket-core facade)
+pub use gasket_channels::{
+    ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
+    TelegramConfig,
 };
 
 /// Get the gasket config directory

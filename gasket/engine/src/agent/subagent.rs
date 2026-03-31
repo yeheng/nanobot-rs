@@ -241,44 +241,6 @@ impl<'a> SubagentTaskBuilder<'a> {
         })
     }
 
-    /// Build an AgentLoop with the given configuration.
-    #[allow(dead_code)]
-    fn build_agent(
-        &self,
-        provider: Arc<dyn LlmProvider>,
-        agent_config: AgentConfig,
-    ) -> anyhow::Result<AgentLoop> {
-        let workspace = self.manager.workspace.clone();
-        let tools = self.manager.tools.clone();
-
-        AgentLoop::builder(provider, workspace, agent_config, tools)
-            .map_err(|e| anyhow::anyhow!("Agent initialization failed: {}", e))
-    }
-
-    /// Apply hooks to the agent if provided.
-    #[allow(dead_code)]
-    fn apply_hooks(&self, agent: AgentLoop) -> AgentLoop {
-        if let Some(ref hooks) = self.hooks {
-            agent.with_hooks(hooks.clone())
-        } else {
-            agent
-        }
-    }
-
-    /// Load the system prompt, with fallback to minimal bootstrap.
-    #[allow(dead_code)]
-    async fn load_system_prompt(&self) -> anyhow::Result<String> {
-        match &self.system_prompt {
-            Some(prompt) => Ok(prompt.clone()),
-            None => {
-                let workspace = self.manager.workspace.clone();
-                prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("System prompt load failed: {}", e))
-            }
-        }
-    }
-
     /// Spawn the subagent task and return its ID.
     ///
     /// The task runs in the background and sends its result to `result_tx`

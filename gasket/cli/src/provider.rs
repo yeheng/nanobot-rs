@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use gasket_core::config::{Config, ProviderType};
-use gasket_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use gasket_engine::config::{Config, ProviderType};
+use gasket_engine::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 
 /// Provider information returned by find_provider
 pub struct ProviderInfo {
@@ -28,7 +28,7 @@ pub struct ProviderInfo {
 pub fn build_provider(
     name: &str,
     api_key: &str,
-    provider_config: &gasket_core::config::ProviderConfig,
+    provider_config: &gasket_engine::config::ProviderConfig,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>> {
     // Validate api_base is configured
@@ -48,7 +48,7 @@ pub fn build_provider(
             // Gemini provider (requires feature flag)
             #[cfg(feature = "provider-gemini")]
             {
-                let provider = gasket_core::providers::GeminiProvider::with_config(
+                let provider = gasket_engine::providers::GeminiProvider::with_config(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
@@ -80,7 +80,7 @@ pub fn build_provider(
                 // GitHub Copilot requires special handling for OAuth token management
                 #[cfg(feature = "provider-copilot")]
                 "copilot" => Ok(Arc::new(
-                    gasket_core::providers::CopilotProvider::with_proxy(
+                    gasket_engine::providers::CopilotProvider::with_proxy(
                         api_key,
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),

@@ -1,11 +1,8 @@
-//! Error types for gasket-core public APIs
+//! Error types for gasket engine public APIs
 //!
-//! This module defines specific error types using `thiserror` for better
-//! error handling and API contracts. Library crates should NOT expose
-//! `anyhow::Error` in their public APIs - it's only for internal use.
-//!
-//! Error chains are preserved through `#[source]` and `#[from]` attributes,
-//! enabling full backtrace traversal with `RUST_BACKTRACE=1`.
+//! Defines `AgentError`, `ChannelError`, `PipelineError`, and re-exports
+//! `ProviderError` from `gasket_providers`. Uses `thiserror` for structured
+//! error handling. `anyhow::Error` is only used internally.
 
 use thiserror::Error;
 
@@ -53,45 +50,8 @@ pub enum AgentError {
     Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Errors from LLM providers
-#[derive(Debug, Error)]
-pub enum ProviderError {
-    /// API authentication failed
-    #[error("Authentication failed: {0}")]
-    AuthError(String),
-
-    /// Rate limit exceeded
-    #[error("Rate limit exceeded: {0}")]
-    RateLimitError(String),
-
-    /// Invalid request
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-
-    /// Model not found
-    #[error("Model not found: {0}")]
-    ModelNotFound(String),
-
-    /// Network error
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    /// API error with status code
-    #[error("API error (status {status_code}): {message}")]
-    ApiError { status_code: u16, message: String },
-
-    /// Response parsing error
-    #[error("Failed to parse response: {0}")]
-    ParseError(String),
-
-    /// Generic provider error
-    #[error("{0}")]
-    Other(String),
-
-    /// Internal error preserving the full error chain
-    #[error(transparent)]
-    Internal(Box<dyn std::error::Error + Send + Sync>),
-}
+/// Errors from LLM providers — canonical definition lives in `gasket_providers`.
+pub use gasket_providers::ProviderError;
 
 /// Errors from channel operations
 #[derive(Debug, Error)]
@@ -180,12 +140,6 @@ pub enum PipelineError {
 impl From<anyhow::Error> for AgentError {
     fn from(err: anyhow::Error) -> Self {
         AgentError::Internal(err.into())
-    }
-}
-
-impl From<anyhow::Error> for ProviderError {
-    fn from(err: anyhow::Error) -> Self {
-        ProviderError::Internal(err.into())
     }
 }
 

@@ -5,8 +5,8 @@ use chrono::Utc;
 use colored::Colorize;
 use uuid::Uuid;
 
-use gasket_core::config::config_dir;
-use gasket_core::cron::{CronJob, CronService};
+use gasket_engine::config::config_dir;
+use gasket_engine::cron::{CronJob, CronService};
 
 /// List all scheduled cron jobs
 pub async fn cmd_cron_list() -> Result<()> {

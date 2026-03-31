@@ -299,7 +299,7 @@ impl AgentContext {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use gasket_storage::{query, SqlitePool};
+    use gasket_storage::SqlitePool;
     use gasket_types::{EventMetadata, EventType};
     use sqlx::sqlite::SqlitePoolOptions;
 
@@ -308,7 +308,7 @@ mod tests {
         let pool = SqlitePoolOptions::new().connect(":memory:").await.unwrap();
 
         // Create tables
-        query(
+        sqlx::query(
             r#"
             CREATE TABLE sessions_v2 (
                 key TEXT PRIMARY KEY,
@@ -326,7 +326,7 @@ mod tests {
         .await
         .unwrap();
 
-        query(
+        sqlx::query(
             r#"
             CREATE TABLE session_events (
                 id TEXT PRIMARY KEY,

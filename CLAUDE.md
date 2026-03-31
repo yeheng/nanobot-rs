@@ -20,7 +20,7 @@ cargo run --release --package gasket-cli -- onboard
 ## Project Structure
 
 ```
-gasket-rs/                    # Rust workspace root
+gasket/                    # Rust workspace root
 ├── gasket-core/              # Core library (all business logic)
 │   └── src/
 │       ├── agent/             # Agent loop, executor, pipeline
@@ -44,7 +44,7 @@ docs/                          # Design documentation
 
 | File | Purpose |
 |------|---------|
-| `gasket-rs/Cargo.toml` | Workspace definition, shared dependencies |
+| `gasket/Cargo.toml` | Workspace definition, shared dependencies |
 | `~/.gasket/config.yaml` | Runtime configuration (providers, agents, channels) |
 | `config.example.yaml` | Example configuration with model profiles |
 | `docs/architecture.md` | Full system architecture |

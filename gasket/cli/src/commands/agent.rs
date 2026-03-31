@@ -8,12 +8,12 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
-use gasket_core::agent::memory::MemoryStore;
-use gasket_core::agent::{AgentLoop, AgentResponse, ModelResolver, StreamEvent, SubagentManager};
-use gasket_core::bus::events::SessionKey;
-use gasket_core::config::{load_config, ModelRegistry};
-use gasket_core::providers::ProviderRegistry;
-use gasket_core::token_tracker::ModelPricing;
+use gasket_engine::agent::memory::MemoryStore;
+use gasket_engine::agent::{AgentLoop, AgentResponse, ModelResolver, StreamEvent, SubagentManager};
+use gasket_engine::bus::events::SessionKey;
+use gasket_engine::config::{load_config, ModelRegistry};
+use gasket_engine::providers::ProviderRegistry;
+use gasket_engine::token_tracker::ModelPricing;
 
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
@@ -133,7 +133,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?
-    .with_spawner(subagent_manager as Arc<dyn gasket_core::SubagentSpawner>);
+    .with_spawner(subagent_manager as Arc<dyn gasket_engine::SubagentSpawner>);
 
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
@@ -142,7 +142,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let session_key = SessionKey::new(gasket_core::bus::events::ChannelType::Cli, "direct");
+            let session_key =
+                SessionKey::new(gasket_engine::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
                 // Use channel-based streaming API
                 let (mut event_rx, result_handle) = agent
@@ -196,7 +197,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
 
             let interactive_session =
-                SessionKey::new(gasket_core::bus::events::ChannelType::Cli, "interactive");
+                SessionKey::new(gasket_engine::bus::events::ChannelType::Cli, "interactive");
 
             loop {
                 match line_editor.read_line(&prompt) {

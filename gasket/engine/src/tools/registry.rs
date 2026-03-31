@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde_json::Value;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
 use gasket_providers::ToolDefinition;
-use gasket_semantic::{top_k_similar, TextEmbedder};
+use gasket_storage::top_k_similar;
+#[cfg(feature = "local-embedding")]
+use gasket_storage::TextEmbedder;
 
 /// A tool bundled with its optional metadata.
 struct RegisteredTool {
@@ -80,6 +82,7 @@ impl ToolRegistry {
     ///
     /// This should be called once after all tools are registered.
     /// Uses the tool's description text to generate embeddings.
+    #[cfg(feature = "local-embedding")]
     pub fn initialize_embeddings(&self, embedder: &TextEmbedder) {
         if self.embeddings.get().is_some() {
             debug!("Tool embeddings already initialized, skipping");
@@ -102,6 +105,8 @@ impl ToolRegistry {
         if self.embeddings.set(embeddings).is_err() {
             debug!("Tool embeddings were already set by another thread");
         } else {
+            use tracing::info;
+
             info!("Initialized embeddings for {} tools", self.items.len());
         }
     }

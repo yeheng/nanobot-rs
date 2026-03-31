@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use gasket_core::config::{load_config, ConfigLoader};
+use gasket_engine::config::{load_config, ConfigLoader};
 
 /// Show gasket status
 pub async fn cmd_status() -> Result<()> {
@@ -48,7 +48,7 @@ pub async fn cmd_auth_status() -> Result<()> {
             {
                 if let Some(ref token) = provider_config.api_key {
                     // Try to validate the token
-                    let oauth = gasket_core::providers::CopilotOAuth::with_default_client_id();
+                    let oauth = gasket_engine::providers::CopilotOAuth::with_default_client_id();
                     match oauth.validate_pat(token).await {
                         Ok(true) => format!("{} Authenticated", "✓".green()),
                         Ok(false) => format!("{} Invalid token", "✗".red()),

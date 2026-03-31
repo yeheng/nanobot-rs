@@ -13,7 +13,7 @@ use super::{HookAction, HookPoint, MutableContext, PipelineHook, ReadonlyContext
 use crate::agent::context::AgentContext;
 use crate::error::AgentError;
 use gasket_providers::ChatMessage;
-use gasket_semantic::TextEmbedder;
+use gasket_storage::TextEmbedder;
 
 /// Hook for semantic history recall.
 ///

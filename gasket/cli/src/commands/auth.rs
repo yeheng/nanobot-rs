@@ -5,7 +5,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 #[cfg(feature = "provider-copilot")]
-use gasket_core::config::ConfigLoader;
+use gasket_engine::config::ConfigLoader;
 
 /// GitHub Copilot API base URL
 #[cfg(feature = "provider-copilot")]
@@ -23,7 +23,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
         // PAT mode: validate and use directly
         println!("Validating Personal Access Token...");
 
-        let oauth = gasket_core::providers::CopilotOAuth::with_default_client_id();
+        let oauth = gasket_engine::providers::CopilotOAuth::with_default_client_id();
         match oauth.validate_pat(&token).await {
             Ok(true) => {
                 println!("{} Token validated successfully", "✓".green());
@@ -42,9 +42,9 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     } else {
         // OAuth Device Flow
         let oauth = if let Some(ref cid) = client_id {
-            gasket_core::providers::CopilotOAuth::new(cid)
+            gasket_engine::providers::CopilotOAuth::new(cid)
         } else {
-            gasket_core::providers::CopilotOAuth::with_default_client_id()
+            gasket_engine::providers::CopilotOAuth::with_default_client_id()
         };
 
         match oauth.start_device_flow().await {
@@ -69,8 +69,8 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     // Save to config with new explicit format
     config.providers.insert(
         "copilot".to_string(),
-        gasket_core::config::ProviderConfig {
-            provider_type: gasket_core::config::ProviderType::Openai,
+        gasket_engine::config::ProviderConfig {
+            provider_type: gasket_engine::config::ProviderType::Openai,
             api_base: COPILOT_API_BASE.to_string(),
             api_key: Some(access_token),
             client_id,

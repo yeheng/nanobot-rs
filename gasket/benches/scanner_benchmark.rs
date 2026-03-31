@@ -5,7 +5,7 @@
 //! function body.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use gasket_core::vault::{
+use gasket_engine::vault::{
     contains_placeholders, replace_placeholders, scan_placeholders, Placeholder,
 };
 use regex::Regex;

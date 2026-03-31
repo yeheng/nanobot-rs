@@ -1,4 +1,5 @@
 use crate::search::top_k_similar;
+#[cfg(feature = "local-embedding")]
 use crate::search::TextEmbedder;
 use crate::skills::{Skill, SkillsLoader};
 use anyhow::Result;
@@ -123,6 +124,7 @@ impl SkillsRegistry {
     ///
     /// This should be called once after all skills are loaded.
     /// Uses the skill's description text to generate embeddings.
+    #[cfg(feature = "local-embedding")]
     pub fn initialize_embeddings(&self, embedder: &TextEmbedder) {
         if self.embeddings.get().is_some() {
             debug!("Skill embeddings already initialized, skipping");
