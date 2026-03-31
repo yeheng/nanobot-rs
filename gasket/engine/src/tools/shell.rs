@@ -372,8 +372,9 @@ mod tests {
         ];
 
         for cmd in injection_attempts {
-            let result = rt
-                .block_on(tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()));
+            let result = rt.block_on(
+                tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()),
+            );
             assert!(
                 result.is_err(),
                 "Command '{}' should have been blocked",

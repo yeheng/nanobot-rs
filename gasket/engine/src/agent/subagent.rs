@@ -284,22 +284,23 @@ impl<'a> SubagentTaskBuilder<'a> {
             }
 
             // Initialize agent
-            let agent = match AgentLoop::for_subagent(provider, workspace.clone(), agent_config, tools) {
-                Ok(a) => a,
-                Err(e) => {
-                    warn!("[Subagent {}] Failed to initialize: {}", subagent_id, e);
-                    Self::send_initialization_error(
-                        &subagent_id,
-                        &task,
-                        &model_name,
-                        &e.to_string(),
-                        &event_tx,
-                        &result_tx,
-                    )
-                    .await;
-                    return;
-                }
-            };
+            let agent =
+                match AgentLoop::for_subagent(provider, workspace.clone(), agent_config, tools) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("[Subagent {}] Failed to initialize: {}", subagent_id, e);
+                        Self::send_initialization_error(
+                            &subagent_id,
+                            &task,
+                            &model_name,
+                            &e.to_string(),
+                            &event_tx,
+                            &result_tx,
+                        )
+                        .await;
+                        return;
+                    }
+                };
 
             // Apply hooks if provided
             let mut agent = if let Some(ref hooks) = hooks {
@@ -801,7 +802,12 @@ impl SubagentManager {
             ..Default::default()
         };
 
-        let mut agent = AgentLoop::for_subagent(self.provider.clone(), self.workspace.clone(), agent_config, self.tools.clone())?;
+        let mut agent = AgentLoop::for_subagent(
+            self.provider.clone(),
+            self.workspace.clone(),
+            agent_config,
+            self.tools.clone(),
+        )?;
 
         let sys = match system_prompt {
             Some(s) => s.to_string(),
@@ -848,7 +854,12 @@ impl SubagentManager {
             agent_config.model, &prompt_text
         );
 
-        let mut agent = AgentLoop::for_subagent(provider, self.workspace.clone(), agent_config, self.tools.clone())?;
+        let mut agent = AgentLoop::for_subagent(
+            provider,
+            self.workspace.clone(),
+            agent_config,
+            self.tools.clone(),
+        )?;
 
         let sys = match system_prompt {
             Some(s) => s.to_string(),
@@ -899,7 +910,12 @@ impl SubagentManager {
             agent_config.model, prompt_text
         );
 
-        let mut agent = AgentLoop::for_subagent(provider, self.workspace.clone(), agent_config, self.tools.clone())?;
+        let mut agent = AgentLoop::for_subagent(
+            provider,
+            self.workspace.clone(),
+            agent_config,
+            self.tools.clone(),
+        )?;
 
         let sys = match system_prompt {
             Some(s) => s.to_string(),

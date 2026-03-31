@@ -161,10 +161,7 @@ impl EventStore {
     pub async fn append_event(&self, event: &SessionEvent) -> Result<(), StoreError> {
         let event_type_tag = event_type_tag(&event.event_type);
         let event_data = EventData::from_event_type(&event.event_type);
-        let event_data_json = event_data
-            .as_ref()
-            .map(|d| serde_json::to_string(d))
-            .transpose()?;
+        let event_data_json = event_data.as_ref().map(serde_json::to_string).transpose()?;
         let tools_used = serde_json::to_string(&event.metadata.tools_used)?;
         let token_usage = event
             .metadata
