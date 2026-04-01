@@ -1,8 +1,9 @@
-//! Windows fallback sandbox backend
+//! Windows unsafe direct execution backend (NOT a sandbox)
 //!
-//! **WARNING**: This is NOT a real sandbox. Commands run with the same
-//! privileges as the parent process without isolation or resource limits.
-//! Consider using WSL2 with bwrap for proper sandboxing on Windows.
+//! **CRITICAL WARNING**: This backend provides ZERO isolation. Commands run
+//! with the same privileges as the parent process — no sandboxing, no resource
+//! limits, no filesystem restrictions. For proper sandboxing on Windows, use
+//! WSL2 with bwrap.
 
 use std::path::Path;
 use std::process::Command;
@@ -15,25 +16,27 @@ use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
-/// Windows fallback executor — direct cmd.exe execution.
+/// Unsafe direct execution backend — runs commands via cmd.exe with NO isolation.
 ///
-/// **WARNING**: This is NOT a real sandbox. Commands run with the same
-/// privileges as the parent process without isolation or resource limits.
-/// Full Job Objects integration would require unsafe Win32 API calls.
+/// This backend does **not** sandbox commands. It exists only so that Windows
+/// users can still execute tools, but every command runs with full user
+/// privileges. The name is deliberately chosen to make the lack of safety
+/// obvious at every call site.
 ///
 /// For proper sandboxing on Windows, consider using WSL2 with bwrap.
-pub struct WindowsFallbackBackend {
-    // No Job Object handle - this is intentional (not implemented)
+pub struct UnsafeDirectExecution {
+    // No isolation mechanism — this is intentional
 }
 
-impl WindowsFallbackBackend {
-    /// Create a new Windows fallback backend
+impl UnsafeDirectExecution {
+    /// Create a new unsafe direct execution backend.
     ///
-    /// **WARNING**: Logs a warning that this is not a real sandbox.
+    /// Logs a **warning** on every construction to remind operators that
+    /// commands will run without any isolation.
     pub fn new() -> Self {
         warn!(
-            "WindowsFallbackBackend: This is NOT a sandbox. \
-             Commands run without isolation. Consider using WSL2 with bwrap."
+            "UnsafeDirectExecution: Commands will run WITHOUT isolation or \
+             resource limits. For proper sandboxing, use WSL2 with bwrap."
         );
         Self {}
     }
@@ -56,16 +59,16 @@ impl WindowsFallbackBackend {
     }
 }
 
-impl Default for WindowsFallbackBackend {
+impl Default for UnsafeDirectExecution {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl SandboxBackend for WindowsFallbackBackend {
+impl SandboxBackend for UnsafeDirectExecution {
     fn name(&self) -> &str {
-        "fallback" // Changed from "job-objects" to be honest about capabilities
+        "unsafe-direct" // Name reflects reality: no sandboxing at all
     }
 
     async fn is_available(&self) -> bool {
@@ -143,13 +146,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_availability() {
-        let backend = WindowsFallbackBackend::new();
+        let backend = UnsafeDirectExecution::new();
         assert!(backend.is_available().await);
     }
 
     #[test]
     fn test_build_command() {
-        let backend = WindowsFallbackBackend::new();
+        let backend = UnsafeDirectExecution::new();
         let config = SandboxConfig::default();
         let cmd = backend.build_command("echo hello", Path::new("C:\\"), &config);
         assert!(cmd.is_ok());

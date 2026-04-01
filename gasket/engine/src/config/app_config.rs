@@ -1,10 +1,21 @@
-//! Application-level configuration types
+//! Application-level configuration types (YAML config file layer)
 //!
-//! NOTE: Many of these types are deprecated and will be removed in a future version.
-//! Use the individual config types from their respective crates:
-//! - Provider config: `gasket_providers::ProviderConfig`
-//! - Channel config: `gasket_channels::ChannelsConfig`
-//! - Tools config: `gasket_engine::ToolsConfig`
+//! These types define the **file format** of `~/.gasket/config.yaml`. They are
+//! the primary config layer used by the CLI to load, validate, and save
+//! configuration.
+//!
+//! ## Relationship to runtime config types
+//!
+//! Some types share names with their runtime counterparts in other crates.
+//! This is intentional — the file-layer type captures the YAML schema (with
+//! optional fields, serde aliases for backward compat), while the runtime type
+//! is a focused, non-optional struct used during execution:
+//!
+//! | File-layer (this module)          | Runtime counterpart              |
+//! |----------------------------------|----------------------------------|
+//! | `ProviderConfig`                 | `gasket_providers::ProviderConfig` |
+//! | `EmbeddingConfig`                | `gasket_storage::EmbeddingConfig`  |
+//! | `ChannelsConfig` (re-exported)   | `gasket_channels::ChannelsConfig`  |
 
 use std::collections::HashMap;
 
@@ -52,7 +63,11 @@ pub enum ProviderType {
     Gemini,
 }
 
-/// Provider configuration (deprecated - use gasket_providers::ProviderConfig instead)
+/// File-level provider configuration (YAML schema).
+///
+/// Maps to a single provider entry under `providers:` in `config.yaml`.
+/// Converted to `gasket_providers::ProviderConfig` at runtime via
+/// `ProviderRegistry::get_or_create`.
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub provider_type: ProviderType,
@@ -182,7 +197,7 @@ pub struct AgentsConfig {
     pub models: HashMap<String, ModelProfile>,
 }
 
-/// Root configuration structure (deprecated)
+/// Root configuration structure — maps directly to `~/.gasket/config.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
@@ -231,7 +246,7 @@ pub fn config_path() -> std::io::Result<std::path::PathBuf> {
     Ok(config_dir().join("config.yaml"))
 }
 
-/// Configuration loader (deprecated)
+/// Configuration loader — reads/writes `~/.gasket/config.yaml`.
 pub struct ConfigLoader {
     config_path: std::path::PathBuf,
 }
