@@ -124,7 +124,9 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         #[cfg(target_os = "macos")]
         "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
         #[cfg(target_os = "windows")]
-        "job-objects" | "windows-fallback" | "unsafe-direct" => Box::new(UnsafeDirectExecution::new()),
+        "job-objects" | "windows-fallback" | "unsafe-direct" => {
+            Box::new(UnsafeDirectExecution::new())
+        }
         _ => {
             tracing::warn!(
                 "Unknown backend '{}', falling back to unsandboxed execution",

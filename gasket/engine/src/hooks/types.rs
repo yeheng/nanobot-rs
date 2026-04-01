@@ -96,6 +96,13 @@ pub struct HookContext<'a, M> {
     pub tool_calls: Option<&'a [ToolCallInfo]>,
     /// Token usage statistics
     pub token_usage: Option<&'a TokenUsage>,
+    /// Vault values collected during this request (for log redaction).
+    ///
+    /// Per-request owned storage — hooks (e.g., VaultHook) push plaintext
+    /// secrets here so the caller can snapshot them after hook execution.
+    /// This replaces the previous `Arc<RwLock<Vec<String>>>` shared state
+    /// which was susceptible to cross-request race conditions.
+    pub vault_values: Vec<String>,
 }
 
 /// Tool call information for hooks
@@ -128,6 +135,7 @@ impl<'a> MutableContext<'a> {
             response: self.response,
             tool_calls: self.tool_calls,
             token_usage: self.token_usage,
+            vault_values: self.vault_values,
         }
     }
 }
@@ -179,6 +187,7 @@ mod tests {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let readonly = ctx.into_readonly();

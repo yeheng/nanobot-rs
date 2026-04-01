@@ -51,7 +51,6 @@ use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
-use tokio::sync::RwLock;
 
 use crate::agent::memory::MemoryStore;
 use gasket_storage::EventStore;
@@ -161,7 +160,6 @@ struct AgentInitState {
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<crate::hooks::HookRegistry>,
-    vault_values: Arc<tokio::sync::RwLock<Vec<String>>>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -197,8 +195,9 @@ struct AgentInitState {
 /// ## Security Note: Vault Values Lifecycle
 ///
 /// Injected vault values (plaintext secrets) are scoped to **single requests**.
-/// They are collected in `vault_values` field, passed through the agent loop,
-/// and used for log redaction. They persist across the request lifetime.
+/// They are collected in `HookContext::vault_values` during BeforeLLM hook
+/// execution, then snapshot-cloned into `PipelineState` for the request duration.
+/// No shared mutable state is involved — each request owns its values.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
@@ -219,8 +218,6 @@ pub struct AgentLoop {
     hooks: Arc<HookRegistry>,
     /// Pricing configuration for cost calculation (optional)
     pricing: Option<crate::token_tracker::ModelPricing>,
-    /// Injected vault values for log redaction (shared with VaultHook)
-    vault_values: Arc<RwLock<Vec<String>>>,
     /// Subagent spawner for spawn/spawn_parallel tools
     spawner: Option<Arc<dyn SubagentSpawner>>,
 }
@@ -251,7 +248,6 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
-            vault_values,
         } = Self::build_internal(event_store, &workspace).await?;
 
         Ok(Self {
@@ -265,7 +261,6 @@ impl AgentLoop {
             skills_context,
             hooks,
             pricing,
-            vault_values,
             spawner: None,
         })
     }
@@ -301,9 +296,7 @@ impl AgentLoop {
     /// Creates:
     /// - ExternalShellHook at BeforeRequest and AfterResponse
     /// - VaultHook at BeforeLLM (if vault is available)
-    fn build_hooks() -> (Arc<HookRegistry>, Arc<RwLock<Vec<String>>>) {
-        let vault_values = Arc::new(RwLock::new(Vec::new()));
-
+    fn build_hooks() -> Arc<HookRegistry> {
         let hooks_dir = dirs::home_dir()
             .map(|p| p.join(".gasket").join("hooks"))
             .unwrap_or_else(|| {
@@ -325,19 +318,15 @@ impl AgentLoop {
             )));
 
         // Add vault hook if available
-        let vault_values = if let Ok(store) = VaultStore::new() {
+        if let Ok(store) = VaultStore::new() {
             debug!("[Agent] Vault initialized successfully, adding vault injector");
             let vault_hook = VaultHook::new(VaultInjector::new(Arc::new(store)));
-            // Get the injected values handle for log redaction
-            let values = vault_hook.injected_values();
             builder = builder.with_hook(Arc::new(vault_hook));
-            values
         } else {
             debug!("[Agent] Vault not available, skipping vault injector");
-            vault_values
-        };
+        }
 
-        (builder.build_shared(), vault_values)
+        builder.build_shared()
     }
 
     /// Internal builder: common initialization for all constructors.
@@ -353,14 +342,13 @@ impl AgentLoop {
 
         let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
 
-        let (hooks, vault_values) = Self::build_hooks();
+        let hooks = Self::build_hooks();
 
         Ok(AgentInitState {
             context,
             system_prompt,
             skills_context,
             hooks,
-            vault_values,
         })
     }
 
@@ -388,7 +376,6 @@ impl AgentLoop {
             skills_context: None,
             hooks: HookRegistry::empty(),
             pricing: None,
-            vault_values: Arc::new(RwLock::new(Vec::new())),
             spawner: None,
         })
     }
@@ -415,11 +402,6 @@ impl AgentLoop {
     /// Get a reference to the hook registry.
     pub fn hooks(&self) -> &Arc<HookRegistry> {
         &self.hooks
-    }
-
-    /// Get mutable access to vault values (for log redaction).
-    pub fn vault_values(&self) -> &Arc<RwLock<Vec<String>>> {
-        &self.vault_values
     }
 
     /// Get the model name
@@ -470,6 +452,7 @@ impl AgentLoop {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         match self
@@ -539,13 +522,15 @@ impl AgentLoop {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
         self.hooks
             .execute(HookPoint::AfterHistory, &mut ctx)
             .await?;
         self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
 
-        let local_vault_values = self.vault_values.read().await.clone();
+        // Vault values are now owned by this request's context — no shared state.
+        let local_vault_values = ctx.vault_values;
 
         Ok(PipelineOutcome::Ready(PipelineState {
             session_key_str,
@@ -784,6 +769,7 @@ async fn finalize_response(
         response: Some(&result.content),
         tool_calls: Some(&tools_used),
         token_usage: token_usage_for_hooks.as_ref(),
+        vault_values: Vec::new(),
     };
     if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
         warn!("AfterResponse hook failed (ignored): {}", e);
@@ -881,34 +867,36 @@ impl AgentLoop {
 
 // ── Stream Event Conversion ──────────────────────────────────────────────────
 
-/// Convert an engine StreamEvent to a bus StreamEvent.
+/// Idiomatic `From` conversion from engine StreamEvent to bus StreamEvent.
 ///
-/// Extracted as a standalone function to keep the spawned task flat
-/// and avoid exceeding the 3-layer indentation rule.
-fn convert_stream_event(event: crate::agent::stream::StreamEvent) -> gasket_bus::StreamEvent {
-    use crate::agent::stream::StreamEvent as AgentStreamEvent;
-    use gasket_bus::StreamEvent as BusStreamEvent;
+/// Replaces the previous standalone `convert_stream_event` function.
+/// The two enums are structurally similar but live in different crates
+/// (engine vs bus), so the conversion is a thin field-mapping.
+impl From<crate::agent::stream::StreamEvent> for gasket_bus::StreamEvent {
+    fn from(event: crate::agent::stream::StreamEvent) -> Self {
+        use crate::agent::stream::StreamEvent as Src;
 
-    match event {
-        AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
-        AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
-        AgentStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
-            name,
-            arguments: arguments.unwrap_or_default(),
-        },
-        AgentStreamEvent::ToolEnd { name, output } => BusStreamEvent::ToolEnd { name, output },
-        AgentStreamEvent::Done => BusStreamEvent::Done,
-        AgentStreamEvent::TokenStats {
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cost: _,
-            currency: _,
-        } => BusStreamEvent::TokenStats {
-            prompt: input_tokens,
-            completion: output_tokens,
-            total: total_tokens,
-        },
+        match event {
+            Src::Content(content) => Self::Content(content),
+            Src::Reasoning(content) => Self::Reasoning(content),
+            Src::ToolStart { name, arguments } => Self::ToolStart {
+                name,
+                arguments: arguments.unwrap_or_default(),
+            },
+            Src::ToolEnd { name, output } => Self::ToolEnd { name, output },
+            Src::Done => Self::Done,
+            Src::TokenStats {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost: _,
+                currency: _,
+            } => Self::TokenStats {
+                prompt: input_tokens,
+                completion: output_tokens,
+                total: total_tokens,
+            },
+        }
     }
 }
 
@@ -957,7 +945,7 @@ impl gasket_bus::MessageHandler for AgentLoop {
         // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
             while let Some(event) = agent_event_rx.recv().await {
-                if event_tx.send(convert_stream_event(event)).await.is_err() {
+                if event_tx.send(event.into()).await.is_err() {
                     break;
                 }
             }

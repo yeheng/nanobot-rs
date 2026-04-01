@@ -214,6 +214,21 @@ impl SqliteStore {
         Ok(result)
     }
 
+    /// Check whether an embedding already exists for a given message.
+    ///
+    /// Used by the summarization layer to skip redundant embedding
+    /// computation when the same event is evicted more than once
+    /// (e.g. during repeated context compression).
+    pub async fn has_embedding(&self, message_id: &str) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM session_embeddings WHERE message_id = $1")
+                .bind(message_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        Ok(row.map(|(count,)| count > 0).unwrap_or(false))
+    }
+
     /// Verify that the database is usable (integrity + read/write).
     async fn health_check(&self) -> anyhow::Result<()> {
         // Integrity check

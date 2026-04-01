@@ -88,7 +88,8 @@ impl SummarizationService {
     /// Generate and store embeddings for evicted events.
     ///
     /// This enables semantic recall of old conversations that were
-    /// dropped from the context window.
+    /// dropped from the context window. Events that already have
+    /// embeddings are skipped to avoid redundant computation.
     #[cfg(feature = "local-embedding")]
     async fn save_evicted_embeddings(&self, session_key: &str, evicted_events: &[SessionEvent]) {
         let Some(ref embedder) = self.embedder else {
@@ -96,9 +97,27 @@ impl SummarizationService {
             return;
         };
 
-        for (idx, event) in evicted_events.iter().enumerate() {
-            // Generate a unique event ID based on session key and index
-            let event_id = format!("{}:evicted:{}", session_key, idx);
+        for event in evicted_events {
+            let event_id = event.id.to_string();
+
+            // Skip events that already have embeddings (idempotent)
+            match self.store.has_embedding(&event_id).await {
+                Ok(true) => {
+                    debug!(
+                        "Embedding already exists for event {}, skipping",
+                        event_id
+                    );
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    debug!(
+                        "Failed to check existing embedding for {}: {}",
+                        event_id, e
+                    );
+                    // Continue anyway — worst case we re-compute
+                }
+            }
 
             match embedder.embed(&event.content) {
                 Ok(embedding) => {
@@ -107,16 +126,22 @@ impl SummarizationService {
                         .save_embedding(&event_id, session_key, &embedding)
                         .await
                     {
-                        debug!("Failed to save embedding for evicted event {}: {}", idx, e);
+                        debug!(
+                            "Failed to save embedding for evicted event {}: {}",
+                            event_id, e
+                        );
                     } else {
                         debug!(
                             "Saved embedding for evicted event {} in session {}",
-                            idx, session_key
+                            event_id, session_key
                         );
                     }
                 }
                 Err(e) => {
-                    debug!("Failed to embed evicted event {}: {}", idx, e);
+                    debug!(
+                        "Failed to embed evicted event {}: {}",
+                        event_id, e
+                    );
                 }
             }
         }

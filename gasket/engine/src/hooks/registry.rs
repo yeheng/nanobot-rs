@@ -177,6 +177,7 @@ impl HookRegistry {
                     response,
                     tool_calls,
                     token_usage,
+                    vault_values: std::mem::take(&mut ctx.vault_values),
                 };
 
                 self.execute_parallel(hooks, &readonly).await
@@ -417,6 +418,7 @@ mod tests {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;
@@ -439,6 +441,7 @@ mod tests {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;
@@ -466,6 +469,7 @@ mod tests {
             response: Some("response"),
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = registry.execute(HookPoint::AfterResponse, &mut ctx).await;
@@ -527,6 +531,7 @@ mod tests {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;

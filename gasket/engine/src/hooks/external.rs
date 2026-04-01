@@ -527,6 +527,7 @@ mod hook_tests {
             response: None,
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = hook.run(&mut ctx).await;
@@ -546,6 +547,7 @@ mod hook_tests {
             response: Some("response content"),
             tool_calls: None,
             token_usage: None,
+            vault_values: Vec::new(),
         };
 
         let result = hook.run_parallel(&ctx).await;
