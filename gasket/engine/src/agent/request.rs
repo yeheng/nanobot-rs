@@ -66,20 +66,12 @@ impl<'a> RequestHandler<'a> {
     /// - HTTP 404 (Not Found) - resource not found
     #[allow(dead_code)]
     fn is_retryable_error(error: &anyhow::Error) -> bool {
-        // First check for structured ProviderError via downcast
         if let Some(provider_err) = error.downcast_ref::<ProviderError>() {
             return provider_err.is_retryable();
         }
 
         let error_str = error.to_string().to_lowercase();
 
-        // Check for HTTP status codes in error message
-        // Format: "provider API error: XXX - ..."
-        if let Some(status_code) = extract_http_status(&error_str) {
-            return is_retryable_http_status(status_code);
-        }
-
-        // Check for network-related errors
         let network_error_patterns = [
             "connection refused",
             "connection reset",
@@ -95,7 +87,7 @@ impl<'a> RequestHandler<'a> {
             "ssl error",
             "tls error",
             "certificate",
-            "hyper::error", // HTTP client errors
+            "hyper::error",
         ];
 
         for pattern in &network_error_patterns {
@@ -104,7 +96,6 @@ impl<'a> RequestHandler<'a> {
             }
         }
 
-        // Default to not retrying for unknown errors
         false
     }
 
@@ -140,56 +131,6 @@ impl<'a> RequestHandler<'a> {
     }
 }
 
-/// Extract HTTP status code from error message.
-///
-/// Looks for patterns like "401 unauthorized", "500 internal server error", etc.
-#[allow(dead_code)]
-fn extract_http_status(error_str: &str) -> Option<u16> {
-    // Common patterns in error messages:
-    // - "API error: 401 - ..."
-    // - "status: 500"
-    // - "http 429"
-
-    // Look for "API error: XXX" pattern
-    if let Some(pos) = error_str.find("api error:") {
-        let after = &error_str[pos + 10..].trim_start();
-        if let Some(space_pos) = after.find(|c: char| !c.is_ascii_digit()) {
-            if let Ok(code) = after[..space_pos].parse::<u16>() {
-                return Some(code);
-            }
-        }
-    }
-
-    // Look for "status XXX" pattern
-    if let Some(pos) = error_str.find("status ") {
-        let after = &error_str[pos + 7..];
-        if let Some(space_pos) = after.find(|c: char| !c.is_ascii_digit()) {
-            if let Ok(code) = after[..space_pos].parse::<u16>() {
-                return Some(code);
-            }
-        }
-    }
-
-    None
-}
-
-/// Check if an HTTP status code indicates a retryable error.
-#[allow(dead_code)]
-fn is_retryable_http_status(status: u16) -> bool {
-    match status {
-        // Client errors: never retry (except 429)
-        400..=428 => false,
-        // Rate limit: retry with backoff
-        429 => true,
-        // Other client errors: never retry
-        430..=499 => false,
-        // Server errors: retry
-        500..=599 => true,
-        // Other: don't retry
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,59 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn test_is_retryable_http_status() {
-        // Non-retryable client errors
-        assert!(!is_retryable_http_status(400));
-        assert!(!is_retryable_http_status(401));
-        assert!(!is_retryable_http_status(403));
-        assert!(!is_retryable_http_status(404));
-        assert!(!is_retryable_http_status(422));
-
-        // Retryable: rate limit
-        assert!(is_retryable_http_status(429));
-
-        // Retryable: server errors
-        assert!(is_retryable_http_status(500));
-        assert!(is_retryable_http_status(502));
-        assert!(is_retryable_http_status(503));
-        assert!(is_retryable_http_status(504));
-    }
-
-    #[test]
-    fn test_extract_http_status() {
-        assert_eq!(
-            extract_http_status("openai api error: 401 - unauthorized"),
-            Some(401)
-        );
-        assert_eq!(
-            extract_http_status("provider api error: 500 - internal server error"),
-            Some(500)
-        );
-        assert_eq!(extract_http_status("status 429 - rate limited"), Some(429));
-        assert_eq!(extract_http_status("random error without status"), None);
-    }
-
-    #[test]
     fn test_is_retryable_error_network() {
-        // Network errors should be retryable
         let err = anyhow::anyhow!("connection timed out");
         assert!(RequestHandler::is_retryable_error(&err));
 
         let err = anyhow::anyhow!("dns error: name resolution failed");
-        assert!(RequestHandler::is_retryable_error(&err));
-
-        // Non-retryable HTTP errors
-        let err = anyhow::anyhow!("openai api error: 401 - unauthorized");
-        assert!(!RequestHandler::is_retryable_error(&err));
-
-        let err = anyhow::anyhow!("api error: 404 - model not found");
-        assert!(!RequestHandler::is_retryable_error(&err));
-
-        // Retryable HTTP errors
-        let err = anyhow::anyhow!("api error: 429 - rate limited");
-        assert!(RequestHandler::is_retryable_error(&err));
-
-        let err = anyhow::anyhow!("api error: 503 - service unavailable");
         assert!(RequestHandler::is_retryable_error(&err));
     }
 }

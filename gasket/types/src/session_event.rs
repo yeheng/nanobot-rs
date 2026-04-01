@@ -153,13 +153,23 @@ impl Session {
     }
 
     pub fn update_from_events(&mut self, events: &[SessionEvent]) {
+        if events.is_empty() {
+            return;
+        }
+
+        self.metadata.created_at = events[0].created_at;
+
         for event in events {
             self.metadata.total_events += 1;
             if let Some(ref usage) = event.metadata.token_usage {
                 self.metadata.total_tokens += (usage.input_tokens + usage.output_tokens) as u64;
             }
+            if event.event_type.is_summary() {
+                self.metadata.last_consolidated_event = Some(event.id);
+            }
         }
-        self.metadata.updated_at = Utc::now();
+
+        self.metadata.updated_at = events.last().unwrap().created_at;
     }
 }
 

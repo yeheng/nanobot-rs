@@ -76,20 +76,11 @@ pub struct CompressionActor {
 }
 
 impl CompressionActor {
-    /// Spawn the compression actor and return a task sender.
+    /// Spawn the compression actor and return a task sender and join handle.
     ///
     /// Creates a new actor instance and spawns it on the tokio runtime.
-    /// Returns an mpsc sender that can be used to submit compression tasks.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_store` - Event store for loading and persisting events
-    /// * `summarization` - Service for generating summaries
-    /// * `embedding_service` - Service for generating embeddings
-    ///
-    /// # Returns
-    ///
-    /// An mpsc sender for submitting compression tasks
+    /// Returns a tuple of (mpsc sender, JoinHandle) for submitting tasks
+    /// and graceful shutdown.
     pub fn spawn(
         event_store: Arc<gasket_storage::EventStore>,
         summarization: Arc<dyn SummarizationService>,

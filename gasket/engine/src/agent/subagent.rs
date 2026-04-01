@@ -570,6 +570,24 @@ impl<'a> SubagentTaskBuilder<'a> {
     }
 }
 
+async fn build_subagent_internal(
+    provider: Arc<dyn LlmProvider>,
+    workspace: PathBuf,
+    config: AgentConfig,
+    tools: Arc<ToolRegistry>,
+    system_prompt: Option<&str>,
+) -> anyhow::Result<AgentLoop> {
+    let mut agent = AgentLoop::for_subagent(provider, workspace.clone(), config, tools)?;
+
+    let sys = match system_prompt {
+        Some(s) => s.to_string(),
+        None => prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?,
+    };
+    agent.set_system_prompt(sys);
+
+    Ok(agent)
+}
+
 impl SubagentManager {
     pub async fn new(
         provider: Arc<dyn LlmProvider>,
@@ -694,14 +712,24 @@ impl SubagentManager {
         SubagentTaskBuilder::new(self, subagent_id.into(), task.into())
     }
 
+    async fn build_subagent(
+        &self,
+        provider: Arc<dyn LlmProvider>,
+        config: AgentConfig,
+        system_prompt: Option<&str>,
+    ) -> anyhow::Result<AgentLoop> {
+        build_subagent_internal(
+            provider,
+            self.workspace.clone(),
+            config,
+            self.tools.clone(),
+            system_prompt,
+        )
+        .await
+    }
+
     #[instrument(name = "subagent.submit", skip_all)]
     pub fn submit(&self, prompt: &str, channel: &str, chat_id: &str) -> anyhow::Result<()> {
-        let provider = self.provider.clone();
-        let workspace = self.workspace.clone();
-        let tools = self.tools.clone();
-        let outbound_tx = self.outbound_tx.clone();
-        let prompt = prompt.to_string();
-
         let channel_enum = match channel {
             "telegram" => gasket_types::ChannelType::Telegram,
             "discord" => gasket_types::ChannelType::Discord,
@@ -713,65 +741,52 @@ impl SubagentManager {
         };
         let chat_id = chat_id.to_string();
         let session_key = SessionKey::new(channel_enum.clone(), &chat_id);
+        let outbound_tx = self.outbound_tx.clone();
+        let provider = self.provider.clone();
+        let workspace = self.workspace.clone();
+        let tools = self.tools.clone();
+        let prompt = prompt.to_string();
 
         tokio::spawn(async move {
-            info!("Subagent task started: {}", prompt);
-            let agent_config = AgentConfig {
+            let config = AgentConfig {
                 model: provider.default_model().to_string(),
                 max_iterations: 10,
                 ..Default::default()
             };
-
-            let mut agent =
-                match AgentLoop::for_subagent(provider, workspace.clone(), agent_config, tools) {
+            let agent =
+                match build_subagent_internal(provider, workspace, config, tools, None).await {
                     Ok(a) => a,
                     Err(e) => {
                         warn!("Failed to initialise subagent: {}", e);
                         return;
                     }
                 };
-
-            // Load minimal system prompt directly (no hook dispatch)
-            let system_prompt =
-                match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to load minimal system prompt: {}", e);
-                        return;
-                    }
-                };
-            agent.set_system_prompt(system_prompt);
-
             let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
             let result = tokio::time::timeout(
                 timeout_duration,
                 agent.process_direct(&prompt, &session_key),
             )
             .await;
-
             let content = match result {
-                Ok(Ok(response)) => format!("Background task completed:\n{}", response.content),
+                Ok(Ok(response)) => {
+                    format!("Background task completed:\n{}", response.content)
+                }
                 Ok(Err(e)) => format!("Background task failed: {}", e),
                 Err(_) => format!(
                     "Background task failed: Execution timed out after {:?}",
                     timeout_duration
                 ),
             };
-
-            let msg = gasket_types::OutboundMessage {
-                channel: channel_enum,
-                chat_id,
-                content,
-                metadata: None,
-                trace_id: None,
-                ws_message: None,
-            };
-
-            // Route through the Outbound Actor — no direct HTTP call
-            if let Err(e) = outbound_tx.send(msg).await {
-                warn!("Failed to send subagent result to outbound channel: {}", e);
-            }
+            let _ = outbound_tx
+                .send(gasket_types::OutboundMessage {
+                    channel: channel_enum,
+                    chat_id,
+                    content,
+                    metadata: None,
+                    trace_id: None,
+                    ws_message: None,
+                })
+                .await;
         });
 
         Ok(())
@@ -802,20 +817,9 @@ impl SubagentManager {
             ..Default::default()
         };
 
-        let mut agent = AgentLoop::for_subagent(
-            self.provider.clone(),
-            self.workspace.clone(),
-            agent_config,
-            self.tools.clone(),
-        )?;
-
-        let sys = match system_prompt {
-            Some(s) => s.to_string(),
-            None => {
-                prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?
-            }
-        };
-        agent.set_system_prompt(sys);
+        let agent = self
+            .build_subagent(self.provider.clone(), agent_config, system_prompt)
+            .await?;
 
         let channel_enum = gasket_types::ChannelType::new(channel);
         let session_key = SessionKey::new(channel_enum, chat_id);
@@ -833,12 +837,6 @@ impl SubagentManager {
     ///
     /// This method allows switching to a different provider/model for the
     /// subagent execution. Used by the `switch_model` tool.
-    ///
-    /// # Arguments
-    /// * `prompt_text` - The task description for the subagent
-    /// * `system_prompt` - Optional custom system prompt (uses minimal bootstrap if None)
-    /// * `provider` - The LLM provider to use for this execution
-    /// * `agent_config` - Agent configuration including model, temperature, etc.
     #[instrument(name = "subagent.submit_and_wait_with_model", skip_all)]
     pub async fn submit_and_wait_with_model(
         &self,
@@ -854,20 +852,9 @@ impl SubagentManager {
             agent_config.model, &prompt_text
         );
 
-        let mut agent = AgentLoop::for_subagent(
-            provider,
-            self.workspace.clone(),
-            agent_config,
-            self.tools.clone(),
-        )?;
-
-        let sys = match system_prompt {
-            Some(s) => s.to_string(),
-            None => {
-                prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?
-            }
-        };
-        agent.set_system_prompt(sys);
+        let agent = self
+            .build_subagent(provider, agent_config, system_prompt)
+            .await?;
 
         let channel_enum = gasket_types::ChannelType::new(channel);
         let session_key = SessionKey::new(channel_enum, chat_id);
@@ -886,13 +873,6 @@ impl SubagentManager {
     /// This method allows switching to a different provider/model for the
     /// subagent execution with streaming support. Used by the `switch_model` tool
     /// to send real-time updates to WebSocket clients.
-    ///
-    /// # Arguments
-    /// * `prompt_text` - The task description for the subagent
-    /// * `system_prompt` - Optional custom system prompt (uses minimal bootstrap if None)
-    /// * `provider` - The LLM provider to use for this execution
-    /// * `agent_config` - Agent configuration including model, temperature, etc.
-    /// * `stream_callback` - Callback function for streaming events
     #[instrument(name = "subagent.submit_and_wait_with_model_streaming", skip_all)]
     pub async fn submit_and_wait_with_model_streaming<F>(
         &self,
@@ -910,30 +890,17 @@ impl SubagentManager {
             agent_config.model, prompt_text
         );
 
-        let mut agent = AgentLoop::for_subagent(
-            provider,
-            self.workspace.clone(),
-            agent_config,
-            self.tools.clone(),
-        )?;
-
-        let sys = match system_prompt {
-            Some(s) => s.to_string(),
-            None => {
-                prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?
-            }
-        };
-        agent.set_system_prompt(sys);
+        let agent = self
+            .build_subagent(provider, agent_config, system_prompt)
+            .await?;
 
         let session_key = SessionKey::new(gasket_types::ChannelType::Cli, "model_switch_streaming");
 
-        // Use channel-based streaming API
         let (mut event_rx, result_handle) = agent
             .process_direct_streaming_with_channel(prompt_text, &session_key)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        // Forward events to callback
         let forward_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 stream_callback(event);
