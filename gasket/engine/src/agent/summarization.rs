@@ -103,18 +103,12 @@ impl SummarizationService {
             // Skip events that already have embeddings (idempotent)
             match self.store.has_embedding(&event_id).await {
                 Ok(true) => {
-                    debug!(
-                        "Embedding already exists for event {}, skipping",
-                        event_id
-                    );
+                    debug!("Embedding already exists for event {}, skipping", event_id);
                     continue;
                 }
                 Ok(false) => {}
                 Err(e) => {
-                    debug!(
-                        "Failed to check existing embedding for {}: {}",
-                        event_id, e
-                    );
+                    debug!("Failed to check existing embedding for {}: {}", event_id, e);
                     // Continue anyway — worst case we re-compute
                 }
             }
@@ -138,10 +132,7 @@ impl SummarizationService {
                     }
                 }
                 Err(e) => {
-                    debug!(
-                        "Failed to embed evicted event {}: {}",
-                        event_id, e
-                    );
+                    debug!("Failed to embed evicted event {}: {}", event_id, e);
                 }
             }
         }
