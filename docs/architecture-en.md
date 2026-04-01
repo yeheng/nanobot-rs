@@ -8,39 +8,38 @@
 
 ```
 gasket-rs/                    (Cargo workspace)
-├── gasket-core/              Core library — all business logic
+├── engine/                   Core orchestration crate — Agent engine, tools, Hook system
 │   └── src/
 │       ├── agent/             Agent core engine (loop, executor, prompt, history, stream, summarization, subagent, context)
 │       ├── bus/               Message bus (Actor model: Router/Session/Outbound)
-│       ├── channels/          Communication channels (Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, WebSocket) - conditional compilation
+│       ├── channels/          Communication channels re-export (from channels)
 │       ├── config/            Configuration loading (YAML → Struct)
 │       ├── cron/              Scheduled task service
 │       ├── crypto/            Cryptographic tools
 │       ├── heartbeat/         Heartbeat service
 │       ├── hooks/             Pipeline Hook system (BeforeRequest, AfterResponse, etc.)
-│       ├── memory/            Storage layer abstraction (re-export from gasket-storage)
-│       ├── providers/         LLM provider abstraction (re-export from gasket-providers)
-│       ├── search/            Search type definitions (re-export from gasket-semantic)
+│       ├── memory/            Storage layer re-export (from storage)
+│       ├── providers/         LLM provider re-export (from providers)
 │       ├── session/           Session management (SQLite backend)
 │       ├── skills/            Skills system (loader, registry, skill, metadata)
-│       ├── tools/             Tool system (12 built-in tools, re-export trait from gasket-types)
-│       ├── vault/             Sensitive data isolation (re-export from gasket-vault)
+│       ├── tools/             Tool system (12 built-in tools)
+│       ├── vault/             Sensitive data isolation re-export (from vault)
 │       ├── webhook/           Webhook server
 │       └── workspace/         Workspace template files
-├── gasket-cli/               CLI executable
+├── cli/                      CLI executable
 │   └── src/
 │       ├── main.rs            Command entry + Gateway launcher
 │       ├── cli.rs             CLI interactive mode
 │       ├── provider.rs        Provider factory
 │       └── commands/          Subcommands (onboard, status, agent, gateway, channels, cron, vault)
-├── gasket-types/             Shared type definitions (Tool trait, events, SessionEvent/EventType, Session aggregate types for event sourcing, etc.)
-├── gasket-providers/         LLM provider implementations
-├── gasket-storage/           SQLite storage implementation
-├── gasket-vault/             Vault sensitive data management
-├── gasket-channels/          Communication channel implementations
-├── gasket-sandbox/           Sandbox execution environment
-├── gasket-semantic/          Semantic search/embeddings
-└── tantivy-mcp/              Tantivy search MCP server (standalone binary)
+├── types/                    Shared type definitions (Tool trait, events, etc.)
+├── providers/                LLM provider implementations
+├── storage/                  SQLite storage + embedding
+├── vault/                    Vault sensitive data management
+├── channels/                 Communication channel implementations
+├── sandbox/                  Sandbox execution environment
+├── bus/                      Message bus Actor implementation
+└── tantivy/                  Tantivy search MCP server (standalone binary)
 ```
 
 ---
@@ -49,17 +48,17 @@ gasket-rs/                    (Cargo workspace)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        gasket-cli (Binary)                      │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐ │
-│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │ │
-│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │ │
-│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘ │
+│                        cli (Binary)                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐   │
+│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │   │
+│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │   │
+│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘   │
 └────────────────────────────────┼───────────┼─────────────────────┘
                                  │           │
 ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
                                  │           │
 ┌────────────────────────────────┼───────────┼─────────────────────┐
-│                        gasket-core (Library)                    │
+│                        engine (Library)                          │
 │                                │           │                     │
 │  ┌─────────────────────────────▼───────────▼──────────────────┐  │
 │  │                      Agent Loop (Core Engine)               │  │
@@ -119,7 +118,7 @@ gasket-rs/                    (Cargo workspace)
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Vault (Sensitive Data Isolation)           │  │
-│  │              (re-export from gasket-vault)              │  │
+│  │              (re-export from vault)              │  │
 │  │                                                         │  │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
 │  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
@@ -132,13 +131,13 @@ gasket-rs/                    (Cargo workspace)
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Search (Search Types Module)               │  │
-│  │              (re-export from gasket-semantic)           │  │
+│  │              (re-export from storage with local-embedding)           │  │
 │  │                                                         │  │
 │  │  SearchQuery: BooleanQuery, FuzzyQuery, DateRange       │  │
 │  │  SearchResult: HighlightedText                          │  │
 │  │  TextEmbedder, cosine_similarity                        │  │
 │  │  Note: Advanced Tantivy full-text search migrated       │  │
-│  │        to standalone tantivy-mcp service                │  │
+│  │        to standalone tantivy service                │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 
@@ -168,27 +167,27 @@ gasket-rs/                    (Cargo workspace)
 ## Module Dependencies
 
 ```
-gasket-core
+engine
     │
-    ├── re-exports from gasket-types
+    ├── re-exports from types
     │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
     │
-    ├── re-exports from gasket-providers
+    ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
-    ├── re-exports from gasket-storage
+    ├── re-exports from storage
     │       └── SqliteStore, MemoryStore trait
     │
-    ├── re-exports from gasket-vault
+    ├── re-exports from vault
     │       └── VaultStore, VaultInjector, crypto types
     │
-    ├── re-exports from gasket-semantic
+    ├── re-exports from storage
     │       └── TextEmbedder, semantic search types
     │
-    ├── optional: gasket-channels (feature flags)
+    ├── optional: channels (feature flags)
     │       └── Telegram, Discord, Slack, etc.
     │
-    └── optional: gasket-mcp (feature flags)
+    └── optional: mcp (feature flags)
             └── MCP client, manager
 ```
 
@@ -298,12 +297,10 @@ pub enum HookPoint {
 
 | Crate | Purpose | Dependencies |
 |-------|---------|--------------|
-| `gasket-types` | Shared type definitions, minimal deps | None |
-| `gasket-providers` | LLM provider implementations | gasket-types, async-trait |
-| `gasket-storage` | SQLite storage | gasket-types, sqlx |
-| `gasket-vault` | Vault encrypted storage | XChaCha20-Poly1305, Argon2 |
-| `gasket-channels` | Communication channels | teloxide, serenity, etc. |
-| `gasket-sandbox` | Sandbox execution | gasket-sandbox |
-| `gasket-semantic` | Semantic search | text-embeddings-inference |
-| `gasket-mcp` | MCP protocol | jsonrpc-core |
-| `tantivy-mcp` | Full-text search MCP server | tantivy |
+| `types` | Shared type definitions, minimal deps | None |
+| `providers` | LLM provider implementations | types, async-trait |
+| `storage` | SQLite storage + embedding | types, sqlx |
+| `vault` | Vault encrypted storage | XChaCha20-Poly1305, Argon2 |
+| `channels` | Communication channels | teloxide, serenity, etc. |
+| `sandbox` | Sandbox execution | sandbox |
+| `tantivy` | Full-text search MCP server | tantivy |

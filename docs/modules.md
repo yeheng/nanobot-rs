@@ -6,7 +6,7 @@
 
 ## 1. providers/ — LLM 提供商抽象层
 
-> **注意**: 核心类型从 `gasket-providers` crate re-export，保持向后兼容。
+> **注意**: 核心类型从 `providers` crate re-export，保持向后兼容。
 
 ### 核心 Trait
 
@@ -70,7 +70,7 @@ trait LlmProvider: Send + Sync {
 
 ## 2. tools/ — 工具系统
 
-> **注意**: `Tool` trait 和基础类型从 `gasket-types` re-export，沙箱类型从 `gasket-sandbox` re-export。
+> **注意**: `Tool` trait 和基础类型从 `types` re-export，沙箱类型从 `sandbox` re-export。
 
 ### 核心 Trait
 
@@ -110,13 +110,13 @@ trait Tool: Send + Sync {
 | `registry.rs` | `ToolRegistry` — 工具注册表，管理所有可用工具 |
 | `base.rs` | 工具基础类型和辅助函数 |
 
-> **注意**: 沙箱相关类型（`ProcessManager`, `SandboxConfig`）从 `gasket-sandbox` crate re-export。
+> **注意**: 沙箱相关类型（`ProcessManager`, `SandboxConfig`）从 `sandbox` crate re-export。
 
 ---
 
 ## 3. channels/ — 通信渠道
 
-> **注意**: `Channel` trait 和相关类型从 `gasket-channels` crate 定义，核心代码通过 feature flag 条件编译集成。
+> **注意**: `Channel` trait 和相关类型从 `channels` crate 定义，核心代码通过 feature flag 条件编译集成。
 
 ### 核心 Trait
 
@@ -158,7 +158,7 @@ trait Channel: Send + Sync {
 
 ## 4. mcp/ — Model Context Protocol
 
-> **注意**: MCP 功能从 `gasket-mcp` crate 提供，核心模块通过条件编译集成。
+> **注意**: MCP 功能内嵌在 `engine` crate，通过条件编译集成。
 
 ```
 ┌─────────────┐    JSON-RPC 2.0     ┌──────────────────┐
@@ -188,7 +188,7 @@ trait Channel: Send + Sync {
 
 | 文件 | 职责 |
 |------|------|
-| `events.rs` | 从 `gasket-types` re-export 事件类型: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
+| `events.rs` | 从 `types` re-export 事件类型: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
 | `actors.rs` | 三个 Actor: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
 | `queue.rs` | 消息队列封装 |
 
@@ -244,7 +244,7 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
 
 ## 7. memory/ — 存储抽象层
 
-> **注意**: 实际实现从 `gasket-storage` crate re-export。
+> **注意**: 实际实现从 `storage` crate re-export。
 
 ### MemoryStore Trait
 
@@ -371,7 +371,7 @@ manager.submit_and_wait(prompt, system_prompt, channel, chat_id).await?;
 ## 11. vault/ — 敏感数据隔离模块
 
 > 详细使用指南见 [vault-guide.md](vault-guide.md)
-> **注意**: 核心类型从 `gasket-vault` crate re-export。
+> **注意**: 核心类型从 `vault` crate re-export。
 
 ### 核心组件
 
@@ -399,9 +399,9 @@ manager.submit_and_wait(prompt, system_prompt, channel, chat_id).await?;
 
 ---
 
-## 12. search/ — 搜索类型定义
+## 12. search/ — 搜索与嵌入
 
-> **注意**: 基础搜索类型从 `gasket-semantic` crate re-export。
+> **注意**: 搜索功能在 `storage` crate 中实现（`local-embedding` feature）。
 
 ### 核心类型
 
@@ -429,13 +429,13 @@ pub struct HighlightedText {
 
 ### 语义搜索
 
-从 `gasket-semantic` re-export:
+从 `storage` crate:
 
-- `TextEmbedder` — 文本嵌入生成
+- `TextEmbedder` — 文本嵌入生成 (fastembed)
 - `cosine_similarity` — 余弦相似度计算
 - `top_k_similar` — Top-K 相似向量检索
 
-> **注意**: 高级 Tantivy 全文搜索已迁移到独立的 `tantivy-mcp` MCP 服务器。
+> **注意**: 高级 Tantivy 全文搜索在独立的 `tantivy` crate 中。
 
 ---
 

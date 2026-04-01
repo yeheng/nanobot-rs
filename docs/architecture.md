@@ -8,39 +8,38 @@
 
 ```
 gasket-rs/                    (Cargo workspace)
-├── gasket-core/              核心库 — 所有业务逻辑
+├── engine/                   核心编排 crate — Agent 引擎、工具、Hook 系统
 │   └── src/
 │       ├── agent/             Agent 核心引擎 (loop, executor, prompt, history, stream, summarization, subagent, context)
 │       ├── bus/               消息总线 (Actor 模型: Router/Session/Outbound)
-│       ├── channels/          通信渠道 (Telegram, Discord, Slack, 飞书, 邮件, 钉钉, 企业微信, WebSocket) - 条件编译
+│       ├── channels/          通信渠道 re-export (从 channels)
 │       ├── config/            配置加载 (YAML → Struct)
 │       ├── cron/              定时任务服务
 │       ├── crypto/            加密工具
 │       ├── heartbeat/         心跳服务
 │       ├── hooks/             Pipeline Hook 系统 (BeforeRequest, AfterResponse, etc.)
-│       ├── memory/            存储层抽象 (从 gasket-storage re-export)
-│       ├── providers/         LLM 提供商抽象 (从 gasket-providers re-export)
-│       ├── search/            搜索类型定义 (从 gasket-semantic re-export)
+│       ├── memory/            存储层 re-export (从 storage)
+│       ├── providers/         LLM 提供商 re-export (从 providers)
 │       ├── session/           会话管理 (SQLite 后端)
 │       ├── skills/            技能系统 (loader, registry, skill, metadata)
-│       ├── tools/             工具系统 (12 个内置工具, 从 gasket-types re-export trait)
-│       ├── vault/             敏感数据隔离 (从 gasket-vault re-export)
+│       ├── tools/             工具系统 (12 个内置工具)
+│       ├── vault/             敏感数据隔离 re-export (从 vault)
 │       ├── webhook/           Webhook 服务器
 │       └── workspace/         工作空间模板文件
-├── gasket-cli/               CLI 可执行文件
+├── cli/                      CLI 可执行文件
 │   └── src/
 │       ├── main.rs            命令入口 + Gateway 启动器
 │       ├── cli.rs             CLI 交互模式
 │       ├── provider.rs        Provider 工厂
 │       └── commands/          子命令 (onboard, status, agent, gateway, channels, cron, vault)
-├── gasket-types/             共享类型定义 (Tool trait, events 等)
-├── gasket-providers/         LLM 提供商实现
-├── gasket-storage/           SQLite 存储实现
-├── gasket-vault/             Vault 敏感数据管理
-├── gasket-channels/          通信渠道实现
-├── gasket-sandbox/           沙箱执行环境
-├── gasket-semantic/          语义搜索/嵌入
-└── tantivy-mcp/              Tantivy 搜索 MCP 服务器 (独立二进制)
+├── types/                    共享类型定义 (Tool trait, events 等)
+├── providers/                LLM 提供商实现
+├── storage/                  SQLite 存储实现
+├── vault/                    Vault 敏感数据管理
+├── channels/                 通信渠道实现
+├── sandbox/                  沙箱执行环境
+├── bus/                      消息总线 Actor 实现
+└── tantivy/                  Tantivy 搜索 MCP 服务器 (独立二进制)
 ```
 
 ---
@@ -49,17 +48,17 @@ gasket-rs/                    (Cargo workspace)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        gasket-cli (Binary)                      │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐ │
-│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │ │
-│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │ │
-│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘ │
+│                        cli (Binary)                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐   │
+│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │   │
+│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │   │
+│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘   │
 └────────────────────────────────┼───────────┼─────────────────────┘
                                  │           │
 ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
                                  │           │
 ┌────────────────────────────────┼───────────┼─────────────────────┐
-│                        gasket-core (Library)                    │
+│                        engine (Library)                          │
 │                                │           │                     │
 │  ┌─────────────────────────────▼───────────▼──────────────────┐  │
 │  │                      Agent Loop (核心引擎)                  │  │
@@ -119,7 +118,7 @@ gasket-rs/                    (Cargo workspace)
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Vault (敏感数据隔离模块)                    │  │
-│  │              (re-export from gasket-vault)              │  │
+│  │              (re-export from vault crate)               │  │
 │  │                                                         │  │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
 │  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
@@ -131,13 +130,13 @@ gasket-rs/                    (Cargo workspace)
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Search (搜索类型模块)                       │  │
-│  │              (re-export from gasket-semantic)           │  │
+│  │              Search/Embedding (搜索/嵌入模块)            │  │
+│  │              (from storage crate with local-embedding)  │  │
 │  │                                                         │  │
 │  │  SearchQuery: BooleanQuery, FuzzyQuery, DateRange       │  │
 │  │  SearchResult: HighlightedText                          │  │
 │  │  TextEmbedder, cosine_similarity                        │  │
-│  │  注: 高级 Tantivy 全文搜索已迁移到独立的 tantivy-mcp 服务 │  │
+│  │  注: 高级 Tantivy 全文搜索在独立的 tantivy crate         │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 
@@ -167,27 +166,24 @@ gasket-rs/                    (Cargo workspace)
 ## 模块依赖关系
 
 ```
-gasket-core
+engine
     │
-    ├── re-exports from gasket-types
+    ├── re-exports from types
     │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
     │
-    ├── re-exports from gasket-providers
+    ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
-    ├── re-exports from gasket-storage
+    ├── re-exports from storage
     │       └── SqliteStore, MemoryStore trait
     │
-    ├── re-exports from gasket-vault
+    ├── re-exports from vault
     │       └── VaultStore, VaultInjector, crypto types
     │
-    ├── re-exports from gasket-semantic
-    │       └── TextEmbedder, semantic search types
-    │
-    ├── optional: gasket-channels (feature flags)
+    ├── optional: channels (feature flags)
     │       └── Telegram, Discord, Slack, etc.
     │
-    └── optional: gasket-mcp (feature flags)
+    └── optional: mcp (feature flags)
             └── MCP client, manager
 ```
 
@@ -242,12 +238,10 @@ pub enum HookPoint {
 
 | Crate | 用途 | 依赖 |
 |-------|------|------|
-| `gasket-types` | 共享类型定义，最小依赖 | 无 |
-| `gasket-providers` | LLM 提供商实现 | gasket-types, async-trait |
-| `gasket-storage` | SQLite 存储 | gasket-types, sqlx |
-| `gasket-vault` | Vault 加密存储 | AES-GCM, Argon2 |
-| `gasket-channels` | 通信渠道 | teloxide, serenity, etc. |
-| `gasket-sandbox` | 沙箱执行 | gasket-sandbox |
-| `gasket-semantic` | 语义搜索 | text-embeddings-inference |
-| `gasket-mcp` | MCP 协议 | jsonrpc-core |
-| `tantivy-mcp` | 全文搜索 MCP 服务器 | tantivy |
+| `types` | 共享类型定义，最小依赖 | 无 |
+| `providers` | LLM 提供商实现 | types, async-trait |
+| `storage` | SQLite 存储 + embedding | types, sqlx, fastembed |
+| `vault` | Vault 加密存储 | AES-GCM, Argon2 |
+| `channels` | 通信渠道 | teloxide, serenity, etc. |
+| `sandbox` | 沙箱执行 | sandbox |
+| `tantivy` | 全文搜索 MCP 服务器 | tantivy |
