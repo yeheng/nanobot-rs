@@ -8,13 +8,13 @@ use std::sync::Arc;
 use tracing::debug;
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::top_k_similar;
-use gasket_storage::SqliteStore;
+use gasket_storage::{top_k_similar, EventStore, SqliteStore};
 #[cfg(feature = "local-embedding")]
 use gasket_storage::TextEmbedder;
-use gasket_types::SessionEvent;
+use gasket_types::{EventMetadata, EventType, SessionEvent, SummaryType};
 
 use crate::agent::count_tokens;
+use crate::vault::redact_secrets;
 
 /// Fixed prompt for LLM summarization
 pub const SUMMARIZATION_PROMPT: &str =
@@ -34,6 +34,8 @@ pub const RECALL_PREFIX: &str = "[回忆]";
 pub struct SummarizationService {
     provider: Arc<dyn LlmProvider>,
     store: Arc<SqliteStore>,
+    /// Event store for persisting summaries as EventType::Summary events.
+    event_store: Arc<EventStore>,
     model: String,
     /// Optional text embedder for semantic history recall
     #[cfg(feature = "local-embedding")]
@@ -42,10 +44,16 @@ pub struct SummarizationService {
 
 impl SummarizationService {
     /// Create a new summarization service.
-    pub fn new(provider: Arc<dyn LlmProvider>, store: Arc<SqliteStore>, model: String) -> Self {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        store: Arc<SqliteStore>,
+        event_store: Arc<EventStore>,
+        model: String,
+    ) -> Self {
         Self {
             provider,
             store,
+            event_store,
             model,
             #[cfg(feature = "local-embedding")]
             embedder: None,
@@ -57,12 +65,14 @@ impl SummarizationService {
     pub fn with_embedder(
         provider: Arc<dyn LlmProvider>,
         store: Arc<SqliteStore>,
+        event_store: Arc<EventStore>,
         model: String,
         embedder: Arc<TextEmbedder>,
     ) -> Self {
         Self {
             provider,
             store,
+            event_store,
             model,
             embedder: Some(embedder),
         }
@@ -75,11 +85,15 @@ impl SummarizationService {
     }
 
     /// Load an existing summary for a session.
+    ///
+    /// Queries the latest `EventType::Summary` event from the event stream
+    /// instead of the deprecated `session_summaries` table.
     pub async fn load_summary(&self, session_key: &str) -> Option<String> {
-        match self.store.load_session_summary(session_key).await {
-            Ok(s) => s,
+        match self.event_store.get_latest_summary(session_key, "main").await {
+            Ok(Some(event)) => Some(event.content),
+            Ok(None) => None,
             Err(e) => {
-                debug!("Failed to load session summary: {}", e);
+                debug!("Failed to load session summary from event store: {}", e);
                 None
             }
         }
@@ -97,33 +111,38 @@ impl SummarizationService {
             return;
         };
 
+        // Phase 1: filter out events that already have embeddings
+        let mut to_embed: Vec<&SessionEvent> = Vec::new();
         for event in evicted_events {
             let event_id = event.id.to_string();
-
-            // Skip events that already have embeddings (idempotent)
             match self.store.has_embedding(&event_id).await {
                 Ok(true) => {
                     debug!("Embedding already exists for event {}, skipping", event_id);
-                    continue;
                 }
-                Ok(false) => {}
+                Ok(false) => to_embed.push(event),
                 Err(e) => {
                     debug!("Failed to check existing embedding for {}: {}", event_id, e);
-                    // Continue anyway — worst case we re-compute
+                    to_embed.push(event); // try anyway
                 }
             }
+        }
 
-            match embedder.embed(&event.content) {
-                Ok(embedding) => {
+        if to_embed.is_empty() {
+            return;
+        }
+
+        // Phase 2: batch embed all new events in a single call
+        let texts: Vec<String> = to_embed.iter().map(|e| e.content.clone()).collect();
+        match embedder.embed_batch(&texts) {
+            Ok(embeddings) => {
+                for (event, embedding) in to_embed.into_iter().zip(embeddings) {
+                    let event_id = event.id.to_string();
                     if let Err(e) = self
                         .store
                         .save_embedding(&event_id, session_key, &embedding)
                         .await
                     {
-                        debug!(
-                            "Failed to save embedding for evicted event {}: {}",
-                            event_id, e
-                        );
+                        debug!("Failed to save embedding for evicted event {}: {}", event_id, e);
                     } else {
                         debug!(
                             "Saved embedding for evicted event {} in session {}",
@@ -131,9 +150,13 @@ impl SummarizationService {
                         );
                     }
                 }
-                Err(e) => {
-                    debug!("Failed to embed evicted event {}: {}", event_id, e);
-                }
+            }
+            Err(e) => {
+                debug!(
+                    "Batch embedding failed for {} events: {}",
+                    texts.len(),
+                    e
+                );
             }
         }
     }
@@ -148,6 +171,7 @@ impl SummarizationService {
         session_key: &str,
         evicted_events: &[SessionEvent],
         existing_summary: &Option<String>,
+        vault_values: &[String],
     ) -> anyhow::Result<String> {
         // Build context for summarization: existing summary + evicted (old) events
         let mut context_parts = Vec::new();
@@ -194,15 +218,36 @@ impl SummarizationService {
             anyhow::bail!("Summarization returned empty content");
         }
 
-        // Persist the summary
-        self.store
-            .save_session_summary(session_key, &summary_text)
-            .await?;
+        // Redact secrets before persisting to prevent leaked vault values
+        let summary_to_persist = if !vault_values.is_empty() {
+            redact_secrets(&summary_text, vault_values)
+        } else {
+            summary_text.clone()
+        };
+
+        // Persist the summary as an EventType::Summary event (single source of truth)
+        let covered_ids: Vec<uuid::Uuid> = evicted_events.iter().map(|e| e.id).collect();
+        let summary_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key.to_string(),
+            event_type: EventType::Summary {
+                summary_type: SummaryType::Compression {
+                    token_budget: 8000,
+                },
+                covered_event_ids: covered_ids,
+            },
+            content: summary_to_persist,
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: chrono::Utc::now(),
+        };
+        self.event_store.append_event(&summary_event).await?;
 
         debug!(
-            "Generated and saved session summary for {}: {} tokens",
+            "Generated and saved summary event for {}: {} tokens, covering {} events",
             session_key,
-            count_tokens(&summary_text)
+            count_tokens(&summary_text),
+            evicted_events.len()
         );
 
         Ok(summary_text)
@@ -216,6 +261,7 @@ impl SummarizationService {
         &self,
         session_key: &str,
         evicted_events: &[SessionEvent],
+        vault_values: &[String],
     ) -> anyhow::Result<Option<String>> {
         if !evicted_events.is_empty() {
             // Save embeddings for evicted events (enables semantic recall)
@@ -225,7 +271,7 @@ impl SummarizationService {
 
             let existing_summary = self.load_summary(session_key).await;
             match self
-                .summarize(session_key, evicted_events, &existing_summary)
+                .summarize(session_key, evicted_events, &existing_summary, vault_values)
                 .await
             {
                 Ok(new_summary) => Ok(Some(new_summary)),

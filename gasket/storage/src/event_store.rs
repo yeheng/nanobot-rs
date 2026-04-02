@@ -298,6 +298,32 @@ impl EventStore {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Get the most recent summary event for a session branch.
+    ///
+    /// Returns the latest `EventType::Summary` event, which serves as a
+    /// checkpoint for context reconstruction. Used by the compression
+    /// pipeline to load the existing summary before generating a new one.
+    pub async fn get_latest_summary(
+        &self,
+        session_key: &str,
+        branch: &str,
+    ) -> Result<Option<SessionEvent>, StoreError> {
+        let row = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT * FROM session_events
+            WHERE session_key = ? AND branch = ? AND event_type = 'summary'
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(session_key)
+        .bind(branch)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|r| r.try_into()).transpose()
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

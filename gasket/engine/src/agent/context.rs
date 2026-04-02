@@ -19,7 +19,7 @@
 //!
 //! ```ignore
 //! // Main agent with persistence
-//! let context = AgentContext::persistent(event_store, compression_tx);
+//! let context = AgentContext::persistent(event_store);
 //!
 //! // Subagent without persistence
 //! let context = AgentContext::Stateless;
@@ -29,27 +29,12 @@
 //! ```
 
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tracing::debug;
 
 use crate::error::AgentError;
 use gasket_storage::EventStore;
 use gasket_types::SessionKey;
-use gasket_types::{Session, SessionEvent, SummaryType};
-
-/// Compression task for background summarization.
-#[derive(Debug, Clone)]
-pub struct CompressionTask {
-    /// Session key for the task
-    pub session_key: String,
-    /// Branch name
-    pub branch: String,
-    /// Events to be compressed
-    pub evicted_events: Vec<uuid::Uuid>,
-    /// Type of compression
-    pub compression_type: SummaryType,
-    /// Number of retry attempts
-    pub retry_count: u32,
-}
+use gasket_types::{Session, SessionEvent};
 
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
@@ -67,52 +52,39 @@ pub enum AgentContext {
 
 /// Persistent context data for main agents.
 ///
-/// Holds references to all services needed for session persistence,
-/// event storage, and context compression.
+/// Holds references to the event store needed for session persistence.
 #[derive(Clone)]
 pub struct PersistentContext {
     /// Event store for persisting events
     pub event_store: Arc<EventStore>,
-
-    /// Compression task sender for background summarization
-    pub compression_tx: mpsc::Sender<CompressionTask>,
 }
 
 impl std::fmt::Debug for PersistentContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentContext")
             .field("event_store", &"EventStore { .. }")
-            .field("compression_tx", &"mpsc::Sender<CompressionTask>")
             .finish()
     }
 }
 
 impl AgentContext {
-    /// Create a persistent context with event store and compression channel.
+    /// Create a persistent context with event store.
     ///
     /// This is the main constructor for main agents that need persistence.
     ///
     /// # Arguments
     ///
     /// * `event_store` - Event store for persisting session events
-    /// * `compression_tx` - Channel sender for background compression tasks
     ///
     /// # Example
     ///
     /// ```ignore
     /// let event_store = Arc::new(EventStore::new(pool));
-    /// let (tx, _rx) = mpsc::channel(64);
-    /// let context = AgentContext::persistent(event_store, tx);
+    /// let context = AgentContext::persistent(event_store);
     /// assert!(context.is_persistent());
     /// ```
-    pub fn persistent(
-        event_store: Arc<EventStore>,
-        compression_tx: mpsc::Sender<CompressionTask>,
-    ) -> Self {
-        Self::Persistent(PersistentContext {
-            event_store,
-            compression_tx,
-        })
+    pub fn persistent(event_store: Arc<EventStore>) -> Self {
+        Self::Persistent(PersistentContext { event_store })
     }
 
     /// Check if this context has persistence enabled.
@@ -191,30 +163,6 @@ impl AgentContext {
         }
     }
 
-    /// Trigger background compression for a session.
-    ///
-    /// Sends a compression task to the background compression actor.
-    /// For `Stateless` context, this is a no-op.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The compression task to process
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the task cannot be sent to the compression actor.
-    pub async fn trigger_compression(&self, task: CompressionTask) -> Result<(), AgentError> {
-        match self {
-            Self::Persistent(ctx) => {
-                ctx.compression_tx.send(task).await.map_err(|e| {
-                    AgentError::Other(format!("Failed to send compression task: {}", e))
-                })?;
-                Ok(())
-            }
-            Self::Stateless => Ok(()),
-        }
-    }
-
     /// Recall relevant historical messages based on recency and content heuristics.
     ///
     /// Returns the top-K most relevant messages from the event store using
@@ -267,6 +215,26 @@ impl AgentContext {
                 Ok(scored.into_iter().take(top_k).map(|(_, c)| c).collect())
             }
             Self::Stateless => Ok(Vec::new()),
+        }
+    }
+
+    /// Load the latest summary for a session.
+    ///
+    /// For `Persistent` context, queries the event store for the most recent
+    /// `EventType::Summary` event. For `Stateless` context, returns `None`.
+    pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
+        match self {
+            Self::Persistent(ctx) => {
+                match ctx.event_store.get_latest_summary(session_key, branch).await {
+                    Ok(Some(event)) => Some(event.content),
+                    Ok(None) => None,
+                    Err(e) => {
+                        debug!("Failed to load session summary: {}", e);
+                        None
+                    }
+                }
+            }
+            Self::Stateless => None,
         }
     }
 
@@ -388,21 +356,6 @@ mod tests {
         assert!(history.is_empty());
     }
 
-    #[test]
-    fn test_compression_task_debug() {
-        let task = CompressionTask {
-            session_key: "cli:test".to_string(),
-            branch: "main".to_string(),
-            evicted_events: vec![uuid::Uuid::now_v7()],
-            compression_type: SummaryType::Compression { token_budget: 1000 },
-            retry_count: 0,
-        };
-        // Just verify Debug trait is implemented correctly
-        let debug_str = format!("{:?}", task);
-        assert!(debug_str.contains("CompressionTask"));
-        assert!(debug_str.contains("cli:test"));
-    }
-
     // ============================================================
     // Integration tests with real EventStore
     // ============================================================
@@ -411,9 +364,8 @@ mod tests {
     async fn test_persistent_context_creation() {
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
         assert!(context.is_persistent());
     }
 
@@ -421,9 +373,8 @@ mod tests {
     async fn test_persistent_context_save_event() {
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
 
         // Save event
         let event = SessionEvent {
@@ -444,9 +395,8 @@ mod tests {
     async fn test_persistent_context_get_history() {
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
 
         // Save multiple events
         let e1 = SessionEvent {
@@ -488,9 +438,8 @@ mod tests {
     async fn test_persistent_context_get_history_with_branch() {
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
 
         // Save event to main branch
         let main_event = SessionEvent {
@@ -534,41 +483,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_persistent_context_trigger_compression() {
-        let pool = setup_test_db().await;
-        let event_store = Arc::new(EventStore::new(pool));
-        let (tx, mut rx) = mpsc::channel(1);
-
-        let context = AgentContext::persistent(event_store, tx);
-
-        // Create and send compression task
-        let task = CompressionTask {
-            session_key: "test:session".to_string(),
-            branch: "main".to_string(),
-            evicted_events: vec![uuid::Uuid::now_v7()],
-            compression_type: SummaryType::Compression { token_budget: 1000 },
-            retry_count: 0,
-        };
-
-        let result = context.trigger_compression(task.clone()).await;
-        assert!(result.is_ok());
-
-        // Verify task was received
-        let received = rx.recv().await;
-        assert!(received.is_some());
-        let received_task = received.unwrap();
-        assert_eq!(received_task.session_key, "test:session");
-        assert_eq!(received_task.branch, "main");
-    }
-
-    #[tokio::test]
     async fn test_persistent_context_flow() {
         // Setup in-memory database
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
         assert!(context.is_persistent());
 
         // Save event
@@ -594,9 +514,8 @@ mod tests {
     async fn test_persistent_context_clear_session() {
         let pool = setup_test_db().await;
         let event_store = Arc::new(EventStore::new(pool));
-        let (tx, _rx) = mpsc::channel(1);
 
-        let context = AgentContext::persistent(event_store, tx);
+        let context = AgentContext::persistent(event_store);
         assert!(context.is_persistent());
 
         // Save event

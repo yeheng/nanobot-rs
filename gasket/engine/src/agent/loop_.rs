@@ -53,7 +53,8 @@ use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
 
 use crate::agent::memory::MemoryStore;
-use gasket_storage::EventStore;
+use crate::agent::summarization::SummarizationService;
+use gasket_storage::{process_history, EventStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
 /// Default model for agent
@@ -160,6 +161,7 @@ struct AgentInitState {
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<crate::hooks::HookRegistry>,
+    summarizer: Arc<SummarizationService>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -203,8 +205,7 @@ pub struct AgentLoop {
     tools: Arc<ToolRegistry>,
     config: AgentConfig,
     workspace: PathBuf,
-    /// History truncator configuration.
-    #[allow(dead_code)]
+    /// History truncator configuration (token-budget-aware trimming).
     history_config: HistoryConfig,
     /// Agent context — handles session persistence and compression.
     /// Uses enum dispatch instead of Arc<dyn Trait> for zero overhead.
@@ -220,6 +221,9 @@ pub struct AgentLoop {
     pricing: Option<crate::token_tracker::ModelPricing>,
     /// Subagent spawner for spawn/spawn_parallel tools
     spawner: Option<Arc<dyn SubagentSpawner>>,
+    /// Summarization service for background context compression.
+    /// Direct async call replaces the previous actor/channel pattern.
+    summarizer: Option<Arc<SummarizationService>>,
 }
 
 impl AgentLoop {
@@ -241,6 +245,7 @@ impl AgentLoop {
         memory_store: Arc<MemoryStore>,
         pricing: Option<crate::token_tracker::ModelPricing>,
     ) -> Result<Self, AgentError> {
+        let sqlite_store = Arc::new(memory_store.sqlite_store().clone());
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
         let AgentInitState {
@@ -248,20 +253,34 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
-        } = Self::build_internal(event_store, &workspace).await?;
+            summarizer,
+        } = Self::build_internal(
+            event_store,
+            sqlite_store,
+            &workspace,
+            provider.clone(),
+            config.model.clone(),
+        )
+        .await?;
+
+        let history_config = HistoryConfig {
+            max_events: config.memory_window,
+            ..Default::default()
+        };
 
         Ok(Self {
             provider,
             tools,
             config,
             workspace,
-            history_config: HistoryConfig::default(),
+            history_config,
             context,
             system_prompt,
             skills_context,
             hooks,
             pricing,
             spawner: None,
+            summarizer: Some(summarizer),
         })
     }
 
@@ -334,11 +353,19 @@ impl AgentLoop {
     /// Extracts shared logic from `with_services()` and `with_memory_store_and_pricing()`.
     async fn build_internal(
         event_store: Arc<EventStore>,
+        sqlite_store: Arc<gasket_storage::SqliteStore>,
         workspace: &Path,
+        provider: Arc<dyn LlmProvider>,
+        model: String,
     ) -> Result<AgentInitState, AgentError> {
-        let compression_tx = Self::spawn_compression_actor(event_store.clone());
+        let context = AgentContext::persistent(event_store.clone());
 
-        let context = AgentContext::persistent(event_store, compression_tx);
+        let summarizer = Arc::new(SummarizationService::new(
+            provider,
+            sqlite_store,
+            event_store,
+            model,
+        ));
 
         let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
 
@@ -349,14 +376,8 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
+            summarizer,
         })
-    }
-
-    fn spawn_compression_actor(
-        _event_store: Arc<gasket_storage::EventStore>,
-    ) -> tokio::sync::mpsc::Sender<crate::agent::context::CompressionTask> {
-        let (tx, _rx) = tokio::sync::mpsc::channel(64);
-        tx
     }
 
     pub fn for_subagent(
@@ -365,18 +386,24 @@ impl AgentLoop {
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
+        let history_config = HistoryConfig {
+            max_events: config.memory_window,
+            ..Default::default()
+        };
+
         Ok(Self {
             provider,
             tools,
             config,
             workspace,
-            history_config: HistoryConfig::default(),
+            history_config,
             context: AgentContext::Stateless,
             system_prompt: String::new(),
             skills_context: None,
             hooks: HookRegistry::empty(),
             pricing: None,
             spawner: None,
+            summarizer: None,
         })
     }
 
@@ -489,15 +516,20 @@ impl AgentLoop {
         };
         self.context.save_event(user_event).await?;
 
-        // ── 4. Truncate history (pure computation) ─────────────────
-        let history_snapshot: Vec<SessionEvent> = history_events
-            .into_iter()
-            .rev()
-            .take(self.config.memory_window)
-            .rev()
-            .collect();
+        // ── 4. Token-budget-aware history trimming ──────────────────
+        let processed = process_history(history_events, &self.history_config);
+        let history_snapshot = processed.events;
+        let evicted_events = processed.evicted;
+        if processed.filtered_count > 0 {
+            debug!(
+                "History trimmed: {} kept, {} evicted, ~{} tokens",
+                history_snapshot.len(),
+                evicted_events.len(),
+                processed.estimated_tokens,
+            );
+        }
 
-        // ── 5. System prompts + prompt assembly ─────────────────────
+        // ── 5. Load existing summary + prompt assembly ─────────────────
         let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
             system_prompts.push(self.system_prompt.clone());
@@ -506,11 +538,17 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
+        // Load the latest summary checkpoint (if any) for context injection
+        let existing_summary = self
+            .context
+            .load_latest_summary(&session_key_str, "main")
+            .await;
+
         let mut messages = Self::assemble_prompt(
             history_snapshot,
             &content,
             &system_prompts,
-            None, // Summary: TODO - query for summary events
+            existing_summary.as_deref(),
             None, // History recall handled by hooks
         );
 
@@ -531,6 +569,26 @@ impl AgentLoop {
 
         // Vault values are now owned by this request's context — no shared state.
         let local_vault_values = ctx.vault_values;
+
+        // ── 7. Trigger background compression for evicted events ────
+        if !evicted_events.is_empty() {
+            if let Some(ref summarizer) = self.summarizer {
+                let summarizer = summarizer.clone();
+                let session_key = session_key_str.clone();
+                let vault_values = local_vault_values.clone();
+                tokio::spawn(async move {
+                    match summarizer
+                        .compress(&session_key, &evicted_events, &vault_values)
+                        .await
+                    {
+                        Ok(_) => debug!("Background compression completed for {}", session_key),
+                        Err(e) => {
+                            debug!("Background compression failed for {}: {}", session_key, e)
+                        }
+                    }
+                });
+            }
+        }
 
         Ok(PipelineOutcome::Ready(PipelineState {
             session_key_str,

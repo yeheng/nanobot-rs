@@ -1,6 +1,5 @@
 //! Agent module: core processing engine
 
-pub mod compression;
 pub mod context;
 pub mod executor;
 pub mod executor_core;
@@ -15,10 +14,10 @@ pub mod subagent;
 pub mod subagent_tracker;
 pub mod summarization;
 
-pub use compression::{CompressionActor, EmbeddingService, SummarizationService};
 // New enum-based AgentContext (replaces trait-based version)
 pub use context::AgentContext;
-pub use context::{CompressionTask, PersistentContext};
+pub use context::PersistentContext;
+pub use summarization::SummarizationService;
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use gasket_storage::{
