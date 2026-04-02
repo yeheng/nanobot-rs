@@ -225,7 +225,11 @@ impl AgentContext {
     pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
         match self {
             Self::Persistent(ctx) => {
-                match ctx.event_store.get_latest_summary(session_key, branch).await {
+                match ctx
+                    .event_store
+                    .get_latest_summary(session_key, branch)
+                    .await
+                {
                     Ok(Some(event)) => Some(event.content),
                     Ok(None) => None,
                     Err(e) => {

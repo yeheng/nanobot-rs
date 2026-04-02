@@ -17,7 +17,6 @@ pub mod summarization;
 // New enum-based AgentContext (replaces trait-based version)
 pub use context::AgentContext;
 pub use context::PersistentContext;
-pub use summarization::SummarizationService;
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use gasket_storage::{
@@ -30,3 +29,4 @@ pub use stream::StreamEvent;
 pub use stream_buffer::BufferedEvents;
 pub use subagent::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};
 pub use subagent_tracker::{SubagentTracker, TrackerError};
+pub use summarization::SummarizationService;

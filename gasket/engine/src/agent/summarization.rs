@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tracing::debug;
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::{top_k_similar, EventStore, SqliteStore};
 #[cfg(feature = "local-embedding")]
 use gasket_storage::TextEmbedder;
+use gasket_storage::{top_k_similar, EventStore, SqliteStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent, SummaryType};
 
 use crate::agent::count_tokens;
@@ -89,7 +89,11 @@ impl SummarizationService {
     /// Queries the latest `EventType::Summary` event from the event stream
     /// instead of the deprecated `session_summaries` table.
     pub async fn load_summary(&self, session_key: &str) -> Option<String> {
-        match self.event_store.get_latest_summary(session_key, "main").await {
+        match self
+            .event_store
+            .get_latest_summary(session_key, "main")
+            .await
+        {
             Ok(Some(event)) => Some(event.content),
             Ok(None) => None,
             Err(e) => {
@@ -142,7 +146,10 @@ impl SummarizationService {
                         .save_embedding(&event_id, session_key, &embedding)
                         .await
                     {
-                        debug!("Failed to save embedding for evicted event {}: {}", event_id, e);
+                        debug!(
+                            "Failed to save embedding for evicted event {}: {}",
+                            event_id, e
+                        );
                     } else {
                         debug!(
                             "Saved embedding for evicted event {} in session {}",
@@ -152,11 +159,7 @@ impl SummarizationService {
                 }
             }
             Err(e) => {
-                debug!(
-                    "Batch embedding failed for {} events: {}",
-                    texts.len(),
-                    e
-                );
+                debug!("Batch embedding failed for {} events: {}", texts.len(), e);
             }
         }
     }
@@ -231,9 +234,7 @@ impl SummarizationService {
             id: uuid::Uuid::now_v7(),
             session_key: session_key.to_string(),
             event_type: EventType::Summary {
-                summary_type: SummaryType::Compression {
-                    token_budget: 8000,
-                },
+                summary_type: SummaryType::Compression { token_budget: 8000 },
                 covered_event_ids: covered_ids,
             },
             content: summary_to_persist,
