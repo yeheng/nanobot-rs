@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use gasket_storage::memory::*;
-use gasket_storage::{SqlitePool, SqliteStore};
+use gasket_storage::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, warn};
@@ -414,6 +414,7 @@ pub struct PhaseBreakdown {
 mod tests {
     use super::*;
     use gasket_storage::memory::{serialize_memory_file, MemoryMeta};
+    use gasket_storage::SqliteStore;
     use tempfile::TempDir;
 
     /// Create a test memory file with proper frontmatter.
