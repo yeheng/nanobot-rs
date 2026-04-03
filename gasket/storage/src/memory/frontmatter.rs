@@ -155,6 +155,7 @@ pub fn estimate_tokens(text: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{Frequency, Scenario};
     use uuid::Uuid;
 
     fn make_test_meta() -> MemoryMeta {

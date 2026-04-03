@@ -16,6 +16,7 @@
 
 mod frontmatter;
 mod path;
+mod store;
 mod types;
 
 pub use types::*;
@@ -29,3 +30,6 @@ pub use path::{
 pub use frontmatter::{
     estimate_tokens, extract_body, parse_frontmatter, parse_memory_file, serialize_memory_file,
 };
+
+// Re-export FileMemoryStore
+pub use store::FileMemoryStore;
