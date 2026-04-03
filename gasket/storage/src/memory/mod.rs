@@ -14,13 +14,18 @@
 //! - **Token budget tracking:** Each memory tracks its token count for budget enforcement
 //! - **Supersession:** Old versions can reference their replacements for audit trails
 
-mod types;
+mod frontmatter;
 mod path;
+mod types;
 
 pub use types::*;
 
 // Re-export key path resolution functions
 pub use path::{
-    history_dir, index_path, list_memory_files, memory_base_dir, memory_file_path,
-    scenario_dir,
+    history_dir, index_path, list_memory_files, memory_base_dir, memory_file_path, scenario_dir,
+};
+
+// Re-export frontmatter parsing functions
+pub use frontmatter::{
+    estimate_tokens, extract_body, parse_frontmatter, parse_memory_file, serialize_memory_file,
 };

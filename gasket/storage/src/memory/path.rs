@@ -28,9 +28,7 @@ pub fn index_path(scenario: Scenario) -> PathBuf {
 
 /// History directory for a scenario.
 pub fn history_dir(scenario: Scenario) -> PathBuf {
-    memory_base_dir()
-        .join(".history")
-        .join(scenario.dir_name())
+    memory_base_dir().join(".history").join(scenario.dir_name())
 }
 
 /// History file path for a specific version.
@@ -130,9 +128,7 @@ mod tests {
 
         // Mock scenario_dir by creating a subdirectory
         let scenario_path = base.join("knowledge");
-        tokio::fs::create_dir_all(&scenario_path)
-            .await
-            .unwrap();
+        tokio::fs::create_dir_all(&scenario_path).await.unwrap();
 
         // Create mix of files
         tokio::fs::write(scenario_path.join("valid.md"), "content")
@@ -150,7 +146,11 @@ mod tests {
 
         // We can't easily mock scenario_dir, so we'll test the filtering logic
         // by creating files in a real scenario directory structure
-        let gasket_temp = temp_dir.path().join(".gasket").join("memory").join("knowledge");
+        let gasket_temp = temp_dir
+            .path()
+            .join(".gasket")
+            .join("memory")
+            .join("knowledge");
         tokio::fs::create_dir_all(&gasket_temp).await.unwrap();
 
         tokio::fs::write(gasket_temp.join("memory1.md"), "content1")

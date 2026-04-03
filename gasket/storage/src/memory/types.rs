@@ -455,7 +455,8 @@ impl TokenBudget {
 
     /// Get the total available budget (min of total_cap and sum of parts).
     pub fn total_budget(&self) -> usize {
-        self.total_cap.min(self.bootstrap + self.scenario + self.on_demand)
+        self.total_cap
+            .min(self.bootstrap + self.scenario + self.on_demand)
     }
 }
 
@@ -469,7 +470,12 @@ mod tests {
         for scenario in Scenario::all() {
             let dir_name = scenario.dir_name();
             let parsed = Scenario::from_dir_name(dir_name);
-            assert_eq!(Some(*scenario), parsed, "roundtrip failed for {:?}", scenario);
+            assert_eq!(
+                Some(*scenario),
+                parsed,
+                "roundtrip failed for {:?}",
+                scenario
+            );
         }
 
         // Test invalid input
