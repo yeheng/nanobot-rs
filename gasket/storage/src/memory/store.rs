@@ -1,9 +1,9 @@
-use super::types::*;
 use super::frontmatter::*;
 use super::path::*;
+use super::types::*;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use chrono::Utc;
+use std::path::PathBuf;
 
 /// Filesystem-backed memory store.
 pub struct FileMemoryStore {
@@ -90,7 +90,10 @@ impl FileMemoryStore {
             .await
             .with_context(|| format!("Failed to read memory file: {}", filename))?;
         let (meta, body) = parse_memory_file(&content)?;
-        Ok(MemoryFile { metadata: meta, content: body })
+        Ok(MemoryFile {
+            metadata: meta,
+            content: body,
+        })
     }
 
     /// Update an existing memory file. Saves version history before overwriting.
@@ -105,13 +108,13 @@ impl FileMemoryStore {
         // Save current version to history
         if path.exists() {
             let existing = tokio::fs::read_to_string(&path).await?;
-            let timestamp = Utc::now().to_rfc3339()
-                .replace(':', "-")
-                .replace('+', "Z");
-            let history_path = self.base_dir
+            let timestamp = Utc::now().to_rfc3339().replace(':', "-").replace('+', "Z");
+            let history_path = self
+                .base_dir
                 .join(".history")
                 .join(scenario.dir_name())
-                .join(format!("{}.{}.md",
+                .join(format!(
+                    "{}.{}.md",
                     filename.trim_end_matches(".md"),
                     timestamp
                 ));
@@ -162,9 +165,7 @@ impl FileMemoryStore {
     /// Prune history files to keep only MAX_HISTORY_VERSIONS most recent.
     async fn prune_history(&self, scenario: Scenario, filename: &str) -> Result<()> {
         let stem = filename.trim_end_matches(".md");
-        let history_dir = self.base_dir
-            .join(".history")
-            .join(scenario.dir_name());
+        let history_dir = self.base_dir.join(".history").join(scenario.dir_name());
 
         if !history_dir.exists() {
             return Ok(());
@@ -228,9 +229,16 @@ mod tests {
     async fn test_create_and_read() {
         let store = temp_store().await;
         let tags = vec!["rust".to_string(), "async".to_string()];
-        let filename = store.create(
-            Scenario::Knowledge, "Test Memory", "concept", &tags, "Body content here"
-        ).await.unwrap();
+        let filename = store
+            .create(
+                Scenario::Knowledge,
+                "Test Memory",
+                "concept",
+                &tags,
+                "Body content here",
+            )
+            .await
+            .unwrap();
 
         let mem = store.read(Scenario::Knowledge, &filename).await.unwrap();
         assert_eq!(mem.metadata.title, "Test Memory");
@@ -243,14 +251,18 @@ mod tests {
     #[tokio::test]
     async fn test_update_preserves_history() {
         let store = temp_store().await;
-        let filename = store.create(
-            Scenario::Decisions, "Original", "design", &[], "V1 content"
-        ).await.unwrap();
+        let filename = store
+            .create(Scenario::Decisions, "Original", "design", &[], "V1 content")
+            .await
+            .unwrap();
 
         // Read original, modify, update
         let original = store.read(Scenario::Decisions, &filename).await.unwrap();
         let updated = serialize_memory_file(&original.metadata, "V2 content");
-        store.update(Scenario::Decisions, &filename, &updated).await.unwrap();
+        store
+            .update(Scenario::Decisions, &filename, &updated)
+            .await
+            .unwrap();
 
         // Verify content changed
         let reloaded = store.read(Scenario::Decisions, &filename).await.unwrap();
@@ -258,7 +270,8 @@ mod tests {
 
         // Verify history file exists
         let history_dir = store.base_dir.join(".history").join("decisions");
-        let entries: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
+        let entries: Vec<_> = std::fs::read_dir(&history_dir)
+            .unwrap()
             .filter_map(|e| e.ok())
             .collect();
         assert_eq!(entries.len(), 1, "Should have 1 history version");
@@ -267,9 +280,10 @@ mod tests {
     #[tokio::test]
     async fn test_delete_removes_file() {
         let store = temp_store().await;
-        let filename = store.create(
-            Scenario::Episodes, "To delete", "incident", &[], "content"
-        ).await.unwrap();
+        let filename = store
+            .create(Scenario::Episodes, "To delete", "incident", &[], "content")
+            .await
+            .unwrap();
 
         store.delete(Scenario::Episodes, &filename).await.unwrap();
         assert!(!store.exists(Scenario::Episodes, &filename).await);
@@ -278,8 +292,14 @@ mod tests {
     #[tokio::test]
     async fn test_list_returns_valid_files() {
         let store = temp_store().await;
-        store.create(Scenario::Knowledge, "M1", "concept", &[], "c1").await.unwrap();
-        store.create(Scenario::Knowledge, "M2", "pattern", &[], "c2").await.unwrap();
+        store
+            .create(Scenario::Knowledge, "M1", "concept", &[], "c1")
+            .await
+            .unwrap();
+        store
+            .create(Scenario::Knowledge, "M2", "pattern", &[], "c2")
+            .await
+            .unwrap();
 
         let files = store.list(Scenario::Knowledge).await.unwrap();
         assert_eq!(files.len(), 2);
@@ -292,11 +312,18 @@ mod tests {
         store.init().await.unwrap();
 
         // Create a memory file
-        store.create(Scenario::Knowledge, "Real", "concept", &[], "content").await.unwrap();
+        store
+            .create(Scenario::Knowledge, "Real", "concept", &[], "content")
+            .await
+            .unwrap();
         // Create _INDEX.md (should be excluded)
-        tokio::fs::write(tmp.path().join("knowledge/_INDEX.md"), "index").await.unwrap();
+        tokio::fs::write(tmp.path().join("knowledge/_INDEX.md"), "index")
+            .await
+            .unwrap();
         // Create .dotfile (should be excluded)
-        tokio::fs::write(tmp.path().join("knowledge/.hidden.md"), "hidden").await.unwrap();
+        tokio::fs::write(tmp.path().join("knowledge/.hidden.md"), "hidden")
+            .await
+            .unwrap();
 
         let files = store.list(Scenario::Knowledge).await.unwrap();
         assert_eq!(files.len(), 1);
