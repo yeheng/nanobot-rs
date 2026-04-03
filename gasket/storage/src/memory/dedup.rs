@@ -294,20 +294,44 @@ mod tests {
     #[test]
     fn test_dedup_suggestion_from_similarity() {
         // > 0.95 → merge
-        assert_eq!(DedupSuggestion::Merge, DedupSuggestion::from_similarity(0.96));
-        assert_eq!(DedupSuggestion::Merge, DedupSuggestion::from_similarity(0.98));
+        assert_eq!(
+            DedupSuggestion::Merge,
+            DedupSuggestion::from_similarity(0.96)
+        );
+        assert_eq!(
+            DedupSuggestion::Merge,
+            DedupSuggestion::from_similarity(0.98)
+        );
 
         // > 0.90 → supersede
-        assert_eq!(DedupSuggestion::Supersede, DedupSuggestion::from_similarity(0.91));
-        assert_eq!(DedupSuggestion::Supersede, DedupSuggestion::from_similarity(0.93));
+        assert_eq!(
+            DedupSuggestion::Supersede,
+            DedupSuggestion::from_similarity(0.91)
+        );
+        assert_eq!(
+            DedupSuggestion::Supersede,
+            DedupSuggestion::from_similarity(0.93)
+        );
 
         // 0.85–0.90 → keep-both
-        assert_eq!(DedupSuggestion::KeepBoth, DedupSuggestion::from_similarity(0.85));
-        assert_eq!(DedupSuggestion::KeepBoth, DedupSuggestion::from_similarity(0.87));
-        assert_eq!(DedupSuggestion::KeepBoth, DedupSuggestion::from_similarity(0.90));
+        assert_eq!(
+            DedupSuggestion::KeepBoth,
+            DedupSuggestion::from_similarity(0.85)
+        );
+        assert_eq!(
+            DedupSuggestion::KeepBoth,
+            DedupSuggestion::from_similarity(0.87)
+        );
+        assert_eq!(
+            DedupSuggestion::KeepBoth,
+            DedupSuggestion::from_similarity(0.90)
+        );
 
         // Below threshold (not used in practice but tested for completeness)
-        assert_eq!(DedupSuggestion::KeepBoth, DedupSuggestion::from_similarity(0.80));
+        assert_eq!(
+            DedupSuggestion::KeepBoth,
+            DedupSuggestion::from_similarity(0.80)
+        );
     }
 
     #[tokio::test]
@@ -510,12 +534,11 @@ mod tests {
         assert_eq!(1, deleted);
 
         // Verify only 2 reports remain (recent + unresolved)
-        let count: i64 =
-            sqlx::query("SELECT COUNT(*) FROM dedup_reports")
-                .fetch_one(&scanner.pool)
-                .await
-                .unwrap()
-                .get(0);
+        let count: i64 = sqlx::query("SELECT COUNT(*) FROM dedup_reports")
+            .fetch_one(&scanner.pool)
+            .await
+            .unwrap()
+            .get(0);
 
         assert_eq!(2, count);
     }

@@ -507,7 +507,10 @@ impl AgentLoop {
 
         let base_dir = memory_base_dir();
         if !base_dir.exists() {
-            debug!("Memory directory {:?} does not exist, skipping memory manager", base_dir);
+            debug!(
+                "Memory directory {:?} does not exist, skipping memory manager",
+                base_dir
+            );
             return None;
         }
 
