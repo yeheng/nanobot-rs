@@ -13,7 +13,9 @@
 //!   for automated lifecycle management
 //! - **Token budget tracking:** Each memory tracks its token count for budget enforcement
 //! - **Supersession:** Old versions can reference their replacements for audit trails
+//! - **Deduplication:** Cross-session duplicate detection via embedding similarity
 
+mod dedup;
 mod embedding_store;
 mod frontmatter;
 mod index;
@@ -53,3 +55,6 @@ pub use lifecycle::{AccessEntry, AccessLog, DecayReport, FlushReport, FrequencyM
 
 // Re-export file watcher
 pub use watcher::{scenario_from_path, should_ignore, MemoryWatcher, WatchEvent, WatcherConfig};
+
+// Re-export deduplication scanner
+pub use dedup::{DedupPair, DedupReport, DedupReportEntry, DedupScanner, DedupSuggestion};
