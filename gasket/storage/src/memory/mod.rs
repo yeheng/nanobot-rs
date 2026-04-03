@@ -15,5 +15,12 @@
 //! - **Supersession:** Old versions can reference their replacements for audit trails
 
 mod types;
+mod path;
 
 pub use types::*;
+
+// Re-export key path resolution functions
+pub use path::{
+    history_dir, index_path, list_memory_files, memory_base_dir, memory_file_path,
+    scenario_dir,
+};
