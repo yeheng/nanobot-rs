@@ -663,6 +663,54 @@ When a `.md` file has malformed YAML frontmatter:
 4. Do NOT modify the file content
 5. The file remains editable by the user; the comment is removed on next successful parse
 
+### 9.7 Memory Version History
+
+Every time a memory `.md` file is modified (by agent or human edit), the previous version is preserved before overwriting:
+
+**History storage:**
+```
+~/.gasket/memory/.history/
+├── knowledge/
+│   ├── rust-async-patterns.2026-04-03T10:00:00.md
+│   └── rust-async-patterns.2026-04-04T15:30:00.md
+├── decisions/
+│   └── chose-sqlite.2026-04-01T08:00:00.md
+└── ...
+```
+
+**Rules:**
+- History files are named `{original_name}.{ISO_timestamp}.md`
+- The `.history/` directory mirrors the scenario structure
+- History is NOT embedded, NOT indexed, and NOT loaded into context
+- File watcher ignores the `.history/` directory entirely
+- Max history per file: 10 versions (oldest auto-pruned)
+- History enables diff viewing and manual rollback
+
+### 9.8 Cross-Session Deduplication Cron
+
+A scheduled background task detects and flags potential duplicate memories:
+
+**Schedule:** Runs weekly (configurable via `cron_jobs` table)
+
+**Algorithm:**
+```
+1. For each scenario, collect all memory embeddings from SQLite
+2. Compute pairwise cosine similarity within scenario
+3. Flag pairs where similarity > 0.85
+4. For each flagged pair, create a dedup report:
+   {
+     memory_a: "knowledge/rust-async.md",
+     memory_b: "knowledge/async-patterns.md",
+     similarity: 0.91,
+     suggestion: "merge" | "keep-both" | "supersede"
+   }
+5. Present report to agent on next session start
+6. Agent proposes action; user confirms or overrides
+7. Never auto-merge without explicit confirmation
+```
+
+**Storage:** Dedup reports stored in SQLite `dedup_reports` table, cleared after resolution.
+
 ## 10. Token Budget Enforcement
 
 ### 10.1 Budget Allocation
@@ -859,9 +907,14 @@ New (additive):
 
 ## 13. Open Questions
 
-1. ~~**File watcher implementation:** Use `notify` crate for filesystem events, or poll on access?~~ → **Resolved:** Use `notify` crate with 2-second debounce (see 9.3)
-2. **Embedding model:** Continue with existing fastembed model, or choose a different one for memory-specific embeddings?
+1. ~~**File watcher implementation:**~~ → **Resolved:** Use `notify` crate with 2-second debounce (see 9.3)
+2. ~~**Embedding model:**~~ → **Resolved:** Continue with existing fastembed model (ONNX-based local embedding)
 3. **Multi-session coordination:** If two Gasket instances run simultaneously (e.g., CLI + gateway), both may write to the same memory files. Proposed: use SQLite WAL mode + file-level advisory locks (`flock`). The first instance to acquire the lock becomes the "writer"; the second operates in read-only mode for memory operations. Full design deferred to implementation phase.
-4. **Memory versioning:** Should edited memories preserve history (git-like)? Or is last-write-wins sufficient?
-5. **Cross-session deduplication:** When should the system detect and merge duplicate memories across sessions?
-6. **Deleted memory reference cleanup:** When a memory file is deleted, should other memories with `superseded_by` pointing to it be updated? Or should broken references be tolerated until next access?
+4. ~~**Memory versioning:**~~ → **Resolved:** Preserve history on every memory write. Each edit saves the previous version to `~/.gasket/memory/.history/{scenario}/{filename}.{timestamp}.md` before overwriting. The `.history/` directory is excluded from file watcher and embedding generation.
+5. ~~**Cross-session deduplication:**~~ → **Resolved:** Add a scheduled background task (runs weekly, configurable) that:
+   - Generates embeddings for all memories in each scenario
+   - Computes pairwise cosine similarity within each scenario
+   - Flag pairs with similarity > 0.85 as potential duplicates
+   - Agent reviews flagged pairs and proposes merge (never auto-merges without confirmation)
+   - Schedule managed via existing `cron_jobs` table in SQLite
+6. ~~**Deleted memory reference cleanup:**~~ → **Resolved:** Broken references (e.g., `superseded_by` pointing to deleted file) are tolerated silently. On next access of a memory with a broken reference, the system removes the invalid `superseded_by` field and logs a warning. No proactive cleanup needed.
