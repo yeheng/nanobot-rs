@@ -130,17 +130,18 @@ impl FileIndexManager {
                 Frequency::Archived => "Archived (historical only)",
             };
             output.push_str(&format!("## {}\n", desc));
-            output.push_str("| ID | Title | Type | Tags | Tokens | Updated |\n");
-            output.push_str("|----|-------|------|------|--------|---------|\n");
+            output.push_str("| ID | Title | Type | Tags | Filename | Tokens | Updated |\n");
+            output.push_str("|----|-------|------|------|----------|--------|---------|\n");
             for entry in freq_entries {
                 let tags_str = entry.tags.join(",");
                 let date = entry.updated.get(..10).unwrap_or(&entry.updated);
                 output.push_str(&format!(
-                    "| {} | {} | {} | {} | ~{} | {} |\n",
+                    "| {} | {} | {} | {} | {} | ~{} | {} |\n",
                     entry.id.get(..12).unwrap_or(&entry.id),
                     entry.title,
                     entry.memory_type,
                     tags_str,
+                    entry.filename,
                     entry.tokens,
                     date,
                 ));
@@ -255,8 +256,22 @@ fn parse_index_content(scenario: Scenario, content: &str) -> Result<MemoryIndex>
 
         let cols: Vec<&str> = line.split('|').filter(|c| !c.trim().is_empty()).collect();
         if cols.len() >= 5 {
-            let tokens_str = cols.get(4).unwrap_or(&"~0").trim();
-            let tokens = tokens_str.trim_start_matches('~').parse().unwrap_or(0);
+            // Handle both old format (without filename) and new format (with filename)
+            let (tokens, filename, updated) = if cols.len() >= 7 {
+                // New format: ID | Title | Type | Tags | Filename | Tokens | Updated
+                (
+                    cols.get(5).unwrap_or(&"~0").trim().trim_start_matches('~').parse().unwrap_or(0),
+                    cols.get(4).unwrap_or(&"").trim().to_string(),
+                    cols.get(6).unwrap_or(&"").trim().to_string(),
+                )
+            } else {
+                // Old format: ID | Title | Type | Tags | Tokens | Updated
+                (
+                    cols.get(4).unwrap_or(&"~0").trim().trim_start_matches('~').parse().unwrap_or(0),
+                    String::new(), // filename not available in old format
+                    cols.get(5).unwrap_or(&"").trim().to_string(),
+                )
+            };
 
             entries.push(MemoryIndexEntry {
                 id: cols.first().unwrap_or(&"").trim().to_string(),
@@ -272,8 +287,8 @@ fn parse_index_content(scenario: Scenario, content: &str) -> Result<MemoryIndex>
                     .collect(),
                 frequency: current_freq,
                 tokens,
-                filename: String::new(), // not stored in index
-                updated: cols.get(5).unwrap_or(&"").trim().to_string(),
+                filename,
+                updated,
             });
         }
     }

@@ -18,6 +18,7 @@ mod embedding_store;
 mod frontmatter;
 mod index;
 mod path;
+mod retrieval;
 mod store;
 mod types;
 
@@ -41,3 +42,6 @@ pub use index::{FileIndexManager, MemoryIndex, MemoryIndexEntry};
 
 // Re-export EmbeddingStore
 pub use embedding_store::{EmbeddingHit, EmbeddingStore};
+
+// Re-export RetrievalEngine
+pub use retrieval::{RetrievalEngine, SearchResult};
