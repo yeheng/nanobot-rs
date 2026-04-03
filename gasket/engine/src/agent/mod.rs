@@ -7,6 +7,7 @@ pub mod executor_core;
 pub mod indexing;
 pub mod loop_;
 pub mod memory;
+pub mod memory_manager;
 pub mod prompt;
 pub mod request;
 pub mod skill_loader;
@@ -28,6 +29,7 @@ pub use gasket_storage::{
 pub use indexing::IndexingService;
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
+pub use memory_manager::{MemoryContext, MemoryManager, PhaseBreakdown};
 pub use stream::StreamEvent;
 pub use stream_buffer::BufferedEvents;
 pub use subagent::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};
