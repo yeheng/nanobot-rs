@@ -127,11 +127,11 @@ Every memory is a standalone `.md` file with YAML frontmatter:
 
 ```markdown
 ---
-id: mem_abc123
+id: mem_0192456c-1a2b-7def-8901-2b3c4d5e6f70    # UUIDv7, time-ordered
 title: "Chose SQLite as primary storage backend"
 type: decision                    # scenario-specific subtype
 scenario: decisions               # which scenario bucket
-tags: [gasket, database, sqlite, architecture]
+tags: [gasket, database, sqlite, architecture]   # lowercase, kebab-case, max 30 chars (see 4.4)
 frequency: warm                   # hot | warm | cold | archived
 access_count: 12
 created: 2026-04-01T10:00:00Z
@@ -162,6 +162,21 @@ Trade-off: cannot scale to multi-user, but that's not a requirement.
 | decisions | `architectural`, `design`, `personal`, `planning` |
 | episodes | `bug-fix`, `incident`, `milestone`, `experience`, `event` |
 | reference | `link`, `contact`, `tool`, `location`, `document` |
+
+### 4.3 Tag Schema
+
+**Format rules:**
+- Lowercase only, no spaces
+- Use kebab-case for multi-word tags: `error-handling`, `rust-async`
+- Alphanumeric plus hyphens, max 30 characters per tag
+- Max 10 tags per memory file
+
+**Reserved tag prefixes (auto-generated, do not use manually):**
+- `project:` — denotes project association (e.g., `project:gasket`)
+- `session:` — denotes session origin (e.g., `session:abc123`)
+- `focus:` — denotes active focus area (e.g., `focus:memory-redesign`)
+
+**Tag lifecycle:** Tags are never automatically removed. Users may edit tags at any time. The system adds tags at creation time based on conversation context.
 
 ### 4.3 Index File Format (`_INDEX.md`)
 
@@ -354,16 +369,30 @@ Hard cap: ~3200 tokens total
 
 ### 6.2 Scenario Detection Heuristics
 
-The agent infers its current behavioral scenario from conversation signals:
+The agent infers its current behavioral scenario via a lightweight LLM structured call on each user message:
 
-| Signal | Detected Scenario |
-|--------|-------------------|
-| Error messages, stack traces, "not working" | debugging → episodes + knowledge |
-| Code snippets, implementation questions | coding → knowledge + reference |
-| "should we", "which approach", "let's decide" | decision-making → decisions + knowledge |
-| "what am I working on", "what's pending" | status-check → active + decisions |
-| "remember this", "don't forget" | explicit-write → write to appropriate scenario |
-| No clear signal | general → load all hot items |
+**Detection mechanism:**
+1. On each user turn, extract the message text (excluding tool results)
+2. Call a lightweight classifier (can be a small model or rule-based) that returns:
+   - `detected_scenario`: primary scenario tag
+   - `confidence`: 0.0–1.0
+   - `keywords`: extracted topic keywords (used for tag matching)
+3. If confidence < 0.6, fall back to "general" (load all hot items)
+
+**Signal mapping table:**
+
+| Signal | Detected Scenario | Confidence Boost |
+|--------|-------------------|-----------------|
+| Error messages, stack traces, "not working" | debugging | +0.3 |
+| Code snippets, implementation questions | coding | +0.2 |
+| "should we", "which approach", "let's decide" | decision-making | +0.3 |
+| "what am I working on", "what's pending" | status-check | +0.4 |
+| "remember this", "don't forget" | explicit-write | +0.5 |
+| No clear signal | general | default |
+
+**Multi-signal handling:** If multiple signals match, the one with highest confidence wins. If two signals are within 0.1 of each other, load memories from both scenarios (splitting the scenario budget equally).
+
+**Topic keyword extraction:** Alongside scenario detection, extract 1–5 topic keywords from the message for tag-based filtering (e.g., "帮我看下 gasket 的 auth" → keywords: ["gasket", "auth"]).
 
 ### 6.3 Tag-Based Filtering
 
@@ -445,18 +474,32 @@ User query
 | Exhaustive listing | Tag search | "gasket 的所有知识" |
 | Mixed (default) | Both, merged | Any general query |
 
-**Merge algorithm:**
+**Merge algorithm (normalized scoring):**
 ```
-results = {}
-for hit in tag_search_results:
-    results[hit.path] = { source: "tag", score: tag_overlap_score }
-for hit in embedding_search_results:
-    if hit.path in results:
-        results[hit.path].score += embedding_score * 0.5  # boost existing
-    else:
-        results[hit.path] = { source: "embedding", score: embedding_score }
+# Normalize both channels to [0.0, 1.0] before merging
+TAG_WEIGHT = 0.4
+EMBEDDING_WEIGHT = 0.6
 
-sort by score descending
+results = {}
+
+for hit in tag_search_results:
+    # Tag overlap: fraction of query tags matched
+    tag_score = count_matching_tags(hit.tags, query.tags) / len(query.tags).max(1)
+    results[hit.path] = { tag_score: tag_score, emb_score: 0.0 }
+
+for hit in embedding_search_results:
+    # Cosine similarity: normalize from [-1, 1] to [0, 1]
+    emb_score = (hit.cosine_similarity + 1.0) / 2.0
+    if hit.path in results:
+        results[hit.path].emb_score = emb_score
+    else:
+        results[hit.path] = { tag_score: 0.0, emb_score: emb_score }
+
+# Merge with configurable weights
+for path, scores in results:
+    scores.merged = scores.tag_score * TAG_WEIGHT + scores.emb_score * EMBEDDING_WEIGHT
+
+sort results by merged score descending
 filter by token budget
 ```
 
@@ -470,6 +513,34 @@ warm ── 30 days without access ──→ cold
 cold ── 90 days without access ──→ archived
 ```
 
+### 8.1.1 Decay Execution Trigger
+
+Decay evaluation runs as a **batch background job**, not inline on every access:
+
+| Trigger | Description |
+|---------|-------------|
+| Application startup | One-time catch-up scan: compare all `last_accessed` against current time |
+| Periodic timer | Every 24 hours at configurable time (default: 03:00 local time) |
+| Manual command | User or agent explicitly calls "rebuild index" |
+
+**Batch decay logic:**
+```
+for memory in sqlite.scan_all():
+    days_since_access = now - memory.last_accessed
+    if memory.frequency == "hot" and days_since_access > 7:
+        memory.frequency = "warm"
+    elif memory.frequency == "warm" and days_since_access > 30:
+        memory.frequency = "cold"
+    elif memory.frequency == "cold" and days_since_access > 90:
+        memory.frequency = "archived"
+
+batch_update_sqlite(dirty_memories)
+for scenario in affected_scenarios:
+    regenerate_index(scenario)    # atomic write (see 9.5)
+```
+
+Profile memories are exempt from decay (always `hot`).
+
 ### 8.2 Auto-Promotion Rules
 
 ```
@@ -479,11 +550,35 @@ warm ── accessed 3+ times in 7 days ──→ hot
 
 ### 8.3 Frequency Update Triggers
 
+**Access tracking uses deferred batched writes to avoid write amplification.**
+
 Every time a memory file is loaded into context, the system:
-1. Increments `access_count` in frontmatter
-2. Updates `last_accessed` timestamp
-3. Recalculates `frequency` based on decay/promotion rules
-4. Updates `_INDEX.md` if frequency tier changed
+1. Appends to an in-memory access log: `(path, timestamp)`
+2. Does NOT immediately write to the `.md` file or `_INDEX.md`
+
+**Flush triggers (when access log is persisted):**
+- On session end / graceful shutdown
+- When access log exceeds 50 entries
+- Every 5 minutes (background timer)
+
+**Flush logic:**
+```
+for (path, timestamp) in access_log:
+    metadata = sqlite.get(path)       # read current metadata from SQLite
+    metadata.access_count += 1
+    metadata.last_accessed = timestamp
+    metadata.frequency = recalculate(metadata)
+    sqlite.upsert(path, metadata)     # update SQLite
+
+for scenario in dirty_scenarios:
+    regenerate_index(scenario)        # batch index update
+
+# After successful flush + index regeneration, update .md frontmatter
+for path in dirty_paths:
+    rewrite_frontmatter(path, metadata)
+```
+
+This avoids writing 20 files on every memory read, prevents file watcher feedback loops, and batches index regeneration.
 
 ### 8.4 Active Context Promotion
 
@@ -520,11 +615,21 @@ Users should NOT manually edit (changes will be lost):
 
 ### 9.3 File Watcher
 
-A file watcher monitors `~/.gasket/memory/` for:
-- **New files:** Generate embedding, add to SQLite, regenerate index
-- **Modified files:** Re-generate embedding, update SQLite, regenerate index
-- **Deleted files:** Remove from SQLite, regenerate index
-- **Moved files:** Treat as delete + create
+A file watcher monitors `~/.gasket/memory/` for changes.
+
+**Debouncing strategy:**
+- Wait **2 seconds** after the last write event before processing
+- Use file modification time (`mtime`) to detect "settled" state
+- If `mtime` changes during processing, restart debounce timer
+- Ignore changes to `.tmp` files (used by atomic writes, see 9.5)
+
+**Event handling:**
+- **New files:** Generate embedding, add to SQLite, regenerate index (debounced)
+- **Modified files:** Re-generate embedding, update SQLite, regenerate index (debounced)
+- **Deleted files:** Remove from SQLite, regenerate index (debounced)
+- **Moved/renamed files:** Treat as delete + create; preserve `access_count` and `last_accessed` by matching on `id` field in frontmatter
+
+**Excluded from watching:** `_INDEX.md` files (system-generated, changes to them don't trigger re-processing)
 
 ### 9.4 Conflict Resolution
 
@@ -532,6 +637,31 @@ If a user edits frontmatter fields that are also auto-managed:
 - User edit wins for: `title`, `tags`, `frequency`, `type`
 - Auto-managed wins for: `access_count`, `last_accessed`, `tokens`, `updated`
 - Merge strategy: preserve user fields, update auto fields
+
+### 9.5 Atomic Index Regeneration
+
+Index regeneration follows atomic write to prevent corruption:
+
+```
+1. Write new index to `_INDEX.md.tmp` in same directory
+2. Flush to disk (fsync)
+3. Atomic rename: `_INDEX.md.tmp` → `_INDEX.md`
+```
+
+**On failure:**
+- Previous index remains intact (rename is atomic)
+- Log error with diagnostic context
+- Retry on next file change event with exponential backoff (2s, 4s, 8s)
+- Alert if failure persists beyond 3 consecutive attempts
+
+### 9.6 Frontmatter Parse Error Recovery
+
+When a `.md` file has malformed YAML frontmatter:
+1. Log warning with file path and parse error details
+2. Skip the file for embedding/index generation (treat as invisible)
+3. Add a comment at the top of the file: `<!-- PARSE_ERROR: <message> -->`
+4. Do NOT modify the file content
+5. The file remains editable by the user; the comment is removed on next successful parse
 
 ## 10. Token Budget Enforcement
 
@@ -584,6 +714,30 @@ function load_memories(query, detected_scenario):
 ### 10.3 Per-File Token Tracking
 
 Each memory file includes a `tokens` field in frontmatter. This is an approximate count (using tiktoken or similar) calculated when the file is created or modified. It enables budget checks without loading file contents.
+
+**Important:** `_INDEX.md` files are NOT counted against the token budget. They are metadata used only to decide which `.md` files to load. Only individual memory `.md` file contents count toward the budget.
+
+### 10.4 Budget Overflow Strategy
+
+If bootstrap phase alone exceeds 700 tokens (e.g., very large profile):
+1. Truncate individual memory contents (not frontmatter) to fit
+2. Add `<!-- TRUNCATED: showing first N tokens of M total -->` marker
+3. If even truncated bootstrap exceeds total hard cap, load only `profile/` + `active/current.md` (drop backlog)
+
+### 10.5 Cosine Similarity in SQLite
+
+SQLite has no built-in cosine similarity function. Implementation uses a custom scalar function registered at connection time:
+
+```rust
+// Register via sqlx custom function, not SQLite extension
+connection.register_scalar_function("cosine_similarity", 2, |ctx| {
+    let a: Vec<f32> = blob_to_vec(ctx.get(0));
+    let b: Vec<f32> = blob_to_vec(ctx.get(1));
+    Ok(cosine_sim(&a, &b))
+})?;
+```
+
+Alternative: fetch top-50 vectors and compute similarity in Rust (avoids SQL function registration complexity, preferred for small memory stores).
 
 ## 11. API Surface (Rust)
 
@@ -705,8 +859,9 @@ New (additive):
 
 ## 13. Open Questions
 
-1. **File watcher implementation:** Use `notify` crate for filesystem events, or poll on access? Trade-off: complexity vs. latency.
+1. ~~**File watcher implementation:** Use `notify` crate for filesystem events, or poll on access?~~ → **Resolved:** Use `notify` crate with 2-second debounce (see 9.3)
 2. **Embedding model:** Continue with existing fastembed model, or choose a different one for memory-specific embeddings?
-3. **Multi-user isolation:** Current design assumes single user. If multi-user support is needed later, scope isolation strategy TBD.
+3. **Multi-session coordination:** If two Gasket instances run simultaneously (e.g., CLI + gateway), both may write to the same memory files. Proposed: use SQLite WAL mode + file-level advisory locks (`flock`). The first instance to acquire the lock becomes the "writer"; the second operates in read-only mode for memory operations. Full design deferred to implementation phase.
 4. **Memory versioning:** Should edited memories preserve history (git-like)? Or is last-write-wins sufficient?
 5. **Cross-session deduplication:** When should the system detect and merge duplicate memories across sessions?
+6. **Deleted memory reference cleanup:** When a memory file is deleted, should other memories with `superseded_by` pointing to it be updated? Or should broken references be tolerated until next access?
