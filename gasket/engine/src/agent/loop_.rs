@@ -54,6 +54,7 @@ use gasket_types::SessionKey;
 
 use crate::agent::compactor::ContextCompactor;
 use crate::agent::memory::MemoryStore;
+use crate::agent::memory_manager::MemoryManager;
 use gasket_storage::{process_history, EventStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
@@ -191,6 +192,7 @@ struct AgentInitState {
     skills_context: Option<String>,
     hooks: Arc<crate::hooks::HookRegistry>,
     compactor: Arc<ContextCompactor>,
+    memory_manager: Option<MemoryManager>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -253,6 +255,8 @@ pub struct AgentLoop {
     /// Synchronous context compactor — runs after response, before next request.
     /// Replaces the previous async fire-and-forget background compression.
     compactor: Option<Arc<ContextCompactor>>,
+    /// Long-term memory manager (optional — only active if ~/.gasket/memory/ exists).
+    memory_manager: Option<MemoryManager>,
 }
 
 impl AgentLoop {
@@ -288,6 +292,7 @@ impl AgentLoop {
             skills_context,
             hooks,
             compactor,
+            memory_manager,
         } = Self::build_internal(
             event_store,
             sqlite_store,
@@ -312,6 +317,7 @@ impl AgentLoop {
             pricing,
             spawner: None,
             compactor: Some(compactor),
+            memory_manager,
         })
     }
 
@@ -404,12 +410,16 @@ impl AgentLoop {
 
         let hooks = Self::build_hooks();
 
+        // Try to initialize long-term memory manager (graceful if not available)
+        let memory_manager = Self::try_init_memory_manager(&sqlite_store).await;
+
         Ok(AgentInitState {
             context,
             system_prompt,
             skills_context,
             hooks,
             compactor,
+            memory_manager,
         })
     }
 
@@ -437,6 +447,7 @@ impl AgentLoop {
             pricing: None,
             spawner: None,
             compactor: None,
+            memory_manager: None,
         })
     }
 
@@ -483,6 +494,81 @@ impl AgentLoop {
             match self.context.clear_session(&session_key.to_string()).await {
                 Ok(_) => tracing::info!("Session '{}' cleared", session_key),
                 Err(e) => tracing::warn!("Failed to clear session '{}': {}", session_key, e),
+            }
+        }
+    }
+
+    /// Try to initialize the long-term memory manager.
+    /// Returns None if the memory directory doesn't exist or init fails.
+    async fn try_init_memory_manager(
+        sqlite_store: &gasket_storage::SqliteStore,
+    ) -> Option<MemoryManager> {
+        use gasket_storage::memory::memory_base_dir;
+
+        let base_dir = memory_base_dir();
+        if !base_dir.exists() {
+            debug!("Memory directory {:?} does not exist, skipping memory manager", base_dir);
+            return None;
+        }
+
+        match MemoryManager::new(base_dir, &sqlite_store.pool()).await {
+            Ok(mgr) => {
+                if let Err(e) = mgr.init().await {
+                    warn!("Failed to initialize memory manager: {}", e);
+                    return None;
+                }
+                debug!("Memory manager initialized successfully");
+                Some(mgr)
+            }
+            Err(e) => {
+                warn!("Failed to create memory manager: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Load long-term memories relevant to the current user message.
+    /// Returns a formatted system section string, or None if no memories loaded.
+    async fn load_memory_context(&self, user_message: &str) -> Option<String> {
+        let mgr = self.memory_manager.as_ref()?;
+
+        use gasket_storage::memory::MemoryQuery;
+
+        let query = MemoryQuery::new().with_text(user_message);
+
+        match mgr.load_for_context(&query).await {
+            Ok(context) if !context.memories.is_empty() => {
+                let mut sections = Vec::new();
+                sections.push("## Long-Term Memory".to_string());
+                sections.push(format!(
+                    "The following memories were loaded ({} tokens):",
+                    context.tokens_used
+                ));
+                sections.push(String::new());
+
+                for mem in &context.memories {
+                    sections.push(format!(
+                        "### {} [{}]",
+                        mem.metadata.title, mem.metadata.scenario
+                    ));
+                    sections.push(mem.content.clone());
+                    sections.push(String::new());
+                }
+
+                debug!(
+                    "Injected {} memories ({} tokens) into context",
+                    context.memories.len(),
+                    context.tokens_used
+                );
+                Some(sections.join("\n"))
+            }
+            Ok(_) => {
+                debug!("No relevant memories found");
+                None
+            }
+            Err(e) => {
+                warn!("Failed to load memories: {}", e);
+                None
             }
         }
     }
@@ -569,6 +655,12 @@ impl AgentLoop {
         }
         if let Some(ref skills) = self.skills_context {
             system_prompts.push(skills.clone());
+        }
+
+        // ── 5.5. Long-term memory injection ─────────────────
+        let memory_section = self.load_memory_context(&content).await;
+        if let Some(ref mem_text) = memory_section {
+            system_prompts.push(mem_text.clone());
         }
 
         // Load the latest summary checkpoint (if any) for context injection
