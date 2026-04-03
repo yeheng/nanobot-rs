@@ -13,6 +13,7 @@
 mod cron;
 mod event_store;
 mod kv;
+pub mod memory;
 
 // ── Merged from gasket-history ──
 pub mod processor;
