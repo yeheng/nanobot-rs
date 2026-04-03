@@ -34,7 +34,7 @@ use tracing::debug;
 use crate::error::AgentError;
 use gasket_storage::EventStore;
 use gasket_types::SessionKey;
-use gasket_types::{Session, SessionEvent};
+use gasket_types::{EventType, Session, SessionEvent};
 
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
@@ -52,11 +52,20 @@ pub enum AgentContext {
 
 /// Persistent context data for main agents.
 ///
-/// Holds references to the event store needed for session persistence.
+/// Holds references to the event store needed for session persistence,
+/// and an optional text embedder for automatic embedding generation
+/// on every saved event (decoupled from summarization/compaction).
 #[derive(Clone)]
 pub struct PersistentContext {
     /// Event store for persisting events
     pub event_store: Arc<EventStore>,
+    /// SQLite store for saving embeddings (semantic recall index)
+    pub sqlite_store: Arc<gasket_storage::SqliteStore>,
+    /// Optional text embedder for automatic embedding generation.
+    /// When present, every saved event gets an embedding for semantic recall,
+    /// regardless of whether compaction/summarization is enabled.
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<gasket_storage::TextEmbedder>>,
 }
 
 impl std::fmt::Debug for PersistentContext {
@@ -83,8 +92,16 @@ impl AgentContext {
     /// let context = AgentContext::persistent(event_store);
     /// assert!(context.is_persistent());
     /// ```
-    pub fn persistent(event_store: Arc<EventStore>) -> Self {
-        Self::Persistent(PersistentContext { event_store })
+    pub fn persistent(
+        event_store: Arc<EventStore>,
+        sqlite_store: Arc<gasket_storage::SqliteStore>,
+    ) -> Self {
+        Self::Persistent(PersistentContext {
+            event_store,
+            sqlite_store,
+            #[cfg(feature = "local-embedding")]
+            embedder: None,
+        })
     }
 
     /// Check if this context has persistence enabled.
@@ -133,10 +150,53 @@ impl AgentContext {
                     .append_event(&event)
                     .await
                     .map_err(|e| AgentError::Other(format!("Failed to persist event: {}", e)))?;
+
+                // Auto-generate embedding for semantic recall (decoupled from compaction).
+                // Only UserMessage and AssistantMessage events are worth indexing.
+                let worth_indexing = matches!(
+                    &event.event_type,
+                    EventType::UserMessage | EventType::AssistantMessage
+                );
+                if worth_indexing {
+                    Self::generate_embedding(ctx, &event).await;
+                }
+
                 Ok(())
             }
             Self::Stateless => Ok(()),
         }
+    }
+
+    /// Generate and persist an embedding for a saved event.
+    ///
+    /// This is decoupled from compaction — every saved message gets indexed
+    /// for semantic recall, even if no summarization occurs.
+    #[cfg(feature = "local-embedding")]
+    async fn generate_embedding(ctx: &PersistentContext, event: &SessionEvent) {
+        let Some(ref embedder) = ctx.embedder else {
+            return;
+        };
+
+        match embedder.embed(&event.content) {
+            Ok(embedding) => {
+                let event_id = event.id.to_string();
+                if let Err(e) = ctx
+                    .sqlite_store
+                    .save_embedding(&event_id, &event.session_key, &embedding)
+                    .await
+                {
+                    debug!("Failed to save embedding for event {}: {}", event_id, e);
+                }
+            }
+            Err(e) => {
+                debug!("Failed to generate embedding for event {}: {}", event.id, e);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "local-embedding"))]
+    async fn generate_embedding(_ctx: &PersistentContext, _event: &SessionEvent) {
+        // No-op when local-embedding is disabled
     }
 
     /// Get history for a session.
@@ -367,18 +427,20 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_context_creation() {
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
         assert!(context.is_persistent());
     }
 
     #[tokio::test]
     async fn test_persistent_context_save_event() {
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
 
         // Save event
         let event = SessionEvent {
@@ -398,9 +460,10 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_context_get_history() {
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
 
         // Save multiple events
         let e1 = SessionEvent {
@@ -441,9 +504,10 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_context_get_history_with_branch() {
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
 
         // Save event to main branch
         let main_event = SessionEvent {
@@ -490,9 +554,10 @@ mod tests {
     async fn test_persistent_context_flow() {
         // Setup in-memory database
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
         assert!(context.is_persistent());
 
         // Save event
@@ -517,9 +582,10 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_context_clear_session() {
         let pool = setup_test_db().await;
+        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
-        let context = AgentContext::persistent(event_store);
+        let context = AgentContext::persistent(event_store, sqlite_store);
         assert!(context.is_persistent());
 
         // Save event

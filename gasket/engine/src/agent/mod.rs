@@ -1,5 +1,6 @@
 //! Agent module: core processing engine
 
+pub mod compactor;
 pub mod context;
 pub mod executor;
 pub mod executor_core;
@@ -15,6 +16,7 @@ pub mod subagent_tracker;
 pub mod summarization;
 
 // New enum-based AgentContext (replaces trait-based version)
+pub use compactor::ContextCompactor;
 pub use context::AgentContext;
 pub use context::PersistentContext;
 pub use executor::ToolExecutor;

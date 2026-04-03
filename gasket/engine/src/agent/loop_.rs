@@ -52,8 +52,8 @@ use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
 
+use crate::agent::compactor::ContextCompactor;
 use crate::agent::memory::MemoryStore;
-use crate::agent::summarization::SummarizationService;
 use gasket_storage::{process_history, EventStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
@@ -139,6 +139,31 @@ struct PipelineState {
     content: String,
     messages: Vec<ChatMessage>,
     local_vault_values: Vec<String>,
+    /// Events evicted during history truncation — compacted post-response.
+    evicted_events: Vec<SessionEvent>,
+}
+
+/// Owned snapshot of `PipelineState` fields needed for post-response finalization.
+///
+/// Extracted *before* `state.messages` is moved into the executor.
+/// Owns its data so the borrow checker doesn't tie it to `state`'s lifetime.
+struct FinalizeContext {
+    session_key_str: String,
+    content: String,
+    local_vault_values: Vec<String>,
+    evicted_events: Vec<SessionEvent>,
+}
+
+impl PipelineState {
+    fn into_finalize_context(self) -> (Vec<ChatMessage>, FinalizeContext) {
+        let ctx = FinalizeContext {
+            session_key_str: self.session_key_str,
+            content: self.content,
+            local_vault_values: self.local_vault_values,
+            evicted_events: self.evicted_events,
+        };
+        (self.messages, ctx)
+    }
 }
 
 /// Outcome of the pipeline preparation.
@@ -161,7 +186,7 @@ struct AgentInitState {
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<crate::hooks::HookRegistry>,
-    summarizer: Arc<SummarizationService>,
+    compactor: Arc<ContextCompactor>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -221,9 +246,9 @@ pub struct AgentLoop {
     pricing: Option<crate::token_tracker::ModelPricing>,
     /// Subagent spawner for spawn/spawn_parallel tools
     spawner: Option<Arc<dyn SubagentSpawner>>,
-    /// Summarization service for background context compression.
-    /// Direct async call replaces the previous actor/channel pattern.
-    summarizer: Option<Arc<SummarizationService>>,
+    /// Synchronous context compactor — runs after response, before next request.
+    /// Replaces the previous async fire-and-forget background compression.
+    compactor: Option<Arc<ContextCompactor>>,
 }
 
 impl AgentLoop {
@@ -253,7 +278,7 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
-            summarizer,
+            compactor,
         } = Self::build_internal(
             event_store,
             sqlite_store,
@@ -280,7 +305,7 @@ impl AgentLoop {
             hooks,
             pricing,
             spawner: None,
-            summarizer: Some(summarizer),
+            compactor: Some(compactor),
         })
     }
 
@@ -358,14 +383,9 @@ impl AgentLoop {
         provider: Arc<dyn LlmProvider>,
         model: String,
     ) -> Result<AgentInitState, AgentError> {
-        let context = AgentContext::persistent(event_store.clone());
+        let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
 
-        let summarizer = Arc::new(SummarizationService::new(
-            provider,
-            sqlite_store,
-            event_store,
-            model,
-        ));
+        let compactor = Arc::new(ContextCompactor::new(provider, event_store.clone(), model));
 
         let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
 
@@ -376,7 +396,7 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             hooks,
-            summarizer,
+            compactor,
         })
     }
 
@@ -403,7 +423,7 @@ impl AgentLoop {
             hooks: HookRegistry::empty(),
             pricing: None,
             spawner: None,
-            summarizer: None,
+            compactor: None,
         })
     }
 
@@ -570,31 +590,12 @@ impl AgentLoop {
         // Vault values are now owned by this request's context — no shared state.
         let local_vault_values = ctx.vault_values;
 
-        // ── 7. Trigger background compression for evicted events ────
-        if !evicted_events.is_empty() {
-            if let Some(ref summarizer) = self.summarizer {
-                let summarizer = summarizer.clone();
-                let session_key = session_key_str.clone();
-                let vault_values = local_vault_values.clone();
-                tokio::spawn(async move {
-                    match summarizer
-                        .compress(&session_key, &evicted_events, &vault_values)
-                        .await
-                    {
-                        Ok(_) => debug!("Background compression completed for {}", session_key),
-                        Err(e) => {
-                            debug!("Background compression failed for {}: {}", session_key, e)
-                        }
-                    }
-                });
-            }
-        }
-
         Ok(PipelineOutcome::Ready(PipelineState {
             session_key_str,
             content,
             messages,
             local_vault_values,
+            evicted_events,
         }))
     }
 
@@ -621,18 +622,18 @@ impl AgentLoop {
         };
 
         let model = self.config.model.clone();
+        let (messages, fctx) = state.into_finalize_context();
         let result = self
-            .run_agent_loop(state.messages, &state.local_vault_values)
+            .run_agent_loop(messages, &fctx.local_vault_values)
             .await?;
 
         Ok(finalize_response(
             result,
-            &state.session_key_str,
-            &state.content,
-            &state.local_vault_values,
+            &fctx,
             &self.context,
             &self.hooks,
             &model,
+            self.compactor.as_ref(),
         )
         .await)
     }
@@ -685,6 +686,7 @@ impl AgentLoop {
         let hooks = self.hooks.clone();
         let context = self.context.clone();
         let spawner = self.spawner.clone();
+        let compactor = self.compactor.clone();
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
 
@@ -693,7 +695,8 @@ impl AgentLoop {
 
             let executor = AgentExecutor::with_spawner(provider, tools, &config, spawner);
 
-            let mut options = ExecutorOptions::new().with_vault_values(&state.local_vault_values);
+            let (messages, fctx) = state.into_finalize_context();
+            let mut options = ExecutorOptions::new().with_vault_values(&fctx.local_vault_values);
             if let Some(ref p) = pricing {
                 options = options.with_pricing(crate::token_tracker::ModelPricing {
                     price_input_per_million: p.price_input_per_million,
@@ -703,17 +706,16 @@ impl AgentLoop {
             }
 
             let result = executor
-                .execute_stream_with_options(state.messages, event_tx, &options)
+                .execute_stream_with_options(messages, event_tx, &options)
                 .await?;
 
             Ok(finalize_response(
                 result,
-                &state.session_key_str,
-                &state.content,
-                &state.local_vault_values,
+                &fctx,
                 &context,
                 &hooks,
                 &config.model,
+                compactor.as_ref(),
             )
             .await)
         });
@@ -769,18 +771,20 @@ impl AgentLoop {
 
 /// Shared post-processing for both direct and streaming execution.
 ///
-/// Handles: save assistant event → AfterResponse hooks → token logging → build response.
+/// Handles: save assistant event → compaction → AfterResponse hooks → token logging → build response.
 /// Errors in save_event and AfterResponse are logged and swallowed — the expensive LLM
 /// response must not be lost because SQLite had a hiccup or a hook misbehaved.
 async fn finalize_response(
     result: crate::agent::executor_core::ExecutionResult,
-    session_key_str: &str,
-    content: &str,
-    local_vault_values: &[String],
+    ctx: &FinalizeContext,
     context: &AgentContext,
     hooks: &HookRegistry,
     model: &str,
+    compactor: Option<&Arc<ContextCompactor>>,
 ) -> AgentResponse {
+    let session_key_str = &ctx.session_key_str;
+    let local_vault_values = &ctx.local_vault_values;
+
     // ── Save assistant event (critical data safety) ────────
     let history_content = redact_secrets(&result.content, local_vault_values);
     let assistant_event = SessionEvent {
@@ -797,6 +801,29 @@ async fn finalize_response(
     };
     if let Err(e) = context.save_event(assistant_event).await {
         warn!("Failed to persist assistant event: {}", e);
+    }
+
+    // ── Synchronous post-response compaction ──────────────
+    // Compaction runs AFTER the response is saved, BEFORE returning.
+    // This ensures the next request always sees the latest summary.
+    if !ctx.evicted_events.is_empty() {
+        if let Some(compactor) = compactor {
+            match compactor
+                .compact(session_key_str, &ctx.evicted_events, local_vault_values)
+                .await
+            {
+                Ok(Some(summary)) => debug!(
+                    "Post-response compaction done for {}: {} tokens",
+                    session_key_str,
+                    crate::agent::count_tokens(&summary)
+                ),
+                Ok(None) => debug!("Post-response compaction: no summary generated"),
+                Err(e) => warn!(
+                    "Post-response compaction failed for {}: {}",
+                    session_key_str, e
+                ),
+            }
+        }
     }
 
     // ── AfterResponse hooks (audit, logging, etc.) ────────
@@ -823,7 +850,7 @@ async fn finalize_response(
     let mut ctx = MutableContext {
         session_key: session_key_str,
         messages: &mut vec![],
-        user_input: Some(content),
+        user_input: Some(&ctx.content),
         response: Some(&result.content),
         tool_calls: Some(&tools_used),
         token_usage: token_usage_for_hooks.as_ref(),
@@ -877,7 +904,7 @@ impl AgentLoop {
             if !summary_text.is_empty() {
                 messages.push(ChatMessage::assistant(format!(
                     "{}{}",
-                    crate::agent::summarization::SUMMARY_PREFIX,
+                    crate::agent::compactor::SUMMARY_PREFIX,
                     summary_text
                 )));
             }
@@ -888,7 +915,7 @@ impl AgentLoop {
             if !recalled.is_empty() {
                 let recall_content = format!(
                     "{}\n{}",
-                    crate::agent::summarization::RECALL_PREFIX,
+                    crate::agent::compactor::RECALL_PREFIX,
                     recalled.join("\n")
                 );
                 messages.push(ChatMessage::assistant(recall_content));

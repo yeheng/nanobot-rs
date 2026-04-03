@@ -115,6 +115,15 @@ impl SqliteStore {
         self.pool.clone()
     }
 
+    /// Create a `SqliteStore` from an existing pool (no migrations).
+    ///
+    /// Intended for test setups and internal use where the caller already
+    /// has a configured pool. Does NOT run migrations — the caller is
+    /// responsible for ensuring the schema exists.
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
     // ── Session Summary API ──
 
     /// Save or replace a session summary (upsert).
