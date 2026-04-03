@@ -9,9 +9,9 @@
 //!
 //! Total never exceeds the hard cap (default 3200 tokens).
 
+use anyhow::Result;
 use gasket_storage::memory::*;
 use gasket_storage::{SqlitePool, SqliteStore};
-use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, warn};
@@ -120,9 +120,15 @@ impl MemoryManager {
         debug!("Phase 2 complete: {} tokens", scenario_tokens);
 
         // Phase 3: On-demand search
-        let remaining = self.budget.total_cap.saturating_sub(bootstrap_tokens + scenario_tokens);
+        let remaining = self
+            .budget
+            .total_cap
+            .saturating_sub(bootstrap_tokens + scenario_tokens);
         if remaining > 0 {
-            debug!("Phase 3: Loading on-demand memories (budget: {})", remaining);
+            debug!(
+                "Phase 3: Loading on-demand memories (budget: {})",
+                remaining
+            );
             let on_demand_memories = self
                 .load_on_demand(query, remaining, &mut loaded_filenames)
                 .await?;
@@ -255,7 +261,11 @@ impl MemoryManager {
         let mut tokens_used = 0;
 
         // Phase 2a: Load hot items first
-        for entry in index.entries.iter().filter(|e| e.frequency == Frequency::Hot) {
+        for entry in index
+            .entries
+            .iter()
+            .filter(|e| e.frequency == Frequency::Hot)
+        {
             let key = format!("{}/{}", scenario.dir_name(), entry.filename);
             if loaded.contains(&key) {
                 continue;
@@ -280,7 +290,11 @@ impl MemoryManager {
         }
 
         // Phase 2b: Load warm items matching tags
-        for entry in index.entries.iter().filter(|e| e.frequency == Frequency::Warm) {
+        for entry in index
+            .entries
+            .iter()
+            .filter(|e| e.frequency == Frequency::Warm)
+        {
             let key = format!("{}/{}", scenario.dir_name(), entry.filename);
             if loaded.contains(&key) {
                 continue;
@@ -399,8 +413,8 @@ pub struct PhaseBreakdown {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use gasket_storage::memory::{serialize_memory_file, MemoryMeta};
+    use tempfile::TempDir;
 
     /// Create a test memory file with proper frontmatter.
     async fn create_memory_file(
@@ -465,15 +479,65 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Create profile files
-        create_memory_file(&memory_dir, Scenario::Profile, "user.md", "User Profile", &["profile"], Frequency::Hot, 100).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Profile, "prefs.md", "Preferences", &["settings"], Frequency::Hot, 150).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Profile,
+            "user.md",
+            "User Profile",
+            &["profile"],
+            Frequency::Hot,
+            100,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Profile,
+            "prefs.md",
+            "Preferences",
+            &["settings"],
+            Frequency::Hot,
+            150,
+        )
+        .await
+        .unwrap();
 
         // Create active files
-        create_memory_file(&memory_dir, Scenario::Active, "current_project.md", "Current Project", &["active"], Frequency::Hot, 200).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Active, "backlog_tasks.md", "Backlog Tasks", &["active"], Frequency::Warm, 250).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Active,
+            "current_project.md",
+            "Current Project",
+            &["active"],
+            Frequency::Hot,
+            200,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Active,
+            "backlog_tasks.md",
+            "Backlog Tasks",
+            &["active"],
+            Frequency::Warm,
+            250,
+        )
+        .await
+        .unwrap();
 
         // Create knowledge file (should NOT be in bootstrap)
-        create_memory_file(&memory_dir, Scenario::Knowledge, "test.md", "Test Knowledge", &["test"], Frequency::Warm, 100).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "test.md",
+            "Test Knowledge",
+            &["test"],
+            Frequency::Warm,
+            100,
+        )
+        .await
+        .unwrap();
 
         // Load with empty query
         let query = MemoryQuery::new();
@@ -493,18 +557,58 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Regenerate index first (empty)
-        manager.index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Knowledge)
+            .await
+            .unwrap();
 
         // Create knowledge files exceeding budget (1500)
-        create_memory_file(&memory_dir, Scenario::Knowledge, "hot1.md", "Hot 1", &["rust"], Frequency::Hot, 800).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Knowledge, "hot2.md", "Hot 2", &["rust"], Frequency::Hot, 800).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Knowledge, "warm1.md", "Warm 1", &["rust"], Frequency::Warm, 500).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "hot1.md",
+            "Hot 1",
+            &["rust"],
+            Frequency::Hot,
+            800,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "hot2.md",
+            "Hot 2",
+            &["rust"],
+            Frequency::Hot,
+            800,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "warm1.md",
+            "Warm 1",
+            &["rust"],
+            Frequency::Warm,
+            500,
+        )
+        .await
+        .unwrap();
 
         // Regenerate index
-        manager.index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Knowledge)
+            .await
+            .unwrap();
 
         // Load with scenario filter
-        let query = MemoryQuery::new().with_scenario(Scenario::Knowledge).with_tag("rust");
+        let query = MemoryQuery::new()
+            .with_scenario(Scenario::Knowledge)
+            .with_tag("rust");
         let context = manager.load_for_context(&query).await.unwrap();
 
         // Should load hot1 (800) + hot2 (800) = 1600, but cap at 1500
@@ -519,14 +623,42 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Regenerate index
-        manager.index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Knowledge)
+            .await
+            .unwrap();
 
         // Create knowledge files with cold frequency (not loaded in phase 2)
-        create_memory_file(&memory_dir, Scenario::Knowledge, "cold1.md", "Cold 1", &["search"], Frequency::Cold, 500).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Knowledge, "cold2.md", "Cold 2", &["search"], Frequency::Cold, 400).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "cold1.md",
+            "Cold 1",
+            &["search"],
+            Frequency::Cold,
+            500,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "cold2.md",
+            "Cold 2",
+            &["search"],
+            Frequency::Cold,
+            400,
+        )
+        .await
+        .unwrap();
 
         // Regenerate index
-        manager.index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Knowledge)
+            .await
+            .unwrap();
 
         // Load with text query (triggers on-demand)
         let query = MemoryQuery::new()
@@ -552,20 +684,49 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Create large files
-        create_memory_file(&memory_dir, Scenario::Profile, "profile1.md", "Profile 1", &[], Frequency::Hot, 600).await.unwrap();
-        create_memory_file(&memory_dir, Scenario::Profile, "profile2.md", "Profile 2", &[], Frequency::Hot, 600).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Profile,
+            "profile1.md",
+            "Profile 1",
+            &[],
+            Frequency::Hot,
+            600,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Profile,
+            "profile2.md",
+            "Profile 2",
+            &[],
+            Frequency::Hot,
+            600,
+        )
+        .await
+        .unwrap();
 
-        manager.index_manager.regenerate(Scenario::Profile).await.unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Profile)
+            .await
+            .unwrap();
 
         // Create manager with custom budget
         let store = FileMemoryStore::new(memory_dir.clone());
         let index_manager = FileIndexManager::new(memory_dir.clone());
-        let pool = SqliteStore::with_path(temp_dir.path().join("test.db")).await.unwrap().pool().clone();
+        let pool = SqliteStore::with_path(temp_dir.path().join("test.db"))
+            .await
+            .unwrap()
+            .pool()
+            .clone();
         let embedding_store = EmbeddingStore::new(pool);
         // Create a separate index manager instance for retrieval engine
         let retrieval_index = FileIndexManager::new(memory_dir.clone());
         let retrieval = RetrievalEngine::new(retrieval_index, embedding_store);
-        let custom_manager = MemoryManager::with_components(store, index_manager, retrieval, budget);
+        let custom_manager =
+            MemoryManager::with_components(store, index_manager, retrieval, budget);
 
         let query = MemoryQuery::new();
         let context = custom_manager.load_for_context(&query).await.unwrap();
@@ -580,11 +741,23 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Create valid file
-        create_memory_file(&memory_dir, Scenario::Profile, "valid.md", "Valid", &[], Frequency::Hot, 100).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Profile,
+            "valid.md",
+            "Valid",
+            &[],
+            Frequency::Hot,
+            100,
+        )
+        .await
+        .unwrap();
 
         // Create corrupted file
         let corrupted_path = memory_dir.join("profile/corrupted.md");
-        tokio::fs::write(&corrupted_path, "invalid frontmatter\n---\ncontent").await.unwrap();
+        tokio::fs::write(&corrupted_path, "invalid frontmatter\n---\ncontent")
+            .await
+            .unwrap();
 
         // Should load valid file and skip corrupted
         let query = MemoryQuery::new();
@@ -601,8 +774,22 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Create a file in knowledge
-        create_memory_file(&memory_dir, Scenario::Knowledge, "duplicate.md", "Duplicate", &["test"], Frequency::Hot, 100).await.unwrap();
-        manager.index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "duplicate.md",
+            "Duplicate",
+            &["test"],
+            Frequency::Hot,
+            100,
+        )
+        .await
+        .unwrap();
+        manager
+            .index_manager
+            .regenerate(Scenario::Knowledge)
+            .await
+            .unwrap();
 
         // The file should only load once (in scenario phase, not again in on-demand)
         let query = MemoryQuery::new()
@@ -612,7 +799,11 @@ mod tests {
         let context = manager.load_for_context(&query).await.unwrap();
 
         // Count how many times the file appears
-        let count = context.memories.iter().filter(|m| m.metadata.title == "Duplicate").count();
+        let count = context
+            .memories
+            .iter()
+            .filter(|m| m.metadata.title == "Duplicate")
+            .count();
         assert_eq!(count, 1, "File should only load once");
     }
 }
