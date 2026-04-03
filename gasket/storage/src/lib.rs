@@ -418,6 +418,7 @@ impl SqliteStore {
                 branch          TEXT DEFAULT 'main',
                 tools_used      TEXT DEFAULT '[]',
                 token_usage     TEXT,
+                token_len       INTEGER NOT NULL DEFAULT 0,
                 event_data      TEXT,
                 extra           TEXT DEFAULT '{}',
                 created_at      TEXT NOT NULL,
@@ -442,6 +443,14 @@ impl SqliteStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(event_type)")
             .execute(&self.pool)
             .await?;
+
+        // Covering index for get_latest_summary: single seek, no table scan
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_type_created \
+             ON session_events(session_key, branch, event_type, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Summary index table
         sqlx::query(

@@ -73,8 +73,10 @@ pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> Pr
     let protected = events.split_off(protected_start);
     let older = events; // Remaining events are the older ones
 
-    // Calculate tokens for protected events (always included)
-    let protected_tokens: usize = protected.iter().map(|e| count_tokens(&e.content)).sum();
+    // Calculate tokens for protected events (always included).
+    // Use pre-computed token count from DB (content_token_len) when available,
+    // fall back to BPE encoding for events created in-memory.
+    let protected_tokens: usize = protected.iter().map(|e| token_len_or_count(e)).sum();
     let mut current_tokens = protected_tokens;
     let mut included_older: Vec<SessionEvent> = Vec::new();
     let mut evicted: Vec<SessionEvent> = Vec::new();
@@ -83,7 +85,7 @@ pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> Pr
     // Use into_iter() to take ownership instead of cloning
     let mut budget_exceeded = false;
     for event in older.into_iter().rev() {
-        let event_tokens = count_tokens(&event.content);
+        let event_tokens = token_len_or_count(&event);
 
         if !budget_exceeded
             && (config.token_budget == 0 || current_tokens + event_tokens <= config.token_budget)
@@ -140,6 +142,20 @@ pub fn count_tokens(text: &str) -> usize {
     match get_encoder() {
         Some(enc) => enc.encode_with_special_tokens(text).len(),
         None => text.len() / 4,
+    }
+}
+
+/// Return pre-computed token count from DB, falling back to BPE encoding.
+///
+/// Events loaded from SQLite have `content_token_len` set at write time.
+/// Events created in-memory (not yet persisted) have it as 0, so we
+/// fall back to live BPE token counting.
+fn token_len_or_count(event: &SessionEvent) -> usize {
+    let cached = event.metadata.content_token_len;
+    if cached > 0 {
+        cached
+    } else {
+        count_tokens(&event.content)
     }
 }
 

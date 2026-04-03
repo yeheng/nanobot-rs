@@ -52,6 +52,7 @@ pub use agent::{
     HistoryQueryBuilder,
     HistoryResult,
     HistoryRetriever,
+    IndexingService,
     // Memory & compression
     MemoryStore,
     ModelResolver,
@@ -64,7 +65,6 @@ pub use agent::{
     StreamEvent,
     SubagentManager,
     SubagentTracker,
-    SummarizationService,
     TimeRange,
     ToolExecutor,
     TrackerError,

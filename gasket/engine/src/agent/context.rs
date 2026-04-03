@@ -370,6 +370,7 @@ mod tests {
                 branch TEXT DEFAULT 'main',
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
+                token_len INTEGER NOT NULL DEFAULT 0,
                 event_data TEXT,
                 extra TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL

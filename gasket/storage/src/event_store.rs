@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, TokenUsage};
+use crate::processor::count_tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -183,12 +184,15 @@ impl EventStore {
         .execute(&mut *tx)
         .await?;
 
+        // Compute content token count once at write time (avoids re-calculation on read path)
+        let token_len = count_tokens(&event.content) as i64;
+
         sqlx::query(
             r#"
             INSERT INTO session_events
             (id, session_key, event_type, content, embedding, branch,
-             tools_used, token_usage, event_data, extra, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tools_used, token_usage, token_len, event_data, extra, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())
@@ -204,6 +208,7 @@ impl EventStore {
         .bind(event.metadata.branch.as_deref().unwrap_or("main"))
         .bind(&tools_used)
         .bind(token_usage.as_deref())
+        .bind(token_len)
         .bind(event_data_json.as_deref())
         .bind(&extra)
         .bind(event.created_at.to_rfc3339())
@@ -336,6 +341,7 @@ struct EventRow {
     branch: String,
     tools_used: String,
     token_usage: Option<String>,
+    token_len: i64,
     event_data: Option<String>,
     extra: String,
     created_at: String,
@@ -382,6 +388,7 @@ impl TryFrom<EventRow> for SessionEvent {
                 },
                 tools_used,
                 token_usage,
+                content_token_len: row.token_len as usize,
                 extra,
             },
             created_at: DateTime::parse_from_rfc3339(&row.created_at)
@@ -431,6 +438,7 @@ mod tests {
                 branch TEXT DEFAULT 'main',
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
+                token_len INTEGER NOT NULL DEFAULT 0,
                 event_data TEXT,
                 extra TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL

@@ -134,6 +134,7 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         streaming: config.agents.defaults.streaming,
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
+        summarization_prompt: None,
     }
 }
 

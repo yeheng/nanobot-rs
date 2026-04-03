@@ -27,9 +27,12 @@ use gasket_types::{EventMetadata, EventType, SessionEvent, SummaryType};
 use crate::agent::count_tokens;
 use crate::vault::redact_secrets;
 
-/// Fixed prompt for LLM summarization.
-pub const SUMMARIZATION_PROMPT: &str =
+/// Default prompt for LLM summarization (used when no custom prompt is configured).
+pub const DEFAULT_SUMMARIZATION_PROMPT: &str =
     "Summarize the following conversation briefly, keeping key facts, decisions, and outcomes.";
+
+/// Alias for backward compatibility.
+pub const SUMMARIZATION_PROMPT: &str = DEFAULT_SUMMARIZATION_PROMPT;
 
 /// Prefix for injected summary assistant messages.
 pub const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
@@ -61,20 +64,50 @@ pub struct ContextCompactor {
     event_store: Arc<EventStore>,
     /// Model to use for summarization.
     model: String,
+    /// Token budget for context window (used to compute compaction threshold).
+    token_budget: usize,
+    /// Compaction threshold multiplier (default 1.2).
+    ///
+    /// Compaction is only triggered when evicted tokens exceed
+    /// `token_budget * (threshold - 1.0)`. With default threshold 1.2 and
+    /// budget 8000, compaction only fires when > 1600 tokens are evicted.
+    /// This prevents high-frequency LLM calls for trivial overflows.
+    compaction_threshold: f32,
+    /// Custom summarization prompt (falls back to DEFAULT_SUMMARIZATION_PROMPT).
+    summarization_prompt: String,
 }
 
 impl ContextCompactor {
+    /// Default compaction threshold multiplier.
+    pub const DEFAULT_COMPACTION_THRESHOLD: f32 = 1.2;
+
     /// Create a new compactor.
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         event_store: Arc<EventStore>,
         model: String,
+        token_budget: usize,
     ) -> Self {
         Self {
             provider,
             event_store,
             model,
+            token_budget,
+            compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
+            summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
         }
+    }
+
+    /// Set a custom summarization prompt (overrides built-in default).
+    pub fn with_summarization_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.summarization_prompt = prompt.into();
+        self
+    }
+
+    /// Set a custom compaction threshold multiplier.
+    pub fn with_threshold(mut self, threshold: f32) -> Self {
+        self.compaction_threshold = threshold;
+        self
     }
 
     /// Run compaction on evicted events.
@@ -105,6 +138,20 @@ impl ContextCompactor {
 
         if evicted_events.is_empty() {
             // No evicted events — just return existing summary (fast path)
+            return Ok(existing_summary);
+        }
+
+        // Batch compaction threshold: skip expensive LLM summarization
+        // when the evicted amount is small relative to the token budget.
+        // Only compact when evicted_tokens > budget * (threshold - 1.0).
+        let evicted_tokens: usize = evicted_events.iter().map(|e| e.token_len_cached()).sum();
+        let overflow_threshold =
+            (self.token_budget as f32 * (self.compaction_threshold - 1.0)) as usize;
+        if evicted_tokens < overflow_threshold {
+            debug!(
+                "Skipping compaction: evicted {} tokens < threshold {} (budget={}, threshold={})",
+                evicted_tokens, overflow_threshold, self.token_budget, self.compaction_threshold
+            );
             return Ok(existing_summary);
         }
 
@@ -162,7 +209,14 @@ impl ContextCompactor {
             }
         }
 
+        // Filter out Summary events — only UserMessage/AssistantMessage contribute
+        // to a meaningful summary. The existing summary (if any) is already loaded
+        // separately above, so including Summary events here would be circular.
         for event in evicted_events {
+            if event.event_type.is_summary() {
+                debug!("Skipping Summary event {} from compaction input", event.id);
+                continue;
+            }
             context_parts.push(format!("{:?}: {}", event.event_type, event.content));
         }
 
@@ -178,7 +232,7 @@ impl ContextCompactor {
         let request = ChatRequest {
             model: self.model.clone(),
             messages: vec![
-                ChatMessage::system(SUMMARIZATION_PROMPT),
+                ChatMessage::system(&self.summarization_prompt),
                 ChatMessage::user(context_text),
             ],
             tools: None,

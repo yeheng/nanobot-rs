@@ -94,6 +94,9 @@ pub struct AgentConfig {
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
+    /// Custom summarization prompt (overrides built-in default).
+    /// When set, this prompt is used by ContextCompactor to generate summaries.
+    pub summarization_prompt: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -109,6 +112,7 @@ impl Default for AgentConfig {
             streaming: true,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+            summarization_prompt: None,
         }
     }
 }
@@ -273,6 +277,11 @@ impl AgentLoop {
         let sqlite_store = Arc::new(memory_store.sqlite_store().clone());
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
+        let history_config = HistoryConfig {
+            max_events: config.memory_window,
+            ..Default::default()
+        };
+
         let AgentInitState {
             context,
             system_prompt,
@@ -285,13 +294,10 @@ impl AgentLoop {
             &workspace,
             provider.clone(),
             config.model.clone(),
+            history_config.token_budget,
+            config.summarization_prompt.clone(),
         )
         .await?;
-
-        let history_config = HistoryConfig {
-            max_events: config.memory_window,
-            ..Default::default()
-        };
 
         Ok(Self {
             provider,
@@ -382,10 +388,16 @@ impl AgentLoop {
         workspace: &Path,
         provider: Arc<dyn LlmProvider>,
         model: String,
+        token_budget: usize,
+        summarization_prompt: Option<String>,
     ) -> Result<AgentInitState, AgentError> {
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
 
-        let compactor = Arc::new(ContextCompactor::new(provider, event_store.clone(), model));
+        let mut compactor = ContextCompactor::new(provider, event_store.clone(), model, token_budget);
+        if let Some(prompt) = summarization_prompt {
+            compactor = compactor.with_summarization_prompt(prompt);
+        }
+        let compactor = Arc::new(compactor);
 
         let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
 
@@ -803,26 +815,28 @@ async fn finalize_response(
         warn!("Failed to persist assistant event: {}", e);
     }
 
-    // ── Synchronous post-response compaction ──────────────
-    // Compaction runs AFTER the response is saved, BEFORE returning.
-    // This ensures the next request always sees the latest summary.
+    // ── Non-blocking post-response compaction ─────────────
+    // Compaction is spawned as a background task (eventually consistent).
+    // The next request uses the existing summary from DB; if compaction
+    // finishes in time, the request after that sees the updated one.
+    // This eliminates Actor-blocking — zero user-facing latency impact.
     if !ctx.evicted_events.is_empty() {
         if let Some(compactor) = compactor {
-            match compactor
-                .compact(session_key_str, &ctx.evicted_events, local_vault_values)
-                .await
-            {
-                Ok(Some(summary)) => debug!(
-                    "Post-response compaction done for {}: {} tokens",
-                    session_key_str,
-                    crate::agent::count_tokens(&summary)
-                ),
-                Ok(None) => debug!("Post-response compaction: no summary generated"),
-                Err(e) => warn!(
-                    "Post-response compaction failed for {}: {}",
-                    session_key_str, e
-                ),
-            }
+            let compactor = std::sync::Arc::clone(compactor);
+            let sk = session_key_str.clone();
+            let evicted = ctx.evicted_events.clone();
+            let vault = local_vault_values.clone();
+            tokio::spawn(async move {
+                match compactor.compact(&sk, &evicted, &vault).await {
+                    Ok(Some(summary)) => debug!(
+                        "Background compaction done for {}: {} tokens",
+                        sk,
+                        crate::agent::count_tokens(&summary)
+                    ),
+                    Ok(None) => debug!("Background compaction for {}: no summary generated", sk),
+                    Err(e) => warn!("Background compaction failed for {}: {}", sk, e),
+                }
+            });
         }
     }
 

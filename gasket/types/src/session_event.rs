@@ -65,6 +65,14 @@ impl EventType {
     }
 }
 
+impl SessionEvent {
+    /// Return pre-computed content token count from DB.
+    /// Returns 0 if not yet computed (e.g., events created in-memory before persistence).
+    pub fn token_len_cached(&self) -> usize {
+        self.metadata.content_token_len
+    }
+}
+
 /// Summary type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SummaryType {
@@ -88,8 +96,14 @@ pub struct EventMetadata {
     #[serde(default)]
     pub tools_used: Vec<String>,
 
-    /// Token statistics
+    /// Token statistics (LLM API input/output tokens)
     pub token_usage: Option<TokenUsage>,
+
+    /// Pre-computed content token count via tiktoken BPE encoding.
+    /// Calculated once at write time in `append_event` to avoid
+    /// re-computation on every read in `process_history`.
+    #[serde(default)]
+    pub content_token_len: usize,
 
     /// Extension fields
     #[serde(default)]
