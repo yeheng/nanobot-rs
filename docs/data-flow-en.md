@@ -233,7 +233,7 @@ User Input
                  └───────────────────┬───────────────────┘
                                      │
                  ┌───────────────────▼───────────────────┐
-                 │  ContextCompressionHook.compress()     │
+                 │  ContextCompactor::compact()           │
                  │                                        │
                  │  evicted not empty → LLM summary       │
                  │  evicted empty → load existing summary │
@@ -297,9 +297,9 @@ User Input
             │            │.execute_    │   │
             │            │ batch()     │   │
             │            │             │   │
-            │            │ Execute all │   │
+            │            │ spawn_parallel│   │
+            │            │ + Execute all│   │
             │            │ tool_calls  │   │
-            │            │ in parallel │   │
             │            └──────┬──────┘   │
             │                   │          │
             │            ┌──────▼──────┐   │
@@ -491,7 +491,7 @@ Merge Event
 ### Summary Events
 
 ```
-ContextCompressionHook.compress()
+ContextCompactor::compact()
   │
   ├── Detect token budget exceeded
   │

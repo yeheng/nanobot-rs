@@ -16,9 +16,9 @@ flowchart TB
 
     subgraph AgentCore["Agent Core - loop_.rs"]
         AL[AgentLoop]
-        AC[AgentContext Trait]
+        AC[AgentContext 枚举]
         PC[PersistentContext]
-        SC[StatelessContext]
+        SC[Stateless]
     end
 
     subgraph Execution["执行层 - executor_core.rs"]
@@ -159,23 +159,31 @@ classDiagram
     }
 
     class AgentContext {
-        <<trait>>
-        +load_session()
-        +save_message()
-        +load_summary()
-        +compress_context()
-        +recall_history()
-        +is_persistent()
+        <<enumeration>>
+        +Persistent(PersistentContext)
+        +Stateless
     }
 
     class PersistentContext {
-        +session_manager: Arc~SessionManager~
-        +summarization: Arc~SummarizationService~
-        +compression_in_progress: DashMap
+        +event_store: Arc~EventStore~
+        +sqlite_store: Arc~SqliteStore~
+        +embedder: Option~Arc~TextEmbedder~~
     }
 
-    class StatelessContext {
+    class Stateless {
         +no-op implementations
+    }
+
+    class ContextCompactor {
+        +provider: Arc~LlmProvider~
+        +event_store: Arc~EventStore~
+        +model: String
+        +token_budget: usize
+        +compaction_threshold: f32
+        +summarization_prompt: String
+        +compress()
+        +load_summary()
+        +recall_history()
     }
 
     class AgentExecutor {
@@ -228,8 +236,9 @@ classDiagram
     }
 
     AgentLoop --> AgentContext : uses
-    AgentContext <|.. PersistentContext : implements
-    AgentContext <|.. StatelessContext : implements
+    AgentContext ..> PersistentContext : variant
+    AgentContext ..> Stateless : variant
+    PersistentContext --> ContextCompactor : uses
     AgentLoop --> AgentExecutor : delegates
     SubagentManager ..> AgentLoop : creates
     SubagentManager --> SubagentTracker : uses
@@ -242,11 +251,11 @@ classDiagram
 
 | 模式 | 上下文类型 | 持久化 | 典型用途 | 入口点 |
 |------|-----------|--------|---------|--------|
-| **Main Agent** | PersistentContext | 是 | 用户对话 | `AgentLoop::new()` |
-| **Background Subagent** | StatelessContext | 否 | 后台任务 | `SubagentManager::submit()` |
-| **Sync Subagent** | StatelessContext | 否 | 治理代理 | `SubagentManager::submit_and_wait()` |
-| **Parallel Subagent** | StatelessContext | 否 | 并行计算 | `SpawnParallelTool::execute()` |
-| **Model Switch** | StatelessContext | 否 | 切换模型 | `SubagentManager::submit_and_wait_with_model()` |
+| **Main Agent** | AgentContext::Persistent | 是 | 用户对话 | `AgentLoop::new()` |
+| **Background Subagent** | AgentContext::Stateless | 否 | 后台任务 | `SubagentManager::submit()` |
+| **Sync Subagent** | AgentContext::Stateless | 否 | 治理代理 | `SubagentManager::submit_and_wait()` |
+| **Parallel Subagent** | AgentContext::Stateless | 否 | 并行计算 | `SpawnParallelTool::execute()` |
+| **Model Switch** | AgentContext::Stateless | 否 | 切换模型 | `SubagentManager::submit_and_wait_with_model()` |
 
 ---
 
@@ -286,69 +295,44 @@ Tool Call (spawn_parallel)
     ↓
 SpawnParallelTool::execute() [spawn_parallel.rs]
     ↓
-SubagentManager::task(id, prompt) → SubagentTaskBuilder [subagent.rs:681]
+SubagentTracker::new() + event_sender()
+    ↓
+SubagentManager::task(id, prompt) → SubagentTaskBuilder [subagent.rs]
     ↓
 SubagentTaskBuilder::with_streaming().with_system_prompt()...
     ↓
-SubagentTaskBuilder::spawn() [subagent.rs:220]
+SubagentTaskBuilder::spawn() [subagent.rs]
     ↓
 tokio::spawn(async { ... })
     ↓
-AgentLoop::builder() → StatelessContext [loop_.rs:393]
+AgentLoop::builder() → AgentContext::Stateless [loop_.rs]
     ↓
-AgentLoop::process_direct_streaming() [loop_.rs:625]
+AgentLoop::process_direct_streaming()
     ↓
 Result → mpsc::channel → SubagentTracker
 ```
 
 ---
 
-## 7. AgentContext Trait 详解
+## 7. AgentContext 枚举详解
 
-`AgentContext` trait 抽象了状态管理，消除了核心循环中的 `Option<T>` 检查。
+`AgentContext` 枚举抽象了状态管理，消除了核心循环中的 `Option<T>` 检查。
 
 ```rust
-#[async_trait]
-pub trait AgentContext: Send + Sync {
-    /// 加载或创建会话
-    async fn load_session(&self, key: &SessionKey) -> Session;
-
-    /// 保存消息到会话
-    async fn save_message(
-        &self,
-        key: &SessionKey,
-        role: &str,
-        content: &str,
-        tools: Option<Vec<String>>,
-    ) -> Result<(), AgentError>;
-
-    /// 加载会话摘要
-    async fn load_summary(&self, key: &str) -> Option<String>;
-
-    /// 压缩上下文（后台非阻塞）
-    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
-
-    /// 语义历史召回
-    async fn recall_history(
-        &self,
-        key: &str,
-        query_embedding: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<String>>;
-
-    /// 是否启用持久化
-    fn is_persistent(&self) -> bool;
+pub enum AgentContext {
+    Persistent(PersistentContext),  // 主 Agent，完整事件溯源
+    Stateless,                      // 子 Agent，无持久化
 }
 ```
 
-### 实现对比
+### 变体对比
 
-| 方法 | PersistentContext | StatelessContext |
+| 方法 | PersistentContext | Stateless |
 |------|------------------|------------------|
 | `load_session` | 从 SQLite 加载 | 内存创建 |
 | `save_message` | 持久化到 SQLite | No-op |
 | `load_summary` | 从 SQLite 加载 | 返回 None |
-| `compress_context` | 后台 LLM 摘要 | No-op |
+| `compress_context` | 同步 LLM 摘要 | No-op |
 | `recall_history` | 语义搜索 | 返回空 Vec |
 | `is_persistent` | true | false |
 
@@ -380,17 +364,20 @@ pub enum HookPoint {
 
 ## 9. 上下文压缩机制
 
-`SummarizationService` 提供非阻塞的上下文压缩：
+`ContextCompactor` 提供同步的上下文压缩：
 
 ```rust
-pub struct SummarizationService {
+pub struct ContextCompactor {
     provider: Arc<dyn LlmProvider>,
-    store: SqliteStore,
-    config: SummarizationConfig,
+    event_store: Arc<EventStore>,
+    model: String,
+    token_budget: usize,
+    compaction_threshold: f32,
+    summarization_prompt: String,
 }
 
-impl SummarizationService {
-    /// 后台压缩（非阻塞）
+impl ContextCompactor {
+    /// 同步压缩（在 finalize_response 中调用）
     pub async fn compress(&self, session_key: &str, messages: &[SessionMessage]) -> Result<()>;
 
     /// 加载已有摘要
@@ -404,8 +391,8 @@ impl SummarizationService {
 
 压缩流程：
 1. `process_history()` 识别被驱逐的消息
-2. `AgentContext::compress_context()` 触发后台任务
-3. `DashMap` 确保每会话只有一个压缩任务运行
+2. `finalize_response()` 中同步调用 `compress_context()`
+3. `ContextCompactor` 执行 LLM 摘要
 4. 摘要存储到 `session_summaries` 表
 
 ---
@@ -437,13 +424,14 @@ manager.submit_and_wait(prompt, system_prompt, channel, chat_id).await?;
 |------|------|---------|
 | `loop_.rs` | 主Agent循环 | `AgentLoop`, `AgentConfig`, `AgentResponse` |
 | `executor_core.rs` | 核心执行引擎 | `AgentExecutor`, `ExecutionResult` |
-| `context.rs` | 状态管理trait | `AgentContext`, `PersistentContext`, `StatelessContext` |
+| `executor.rs` | 执行门面 | `AgentExecutor`, `ToolExecutor` |
+| `context.rs` | 上下文管理 | `AgentContext` 枚举, `PersistentContext`, `Stateless` |
 | `subagent.rs` | 子代理管理 | `SubagentManager`, `SubagentTaskBuilder`, `SessionKeyGuard` |
 | `subagent_tracker.rs` | 并行追踪 | `SubagentTracker`, `SubagentEvent`, `SubagentResult` |
 | `spawn_parallel.rs` | 并行工具 | `SpawnParallelTool` |
 | `pipeline.rs` | 简化流水线 | `process_message()` |
 | `stream.rs` | 流事件 | `StreamEvent` |
 | `request.rs` | 请求构建 | `RequestHandler` |
-| `history_processor.rs` | 历史处理 | `process_history()`, `HistoryConfig`, `ProcessedHistory` |
-| `summarization.rs` | 摘要服务 | `SummarizationService`, `SummarizationConfig` |
+| `processor.rs` | 历史处理 | `process_history()`, `HistoryConfig`, `ProcessedHistory` |
+| `compactor.rs` | 上下文压缩 | `ContextCompactor`, `CompactionConfig` |
 | `prompt.rs` | 提示加载 | `load_prompt()`, `load_skills_context()` |

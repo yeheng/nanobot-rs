@@ -16,9 +16,9 @@ flowchart TB
 
     subgraph AgentCore["Agent Core - loop_.rs"]
         AL[AgentLoop]
-        AC[AgentContext Trait]
+        AC[AgentContext Enum]
         PC[PersistentContext]
-        SC[StatelessContext]
+        SC[Stateless]
     end
 
     subgraph Execution["Execution Layer - executor_core.rs"]
@@ -151,26 +151,38 @@ classDiagram
         +system_prompt: String
         +vault_injector: Option~VaultInjector~
         +pricing: Option~ModelPricing~
+        +hook_registry: Arc~HookRegistry~
         +process_direct()
         +process_direct_streaming()
+        +process_direct_streaming_with_channel()
         -run_agent_loop()
     }
 
-    class AgentContext {
-        <<trait>>
-        +load_session()
-        +save_message()
+    class ContextCompactor {
+        +provider: Arc~LlmProvider~
+        +event_store: Arc~EventStore~
+        +model: String
+        +token_budget: usize
+        +compaction_threshold: f32
+        +summarization_prompt: String
+        +compress()
         +load_summary()
-        +compress_context()
-        +is_persistent()
+        +recall_history()
+    }
+
+    class AgentContext {
+        <<enumeration>>
+        +Persistent(PersistentContext)
+        +Stateless
     }
 
     class PersistentContext {
-        +session_manager: Arc~SessionManager~
-        +summarization: Arc~SummarizationService~
+        +event_store: Arc~EventStore~
+        +sqlite_store: Arc~SqliteStore~
+        +embedder: Option~Arc~TextEmbedder~~
     }
 
-    class StatelessContext {
+    class Stateless {
         +no-op implementations
     }
 
@@ -187,11 +199,31 @@ classDiagram
         +provider: Arc~LlmProvider~
         +tools: Arc~ToolRegistry~
         +outbound_tx: mpsc::Sender
-        +session_key: Option~SessionKey~
+        +session_key: RwLock~Option~SessionKey~~
+        +timeout_secs: u64
+        +task() SubagentTaskBuilder
         +submit()
         +submit_and_wait()
-        +submit_tracked()
-        +submit_tracked_streaming()
+        +submit_and_wait_with_model()
+        +submit_and_wait_with_model_streaming()
+    }
+
+    class SubagentTaskBuilder {
+        +subagent_id: String
+        +task: String
+        +provider: Option~Arc~LlmProvider~~
+        +config: Option~AgentConfig~
+        +event_tx: Option~mpsc::Sender~
+        +system_prompt: Option~String~
+        +session_key: Option~SessionKey~
+        +cancellation_token: Option~CancellationToken~
+        +hooks: Option~Arc~HookRegistry~~
+        +with_provider()
+        +with_config()
+        +with_streaming()
+        +with_system_prompt()
+        +with_cancellation_token()
+        +spawn()
     }
 
     class SubagentTracker {
@@ -204,11 +236,13 @@ classDiagram
     }
 
     AgentLoop --> AgentContext : uses
-    AgentContext <|.. PersistentContext : implements
-    AgentContext <|.. StatelessContext : implements
+    AgentContext ..> PersistentContext : variant
+    AgentContext ..> Stateless : variant
+    PersistentContext --> ContextCompactor : uses
     AgentLoop --> AgentExecutor : delegates
     SubagentManager ..> AgentLoop : creates
     SubagentManager --> SubagentTracker : uses
+    SubagentManager ..> SubagentTaskBuilder : creates
 ```
 
 ---
@@ -217,11 +251,11 @@ classDiagram
 
 | Mode | Context Type | Persistence | Typical Use | Entry Point |
 |------|-----------|--------|---------|--------|
-| **Main Agent** | PersistentContext | Yes | User conversation | `AgentLoop::new()` |
-| **Background Subagent** | StatelessContext | No | Background tasks | `SubagentManager::submit()` |
-| **Sync Subagent** | StatelessContext | No | Governance agent | `SubagentManager::submit_and_wait()` |
-| **Parallel Subagent** | StatelessContext | No | Parallel computation | `SpawnParallelTool::execute()` |
-| **Model Switch** | StatelessContext | No | Switch model | `SubagentManager::submit_and_wait_with_model()` |
+| **Main Agent** | AgentContext::Persistent | Yes | User conversation | `AgentLoop::new()` |
+| **Background Subagent** | AgentContext::Stateless | No | Background tasks | `SubagentManager::submit()` |
+| **Sync Subagent** | AgentContext::Stateless | No | Governance agent | `SubagentManager::submit_and_wait()` |
+| **Parallel Subagent** | AgentContext::Stateless | No | Parallel computation | `SpawnParallelTool::execute()` |
+| **Model Switch** | AgentContext::Stateless | No | Switch model | `SubagentManager::submit_and_wait_with_model()` |
 
 ---
 
@@ -248,15 +282,19 @@ LlmProvider::chat_stream()
 ```
 Tool Call (spawn_parallel)
     ↓
-SpawnParallelTool::execute() [spawn_parallel.rs:132]
+SpawnParallelTool::execute() [spawn_parallel.rs]
     ↓
-SubagentManager::submit_tracked_streaming() [subagent.rs:384]
+SubagentTracker::new() + event_sender()
+    ↓
+SubagentManager::task(id, prompt) → SubagentTaskBuilder [subagent.rs]
+    ↓
+SubagentTaskBuilder::with_streaming().spawn()
     ↓
 tokio::spawn(async { ... })
     ↓
-AgentLoop::builder() → StatelessContext [loop_.rs:385]
+AgentLoop::builder() → AgentContext::Stateless [loop_.rs]
     ↓
-AgentLoop::process_direct_streaming() [loop_.rs:591]
+AgentLoop::process_direct_streaming()
     ↓
 Result → mpsc::channel → SubagentTracker
 ```
@@ -265,23 +303,22 @@ Result → mpsc::channel → SubagentTracker
 
 ## 7. Design Review: Potential Issues and Risks
 
-### 7.1 🔴 High Risk: Subagent Result Loss
+### 7.1 🟢 Low Risk: Subagent Result Loss (Mitigated)
 
-**Issue**: `SubagentTracker::wait_for_all()` uses `tokio::time::timeout`, but results from partially completed tasks may be lost after timeout.
+**Previous Issue**: `SubagentTracker::wait_for_all()` uses `tokio::time::timeout`, but results from partially completed tasks may be lost after timeout.
 
-**Code Location**: `subagent_tracker.rs:124-186`
+**Mitigation**: `CancellationToken` is now used for graceful cancellation of timed-out tasks.
+
+**Code Location**: `subagent_tracker.rs`
 
 ```rust
-// Issue: After timeout, still-running subagents continue sending to closed channel
+// Now uses CancellationToken for graceful cancellation
 pub async fn wait_for_all_timeout(&self, count: usize, timeout: Duration) -> Vec<SubagentResult> {
-    // ... Returns collected results if timeout occurs
-    // But background tasks still running, may panic or lose results
+    // SubagentTaskBuilder::with_cancellation_token() ensures clean shutdown
 }
 ```
 
-**Recommendations**:
-1. Use `tokio_util::sync::CancellationToken` to actively cancel timed-out tasks
-2. Or use `JoinHandle` to wait for all tasks to truly complete
+**Status**: ✅ Mitigated with CancellationToken pattern
 
 ### 7.2 🟡 Medium Risk: Channel Backpressure
 
@@ -337,15 +374,16 @@ task_local! {
 │  【Taste Score】 Good Taste ✓                            │
 ├─────────────────────────────────────────────────────────┤
 │  【Highlights】                                          │
-│  • AgentContext trait eliminates Option<T> runtime checks│
+│  • AgentContext enum eliminates trait object overhead   │
 │  • Clear separation between execution and state layers   │
 │  • Vault values at request-level scope, prevents leaks   │
-│  • Background compression doesn't block user response    │
+│  • ContextCompactor for synchronous context compression  │
+│  • Builder pattern for subagent task configuration       │
 ├─────────────────────────────────────────────────────────┤
 │  【Improvements】                                        │
-│  • Subagent timeout handling could be simpler/clearer    │
-│  • Multiple submit_* methods could merge into unified API│
-│  • spawn_parallel mpsc clone logic could extract helper  │
+│  • Subagent timeout handling now uses CancellationToken  │
+│  • Builder pattern unifies subagent API                  │
+│  • ContextCompactor for sync compression (was async bg task) │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -355,13 +393,16 @@ task_local! {
 
 | File | Responsibility | Key Structures |
 |------|------|---------|
-| `loop_.rs` | Main Agent loop | `AgentLoop`, `AgentConfig` |
+| `loop_.rs` | Main Agent loop | `AgentLoop`, `AgentConfig`, `AgentResponse` |
 | `executor_core.rs` | Core execution engine | `AgentExecutor`, `ExecutionResult` |
-| `context.rs` | State management trait | `AgentContext`, `PersistentContext`, `StatelessContext` |
-| `subagent.rs` | Subagent management | `SubagentManager` |
-| `subagent_tracker.rs` | Parallel tracking | `SubagentTracker`, `SubagentEvent` |
+| `executor.rs` | Execution facade | `AgentExecutor`, `ToolExecutor` |
+| `context.rs` | Context management | `AgentContext` enum, `PersistentContext`, `Stateless` |
+| `subagent.rs` | Subagent management | `SubagentManager`, `SubagentTaskBuilder`, `SessionKeyGuard` |
+| `subagent_tracker.rs` | Parallel tracking | `SubagentTracker`, `SubagentEvent`, `SubagentResult` |
 | `spawn_parallel.rs` | Parallel tool | `SpawnParallelTool` |
 | `pipeline.rs` | Simplified pipeline | `process_message()` |
 | `stream.rs` | Stream events | `StreamEvent` |
 | `request.rs` | Request building | `RequestHandler` |
-| `history_processor.rs` | History processing | `process_history()` |
+| `processor.rs` | History processing | `process_history()`, `HistoryConfig`, `ProcessedHistory` |
+| `compactor.rs` | Context compression | `ContextCompactor`, `CompactionConfig` |
+| `prompt.rs` | Prompt loading | `load_prompt()`, `load_skills_context()` |

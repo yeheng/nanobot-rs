@@ -10,22 +10,14 @@
 gasket-rs/                    (Cargo workspace)
 ├── engine/                   核心编排 crate — Agent 引擎、工具、Hook 系统
 │   └── src/
-│       ├── agent/             Agent 核心引擎 (loop, executor, prompt, history, stream, summarization, subagent, context)
-│       ├── bus/               消息总线 (Actor 模型: Router/Session/Outbound)
-│       ├── channels/          通信渠道 re-export (从 channels)
+│       ├── agent/             Agent 核心引擎 (loop, executor, prompt, history, stream, compactor, indexing, subagent, context)
 │       ├── config/            配置加载 (YAML → Struct)
 │       ├── cron/              定时任务服务
-│       ├── crypto/            加密工具
 │       ├── heartbeat/         心跳服务
 │       ├── hooks/             Pipeline Hook 系统 (BeforeRequest, AfterResponse, etc.)
-│       ├── memory/            存储层 re-export (从 storage)
-│       ├── providers/         LLM 提供商 re-export (从 providers)
-│       ├── session/           会话管理 (SQLite 后端)
 │       ├── skills/            技能系统 (loader, registry, skill, metadata)
-│       ├── tools/             工具系统 (12 个内置工具)
-│       ├── vault/             敏感数据隔离 re-export (从 vault)
-│       ├── webhook/           Webhook 服务器
-│       └── workspace/         工作空间模板文件
+│       ├── tools/             工具系统 (14 个内置工具)
+│       └── vault/             敏感数据隔离 re-export (从 vault)
 ├── cli/                      CLI 可执行文件
 │   └── src/
 │       ├── main.rs            命令入口 + Gateway 启动器
@@ -67,8 +59,8 @@ gasket-rs/                    (Cargo workspace)
 │  │  │  Loader    │  │   Executor   │  │   Processor      │   │  │
 │  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
 │  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
-│  │  │  Summarization     │  │      Hook Registry         │   │  │
-│  │  │  Service           │  │  (BeforeRequest/AfterResp) │   │  │
+│  │  │  Context Compactor │  │      Hook Registry         │   │  │
+│  │  │  (同步压缩)        │  │  (BeforeRequest/AfterResp) │   │  │
 │  │  └────────────────────┘  └────────────────────────────┘   │  │
 │  └──────────┬──────────────┬──────────────────┬──────────────┘  │
 │             │              │                  │                  │
@@ -82,7 +74,8 @@ gasket-rs/                    (Cargo workspace)
 │  │ │  Provider   │ │  │ │WebSearch │ │  ┌─────────▼─────────┐  │
 │  │ ├─────────────┤ │  │ │WebFetch  │ │  │  Memory Store     │  │
 │  │ │  Gemini     │ │  │ │Spawn    │ │  │  (re-export)      │  │
-│  │ │  Provider   │ │  │ │Message  │ │  │  ┌─────────────┐  │  │
+│  │ │  Provider   │ │  │ │SpawnPar.│ │  │  ┌─────────────┐  │  │
+│  │ │             │ │  │ │Message  │ │  │  │             │  │  │
 │  │ ├─────────────┤ │  │ │Cron     │ │  │  │ memories    │  │  │
 │  │ │  Copilot    │ │  │ │MCP Tools│ │  │  │ sessions    │  │  │
 │  │ │  Provider   │ │  │ │Memory   │ │  │  │ session_msg │  │  │
@@ -122,7 +115,7 @@ gasket-rs/                    (Cargo workspace)
 │  │                                                         │  │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
 │  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
-│  │  │ (JSON 存储) │  │ (运行时注入) │  │  (AES-GCM)    │  │  │
+│  │  │ (JSON 存储) │  │ (运行时注入) │  │  (XChaCha20)  │  │  │
 │  │  └─────────────┘  └──────────────┘  └───────────────┘  │  │
 │  │                                                         │  │
 │  │  占位符语法: {{vault:key}}                              │  │
@@ -152,7 +145,7 @@ gasket-rs/                    (Cargo workspace)
 
 | 原则 | 实现方式 |
 |------|----------|
-| **AgentContext trait** | 通过 trait 抽象替代 Option<T> 模式，支持 PersistentContext（完整依赖）和 StatelessContext（无持久化）两种实现 |
+| **AgentContext 枚举** | 零成本枚举分发替代 Option<T> 模式，PersistentContext 变体（完整依赖）和 Stateless 变体（无持久化） |
 | **Actor 模型消息传递** | Gateway 使用三个 Actor（Router → Session → Outbound）通过 mpsc channel 通信，零锁设计 |
 | **Pipeline Hook 扩展** | 五个执行点（BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse）支持顺序/并行策略 |
 | **Feature Flag 编译** | 各通信渠道通过 Cargo feature flag 独立编译，按需启用 |
@@ -174,43 +167,59 @@ engine
     ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
-    ├── re-exports from storage
-    │       └── SqliteStore, MemoryStore trait
+    ├── re-exports from storage (as memory 模块)
+    │       └── SqliteStore, EventStore, StoreError, MemoryStore
+    │
+    ├── re-exports from storage (as search 模块)
+    │       └── TextEmbedder, cosine_similarity, top_k_similar (feature: local-embedding)
     │
     ├── re-exports from vault
-    │       └── VaultStore, VaultInjector, crypto types
+    │       └── VaultStore, VaultInjector, VaultCrypto, etc.
     │
     ├── optional: channels (feature flags)
-    │       └── Telegram, Discord, Slack, etc.
+    │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
     │
-    └── optional: mcp (feature flags)
-            └── MCP client, manager
+    └── optional: providers (feature flags)
+            └── Gemini, Copilot
 ```
 
 ---
 
 ## 关键组件说明
 
-### AgentContext Trait
+### AgentContext 枚举
 
-核心抽象，消除 `Option<T>` 运行时检查：
+零成本枚举分发，编译期替代 `Option<T>` 模式：
 
 ```rust
-#[async_trait]
-pub trait AgentContext: Send + Sync {
-    async fn load_session(&self, key: &SessionKey) -> Session;
-    async fn save_message(&self, key: &SessionKey, role: &str, content: &str, tools: Option<Vec<String>>) -> Result<(), AgentError>;
-    async fn load_summary(&self, key: &str) -> Option<String>;
-    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
-    async fn recall_history(&self, key: &str, query_embedding: &[f32], top_k: usize) -> Result<Vec<String>>;
-    fn is_persistent(&self) -> bool;
+pub enum AgentContext {
+    Persistent(PersistentContext),
+    Stateless,
 }
 ```
 
-| 实现 | 用途 |
+```rust
+pub struct PersistentContext {
+    pub event_store: Arc<EventStore>,
+    pub sqlite_store: Arc<SqliteStore>,
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<TextEmbedder>>,
+}
+```
+
+AgentContext 关键方法:
+- `persistent(event_store, sqlite_store) -> Self` — 创建持久化变体
+- `is_persistent(&self) -> bool` — 运行时检查变体类型
+- `load_session(&self, key) -> Session` — 从事件存储加载会话
+- `save_event(&self, event) -> Result` — 追加事件到事件存储
+- `get_history(&self, key, branch) -> Vec<SessionEvent>` — 获取分支历史
+- `recall_history(&self, key, embedding, top_k) -> Vec<String>` — 语义召回
+- `clear_session(&self, key) -> Result` — 清除会话数据
+
+| 变体 | 用途 |
 |------|------|
-| `PersistentContext` | 主 Agent，完整持久化 |
-| `StatelessContext` | 子 Agent，无持久化 |
+| `Persistent(PersistentContext)` | 主 Agent，完整事件溯源（SQLite） |
+| `Stateless` | 子 Agent，无持久化，纯计算 |
 
 ### Hook 系统
 
@@ -223,6 +232,26 @@ pub enum HookPoint {
     AfterResponse,  // 并行，只读
 }
 ```
+
+### Feature Flags
+
+| Crate | Flag | 用途 |
+|-------|------|------|
+| engine | `local-embedding` | ONNX 嵌入 (fastembed) |
+| engine | `smart-model-selection` | 动态模型切换 |
+| engine | `telegram` | Telegram 渠道 |
+| engine | `discord` | Discord 渠道 |
+| engine | `slack` | Slack 渠道 |
+| engine | `email` | 邮件渠道 |
+| engine | `feishu` | 飞书渠道 |
+| engine | `dingtalk` | 钉钉渠道 |
+| engine | `wecom` | 企业微信渠道 |
+| engine | `webhook` | Webhook 服务器 |
+| engine | `provider-gemini` | Google Gemini 提供商 |
+| engine | `provider-copilot` | GitHub Copilot 提供商 |
+| storage | `local-embedding` | fastembed ONNX 嵌入 (~20MB) |
+| cli | `full` | 全部功能 |
+| cli | `telemetry` | OpenTelemetry 支持 |
 
 ### Actor 模型
 

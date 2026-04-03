@@ -10,22 +10,15 @@
 gasket-rs/                    (Cargo workspace)
 ├── engine/                   Core orchestration crate — Agent engine, tools, Hook system
 │   └── src/
-│       ├── agent/             Agent core engine (loop, executor, prompt, history, stream, summarization, subagent, context)
-│       ├── bus/               Message bus (Actor model: Router/Session/Outbound)
-│       ├── channels/          Communication channels re-export (from channels)
+│       ├── agent/             Agent core engine (loop, executor, prompt, history, stream, compactor, indexing, subagent, context)
 │       ├── config/            Configuration loading (YAML → Struct)
 │       ├── cron/              Scheduled task service
-│       ├── crypto/            Cryptographic tools
 │       ├── heartbeat/         Heartbeat service
 │       ├── hooks/             Pipeline Hook system (BeforeRequest, AfterResponse, etc.)
-│       ├── memory/            Storage layer re-export (from storage)
-│       ├── providers/         LLM provider re-export (from providers)
-│       ├── session/           Session management (SQLite backend)
 │       ├── skills/            Skills system (loader, registry, skill, metadata)
-│       ├── tools/             Tool system (12 built-in tools)
+│       ├── tools/             Tool system (14 built-in tools)
 │       ├── vault/             Sensitive data isolation re-export (from vault)
-│       ├── webhook/           Webhook server
-│       └── workspace/         Workspace template files
+│       └── search/            Semantic search re-export (from storage)
 ├── cli/                      CLI executable
 │   └── src/
 │       ├── main.rs            Command entry + Gateway launcher
@@ -67,8 +60,8 @@ gasket-rs/                    (Cargo workspace)
 │  │  │  Loader    │  │   Executor   │  │   Processor      │   │  │
 │  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
 │  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
-│  │  │  Summarization     │  │      Hook Registry         │   │  │
-│  │  │  Service           │  │  (BeforeRequest/AfterResp) │   │  │
+│  │  │  Context Compactor │  │      Hook Registry         │   │  │
+│  │  │  (sync compress)   │  │  (BeforeRequest/AfterResp) │   │  │
 │  │  └────────────────────┘  └────────────────────────────┘   │  │
 │  └──────────┬──────────────┬──────────────────┬──────────────┘  │
 │             │              │                  │                  │
@@ -83,10 +76,12 @@ gasket-rs/                    (Cargo workspace)
 │  │ ├─────────────┤ │  │ │WebFetch  │ │  │  Memory Store     │  │
 │  │ │  Gemini     │ │  │ │Spawn    │ │  │  (re-export)      │  │
 │  │ │  Provider   │ │  │ │Message  │ │  │  ┌─────────────┐  │  │
-│  │ ├─────────────┤ │  │ │Cron     │ │  │  │ memories    │  │  │
-│  │ │  Copilot    │ │  │ │MCP Tools│ │  │  │ sessions    │  │  │
-│  │ │  Provider   │ │  │ │Memory   │ │  │  │ session_msg │  │  │
-│  │ └─────────────┘ │  │ │ Search  │ │  │  │ kv_store    │  │  │
+│  │ ├─────────────┤ │  │ │SpawnPar.│ │  │  │ memories    │  │  │
+│  │ │  Copilot    │ │  │ │Cron     │ │  │  │ sessions    │  │  │
+│  │ │  Provider   │ │  │ │MCP Tools│ │  │  │ session_msg │  │  │
+│  │ └─────────────┘ │  │ │Memory   │ │  │  │ kv_store    │  │  │
+│  │                 │  │ │ Search  │ │  │  │ cron_jobs   │  │  │
+│  │                 │  │ │Sandbox  │ │  │  │ embeddings  │  │  │
 │  │                 │  │ │Sandbox  │ │  │  │ cron_jobs   │  │  │
 │  └────────────────┘  │ └──────────┘ │  │  └─────────────┘  │  │
 │                      │              │  └───────────────────┘  │
@@ -153,7 +148,7 @@ gasket-rs/                    (Cargo workspace)
 
 | Principle | Implementation |
 |-----------|----------------|
-| **AgentContext trait** | Abstracts via trait instead of Option<T> pattern, supports PersistentContext (full deps) and StatelessContext (no persistence) |
+| **AgentContext enum** | Zero-cost enum dispatch instead of Option<T> pattern, PersistentContext variant (full deps) and Stateless variant (no persistence) |
 | **Actor model messaging** | Gateway uses three Actors (Router → Session → Outbound) communicating via mpsc channels, zero-lock design |
 | **Pipeline Hook extension** | Five execution points (BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse) with sequential/parallel strategies |
 | **Feature flag compilation** | Communication channels compiled via Cargo feature flags, enable on demand |
@@ -175,46 +170,59 @@ engine
     ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
-    ├── re-exports from storage
-    │       └── SqliteStore, MemoryStore trait
+    ├── re-exports from storage (as memory module)
+    │       └── SqliteStore, EventStore, StoreError, MemoryStore
+    │
+    ├── re-exports from storage (as search module)
+    │       └── TextEmbedder, cosine_similarity, top_k_similar (feature: local-embedding)
     │
     ├── re-exports from vault
-    │       └── VaultStore, VaultInjector, crypto types
-    │
-    ├── re-exports from storage
-    │       └── TextEmbedder, semantic search types
+    │       └── VaultStore, VaultInjector, VaultCrypto, etc.
     │
     ├── optional: channels (feature flags)
-    │       └── Telegram, Discord, Slack, etc.
+    │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
     │
-    └── optional: mcp (feature flags)
-            └── MCP client, manager
+    └── optional: providers (feature flags)
+            └── Gemini, Copilot
 ```
 
 ---
 
 ## Key Components
 
-### AgentContext Trait
+### AgentContext Enum
 
-Core abstraction that eliminates `Option<T>` runtime checks:
+Zero-cost enum dispatch that replaces `Option<T>` pattern at compile time:
 
 ```rust
-#[async_trait]
-pub trait AgentContext: Send + Sync {
-    async fn load_session(&self, key: &SessionKey) -> Session;
-    async fn save_message(&self, key: &SessionKey, role: &str, content: &str, tools: Option<Vec<String>>) -> Result<(), AgentError>;
-    async fn load_summary(&self, key: &str) -> Option<String>;
-    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
-    async fn recall_history(&self, key: &str, query_embedding: &[f32], top_k: usize) -> Result<Vec<String>>;
-    fn is_persistent(&self) -> bool;
+pub enum AgentContext {
+    Persistent(PersistentContext),
+    Stateless,
 }
 ```
 
-| Implementation | Purpose |
-|---------------|---------|
-| `PersistentContext` | Main agent, full persistence |
-| `StatelessContext` | Subagent, no persistence |
+```rust
+pub struct PersistentContext {
+    pub event_store: Arc<EventStore>,
+    pub sqlite_store: Arc<SqliteStore>,
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<TextEmbedder>>,
+}
+```
+
+Key methods on AgentContext:
+- `persistent(event_store, sqlite_store) -> Self` — create persistent variant
+- `is_persistent(&self) -> bool` — check variant at runtime
+- `load_session(&self, key) -> Session` — load session from event store
+- `save_event(&self, event) -> Result` — append event to event store
+- `get_history(&self, key, branch) -> Vec<SessionEvent>` — retrieve branch history
+- `recall_history(&self, key, embedding, top_k) -> Vec<String>` — semantic recall
+- `clear_session(&self, key) -> Result` — clear session data
+
+| Variant | Purpose |
+|---------|---------|
+| `Persistent(PersistentContext)` | Main agent, full event sourcing with SQLite |
+| `Stateless` | Subagent, no persistence, pure computation |
 
 ### Event Sourcing Architecture
 
@@ -282,6 +290,26 @@ pub enum HookPoint {
     AfterResponse,  // Parallel, read-only
 }
 ```
+
+### Feature Flags
+
+| Crate | Flag | Purpose |
+|-------|------|---------|
+| engine | `local-embedding` | ONNX embedding via fastembed |
+| engine | `smart-model-selection` | Dynamic model switching |
+| engine | `telegram` | Telegram channel |
+| engine | `discord` | Discord channel |
+| engine | `slack` | Slack channel |
+| engine | `email` | Email channel |
+| engine | `feishu` | Feishu channel |
+| engine | `dingtalk` | DingTalk channel |
+| engine | `wecom` | WeCom channel |
+| engine | `webhook` | Webhook server |
+| engine | `provider-gemini` | Google Gemini provider |
+| engine | `provider-copilot` | GitHub Copilot provider |
+| storage | `local-embedding` | fastembed ONNX embedding (~20MB) |
+| cli | `full` | All features combined |
+| cli | `telemetry` | OpenTelemetry support |
 
 ### Actor Model
 

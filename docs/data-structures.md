@@ -213,7 +213,196 @@ pub enum StreamEvent {
 
 ---
 
-## 3. 会话与历史结构
+## 3. 事件溯源架构
+
+### 3.1 SessionEvent
+
+表示会话历史中单个事件的不可变事实记录。使用 UUID v7 时间有序标识符进行自然时间排序和数据库友好的索引。
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEvent {
+    /// 事件唯一标识符（UUID v7 时间有序）
+    pub id: Uuid,
+
+    /// 此事件所属的会话
+    pub session_key: String,
+
+    /// 事件类型
+    pub event_type: EventType,
+
+    /// 消息内容
+    pub content: String,
+
+    /// 语义向量（每条消息的嵌入）
+    pub embedding: Option<Vec<f32>>,
+
+    /// 事件元数据
+    pub metadata: EventMetadata,
+
+    /// 创建时间戳
+    pub created_at: DateTime<Utc>,
+}
+```
+
+**关键设计点：**
+- **UUID v7**：时间有序 UUID 提供自然时间排序，无需时间戳索引
+- **嵌入**：可选的语义向量，用于相似性搜索和上下文检索
+- **不可变**：事件仅追加，修改创建新事件
+
+### 3.2 EventType 枚举
+
+表示系统中所有可能事件类型的判别联合。
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EventType {
+    /// 用户消息
+    UserMessage,
+
+    /// 助手回复
+    AssistantMessage,
+
+    /// 工具调用
+    ToolCall {
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+
+    /// 工具结果
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        is_error: bool,
+    },
+
+    /// 摘要事件（压缩生成）
+    Summary {
+        summary_type: SummaryType,
+        covered_event_ids: Vec<Uuid>,
+    },
+}
+```
+
+**事件类型类别：**
+- **简单变体**：`UserMessage`、`AssistantMessage` - 基本消息类型
+- **工具变体**：`ToolCall`、`ToolResult` - 工具执行生命周期
+- **元变体**：`Summary` - 历史管理的系统生成事件
+
+### 3.3 SummaryType
+
+指定用于生成摘要事件的策略。
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SummaryType {
+    /// 时间窗口摘要
+    TimeWindow { duration_hours: u32 },
+
+    /// 主题摘要
+    Topic { topic: String },
+
+    /// 压缩摘要（超过 token 预算时）
+    Compression { token_budget: usize },
+}
+```
+
+**摘要策略：**
+- **TimeWindow**：汇总特定时间范围内的事件
+- **Topic**：汇总与特定主题相关的事件（通过嵌入相似性提取）
+- **Compression**：超过 token 预算时触发的激进摘要
+
+### 3.4 EventMetadata
+
+事件的可扩展元数据容器。
+
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventMetadata {
+    /// 分支名称（None 表示主分支）
+    pub branch: Option<String>,
+
+    /// 使用的工具列表
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+
+    /// Token 统计
+    pub token_usage: Option<TokenUsage>,
+
+    /// 扩展字段
+    #[serde(default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+```
+
+**字段：**
+- **branch**：类似 Git 的分支支持；`None` 表示主分支
+- **tools_used**：跟踪在此事件的处理期间调用了哪些工具
+- **token_usage**：LLM token 消耗统计，用于成本跟踪
+- **extra**：开放式的键值存储，用于未来扩展而无需架构更改
+
+### 3.5 Session（聚合根）
+
+管理会话状态和分支指针的聚合根。
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// 会话标识符
+    pub key: String,
+
+    /// 当前活动分支
+    pub current_branch: String,
+
+    /// 所有分支指针（branch_name -> latest_event_id）
+    pub branches: HashMap<String, Uuid>,
+
+    /// 会话元数据
+    pub metadata: SessionMetadata,
+}
+```
+
+**职责：**
+- 维护新事件的当前分支上下文
+- 跟踪每个分支的头提交
+- 提供会话级别的元数据和统计信息
+
+### 3.6 SessionMetadata
+
+会话级别的统计和维护信息。
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct SessionMetadata {
+    /// 创建时间戳
+    pub created_at: DateTime<Utc>,
+
+    /// 最后更新时间戳
+    pub updated_at: DateTime<Utc>,
+
+    /// 最后合并点（事件 ID）
+    pub last_consolidated_event: Option<Uuid>,
+
+    /// 总消息数
+    pub total_events: usize,
+
+    /// 累计 token 使用量
+    pub total_tokens: u64,
+}
+```
+
+**用途：**
+- **last_consolidated_event**：跟踪包含在摘要中的最后一个事件；用于增量摘要
+- **total_events/total_tokens**：资源监控和限制的运行计数器
+
+---
+
+## 4. 会话与历史结构（旧版）
 
 ### 3.1 Session
 
@@ -236,7 +425,7 @@ SessionMessage {
 
 ### 3.2 历史处理配置
 
-> **来源**: `gasket-core::agent::history_processor`
+> **来源**: `gasket_storage::processor`
 
 ```rust
 HistoryConfig {
@@ -252,47 +441,115 @@ ProcessedHistory {
 }
 ```
 
-### 3.3 AgentContext Trait
+### 4.8 AgentContext (基于枚举)
 
-> **来源**: `gasket-core::agent::context`
+零成本枚举分发 — 无运行时开销。
 
 ```rust
-#[async_trait]
-pub trait AgentContext: Send + Sync {
-    /// 加载或创建会话
-    async fn load_session(&self, key: &SessionKey) -> Session;
+#[derive(Debug, Clone)]
+pub enum AgentContext {
+    /// 持久化上下文（主 Agent）
+    Persistent(PersistentContext),
 
-    /// 保存消息到会话
-    async fn save_message(
-        &self,
-        key: &SessionKey,
-        role: &str,
-        content: &str,
-        tools: Option<Vec<String>>,
-    ) -> Result<(), AgentError>;
+    /// 无状态上下文（子 Agent）
+    Stateless,
+}
 
-    /// 加载会话摘要
-    async fn load_summary(&self, key: &str) -> Option<String>;
-
-    /// 压缩上下文（后台非阻塞）
-    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
-
-    /// 语义历史召回
-    async fn recall_history(
-        &self,
-        key: &str,
-        query_embedding: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<String>>;
-
-    /// 是否启用持久化
-    fn is_persistent(&self) -> bool;
+/// 主代理的持久化上下文数据。
+#[derive(Clone)]
+pub struct PersistentContext {
+    /// 用于持久化事件的事件存储
+    pub event_store: Arc<EventStore>,
+    /// 用于保存嵌入的 SQLite 存储（语义召回索引）
+    pub sqlite_store: Arc<SqliteStore>,
+    /// 可选的文本嵌入器，用于自动生成嵌入
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<TextEmbedder>>,
 }
 ```
 
-**实现类型**:
-- `PersistentContext`: 完整持久化（主 Agent）
-- `StatelessContext`: 无持久化（子 Agent）
+**AgentContext 上的关键方法：**
+
+| 方法 | 描述 |
+|------|------|
+| `persistent(event_store, sqlite_store) -> Self` | 创建持久化变体 |
+| `is_persistent(&self) -> bool` | 检查变体 |
+| `load_session(&self, key) -> Session` | 从事件存储加载 |
+| `save_event(&self, event) -> Result` | 追加事件 |
+| `get_history(&self, key, branch) -> Vec<SessionEvent>` | 获取分支历史 |
+| `recall_history(&self, key, embedding, top_k) -> Vec<String>` | 语义召回 |
+| `clear_session(&self, key) -> Result` | 清除会话 |
+
+**变体：**
+
+| 变体 | 用途 |
+|------|------|
+| `Persistent(PersistentContext)` | 主代理，完整事件溯源 |
+| `Stateless` | 子代理，无持久化 |
+
+**设计优势：**
+- 零运行时分发开销（枚举分发 vs 特征对象 vtable）
+- 更好的缓存局部性（枚举变体内联）
+- 编译时穷举检查
+
+### 4.9 ContextCompactor
+
+同步上下文压缩器 — 替代异步后台摘要。在每次代理响应后直接调用，确保下一个请求看到最新摘要。
+
+```rust
+pub struct ContextCompactor {
+    /// 用于生成摘要的 LLM 提供商
+    provider: Arc<dyn LlmProvider>,
+    /// 用于持久化摘要事件的事件存储
+    event_store: Arc<EventStore>,
+    /// 用于摘要的模型
+    model: String,
+    /// 上下文窗口的 token 预算
+    token_budget: usize,
+    /// 压缩阈值乘数（默认 1.2）
+    compaction_threshold: f32,
+    /// 自定义摘要提示
+    summarization_prompt: String,
+}
+
+impl ContextCompactor {
+    /// 创建新的压缩器
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        event_store: Arc<EventStore>,
+        model: String,
+        token_budget: usize,
+    ) -> Self;
+
+    /// 设置自定义摘要提示
+    pub fn with_summarization_prompt(self, prompt: impl Into<String>) -> Self;
+
+    /// 设置自定义压缩阈值乘数
+    pub fn with_threshold(self, threshold: f32) -> Self;
+
+    /// 对被驱逐的事件运行压缩
+    pub async fn compact(
+        &self,
+        session_key: &str,
+        evicted_events: &[SessionEvent],
+        vault_values: &[String],
+    ) -> anyhow::Result<Option<String>>;
+}
+```
+
+**关键设计点：**
+- **同步执行**：在用户收到响应后在 `finalize_response()` 中运行（无额外延迟）
+- **无竞态条件**：下一个请求始终看到最新摘要（消除 `tokio::spawn` 时序问题）
+- **批量阈值**：仅在被驱逐的 token 超过 `token_budget * (threshold - 1.0)` 时压缩
+- **LSM-tree 类比**：L0（活动上下文）在溢出时刷新到 L1（摘要检查点）
+
+**生命周期：**
+```text
+AgentLoop::process_direct()
+  → prepare_pipeline()     // 历史 + 提示组装
+  → run_agent_loop()       // LLM 迭代
+  → finalize_response()    // 保存事件 + 压缩 + 返回
+```
 
 ---
 
@@ -399,7 +656,7 @@ InjectionReport {
 │   ├── timestamp TEXT    ISO 8601
 │   └── tools_used TEXT   JSON 数组 (nullable)
 │
-├── session_summaries     会话摘要 (SummarizationService 生成)
+├── session_summaries     会话摘要 (ContextCompactor 生成)
 │   ├── session_key TEXT PK  → sessions.key
 │   └── summary TEXT         摘要内容
 │
@@ -453,7 +710,7 @@ InjectionReport {
 ├── skills/                 用户自定义技能
 │   └── *.md                Markdown + YAML frontmatter
 ├── vault/                  敏感数据隔离目录
-│   └── secrets.json        加密存储的密钥 (AES-256-GCM)
+│   └── secrets.json        加密存储的密钥 (XChaCha20-Poly1305)
 ```
 
 > **Bootstrap 文件加载顺序**: PROFILE.md → SOUL.md → AGENTS.md → MEMORY.md → BOOTSTRAP.md

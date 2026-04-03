@@ -248,11 +248,11 @@ Outbound Actor ──▶ WebSocket 客户端
                  └───────────────────┬───────────────────┘
                                      │
                  ┌───────────────────▼───────────────────┐
-                 │  AgentContext::compress_context()      │
+                 │  ContextCompactor::compact()           │
                  │                                        │
-                 │  evicted 不为空 → 后台 LLM 摘要        │
-                 │  evicted 为空 → 加载已有摘要             │
-                 │  → summary: Option<String>              │
+                 │  evicted 不为空 → 同步 LLM 摘要         │
+                 │  evicted 为空 → 加载已有摘要            │
+                 │  → summary: Option<String>             │
                  └───────────────────┬───────────────────┘
                                      │
                  ┌───────────────────▼───────────────────┐
@@ -311,7 +311,8 @@ Outbound Actor ──▶ WebSocket 客户端
             │            │.execute_    │   │
             │            │ batch()     │   │
             │            │             │   │
-            │            │ 并行执行所有 │   │
+            │            │ spawn_parallel│   │
+            │            │ + 并行执行所有 │   │
             │            │ tool_calls  │   │
             │            └──────┬──────┘   │
             │                   │          │
@@ -495,41 +496,36 @@ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
 ## 8. 上下文压缩数据流
 
 ```
-AgentLoop::process_direct()
+AgentLoop::finalize_response()
     │
     ▼
 process_history() ──▶ 识别被驱逐消息
     │
     ▼
-AgentContext::compress_context(key, evicted)
+ContextCompactor::compact(key, evicted)
     │
     ├──▶ evicted 为空? ──▶ 返回
     │
     ▼
-DashMap::entry(key) ──▶ 检查压缩是否进行中
+同步执行 {
     │
     ▼
-tokio::spawn(async {
+    LLM 生成摘要
     │
     ▼
-SummarizationService::compress(key, evicted)
+    EventStore::save_summary()
     │
     ▼
-LLM 生成摘要
-    │
-    ▼
-SQLite::upsert session_summaries
-    │
-    ▼
-DashMap::remove(key) ──▶ 释放锁
-})
+    SQLite 存储 Summary 事件
+}
 ```
 
-### 并发控制
+### 压缩执行策略
 
-- `DashMap<String, Arc<AtomicBool>>` 确保每会话只有一个压缩任务
-- `compare_exchange` 实现无锁并发控制
-- 后台执行不阻塞用户响应
+- 同步执行在 `finalize_response` 中
+- 压缩完成后立即保存 Summary 事件到 EventStore
+- 不使用后台任务或并发锁
+- 每次响应都会检查并执行压缩（如需要）
 
 ---
 

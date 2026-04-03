@@ -90,6 +90,7 @@ trait Tool: Send + Sync {
 | `list_dir` | filesystem | List directory contents |
 | `exec` | system | Execute shell command (with timeout + command_policy) |
 | `spawn` | system | Create subagent to execute task |
+| `spawn_parallel` | system | Execute multiple tasks in parallel with subagents |
 | `web_fetch` | web | HTTP GET request |
 | `web_search` | web | Web search (Brave/Tavily/Exa/Firecrawl) |
 | `message` | communication | Send message through Bus to channel |
@@ -102,10 +103,8 @@ trait Tool: Send + Sync {
 
 | Module | Description |
 |------|-------------|
-| `registry.rs` | `ToolRegistry` — Tool registry, manages all available tools |
-| `sandbox.rs` | `SandboxProvider` — Sandbox constraints (directory restrictions) |
-| `resource_limits.rs` | Resource limits (file size, output length, etc.) |
-| `command_policy.rs` | Shell command policy (whitelist/blacklist) |
+| `registry.rs` | `ToolRegistry` — Tool registry with semantic routing support |
+| `base.rs` | Re-exports `Tool` trait, `ToolContext`, `ToolError` from types crate |
 
 ---
 
@@ -195,7 +194,33 @@ Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outb
 
 ---
 
-## 6. hooks/ — External Shell Hook System
+## 6. hooks/ — Agent Pipeline Lifecycle Hook System
+
+Unified pipeline extension mechanism with five execution points and sequential/parallel strategies.
+
+### Hook Points
+
+| Hook Point | Timing | Strategy | Description |
+|------------|--------|----------|-------------|
+| `BeforeRequest` | Before request processed | Sequential | Can modify input, can abort |
+| `AfterHistory` | After history loaded | Sequential | Can add context |
+| `BeforeLLM` | Before sending to LLM | Sequential | Last chance to modify |
+| `AfterToolCall` | After tool call completes | Parallel | Read-only, fire-and-forget |
+| `AfterResponse` | After response generated | Parallel | Audit/alert |
+
+### Core Components
+
+| Component | Responsibility |
+|-----------|----------------|
+| `HookRegistry` | Hook registry, manages all hooks by point |
+| `PipelineHook` | Hook trait with `name()`, `point()`, `run()`, `run_parallel()` |
+| `HookBuilder` | Builder for creating HookRegistry |
+| `HookContext<M>` | Generic context with session_key, messages, user_input, response |
+| `ExternalShellHook` | Shell script hook wrapper |
+| `HistoryRecallHook` | Semantic history recall (feature: local-embedding) |
+| `VaultHook` | Vault secret injection at BeforeLLM |
+
+### External Shell Hooks
 
 ```
 Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
@@ -231,25 +256,28 @@ trait MemoryStore: Send + Sync {
 
 ---
 
-## 8. session/ — Session Management
+## 8. session/ — Session Management (Event Sourcing)
 
-Event sourcing-based session management with full history reconstruction capability.
+> **Note**: Event sourcing types defined in `types` crate (`SessionEvent`, `EventType`, `Session`), persistence in `storage` crate (`EventStore`).
 
-### Core Types
+### Core Types (from types crate)
 
 | Type | Description |
 |------|-------------|
-| `Session` | Aggregate root with branch management (branches HashMap) |
-| `SessionEvent` | Immutable events with UUID v7, parent_id for branching support |
-| `EventType` | Event variants: UserMessage, AssistantMessage, ToolCall, ToolResult, Summary, Merge |
-| `EventMetadata` | Event metadata with branch, tools_used, token_usage fields |
+| `Session` | Aggregate root with metadata (created_at, updated_at, total_events) |
+| `SessionEvent` | Immutable events with UUID v7, session_key, event_type, content, optional embedding |
+| `EventType` | UserMessage, AssistantMessage, ToolCall, ToolResult, Summary |
+| `SummaryType` | TimeWindow, Topic, Compression |
+| `EventMetadata` | branch, tools_used, token_usage, content_token_len, extra |
+| `SessionMetadata` | created_at, updated_at, last_consolidated_event, total_events, total_tokens |
 
 ### Architecture
 
 - **Event Sourcing**: All messages stored as immutable events enabling full history reconstruction
-- **Branch Support**: Events reference parent events via `parent_id`, branches tracked in `branches` HashMap
-- **Storage**: Pure SQLite backend, no in-memory cache, reads directly from database every time
-- **Migration**: Supports legacy JSON blob session automatic migration
+- **EventStore** (storage crate): `append_event()`, `get_branch_history()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
+- **Pure SQLite**: No in-memory cache, reads directly from database, leverages SQLite page cache
+- **History Processing**: `process_history()` with token budget, recent_keep, max_events configuration
+- **Query System**: `HistoryQueryBuilder` with branch, time_range, event_types, semantic_query, tools filters
 
 ---
 
@@ -258,44 +286,89 @@ Event sourcing-based session management with full history reconstruction capabil
 | File | Responsibility |
 |------|----------------|
 | `loop_.rs` | `AgentLoop` — Core processing loop, orchestrates all components |
-| `executor.rs` | `ToolExecutor` — Tool call execution (supports parallel batch execution) |
-| `history_processor.rs` | Token-aware history truncation (tiktoken-rs BPE encoding) |
-| `prompt.rs` | System prompt loading (bootstrap files + skills + token truncation protection) |
-| `summarization.rs` | `SummarizationService` + `ContextCompressionHook` — LLM summarization |
-| `stream.rs` | Stream output accumulator |
-| `request.rs` | Request building and retry logic |
-| `memory.rs` | Agent workspace memory management |
-| `skill_loader.rs` | Skill file loader (Markdown + YAML frontmatter) |
-| `subagent.rs` | Subagent management (`submit()` async + `submit_and_wait()` sync + `submit_tracked()` tracked + `submit_tracked_streaming()` streaming) |
+| `executor.rs` | `ToolExecutor` — Tool call execution (supports parallel batch) |
+| `executor_core.rs` | `AgentExecutor` — Core LLM execution loop with streaming support |
+| `context.rs` | `AgentContext` enum — Zero-cost enum dispatch (Persistent/Stateless) |
+| `compactor.rs` | `ContextCompactor` — Synchronous context compression (replaces SummarizationService) |
+| `indexing.rs` | `IndexingService` — Semantic indexing service (decoupled from compaction) |
+| `stream.rs` | `StreamEvent` enum — Streaming output events (Content, Reasoning, ToolStart/End, Done) |
+| `stream_buffer.rs` | `BufferedEvents` — WebSocket message buffering for ordering |
+| `subagent.rs` | `SubagentManager` + `SubagentTaskBuilder` — Builder pattern subagent management |
+| `subagent_tracker.rs` | `SubagentTracker` — Parallel task coordination with cancellation |
+| `memory.rs` | `MemoryStore` — Session memory store wrapping SqliteStore |
+| `prompt.rs` | Bootstrap file loading, skills context, token truncation |
+| `request.rs` | `RequestHandler` — Request building with retry logic |
+| `skill_loader.rs` | Skill file loading from workspace and built-in directories |
 
-### ContextCompressionHook
+### AgentContext Enum
 
-Extensible context compression interface, decouples compression strategy from Agent loop:
+Zero-cost enum dispatch replacing the previous trait-based approach:
 
 ```rust
-#[async_trait]
-trait ContextCompressionHook: Send + Sync {
-    async fn compress(
-        &self,
-        session_key: &str,
-        evicted_messages: &[SessionMessage],
-    ) -> Result<Option<String>>;
+pub enum AgentContext {
+    Persistent(PersistentContext),
+    Stateless,
+}
+
+pub struct PersistentContext {
+    pub event_store: Arc<EventStore>,
+    pub sqlite_store: Arc<SqliteStore>,
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<TextEmbedder>>,
 }
 ```
 
-Current implementation `SummarizationService`: When history messages are evicted, calls LLM to generate summary and persists to SQLite.
+| Variant | Purpose |
+|---------|---------|
+| `Persistent(PersistentContext)` | Main agent with full event sourcing |
+| `Stateless` | Subagent with no persistence |
 
-> **Note**: `ContextCompressionHook` has been simplified to `SummarizationService`'s `compress()` method, no longer as an independent trait. `AgentContext::compress_context()` directly calls this method.
+### Context Compaction
+
+`ContextCompactor` performs synchronous context compression when history is evicted:
+
+```rust
+pub struct ContextCompactor { /* provider, event_store, model, token_budget, threshold */ }
+
+impl ContextCompactor {
+    pub fn new(provider, event_store, model, token_budget) -> Self;
+    pub fn with_summarization_prompt(self, prompt) -> Self;
+    pub fn with_threshold(self, threshold: f32) -> Self;
+    pub async fn compact(&self, session_key, evicted_events, vault_values) -> Result<Option<String>>;
+}
+```
+
+When history messages exceed the token budget, the compactor calls the LLM to generate a summary and persists it as a Summary event.
+
+### SubagentManager API
+
+Builder pattern for flexible task creation:
+
+```rust
+let task_id = manager
+    .task("sub-1", "Execute task")
+    .with_provider(provider)
+    .with_config(config)
+    .with_system_prompt("Custom prompt".to_string())
+    .with_streaming(event_tx)
+    .with_session_key(session_key)
+    .with_cancellation_token(token)
+    .with_hooks(hooks)
+    .spawn(result_tx)
+    .await?;
+```
 
 ---
 
 ## 10. config/ — Configuration Management
 
-- `loader.rs` — Configuration file loading (`~/.gasket/config.yaml`)
-- `schema.rs` — Configuration structure definitions (providers, agents, channels, tools, etc.)
-- `provider.rs` — Provider configuration definitions
-- `agent.rs` — Agent configuration definitions
-- `channel.rs` — Channel configuration definitions
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | Configuration module exports |
+| `app_config.rs` | Main `Config` struct, `ConfigLoader`, `ModelConfig`, `ModelProfile`, `ModelRegistry`, `ProviderConfig`, `ProviderRegistry`, `ProviderType` |
+| `tools.rs` | `ToolsConfig`, `ExecToolConfig` (command policy), `WebToolsConfig` (search/fetch/proxy), `SandboxConfig`, `CommandPolicyConfig`, `ResourceLimitsConfig`, `EmbeddingConfig` |
+
+- Config file at `~/.gasket/config.yaml`
 - Compatible with Python gasket configuration format
 
 ---
@@ -311,7 +384,7 @@ Current implementation `SummarizationService`: When history messages are evicted
 | `store.rs` | `VaultStore` — JSON file storage, supports encryption |
 | `injector.rs` | `VaultInjector` — Runtime placeholder replacement |
 | `scanner.rs` | Placeholder scanning and parsing (`{{vault:key}}`) |
-| `crypto.rs` | `VaultCrypto` — AES-256-GCM encryption |
+| `crypto.rs` | `VaultCrypto` — XChaCha20-Poly1305 encryption |
 | `redaction.rs` | Log redaction functions (`redact_secrets`) |
 | `error.rs` | `VaultError` error types |
 
@@ -330,33 +403,40 @@ Password: {{vault:db_password}}
 
 ---
 
-## 12. search/ — Search Type Definitions
+## 12. search/ — Search & Embedding
+
+> **Note**: Search types re-exported from `storage` crate. Advanced Tantivy full-text search in standalone `tantivy` crate.
 
 ### Core Types
 
+| Type | Description |
+|------|-------------|
+| `TextEmbedder` | ONNX-based text embedding via fastembed (feature: local-embedding) |
+| `EmbeddingConfig` | Model name, cache dir, local model path configuration |
+| `cosine_similarity()` | Calculate cosine similarity between two vectors |
+| `top_k_similar()` | Get top-K most similar items from vector collection |
+| `bytes_to_embedding()` | Convert byte slice to embedding vector |
+| `embedding_to_bytes()` | Convert embedding vector to byte slice |
+
+### Semantic Search Pipeline
+
+1. `TextEmbedder::embed(text) -> Vec<f32>` — Generate embedding for query
+2. `cosine_similarity(query, candidate) -> f32` — Score similarity
+3. `top_k_similar(query, vectors, k) -> Vec<(f32, String)>` — Rank results
+
+### History Query Builder
+
 ```rust
-// Search query
-pub enum SearchQuery {
-    Boolean(BooleanQuery),
-    Fuzzy(FuzzyQuery),
-    DateRange(DateRange),
-}
-
-// Search result
-pub struct SearchResult {
-    pub id: String,
-    pub score: f32,
-    pub highlights: Vec<HighlightedText>,
-}
-
-pub struct HighlightedText {
-    pub field: String,
-    pub text: String,
-    pub highlights: Vec<(usize, usize)>, // Highlight ranges
-}
+let results = HistoryQuery::builder("session-key")
+    .branch("main")
+    .time_range(start, end)
+    .event_types(vec!["UserMessage".into()])
+    .semantic_text("search query")
+    .tools(vec!["exec".into()])
+    .limit(10)
+    .order(QueryOrder::ReverseChronological)
+    .build();
 ```
-
-> **Note**: Advanced Tantivy full-text search has been migrated to the standalone `tantivy-mcp` MCP server.
 
 ---
 
@@ -364,14 +444,12 @@ pub struct HighlightedText {
 
 | Module | Description |
 |------|-------------|
-| `cron/` | Scheduled task service, checks due tasks every 60 seconds |
-| `heartbeat/` | Heartbeat service, reads HEARTBEAT.md and triggers periodically |
-| `crypto/` | Cryptographic tools (message encryption/decryption required by some channels like WeCom) |
-| `skills/` | Skills system (see below) |
-| `webhook/` | Webhook HTTP server (axum) |
-| `workspace/` | Workspace template files (copied during initialization) |
-| `error.rs` | Unified error type definitions (AgentError, ProviderError, McpError, ChannelError, PipelineError) |
-| `token_tracker.rs` | Token counting and tracking |
+| `cron/` | `CronService` + `CronJob` — Scheduled task service with SQLite persistence |
+| `heartbeat/` | `HeartbeatService` — Reads HEARTBEAT.md, triggers periodic proactive tasks |
+| `skills/` | Skills system — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata` (see Section 14) |
+| `bus_adapter.rs` | `EngineHandler` — Bridges engine to bus actor system |
+| `error.rs` | Unified error types (AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError) |
+| `token_tracker.rs` | Token counting, cost calculation, session stats tracking |
 
 ---
 
@@ -384,7 +462,7 @@ pub struct HighlightedText {
 | `loader.rs` | `SkillsLoader` — Load skills from Markdown files |
 | `registry.rs` | `SkillsRegistry` — Skills registry management |
 | `skill.rs` | `Skill` — Skill definition structure |
-| `metadata.rs` | `SkillMetadata` — Skill metadata (dependencies, tags, etc.) |
+| `metadata.rs` | `SkillMetadata` — Skill metadata (name, description, bins, env_vars, always, extra) |
 
 ### Skill File Format
 
@@ -392,10 +470,8 @@ pub struct HighlightedText {
 ---
 name: my_skill
 description: A sample skill
-dependencies:
-  binaries: ["node", "npm"]
-  env_vars: ["API_KEY"]
-tags: ["automation", "web"]
+bins: ["node", "npm"]
+env_vars: ["API_KEY"]
 always_load: false
 ---
 

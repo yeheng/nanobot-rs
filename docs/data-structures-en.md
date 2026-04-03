@@ -192,9 +192,6 @@ pub struct SessionEvent {
     /// Session this event belongs to
     pub session_key: String,
 
-    /// Parent event ID (supports branching and version control)
-    pub parent_id: Option<Uuid>,
-
     /// Event type
     pub event_type: EventType,
 
@@ -214,7 +211,6 @@ pub struct SessionEvent {
 
 **Key Design Points:**
 - **UUID v7**: Time-ordered UUIDs provide natural chronological sorting without requiring timestamp indexes
-- **Parent ID**: Enables Git-like branching and version control capabilities
 - **Embedding**: Optional semantic vector for similarity search and context retrieval
 - **Immutable**: Events are append-only; modifications create new events
 
@@ -249,39 +245,15 @@ pub enum EventType {
         summary_type: SummaryType,
         covered_event_ids: Vec<Uuid>,
     },
-
-    /// Branch merge
-    Merge {
-        source_branch: String,
-        source_head: Uuid,
-    },
 }
 ```
 
 **Event Type Categories:**
 - **Simple variants**: `UserMessage`, `AssistantMessage` - basic message types
 - **Tool variants**: `ToolCall`, `ToolResult` - tool execution lifecycle
-- **Meta variants**: `Summary`, `Merge` - system-generated events for history management
+- **Meta variants**: `Summary` - system-generated events for history management
 
-### 3.3 EventTypeCategory
-
-Query-friendly categorization for filtering events without pattern matching on the full enum.
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EventTypeCategory {
-    UserMessage,
-    AssistantMessage,
-    ToolCall,
-    ToolResult,
-    Summary,
-    Merge,
-}
-```
-
-Used for database queries and event stream filtering where exact variant matching is unnecessary.
-
-### 3.4 SummaryType
+### 3.3 SummaryType
 
 Specifies the strategy used to generate a summary event.
 
@@ -391,6 +363,116 @@ pub struct SessionMetadata {
 **Usage:**
 - **last_consolidated_event**: Tracks the last event included in a summary; used for incremental summarization
 - **total_events/total_tokens**: Running counters for resource monitoring and limits
+
+### 3.8 AgentContext (Enum-based)
+
+Zero-cost enum dispatch for agent state management — no runtime overhead.
+
+```rust
+#[derive(Debug, Clone)]
+pub enum AgentContext {
+    /// Persistent context (main Agent)
+    Persistent(PersistentContext),
+
+    /// Stateless context (sub Agent)
+    Stateless,
+}
+
+/// Persistent context data for main agents.
+#[derive(Clone)]
+pub struct PersistentContext {
+    /// Event store for persisting events
+    pub event_store: Arc<EventStore>,
+    /// SQLite store for saving embeddings (semantic recall index)
+    pub sqlite_store: Arc<SqliteStore>,
+    /// Optional text embedder for automatic embedding generation
+    #[cfg(feature = "local-embedding")]
+    pub embedder: Option<Arc<TextEmbedder>>,
+}
+```
+
+**Key Methods on AgentContext:**
+
+| Method | Description |
+|--------|-------------|
+| `persistent(event_store, sqlite_store) -> Self` | Create persistent variant |
+| `is_persistent(&self) -> bool` | Check variant |
+| `load_session(&self, key) -> Session` | Load from event store |
+| `save_event(&self, event) -> Result` | Append event |
+| `get_history(&self, key, branch) -> Vec<SessionEvent>` | Get branch history |
+| `recall_history(&self, key, embedding, top_k) -> Vec<String>` | Semantic recall |
+| `clear_session(&self, key) -> Result` | Clear session |
+
+**Variants:**
+
+| Variant | Purpose |
+|---------|---------|
+| `Persistent(PersistentContext)` | Main agent, full event sourcing |
+| `Stateless` | Subagent, no persistence |
+
+**Design Benefits:**
+- Zero runtime dispatch overhead (enum dispatch vs trait object vtable)
+- Better cache locality (enum variants are inline)
+- Compile-time exhaustiveness checking
+
+### 3.9 ContextCompactor
+
+Synchronous context compactor — replaces async background summarization. Called directly after each agent response to ensure the next request sees the latest summary.
+
+```rust
+pub struct ContextCompactor {
+    /// LLM provider for generating summaries
+    provider: Arc<dyn LlmProvider>,
+    /// Event store for persisting summary events
+    event_store: Arc<EventStore>,
+    /// Model to use for summarization
+    model: String,
+    /// Token budget for context window
+    token_budget: usize,
+    /// Compaction threshold multiplier (default 1.2)
+    compaction_threshold: f32,
+    /// Custom summarization prompt
+    summarization_prompt: String,
+}
+
+impl ContextCompactor {
+    /// Create a new compactor
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        event_store: Arc<EventStore>,
+        model: String,
+        token_budget: usize,
+    ) -> Self;
+
+    /// Set a custom summarization prompt
+    pub fn with_summarization_prompt(self, prompt: impl Into<String>) -> Self;
+
+    /// Set a custom compaction threshold multiplier
+    pub fn with_threshold(self, threshold: f32) -> Self;
+
+    /// Run compaction on evicted events
+    pub async fn compact(
+        &self,
+        session_key: &str,
+        evicted_events: &[SessionEvent],
+        vault_values: &[String],
+    ) -> anyhow::Result<Option<String>>;
+}
+```
+
+**Key Design Points:**
+- **Synchronous execution**: Runs in `finalize_response()` after user receives response (no added latency)
+- **No race conditions**: Next request always sees latest summary (eliminates `tokio::spawn` timing issues)
+- **Batch threshold**: Only compacts when evicted tokens exceed `token_budget * (threshold - 1.0)`
+- **LSM-tree analogy**: L0 (active context) flushes to L1 (summary checkpoint) on overflow
+
+**Lifecycle:**
+```text
+AgentLoop::process_direct()
+  → prepare_pipeline()     // history + prompt assembly
+  → run_agent_loop()       // LLM iteration
+  → finalize_response()    // save event + compact + return
+```
 
 ---
 
@@ -524,7 +606,7 @@ InjectionReport {
 │   ├── timestamp TEXT    ISO 8601
 │   └── tools_used TEXT   JSON array (nullable)
 │
-├── session_summaries     Session summaries (generated by ContextCompressionHook)
+├── session_summaries     Session summaries (generated by ContextCompactor)
 │   ├── session_key TEXT PK  → sessions.key
 │   └── summary TEXT         Summary content
 │
@@ -578,7 +660,7 @@ InjectionReport {
 ├── skills/                 User-defined skills
 │   └── *.md                Markdown + YAML frontmatter
 ├── vault/                  Sensitive data isolation directory
-│   └── secrets.json        Encrypted key storage (AES-256-GCM)
+│   └── secrets.json        Encrypted key storage (XChaCha20-Poly1305)
 ```
 
 > **Bootstrap file loading order**: PROFILE.md → SOUL.md → AGENTS.md → MEMORY.md → BOOTSTRAP.md
