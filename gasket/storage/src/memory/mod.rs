@@ -15,6 +15,7 @@
 //! - **Supersession:** Old versions can reference their replacements for audit trails
 
 mod frontmatter;
+mod index;
 mod path;
 mod store;
 mod types;
@@ -33,3 +34,6 @@ pub use frontmatter::{
 
 // Re-export FileMemoryStore
 pub use store::FileMemoryStore;
+
+// Re-export index manager
+pub use index::{FileIndexManager, MemoryIndex, MemoryIndexEntry};
