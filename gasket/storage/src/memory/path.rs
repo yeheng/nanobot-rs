@@ -32,6 +32,7 @@ pub fn history_dir(scenario: Scenario) -> PathBuf {
 }
 
 /// History file path for a specific version.
+#[allow(dead_code)]
 pub fn history_file_path(scenario: Scenario, filename: &str, timestamp: &str) -> PathBuf {
     let stem = filename.trim_end_matches(".md");
     history_dir(scenario).join(format!("{}.{}.md", stem, timestamp))
