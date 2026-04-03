@@ -76,7 +76,7 @@ pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> Pr
     // Calculate tokens for protected events (always included).
     // Use pre-computed token count from DB (content_token_len) when available,
     // fall back to BPE encoding for events created in-memory.
-    let protected_tokens: usize = protected.iter().map(|e| token_len_or_count(e)).sum();
+    let protected_tokens: usize = protected.iter().map(token_len_or_count).sum();
     let mut current_tokens = protected_tokens;
     let mut included_older: Vec<SessionEvent> = Vec::new();
     let mut evicted: Vec<SessionEvent> = Vec::new();

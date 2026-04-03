@@ -393,7 +393,8 @@ impl AgentLoop {
     ) -> Result<AgentInitState, AgentError> {
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
 
-        let mut compactor = ContextCompactor::new(provider, event_store.clone(), model, token_budget);
+        let mut compactor =
+            ContextCompactor::new(provider, event_store.clone(), model, token_budget);
         if let Some(prompt) = summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt);
         }

@@ -1,8 +1,8 @@
 //! Event store for event sourcing architecture.
 
+use crate::processor::count_tokens;
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, TokenUsage};
-use crate::processor::count_tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;

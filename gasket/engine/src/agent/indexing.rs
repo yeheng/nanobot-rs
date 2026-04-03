@@ -118,7 +118,10 @@ impl IndexingService {
                             .save_embedding(&event_id, session_key, &embedding)
                             .await
                         {
-                            debug!("Failed to save embedding for evicted event {}: {}", event_id, e);
+                            debug!(
+                                "Failed to save embedding for evicted event {}: {}",
+                                event_id, e
+                            );
                         } else {
                             debug!(
                                 "Saved embedding for evicted event {} in session {}",
