@@ -17,6 +17,7 @@
 mod embedding_store;
 mod frontmatter;
 mod index;
+mod lifecycle;
 mod path;
 mod retrieval;
 mod store;
@@ -45,3 +46,6 @@ pub use embedding_store::{EmbeddingHit, EmbeddingStore};
 
 // Re-export RetrievalEngine
 pub use retrieval::{RetrievalEngine, SearchResult};
+
+// Re-export lifecycle types
+pub use lifecycle::{AccessLog, AccessEntry, DecayReport, FlushReport, FrequencyManager};
