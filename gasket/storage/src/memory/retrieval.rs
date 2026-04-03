@@ -1,8 +1,8 @@
 //! Retrieval engine combining tag and embedding search with normalized scoring.
 
-use super::types::*;
 use super::embedding_store::EmbeddingStore;
 use super::index::FileIndexManager;
+use super::types::*;
 use anyhow::Result;
 
 const TAG_WEIGHT: f32 = 0.4;
@@ -182,8 +182,8 @@ impl RetrievalEngine {
                 .entry(key)
                 .and_modify(|existing| {
                     existing.embedding_score = r.embedding_score;
-                    existing.score =
-                        existing.tag_score * TAG_WEIGHT + existing.embedding_score * EMBEDDING_WEIGHT;
+                    existing.score = existing.tag_score * TAG_WEIGHT
+                        + existing.embedding_score * EMBEDDING_WEIGHT;
                     // Copy title/path from embedding result if we had it
                     if existing.title.is_empty() && !r.title.is_empty() {
                         existing.title = r.title.clone();
@@ -289,10 +289,7 @@ tokens: 100
 
         // Regenerate index
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
 
         // Search by "rust" tag
         let results = engine
@@ -335,10 +332,7 @@ tokens: 50
 
         // Regenerate index
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
 
         // Add embedding
         let pool = SqliteStore::with_path(base_dir.join("test.db"))
@@ -415,10 +409,7 @@ tokens: 50
 
         // Regenerate index
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
 
         // Search by tag - should only return warm, not archived
         let results = engine
@@ -459,10 +450,7 @@ tokens: 50
 
         // Regenerate index
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
 
         // Add embedding for the same memory
         let pool = SqliteStore::with_path(base_dir.join("test.db"))
@@ -484,9 +472,7 @@ tokens: 50
             .unwrap();
 
         // Combined search should deduplicate
-        let query = MemoryQuery::new()
-            .with_tag("test")
-            .with_text("test query");
+        let query = MemoryQuery::new().with_tag("test").with_text("test query");
         let results = engine.search(&query).await.unwrap();
 
         // Should have exactly 1 result (deduplicated)
@@ -496,8 +482,8 @@ tokens: 50
         assert!(results[0].tag_score > 0.0);
         assert!(results[0].embedding_score > 0.0);
         // Combined score should use both weights
-        let expected = results[0].tag_score * TAG_WEIGHT
-            + results[0].embedding_score * EMBEDDING_WEIGHT;
+        let expected =
+            results[0].tag_score * TAG_WEIGHT + results[0].embedding_score * EMBEDDING_WEIGHT;
         assert!((results[0].score - expected).abs() < 0.001);
     }
 }

@@ -10,6 +10,8 @@ description = "SQLite-backed storage, history processing, and semantic embedding
 default = []
 # Enable local ONNX-based embedding (requires ~20MB model download)
 local-embedding = ["fastembed", "bytemuck/derive", "parking_lot"]
+# Enable file watcher for memory directory changes
+memory-watcher = ["notify"]
 
 [dependencies]
 # Async
@@ -50,6 +52,9 @@ tiktoken-rs = "0.9"
 # Optional: Local ONNX embedding (from gasket-semantic)
 fastembed = { version = "5.13.0", optional = true }
 parking_lot = { version = "0.12", optional = true }
+
+# Optional: File watcher for memory directory changes
+notify = { version = "7", optional = true }
 
 # Internal crates
 gasket-types = { path = "../types" }

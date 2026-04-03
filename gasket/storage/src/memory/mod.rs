@@ -22,6 +22,7 @@ mod path;
 mod retrieval;
 mod store;
 mod types;
+mod watcher;
 
 pub use types::*;
 
@@ -48,4 +49,7 @@ pub use embedding_store::{EmbeddingHit, EmbeddingStore};
 pub use retrieval::{RetrievalEngine, SearchResult};
 
 // Re-export lifecycle types
-pub use lifecycle::{AccessLog, AccessEntry, DecayReport, FlushReport, FrequencyManager};
+pub use lifecycle::{AccessEntry, AccessLog, DecayReport, FlushReport, FrequencyManager};
+
+// Re-export file watcher
+pub use watcher::{scenario_from_path, should_ignore, MemoryWatcher, WatchEvent, WatcherConfig};

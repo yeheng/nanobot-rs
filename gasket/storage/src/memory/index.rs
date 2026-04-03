@@ -260,14 +260,24 @@ fn parse_index_content(scenario: Scenario, content: &str) -> Result<MemoryIndex>
             let (tokens, filename, updated) = if cols.len() >= 7 {
                 // New format: ID | Title | Type | Tags | Filename | Tokens | Updated
                 (
-                    cols.get(5).unwrap_or(&"~0").trim().trim_start_matches('~').parse().unwrap_or(0),
+                    cols.get(5)
+                        .unwrap_or(&"~0")
+                        .trim()
+                        .trim_start_matches('~')
+                        .parse()
+                        .unwrap_or(0),
                     cols.get(4).unwrap_or(&"").trim().to_string(),
                     cols.get(6).unwrap_or(&"").trim().to_string(),
                 )
             } else {
                 // Old format: ID | Title | Type | Tags | Tokens | Updated
                 (
-                    cols.get(4).unwrap_or(&"~0").trim().trim_start_matches('~').parse().unwrap_or(0),
+                    cols.get(4)
+                        .unwrap_or(&"~0")
+                        .trim()
+                        .trim_start_matches('~')
+                        .parse()
+                        .unwrap_or(0),
                     String::new(), // filename not available in old format
                     cols.get(5).unwrap_or(&"").trim().to_string(),
                 )

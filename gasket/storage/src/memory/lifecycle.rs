@@ -225,8 +225,7 @@ impl FrequencyManager {
                     updated_meta.frequency = new_freq;
                     updated_meta.updated = Utc::now().to_rfc3339();
 
-                    let new_content =
-                        serialize_memory_file(&updated_meta, &memory_file.content);
+                    let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
 
                     if let Err(e) = store.update(scenario, &filename, &new_content).await {
                         tracing::warn!(
@@ -318,11 +317,7 @@ impl FrequencyManager {
             };
 
             // Find the latest access timestamp
-            let latest_timestamp = access_entries
-                .iter()
-                .map(|e| e.timestamp)
-                .max()
-                .unwrap();
+            let latest_timestamp = access_entries.iter().map(|e| e.timestamp).max().unwrap();
 
             let access_count_increment = access_entries.len() as u64;
             let old_freq = memory_file.metadata.frequency;
@@ -353,12 +348,7 @@ impl FrequencyManager {
             // Write updated file
             let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
             if let Err(e) = store.update(scenario, &filename, &new_content).await {
-                tracing::warn!(
-                    "Failed to update {}/{}: {}",
-                    scenario,
-                    filename,
-                    e
-                );
+                tracing::warn!("Failed to update {}/{}: {}", scenario, filename, e);
                 report.errors += 1;
                 continue;
             }
@@ -423,11 +413,8 @@ mod tests {
         let now = Utc::now();
         let eight_days_ago = (now - Duration::days(8)).to_rfc3339();
 
-        let new_freq = FrequencyManager::recalculate(
-            Frequency::Hot,
-            &eight_days_ago,
-            Scenario::Knowledge,
-        );
+        let new_freq =
+            FrequencyManager::recalculate(Frequency::Hot, &eight_days_ago, Scenario::Knowledge);
 
         assert_eq!(new_freq, Frequency::Warm);
     }
@@ -437,11 +424,8 @@ mod tests {
         let now = Utc::now();
         let five_days_ago = (now - Duration::days(5)).to_rfc3339();
 
-        let new_freq = FrequencyManager::recalculate(
-            Frequency::Hot,
-            &five_days_ago,
-            Scenario::Knowledge,
-        );
+        let new_freq =
+            FrequencyManager::recalculate(Frequency::Hot, &five_days_ago, Scenario::Knowledge);
 
         assert_eq!(new_freq, Frequency::Hot);
     }
@@ -451,11 +435,8 @@ mod tests {
         let now = Utc::now();
         let thirty_one_days_ago = (now - Duration::days(31)).to_rfc3339();
 
-        let new_freq = FrequencyManager::recalculate(
-            Frequency::Warm,
-            &thirty_one_days_ago,
-            Scenario::Active,
-        );
+        let new_freq =
+            FrequencyManager::recalculate(Frequency::Warm, &thirty_one_days_ago, Scenario::Active);
 
         assert_eq!(new_freq, Frequency::Cold);
     }
@@ -480,8 +461,7 @@ mod tests {
         let ancient = (now - Duration::days(365)).to_rfc3339();
 
         // Profile memories should never decay, even after a year
-        let new_freq =
-            FrequencyManager::recalculate(Frequency::Hot, &ancient, Scenario::Profile);
+        let new_freq = FrequencyManager::recalculate(Frequency::Hot, &ancient, Scenario::Profile);
 
         assert_eq!(new_freq, Frequency::Hot);
     }
@@ -491,11 +471,8 @@ mod tests {
         let now = Utc::now();
         let ancient = (now - Duration::days(365)).to_rfc3339();
 
-        let new_freq = FrequencyManager::recalculate(
-            Frequency::Warm,
-            &ancient,
-            Scenario::Decisions,
-        );
+        let new_freq =
+            FrequencyManager::recalculate(Frequency::Warm, &ancient, Scenario::Decisions);
 
         assert_eq!(new_freq, Frequency::Hot); // Exempt scenarios become Hot
     }
@@ -505,11 +482,8 @@ mod tests {
         let now = Utc::now();
         let ancient = (now - Duration::days(365)).to_rfc3339();
 
-        let new_freq = FrequencyManager::recalculate(
-            Frequency::Cold,
-            &ancient,
-            Scenario::Reference,
-        );
+        let new_freq =
+            FrequencyManager::recalculate(Frequency::Cold, &ancient, Scenario::Reference);
 
         assert_eq!(new_freq, Frequency::Hot); // Exempt scenarios become Hot
     }
@@ -579,18 +553,14 @@ mod tests {
         store.init().await.unwrap();
 
         // Create a test memory
-        let (filename, _meta, content) = create_test_memory(
-            Scenario::Knowledge,
-            "Test Memory",
-            Frequency::Warm,
-            0,
-        );
+        let (filename, _meta, content) =
+            create_test_memory(Scenario::Knowledge, "Test Memory", Frequency::Warm, 0);
         let scenario_dir = temp_dir.path().join("knowledge");
         tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(scenario_dir.join(&filename), serialize_memory_file(
-            &_meta,
-            &content,
-        ))
+        tokio::fs::write(
+            scenario_dir.join(&filename),
+            serialize_memory_file(&_meta, &content),
+        )
         .await
         .unwrap();
 
@@ -621,18 +591,14 @@ mod tests {
         store.init().await.unwrap();
 
         // Create a cold memory
-        let (filename, _meta, content) = create_test_memory(
-            Scenario::Knowledge,
-            "Cold Memory",
-            Frequency::Cold,
-            0,
-        );
+        let (filename, _meta, content) =
+            create_test_memory(Scenario::Knowledge, "Cold Memory", Frequency::Cold, 0);
         let scenario_dir = temp_dir.path().join("knowledge");
         tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(scenario_dir.join(&filename), serialize_memory_file(
-            &_meta,
-            &content,
-        ))
+        tokio::fs::write(
+            scenario_dir.join(&filename),
+            serialize_memory_file(&_meta, &content),
+        )
         .await
         .unwrap();
 
@@ -670,17 +636,18 @@ mod tests {
         for (filename, meta, content) in memories {
             let scenario_dir = temp_dir.path().join(meta.scenario.dir_name());
             tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-            tokio::fs::write(scenario_dir.join(&filename), serialize_memory_file(
-                &meta,
-                &content,
-            ))
+            tokio::fs::write(
+                scenario_dir.join(&filename),
+                serialize_memory_file(&meta, &content),
+            )
             .await
             .unwrap();
         }
 
         // Run decay batch
-        let report =
-            FrequencyManager::run_decay_batch(&store, &index_manager).await.unwrap();
+        let report = FrequencyManager::run_decay_batch(&store, &index_manager)
+            .await
+            .unwrap();
 
         assert_eq!(report.total_scanned, 3);
         assert!(report.decayed >= 2); // At least the stale ones should decay
@@ -718,10 +685,10 @@ mod tests {
             create_test_memory(Scenario::Active, "Popular Memory", Frequency::Warm, 0);
         let scenario_dir = temp_dir.path().join("active");
         tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(scenario_dir.join(&filename), serialize_memory_file(
-            &_meta,
-            &content,
-        ))
+        tokio::fs::write(
+            scenario_dir.join(&filename),
+            serialize_memory_file(&_meta, &content),
+        )
         .await
         .unwrap();
 
