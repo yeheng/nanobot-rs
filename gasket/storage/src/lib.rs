@@ -387,6 +387,51 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
+        // ── Memory system tables ──
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memory_embeddings (
+                memory_path   TEXT PRIMARY KEY,
+                scenario      TEXT NOT NULL,
+                tags          TEXT,
+                frequency     TEXT NOT NULL DEFAULT 'warm',
+                embedding     BLOB NOT NULL,
+                token_count   INTEGER NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_mem_emb_scenario
+             ON memory_embeddings(scenario)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_mem_emb_frequency
+             ON memory_embeddings(frequency)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS dedup_reports (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_a      TEXT NOT NULL,
+                memory_b      TEXT NOT NULL,
+                similarity    REAL NOT NULL,
+                suggestion    TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                resolved      INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
         // === Event sourcing new tables ===
 
         // Session metadata table (v2 with branch support)

@@ -4,12 +4,12 @@
 //! all memories in a scenario directory. The index is organized by frequency
 //! (Hot, Warm, Cold, Archived) and includes token counts and metadata.
 
-use super::types::*;
 use super::frontmatter::*;
 use super::path::*;
+use super::types::*;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use chrono::Utc;
+use std::path::PathBuf;
 
 /// A single entry parsed from _INDEX.md.
 #[derive(Debug, Clone)]
@@ -113,7 +113,12 @@ impl FileIndexManager {
         output.push_str(&format!("<!-- total_tokens: ~{} -->\n\n", total_tokens));
 
         // Group by frequency
-        for freq in &[Frequency::Hot, Frequency::Warm, Frequency::Cold, Frequency::Archived] {
+        for freq in &[
+            Frequency::Hot,
+            Frequency::Warm,
+            Frequency::Cold,
+            Frequency::Archived,
+        ] {
             let freq_entries: Vec<_> = entries.iter().filter(|e| e.frequency == *freq).collect();
             if freq_entries.is_empty() && *freq == Frequency::Archived {
                 continue; // skip empty archived section
@@ -576,7 +581,10 @@ tokens: 25
 
         // Verify no .tmp file remains
         let tmp_path = dir.join("_INDEX.md.tmp");
-        assert!(!tmp_path.exists(), "No .tmp file should remain after atomic write");
+        assert!(
+            !tmp_path.exists(),
+            "No .tmp file should remain after atomic write"
+        );
 
         // Verify the actual index exists
         let index_path = dir.join("_INDEX.md");

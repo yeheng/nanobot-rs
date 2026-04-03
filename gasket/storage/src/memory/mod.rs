@@ -14,6 +14,7 @@
 //! - **Token budget tracking:** Each memory tracks its token count for budget enforcement
 //! - **Supersession:** Old versions can reference their replacements for audit trails
 
+mod embedding_store;
 mod frontmatter;
 mod index;
 mod path;
@@ -37,3 +38,6 @@ pub use store::FileMemoryStore;
 
 // Re-export index manager
 pub use index::{FileIndexManager, MemoryIndex, MemoryIndexEntry};
+
+// Re-export EmbeddingStore
+pub use embedding_store::{EmbeddingHit, EmbeddingStore};
