@@ -7,6 +7,7 @@ pub mod executor_core;
 pub mod history_coordinator;
 pub mod indexing;
 pub mod loop_;
+pub mod materialization;
 pub mod memory;
 pub mod memory_manager;
 pub mod memory_provider;
@@ -31,6 +32,10 @@ pub use gasket_storage::{
 pub use history_coordinator::ContextMessage;
 pub use indexing::IndexingService;
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
+pub use materialization::{
+    Checkpoint, CheckpointStore, EventHandler, FailedEventStore, HandlerContext,
+    MaterializationEngine,
+};
 pub use memory::MemoryStore;
 pub use memory_manager::{MemoryContext, MemoryManager, PhaseBreakdown};
 pub use stream::StreamEvent;
