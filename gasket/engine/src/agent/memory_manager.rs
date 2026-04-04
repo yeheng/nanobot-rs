@@ -919,3 +919,46 @@ mod tests {
         assert_eq!(count, 1, "File should only load once");
     }
 }
+
+/// Implement MemoryProvider trait for MemoryManager.
+///
+/// This allows HistoryCoordinator to depend on the trait rather than
+/// the concrete type, enabling test doubles and future alternative backends.
+#[async_trait::async_trait]
+impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
+    async fn load_for_context(
+        &self,
+        query: &MemoryQuery,
+    ) -> anyhow::Result<MemoryContext> {
+        self.load_for_context(query).await
+    }
+
+    async fn search(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<MemoryHit>> {
+        // MemoryManager doesn't expose a public search() method directly.
+        // Use load_for_context with text-based MemoryQuery as a workaround.
+        // Phase 2+ will expose a proper search method via RetrievalEngine.
+        let memory_query = MemoryQuery {
+            text: Some(query.to_string()),
+            tags: vec![],
+            scenario: None,
+            max_tokens: Some(top_k * 200),
+        };
+        let ctx = self.load_for_context(&memory_query).await?;
+        // Convert MemoryFile hits to MemoryHit
+        let hits: Vec<MemoryHit> = ctx
+            .memories
+            .into_iter()
+            .map(|m| MemoryHit {
+                path: m.metadata.id.clone(),
+                scenario: m.metadata.scenario,
+                title: m.metadata.title.clone(),
+                tags: m.metadata.tags,
+                frequency: m.metadata.frequency,
+                score: 0.0,
+                tokens: m.metadata.tokens,
+            })
+            .take(top_k)
+            .collect();
+        Ok(hits)
+    }
+}

@@ -9,6 +9,7 @@ pub mod indexing;
 pub mod loop_;
 pub mod memory;
 pub mod memory_manager;
+pub mod memory_provider;
 pub mod prompt;
 pub mod request;
 pub mod skill_loader;
