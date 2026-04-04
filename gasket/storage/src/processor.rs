@@ -174,6 +174,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         }
     }
 

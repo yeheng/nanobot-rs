@@ -387,7 +387,8 @@ mod tests {
                 token_len INTEGER NOT NULL DEFAULT 0,
                 event_data TEXT,
                 extra TEXT DEFAULT '{}',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -423,6 +424,7 @@ mod tests {
             embedding: None,
             metadata: Default::default(),
             created_at: chrono::Utc::now(),
+            sequence: 0,
         };
         let result = context.save_event(event).await;
         assert!(result.is_ok());
@@ -466,6 +468,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         let result = context.save_event(event).await;
@@ -492,6 +495,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(e1.clone()).await.unwrap();
 
@@ -506,6 +510,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(e2.clone()).await.unwrap();
 
@@ -536,6 +541,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(main_event).await.unwrap();
 
@@ -551,6 +557,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(feature_event).await.unwrap();
 
@@ -584,6 +591,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         context.save_event(event).await.unwrap();
@@ -612,6 +620,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(event).await.unwrap();
 

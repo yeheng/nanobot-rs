@@ -635,6 +635,7 @@ impl AgentLoop {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: chrono::Utc::now(),
+            sequence: 0,
         };
         self.context.save_event(user_event).await?;
 
@@ -906,6 +907,7 @@ async fn finalize_response(
             ..Default::default()
         },
         created_at: chrono::Utc::now(),
+        sequence: 0,
     };
     if let Err(e) = context.save_event(assistant_event).await {
         warn!("Failed to persist assistant event: {}", e);

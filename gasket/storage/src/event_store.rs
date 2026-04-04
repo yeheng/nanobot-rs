@@ -187,12 +187,23 @@ impl EventStore {
         // Compute content token count once at write time (avoids re-calculation on read path)
         let token_len = count_tokens(&event.content) as i64;
 
+        // Generate sequence number
+        let max_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?"
+        )
+        .bind(&event.session_key)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
+        let sequence = max_seq + 1;
+
         sqlx::query(
             r#"
             INSERT INTO session_events
             (id, session_key, event_type, content, embedding, branch,
-             tools_used, token_usage, token_len, event_data, extra, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tools_used, token_usage, token_len, event_data, extra, created_at, sequence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())
@@ -212,6 +223,7 @@ impl EventStore {
         .bind(event_data_json.as_deref())
         .bind(&extra)
         .bind(event.created_at.to_rfc3339())
+        .bind(sequence)
         .execute(&mut *tx)
         .await?;
 
@@ -345,6 +357,7 @@ struct EventRow {
     event_data: Option<String>,
     extra: String,
     created_at: String,
+    sequence: i64,
 }
 
 impl TryFrom<EventRow> for SessionEvent {
@@ -394,6 +407,7 @@ impl TryFrom<EventRow> for SessionEvent {
             created_at: DateTime::parse_from_rfc3339(&row.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
+            sequence: row.sequence,
         })
     }
 }
@@ -441,7 +455,8 @@ mod tests {
                 token_len INTEGER NOT NULL DEFAULT 0,
                 event_data TEXT,
                 extra TEXT DEFAULT '{}',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -465,6 +480,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -492,6 +508,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -530,6 +547,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -572,6 +590,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -609,6 +628,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -643,6 +663,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -676,6 +697,7 @@ mod tests {
             embedding: Some(embedding.clone()),
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         store.append_event(&event).await.unwrap();
@@ -710,6 +732,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e1).await.unwrap();
 
@@ -724,6 +747,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e2).await.unwrap();
 
@@ -764,6 +788,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&main_event).await.unwrap();
 
@@ -778,6 +803,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&feature_event).await.unwrap();
 
@@ -809,6 +835,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e1).await.unwrap();
 
@@ -820,6 +847,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e2).await.unwrap();
 
@@ -831,6 +859,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e3).await.unwrap();
 
@@ -865,6 +894,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e1).await.unwrap();
 
@@ -876,6 +906,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         store.append_event(&e2).await.unwrap();
 

@@ -3,12 +3,12 @@
 //! This module defines the unified query types that the agent loop uses
 //! instead of directly calling EventStore, MemoryManager, and Compactor.
 
-use std::sync::Arc;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use gasket_storage::EventStore;
 use gasket_storage::memory::{MemoryHit, MemoryQuery};
+use gasket_storage::EventStore;
 use gasket_types::session_event::SessionEvent;
+use std::sync::Arc;
 
 use super::compactor::ContextCompactor;
 use super::memory_manager::MemoryContext;
@@ -88,15 +88,23 @@ impl HistoryCoordinator {
         compactor: Arc<ContextCompactor>,
         memory: Arc<MemoryManager>,
     ) -> Self {
-        Self { event_store, compactor, memory }
+        Self {
+            event_store,
+            compactor,
+            memory,
+        }
     }
 
     /// Unified query entry point
     pub async fn query(&self, query: HistoryQuery) -> Result<HistoryResult> {
         match query {
-            HistoryQuery::SessionContext { session_key, token_budget } => {
+            HistoryQuery::SessionContext {
+                session_key,
+                token_budget,
+            } => {
                 // Phase 1: delegate to existing get_branch_history + trim
-                let events = self.event_store
+                let events = self
+                    .event_store
                     .get_branch_history(&session_key, "main")
                     .await
                     .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
@@ -111,16 +119,22 @@ impl HistoryCoordinator {
                     tokens_used += event_tokens;
                     let role = match event.event_type {
                         gasket_types::session_event::EventType::UserMessage => "user".to_string(),
-                        gasket_types::session_event::EventType::AssistantMessage => "assistant".to_string(),
+                        gasket_types::session_event::EventType::AssistantMessage => {
+                            "assistant".to_string()
+                        }
                         _ => "system".to_string(),
                     };
-                    selected.push(ContextMessage { role, content: event.content });
+                    selected.push(ContextMessage {
+                        role,
+                        content: event.content,
+                    });
                 }
                 selected.reverse();
                 Ok(HistoryResult::Context(selected))
             }
             HistoryQuery::LatestSummary { session_key } => {
-                let summary = self.event_store
+                let summary = self
+                    .event_store
                     .get_latest_summary(&session_key, "main")
                     .await
                     .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
@@ -142,8 +156,13 @@ impl HistoryCoordinator {
                 let ctx = self.memory.load_for_context(&query).await?;
                 Ok(HistoryResult::MemoryContext(ctx))
             }
-            HistoryQuery::TimeRange { session_key, start, end } => {
-                let events = self.event_store
+            HistoryQuery::TimeRange {
+                session_key,
+                start,
+                end,
+            } => {
+                let events = self
+                    .event_store
                     .get_branch_history(&session_key, "main")
                     .await
                     .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
@@ -161,7 +180,9 @@ impl HistoryCoordinator {
         &self,
         event: &gasket_types::session_event::SessionEvent,
     ) -> Result<()> {
-        self.event_store.append_event(event).await
+        self.event_store
+            .append_event(event)
+            .await
             .map_err(|e| anyhow::anyhow!("event store error: {}", e))
     }
 }

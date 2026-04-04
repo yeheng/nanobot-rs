@@ -21,13 +21,13 @@ pub mod subagent_tracker;
 pub use compactor::ContextCompactor;
 pub use context::AgentContext;
 pub use context::PersistentContext;
-pub use history_coordinator::ContextMessage;
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use gasket_storage::{
     count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
     HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
+pub use history_coordinator::ContextMessage;
 pub use indexing::IndexingService;
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;

@@ -268,6 +268,7 @@ impl ContextCompactor {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: chrono::Utc::now(),
+            sequence: 0,
         };
         self.event_store.append_event(&summary_event).await?;
 
