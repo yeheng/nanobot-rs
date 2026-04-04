@@ -1,7 +1,7 @@
 //! Event store for event sourcing architecture.
 
-use async_trait::async_trait;
 use crate::processor::count_tokens;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, TokenUsage};
 use serde::{Deserialize, Serialize};
@@ -190,14 +190,31 @@ pub trait EventStoreTrait: Send + Sync {
 
 pub struct EventStore {
     pool: SqlitePool,
+    tx: broadcast::Sender<SessionEvent>,
 }
 
 impl EventStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
     }
 
-    pub async fn append_event(&self, event: &SessionEvent) -> Result<(), StoreError> {
+    async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+        let max_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
+        )
+        .bind(session_key)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(max_seq + 1)
+    }
+
+    async fn append_event_with_sequence(
+        &self,
+        event: &SessionEvent,
+        sequence: i64,
+    ) -> Result<(), StoreError> {
         let event_type_tag = event_type_tag(&event.event_type);
         let event_data = EventData::from_event_type(&event.event_type);
         let event_data_json = event_data.as_ref().map(serde_json::to_string).transpose()?;
@@ -224,17 +241,6 @@ impl EventStore {
 
         // Compute content token count once at write time (avoids re-calculation on read path)
         let token_len = count_tokens(&event.content) as i64;
-
-        // Generate sequence number
-        let max_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
-        )
-        .bind(&event.session_key)
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap_or(0);
-
-        let sequence = max_seq + 1;
 
         sqlx::query(
             r#"
@@ -292,7 +298,16 @@ impl EventStore {
         .await?;
 
         tx.commit().await?;
+
+        // Notify subscribers (ignore send errors — no subscribers is normal)
+        let _ = self.tx.send(event.clone());
+
         Ok(())
+    }
+
+    pub async fn append_event(&self, event: &SessionEvent) -> Result<(), StoreError> {
+        let sequence = self.generate_sequence(&event.session_key).await?;
+        self.append_event_with_sequence(event, sequence).await
     }
 
     pub async fn get_branch_history(
@@ -378,6 +393,67 @@ impl EventStore {
         .await?;
 
         row.map(|r| r.try_into()).transpose()
+    }
+}
+
+#[async_trait]
+impl EventStoreTrait for EventStore {
+    async fn append(&self, event: &SessionEvent) -> Result<i64, StoreError> {
+        let sequence = self.generate_sequence(&event.session_key).await?;
+        self.append_event_with_sequence(event, sequence).await?;
+        Ok(sequence)
+    }
+
+    async fn query_events(&self, filter: &EventFilter) -> Result<Vec<SessionEvent>, StoreError> {
+        let session_key = match &filter.session_key {
+            Some(k) => k.clone(),
+            None => return Ok(vec![]),
+        };
+        let branch = filter.branch.as_deref().unwrap_or("main");
+        let mut events = self.get_branch_history(&session_key, branch).await?;
+
+        // Apply filters
+        if let Some(time_range) = &filter.time_range {
+            events.retain(|e| e.created_at >= time_range.0 && e.created_at <= time_range.1);
+        }
+        if let Some(event_types) = &filter.event_types {
+            events.retain(|e| {
+                event_types.iter().any(|et| {
+                    // Match event types by variant kind, ignoring data fields
+                    match (&e.event_type, et) {
+                        (EventType::UserMessage, EventType::UserMessage) => true,
+                        (EventType::AssistantMessage, EventType::AssistantMessage) => true,
+                        (EventType::ToolCall { .. }, EventType::ToolCall { .. }) => true,
+                        (EventType::ToolResult { .. }, EventType::ToolResult { .. }) => true,
+                        (EventType::Summary { .. }, EventType::Summary { .. }) => true,
+                        _ => false,
+                    }
+                })
+            });
+        }
+        if let Some(sequence_after) = filter.sequence_after {
+            events.retain(|e| e.sequence > sequence_after);
+        }
+        if let Some(event_ids) = &filter.event_ids {
+            let id_set: std::collections::HashSet<Uuid> = event_ids.iter().copied().collect();
+            events.retain(|e| id_set.contains(&e.id));
+        }
+        if let Some(limit) = filter.limit {
+            events.truncate(limit);
+        }
+        Ok(events)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
+        self.tx.subscribe()
+    }
+
+    async fn get_latest_summary(
+        &self,
+        session_key: &str,
+        branch: &str,
+    ) -> Result<Option<SessionEvent>, StoreError> {
+        self.get_latest_summary(session_key, branch).await
     }
 }
 
