@@ -419,9 +419,7 @@ impl AgentLoop {
         // dispatches events to registered handlers (indexing, compaction,
         // memory updates) for event-driven processing.
         {
-            use crate::agent::handlers::{
-                CompactionHandler, IndexingHandler, MemoryUpdateHandler,
-            };
+            use crate::agent::handlers::{CompactionHandler, IndexingHandler, MemoryUpdateHandler};
             use crate::agent::indexing::IndexingService;
             use crate::agent::materialization::EventHandler;
 
