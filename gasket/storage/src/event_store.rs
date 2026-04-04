@@ -1,11 +1,13 @@
 //! Event store for event sourcing architecture.
 
+use async_trait::async_trait;
 use crate::processor::count_tokens;
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -150,6 +152,42 @@ fn event_type_tag(et: &EventType) -> &'static str {
     }
 }
 
+/// Filter for querying events from the store.
+#[derive(Debug, Default)]
+pub struct EventFilter {
+    pub session_key: Option<String>,
+    pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    pub event_types: Option<Vec<EventType>>,
+    pub event_ids: Option<Vec<Uuid>>,
+    pub limit: Option<usize>,
+    pub branch: Option<String>,
+    /// For checkpoint-based recovery: only return events with sequence > this value.
+    pub sequence_after: Option<i64>,
+}
+
+/// Event store trait — narrow interface for event log operations.
+///
+/// Implementors provide: append, query, and subscribe.
+/// NOT included: truncation, summary management, embedding generation.
+#[async_trait]
+pub trait EventStoreTrait: Send + Sync {
+    /// Append an event and return its assigned sequence number.
+    async fn append(&self, event: &SessionEvent) -> Result<i64, StoreError>;
+
+    /// Query events matching the given filter.
+    async fn query_events(&self, filter: &EventFilter) -> Result<Vec<SessionEvent>, StoreError>;
+
+    /// Subscribe to newly appended events via broadcast channel.
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent>;
+
+    /// Get the latest summary event for a session.
+    async fn get_latest_summary(
+        &self,
+        session_key: &str,
+        branch: &str,
+    ) -> Result<Option<SessionEvent>, StoreError>;
+}
+
 pub struct EventStore {
     pool: SqlitePool,
 }
@@ -189,7 +227,7 @@ impl EventStore {
 
         // Generate sequence number
         let max_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?"
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
         )
         .bind(&event.session_key)
         .fetch_one(&mut *tx)

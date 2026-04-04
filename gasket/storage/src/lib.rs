@@ -31,7 +31,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
 pub use cron::CronJobRow;
-pub use event_store::{EventStore, StoreError};
+pub use event_store::{EventStore, EventStoreTrait, EventFilter, StoreError};
 
 // ── History re-exports ──
 pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
