@@ -127,16 +127,18 @@ pub fn should_ignore(path: &Path) -> bool {
 
 /// Extract scenario from a file path relative to memory base dir.
 pub fn scenario_from_path(path: &Path) -> Option<Scenario> {
-    path
-        .iter()
+    path.iter()
         .next()
         .and_then(|s| s.to_str())
         .and_then(Scenario::from_dir_name)
 }
 
 /// Extract the relative path from a full path by stripping the base_dir prefix.
-fn relative_path<'a>(full_path: &'a Path, base_dir: &Path) -> Option<PathBuf> {
-    full_path.strip_prefix(base_dir).ok().map(|p| p.to_path_buf())
+fn relative_path(full_path: &Path, base_dir: &Path) -> Option<PathBuf> {
+    full_path
+        .strip_prefix(base_dir)
+        .ok()
+        .map(|p| p.to_path_buf())
 }
 
 // ============================================================================
@@ -353,10 +355,7 @@ impl AutoIndexHandler {
         let rel_path = match relative_path(path, &self.base_dir) {
             Some(p) => p,
             None => {
-                tracing::debug!(
-                    "AutoIndex: path outside base dir: {:?}",
-                    path.display()
-                );
+                tracing::debug!("AutoIndex: path outside base dir: {:?}", path.display());
                 return;
             }
         };
@@ -364,20 +363,14 @@ impl AutoIndexHandler {
         let scenario = match scenario_from_path(&rel_path) {
             Some(s) => s,
             None => {
-                tracing::debug!(
-                    "AutoIndex: unknown scenario for {:?}",
-                    rel_path.display()
-                );
+                tracing::debug!("AutoIndex: unknown scenario for {:?}", rel_path.display());
                 return;
             }
         };
 
         // Always regenerate the scenario index
         if let Err(e) = self.index_manager.regenerate(scenario).await {
-            tracing::error!(
-                "AutoIndex: failed to regenerate {:?}: {}",
-                scenario, e
-            );
+            tracing::error!("AutoIndex: failed to regenerate {:?}: {}", scenario, e);
         }
 
         match event {
@@ -388,9 +381,7 @@ impl AutoIndexHandler {
                     .unwrap_or_default();
 
                 if let Ok(content) = tokio::fs::read_to_string(path).await {
-                    if let Ok((meta, _)) =
-                        super::frontmatter::parse_memory_file(&content)
-                    {
+                    if let Ok((meta, _)) = super::frontmatter::parse_memory_file(&content) {
                         let embedding = vec![0.0f32; 384]; // TODO: actual embedder
                         match self
                             .embedding_store
@@ -405,16 +396,10 @@ impl AutoIndexHandler {
                             .await
                         {
                             Ok(()) => {
-                                tracing::debug!(
-                                    "AutoIndex: upserted embedding for {}",
-                                    filename
-                                );
+                                tracing::debug!("AutoIndex: upserted embedding for {}", filename);
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "AutoIndex: failed to upsert embedding: {}",
-                                    e
-                                );
+                                tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
                             }
                         }
                     }
@@ -424,16 +409,10 @@ impl AutoIndexHandler {
                 let path_str = path.to_string_lossy();
                 match self.embedding_store.delete(&path_str).await {
                     Ok(()) => {
-                        tracing::debug!(
-                            "AutoIndex: deleted embedding for {}",
-                            path_str
-                        );
+                        tracing::debug!("AutoIndex: deleted embedding for {}", path_str);
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "AutoIndex: failed to delete embedding: {}",
-                            e
-                        );
+                        tracing::error!("AutoIndex: failed to delete embedding: {}", e);
                     }
                 }
             }
@@ -444,10 +423,7 @@ impl AutoIndexHandler {
     ///
     /// This method runs in a background task, draining events from the watcher
     /// channel and processing each one via `process_event`.
-    pub async fn run(
-        &self,
-        mut rx: mpsc::Receiver<WatchEvent>,
-    ) {
+    pub async fn run(&self, mut rx: mpsc::Receiver<WatchEvent>) {
         while let Some(event) = rx.recv().await {
             self.process_event(&event).await;
         }
@@ -643,7 +619,10 @@ mod tests {
 
         let timeout = Duration::from_millis(100);
         let result = tokio::time::timeout(timeout, rx.recv()).await;
-        assert!(result.is_err(), "Should not receive events for _INDEX.md files");
+        assert!(
+            result.is_err(),
+            "Should not receive events for _INDEX.md files"
+        );
     }
 
     #[cfg(not(feature = "memory-watcher"))]
@@ -652,6 +631,9 @@ mod tests {
         let watcher = MemoryWatcher::with_defaults();
         let mut rx = watcher.start().await.unwrap();
         let result = rx.recv().await;
-        assert!(result.is_none(), "Channel should return None when closed without feature");
+        assert!(
+            result.is_none(),
+            "Channel should return None when closed without feature"
+        );
     }
 }
