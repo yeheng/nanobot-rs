@@ -1,61 +1,117 @@
-# 历史记录模块重新设计规格
+# 历史记录模块重新设计
 
 ## 概述
 
-本规格描述 Gasket 历史记录模块的架构重新设计，采用**事件溯源 + 物化视图（CQRS）**模式，解决当前 SessionEvent 和 Memory 系统之间的边界模糊问题。
+本设计描述 Gasket 历史记录模块的架构重新设计，采用**事件溯源 + 物化视图（CQRS）**模式作为目标架构，通过**接口优先边界重构**作为实施路径，解决当前 SessionEvent 和 Memory 系统之间的边界模糊问题。
 
 ## 问题陈述
 
-当前系统存在以下架构问题：
+当前系统存在四个架构问题：
 
-1. **数据转换不明确** - SessionEvent 何时提升为 Memory？由谁决定？如何转换？
-2. **检索路径重叠** - Agent 需要历史时，应查 SessionEvent 还是 Memory？两者如何协同？
-3. **生命周期管理混乱** - SessionEvent 何时过期？过期后是删除还是归档？
-4. **职责边界模糊** - SessionEvent 既做原始日志又做语义搜索，功能重叠
+1. **EventStore 职责膨胀** — 同时处理追加、查询、截断、摘要管理、embedding 存储、会话追踪
+2. **Memory/Compaction 重叠** — MemoryManager、ContextCompactor、IndexingService 在 embedding 和 token budget 上有重叠关注点
+3. **Agent Loop 直接耦合** — 直接调用 EventStore、Compactor、MemoryManager、IndexingService 四个独立子系统
+4. **数据流不清晰** — prepare_pipeline → process_history → compaction → memory injection 链路难以追踪
 
 ## 设计目标
 
 - **单一真相源**: EventStore 是唯一写入目标，所有其他存储都是派生视图
-- **职责清晰**: EventStore = 事实记录，Views = 知识提取
-- **可重建性**: 任何视图损坏都可从 EventStore 重放恢复
-- **查询优化**: 不同查询类型路由到专门优化的视图
+- **职责清晰**: EventStore = 事实记录，Coordinator = 路由，Handlers = 知识提取
+- **可重建性**: 视图损坏时可从 EventStore 重放恢复
+- **查询优化**: 不同查询类型路由到专门优化的组件
+- **增量迁移**: 四阶段迁移，每阶段独立可测可部署
 
 ## 核心架构
 
-### 数据流
+### 目标架构（CQRS）
 
 ```
 用户消息 → EventStore.append()
               ↓ [事件发布]
     MaterializationEngine
          ↙    ↓    ↘
-SessionView  KnowledgeView  DecisionView
+  SessionView  KnowledgeView  DecisionView
+              ↓ [统一查询]
+        ViewCoordinator
+              ↓
+         Agent Loop
 ```
 
-### 关键原则
+### 实施路径（接口优先重构）
 
-1. **写入路径单一**: 所有数据只写入 EventStore
-2. **读取路径多样**: 根据查询类型路由到最优视图
-3. **最终一致性**: 视图更新异步，延迟通常 < 100ms
-4. **幂等处理**: 视图更新逻辑必须幂等，支持重试和重放
+```
+Agent Loop
+    ↓ [唯一入口]
+HistoryCoordinator
+    ↙           ↓           ↘
+EventStore   Compactor   MemoryProvider
+    ↓ [事件发布]
+MaterializationEngine
+    ↙       ↓        ↘       ↘
+Indexing  Compaction  Memory  Dedup
+Handler   Handler    Handler  Handler
+```
+
+### 目标 ↔ 实施对应关系
+
+| 目标 CQRS 概念 | 实施阶段 | 实现方式 |
+|---|---|---|
+| EventStore | Phase 2 | 从现有 SqliteEventStore 提取 trait |
+| ViewCoordinator | Phase 1 | HistoryCoordinator 作为薄路由层 |
+| SessionView | Phase 1 | 复用现有 ContextCompactor（LSM-tree） |
+| KnowledgeView | Phase 2 | 复用现有 MemoryManager（MemoryProvider trait） |
+| DecisionView | Phase 4+ | YAGNI — 需要时添加新 EventHandler |
+| MaterializationEngine | Phase 3 | 包装现有组件为 EventHandler |
+
+## 类型定义
+
+以下类型在组件设计中引用，统一定义在此：
+
+```rust
+/// 追加事件的输入类型（不含 id、created_at、sequence，由 EventStore 生成）
+pub struct NewEvent {
+    pub session_key: String,
+    pub event_type: EventType,
+    pub content: String,
+    pub branch: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+    pub metadata: EventMetadata,
+}
+
+/// 事件 ID，复用现有 Uuid 类型
+pub type EventId = Uuid;
+
+/// 语义搜索结果 — 复用 storage::memory::types::MemoryHit
+/// 现有定义: path, title, scenario, frequency, tags, score (f32), tokens
+/// 通过 MemoryProvider::search() 返回，与现有 RetrievalEngine 输出一致
+pub use gasket_storage::memory::types::MemoryHit;
+```
 
 ## 组件设计
 
 ### 1. EventStore（事件存储）
 
-**职责收缩**: 从"历史管理器"收缩为"事件日志"
+**目标职责**: 从"历史管理器"收缩为"事件日志"
 
-**保留功能**:
-- `append_event()` - 追加事件（唯一写入接口）
-- `get_events(session_key, time_range)` - 按时间范围查询原始事件
-- `subscribe_events(callback)` - 事件订阅（新增）
-- `replay_events(from_time, to_time)` - 事件重放（用于视图重建）
+**接口定义**:
 
-**移除功能**:
-- ❌ 历史截断逻辑（移到 SessionView）
-- ❌ 语义搜索（移到 KnowledgeView）
-- ❌ 摘要生成（移到 MaterializationEngine）
-- ❌ Token 预算管理（移到上层）
+```rust
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    async fn append(&self, event: NewEvent) -> Result<EventId>;
+    async fn query(&self, filter: EventFilter) -> Result<Vec<SessionEvent>>;
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent>;
+}
+
+pub struct EventFilter {
+    pub session_key: Option<String>,
+    pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    pub event_types: Option<Vec<EventType>>,
+    pub event_ids: Option<Vec<Uuid>>,      // 替代 get_events_by_ids()
+    pub limit: Option<usize>,
+    pub branch: Option<String>,
+}
+```
 
 **数据模型变更**:
 
@@ -66,224 +122,343 @@ pub struct SessionEvent {
     pub event_type: EventType,
     pub content: String,
     pub created_at: DateTime<Utc>,
-    
-    // 新增：事件序列号（单调递增，用于增量同步）
+
+    // 新增：单调递增序列号（用于增量同步和 checkpoint）
     pub sequence: i64,
-    
-    // 新增：事件版本（用于 schema 演化）
-    pub schema_version: u32,
-    
-    // 保留但不主动使用
+
+    // 保留
     pub embedding: Option<Vec<f32>>,
     pub metadata: EventMetadata,
 }
 ```
 
+**sequence 列迁移计划**:
+
+```sql
+-- Phase 2 中执行，向后兼容
+ALTER TABLE session_events ADD COLUMN sequence INTEGER;
+
+-- 回填：按 created_at 排序生成序列号
+UPDATE session_events SET sequence = subquery.row_num
+FROM (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC) as row_num
+    FROM session_events
+) AS subquery
+WHERE session_events.id = subquery.id;
+
+-- 后续插入使用 SQLite AUTOINCREMENT 或应用层生成
+```
+
 **事件订阅机制**:
 
 ```rust
-// 订阅接口
-EventStore::subscribe(|event: SessionEvent| {
-    materialization_engine.process(event);
-});
+// SqliteEventStore 内部持有 sender
+pub struct SqliteEventStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<SessionEvent>,  // buffer = 64
+}
+
+impl SqliteEventStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);  // 64 事件缓冲
+        Self { pool, tx }
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
+        self.tx.subscribe()
+    }
+}
 ```
 
-### 2. MaterializationEngine（物化引擎）
+- **所有权**: `SqliteEventStore` 拥有 `Sender`，生命周期与 store 相同
+- **多订阅者**: broadcast 支持多个 Receiver。MaterializationEngine 和未来组件可各自订阅
+- **慢消费者**: 超过 buffer 的事件自动丢弃，Checkpoint 机制兜底恢复
 
-**职责**: 监听 EventStore 事件流，增量更新各个物化视图
+**移出的职责**:
 
-**架构**:
+| 原位置 | 移至 | 原因 |
+|---|---|---|
+| `get_latest_summary()` | `ContextCompactor` | 摘要生成和管理是压缩的职责 |
+| Token 计数 | `AgentContext::save_event()` | 调用者应负责 token 计算 |
+| Embedding 生成 | `IndexingHandler` | 物化引擎统一处理 |
+| 会话创建/追踪 | `AgentContext` | 会话生命周期由上下文管理 |
+
+**向后兼容**: `SqliteEventStore` 保留所有现有方法。添加 `impl EventStore for SqliteEventStore` 作为薄委托层。旧代码继续工作，新代码使用 trait。
+
+### 2. MemoryProvider（记忆提供者）
+
+从现有 `MemoryManager` 提取查询接口。**接口签名与现有 MemoryManager 匹配，使用 async + MemoryQuery**：
 
 ```rust
-pub struct MaterializationEngine {
-    event_store: Arc<EventStore>,
-    handlers: Vec<Box<dyn EventHandler>>,
-    checkpoint_store: CheckpointStore,
-}
+#[async_trait]
+pub trait MemoryProvider: Send + Sync {
+    /// 三阶段加载（bootstrap/scenario/on-demand），复用现有 MemoryQuery
+    async fn load_for_context(
+        &self,
+        query: &MemoryQuery,
+    ) -> Result<MemoryContext>;
 
-pub trait EventHandler: Send + Sync {
-    fn can_handle(&self, event: &SessionEvent) -> bool;
-    fn handle(&self, event: &SessionEvent) -> Result<()>;
-    fn name(&self) -> &str;
-}
-```
+    /// 语义搜索，复用现有 RetrievalEngine
+    async fn search(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<MemoryHit>>;
 
-**内置 Handlers**:
-
-1. **SessionViewHandler** - 维护会话上下文视图
-2. **KnowledgeExtractor** - 提取知识到 KnowledgeView
-3. **DecisionTracker** - 记录决策到 DecisionView
-4. **EmbeddingIndexer** - 生成和索引 embedding
-5. **SummaryGenerator** - 生成摘要（替代当前的 ContextCompactor）
-
-**Checkpoint 机制**:
-
-```rust
-pub struct Checkpoint {
-    handler_name: String,
-    last_sequence: i64,
-    updated_at: DateTime<Utc>,
+    /// 从事件中提取知识（由 MemoryUpdateHandler 调用）
+    async fn update(&self, event: &SessionEvent) -> Result<()>;
 }
 ```
 
-**处理流程**:
-
-1. 启动时从 checkpoint 恢复上次位置
-2. 订阅 EventStore 新事件
-3. 对每个事件，调用所有匹配的 handlers
-4. 成功后更新 checkpoint
-5. 失败时记录到 `failed_events` 表，定期重试
-
-### 3. 物化视图
-
-#### 3.1 SessionView（会话上下文视图）
-
-**用途**: 替代当前的 `process_history()`，为单次会话提供 token-budget-aware 的上下文
-
-**存储结构**:
-
-```rust
-pub struct SessionView {
-    session_key: String,
-    recent_events: VecDeque<SessionEvent>,  // 最近 N 条，内存
-    summary: Option<String>,                 // 压缩摘要，SQLite
-    token_count: usize,
-    last_updated: DateTime<Utc>,
-}
-```
-
-**更新逻辑**:
-- 新事件到达 → 追加到 `recent_events`
-- 超过 token budget → 触发压缩，生成 summary
-- 旧事件从内存移除，但保留在 EventStore
-
-**查询接口**:
-
-```rust
-impl SessionView {
-    pub fn get_context(
-        session_key: &str, 
-        token_budget: usize
-    ) -> Result<Vec<ChatMessage>>;
-}
-```
-
-#### 3.2 KnowledgeView（知识库视图）
-
-**用途**: 替代当前的 Memory 系统，存储提取的结构化知识
-
-**存储**: 保持当前的 Markdown 文件格式（`~/.gasket/memory/`），但数据来源改为从 EventStore 提取
-
-**更新逻辑**:
-- KnowledgeExtractor 分析事件内容
-- 识别知识类型（决策、模式、偏好、概念）
-- 生成或更新对应的 Memory 文件
-- 更新 embedding 索引
+现有 `MemoryManager` 实现 `MemoryProvider`。三阶段加载策略（bootstrap/scenario/on-demand）保持不变。`MemoryQuery` 和 `MemoryContext` 复用现有定义。
 
 **保留特性**:
 - 六大场景分类（profile, active, knowledge, decisions, episodes, reference）
 - 频率分层（hot, warm, cold, archived）
-- 三阶段加载策略
-- 人类可编辑
+- 三阶段加载策略（bootstrap 700t, scenario 1500t, on-demand 1000t, 总计 3200t）
+- 人类可编辑的 Markdown 文件格式
 
-#### 3.3 DecisionView（决策历史视图）
+### 3. HistoryCoordinator（查询协调器）
 
-**用途**: 专门追踪和查询决策历史
-
-**存储**: SQLite 表 + 索引
-
-```sql
-CREATE TABLE decisions (
-    id TEXT PRIMARY KEY,
-    session_key TEXT NOT NULL,
-    event_id TEXT NOT NULL,
-    decision_text TEXT NOT NULL,
-    context TEXT,
-    tags TEXT,  -- JSON array
-    created_at TIMESTAMP NOT NULL,
-    FOREIGN KEY (event_id) REFERENCES events(id)
-);
-
-CREATE INDEX idx_decisions_tags ON decisions(tags);
-CREATE INDEX idx_decisions_created ON decisions(created_at);
-```
-
-**查询接口**:
+薄路由层，提供统一的查询入口，根据查询意图自动路由到最优组件：
 
 ```rust
-impl DecisionView {
-    pub fn query_by_tags(tags: &[String]) -> Result<Vec<Decision>>;
-    pub fn query_by_time_range(start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Decision>>;
+pub struct HistoryCoordinator {
+    event_store: Arc<dyn EventStore>,
+    compactor: Arc<ContextCompactor>,
+    memory: Arc<dyn MemoryProvider>,
+    engine: Arc<MaterializationEngine>,
 }
-```
 
-### 4. ViewCoordinator（视图协调器）
-
-**职责**: 提供统一的查询入口，根据查询意图自动路由到最优视图
-
-**查询类型**:
-
-```rust
 pub enum HistoryQuery {
-    // 会话上下文（最近对话）
-    SessionContext { 
-        session_key: String, 
-        token_budget: usize 
+    /// "给我这个会话的最近上下文，在 token 预算内"
+    /// 路由到 ContextCompactor（LSM-tree: L0 events + L1 summary）
+    SessionContext {
+        session_key: String,
+        token_budget: usize,
     },
-    
-    // 语义搜索（跨会话知识）
-    SemanticSearch { 
-        query: String, 
-        top_k: usize 
+    /// "获取最新摘要" — 替代原 context.load_latest_summary()
+    /// 路由到 ContextCompactor::load_summary()
+    LatestSummary {
+        session_key: String,
     },
-    
-    // 时间范围查询（原始事件）
-    TimeRange { 
+    /// "跨会话语义搜索" — 替代原 context.recall_history()
+    /// 路由到 MemoryProvider::search()
+    SemanticSearch {
+        query: String,
+        top_k: usize,
+    },
+    /// "三阶段记忆加载" — 替代原 memory_manager.load_for_context()
+    /// 路由到 MemoryProvider::load_for_context()
+    MemoryContext {
+        query: MemoryQuery,
+    },
+    /// "查看指定时间范围的原始事件"
+    /// 路由到 EventStore::query()
+    TimeRange {
         session_key: String,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     },
-    
-    // 决策历史
-    Decisions { 
-        tags: Vec<String>,
-        limit: usize 
-    },
+}
+
+pub enum HistoryResult {
+    Context(Vec<ChatMessage>),      // Compactor 返回
+    Summary(Option<String>),        // Compactor 返回
+    Memories(Vec<MemoryHit>),       // MemoryProvider 返回
+    MemoryContext(MemoryContext),    // MemoryProvider 返回
+    Events(Vec<SessionEvent>),      // EventStore 返回
 }
 ```
 
 **路由逻辑**:
 
+| 查询类型 | 路由目标 | 替代的现有调用 |
+|---|---|---|
+| `SessionContext` | `ContextCompactor` | `context.get_history()` + `process_history()` |
+| `LatestSummary` | `ContextCompactor::load_summary()` | `context.load_latest_summary()` |
+| `SemanticSearch` | `MemoryProvider::search()` | `context.recall_history()` |
+| `MemoryContext` | `MemoryProvider::load_for_context()` | `memory_manager.load_for_context()` |
+| `TimeRange` | `EventStore::query()` | `context.get_history()` (原始模式) |
+
 ```rust
-impl ViewCoordinator {
-    pub fn query(&self, query: HistoryQuery) -> Result<QueryResult> {
+impl HistoryCoordinator {
+    pub async fn query(&self, query: HistoryQuery) -> Result<HistoryResult> {
         match query {
-            HistoryQuery::SessionContext { session_key, token_budget } 
-                => self.session_view.get_context(&session_key, token_budget),
-            
-            HistoryQuery::SemanticSearch { query, top_k } 
-                => self.knowledge_view.search(&query, top_k),
-            
-            HistoryQuery::TimeRange { session_key, start, end } 
-                => self.event_store.get_events(&session_key, start, end),
-            
-            HistoryQuery::Decisions { tags, limit } 
-                => self.decision_view.query_by_tags(&tags, limit),
+            HistoryQuery::SessionContext { session_key, token_budget } => {
+                let context = self.compactor.get_context(&session_key, token_budget).await?;
+                Ok(HistoryResult::Context(context))
+            }
+            HistoryQuery::LatestSummary { session_key } => {
+                let summary = self.compactor.load_summary(&session_key).await?;
+                Ok(HistoryResult::Summary(summary))
+            }
+            HistoryQuery::SemanticSearch { query, top_k } => {
+                let hits = self.memory.search(&query, top_k).await?;
+                Ok(HistoryResult::Memories(hits))
+            }
+            HistoryQuery::MemoryContext { query } => {
+                let ctx = self.memory.load_for_context(&query).await?;
+                Ok(HistoryResult::MemoryContext(ctx))
+            }
+            HistoryQuery::TimeRange { session_key, start, end } => {
+                let events = self.event_store.query(EventFilter {
+                    session_key: Some(session_key),
+                    time_range: Some((start, end)),
+                    ..Default::default()
+                }).await?;
+                Ok(HistoryResult::Events(events))
+            }
         }
+    }
+
+    pub async fn save_event(&self, event: NewEvent) -> Result<EventId> {
+        let id = self.event_store.append(event).await?;
+        // MaterializationEngine 通过 broadcast 接收通知
+        Ok(id)
     }
 }
 ```
 
+**关键约束**: HistoryCoordinator 是路由器，不是处理器。允许简单的类型转换（如 `SessionEvent` → `ChatMessage`），但不包含业务逻辑。所有计算委托给现有组件。
+
 **Agent Loop 集成**:
 
 ```rust
-// 替代当前的 process_history() + MemoryManager
+// Before（agent loop 直接调用 5+ 个接口）
+let history = context.get_history();
+let processed = process_history(history, budget);
+let summary = context.load_latest_summary();
+let memories = memory_manager.load_for_context(&memory_query);
+let recalled = context.recall_history(&query);
+indexing_service.index_events(&events);
+
+// After（agent loop 只与 coordinator 交互）
 let context = coordinator.query(
-    HistoryQuery::SessionContext { 
-        session_key: session_key.clone(), 
-        token_budget: 8000 
+    HistoryQuery::SessionContext { session_key, token_budget: 8000 }
+).await?;
+let summary = coordinator.query(
+    HistoryQuery::LatestSummary { session_key }
+).await?;
+let memories = coordinator.query(
+    HistoryQuery::MemoryContext { query: memory_query }
+).await?;
+let recalled = coordinator.query(
+    HistoryQuery::SemanticSearch { query, top_k: 10 }
+).await?;
+// Indexing 由 MaterializationEngine 自动处理
+```
+
+### 4. MaterializationEngine（物化引擎）
+
+事件驱动的处理管道，将现有组件包装为 EventHandler：
+
+```rust
+pub struct MaterializationEngine {
+    event_store: Arc<dyn EventStore>,  // handler 可查询状态
+    handlers: Vec<Box<dyn EventHandler>>,
+    checkpoint_store: CheckpointStore,
+    failed_store: FailedEventStore,
+}
+
+/// Handler 上下文 — 提供事件 + 状态查询能力
+pub struct HandlerContext<'a> {
+    pub event: &'a SessionEvent,
+    pub event_store: &'a dyn EventStore,  // 用于查询会话状态
+}
+
+#[async_trait]
+pub trait EventHandler: Send + Sync {
+    /// 基于事件属性判断是否处理（无副作用）
+    fn can_handle(&self, event: &SessionEvent) -> bool;
+    /// 处理事件，可通过 ctx.event_store 查询额外状态
+    async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()>;
+    fn name(&self) -> &str;
+}
+
+pub struct Checkpoint {
+    pub handler_name: String,
+    pub last_sequence: i64,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+**内置 Handlers（包装现有组件）**:
+
+| Handler | 包装 | `can_handle()` 条件 | 行为 |
+|---|---|---|---|
+| `IndexingHandler` | `IndexingService` | `event.content.len() > 0` | 生成 embedding |
+| `CompactionHandler` | `ContextCompactor` | `event.event_type == AssistantMessage`（每次响应后检查压缩） | 通过 `ctx.event_store` 查询会话事件数，超过阈值触发压缩 |
+| `MemoryUpdateHandler` | `MemoryManager` | `event.event_type == UserMessage`（分析用户消息提取知识） | 解析 content 识别决策、模式、偏好等 |
+| `DedupHandler` | `DedupScanner` | 由 `MemoryUpdateHandler` 完成后间接触发 | 通过 handler 间通知机制触发 |
+
+**Handler 执行顺序与依赖**:
+
+```
+IndexingHandler → CompactionHandler → MemoryUpdateHandler → DedupHandler
+     ↓                  ↓                    ↓
+  (无依赖)       (依赖 embedding)      (无前置依赖)
+```
+
+- `IndexingHandler` 先执行，确保 embedding 可用
+- `CompactionHandler` 可查询 event_store 获取会话状态
+- `MemoryUpdateHandler` 独立执行，不依赖前两个 handler
+- `DedupHandler` 由 `MemoryUpdateHandler` 完成后间接触发（非直接依赖）
+
+**处理流程**:
+
+1. 订阅 EventStore 的 broadcast channel
+2. 对每个事件，按顺序调用 handlers — `can_handle()` 过滤，`handle()` 处理
+3. 所有 handler 成功后推进 checkpoint
+4. 失败事件记录到 `failed_events` 表，指数退避重试
+
+**Checkpoint 存储**（复用 SqliteStore 的现有 kv 接口）:
+
+```rust
+/// 复用 SqliteStore 的 kv 接口（kv.rs 中的 read_raw / write_raw）存储 checkpoint
+/// key 格式: "mat:checkpoint:{handler_name}"
+/// value: serde_json serialize 的 Checkpoint 结构
+pub struct CheckpointStore {
+    store: Arc<SqliteStore>,
+}
+
+impl CheckpointStore {
+    pub async fn load(&self, handler_name: &str) -> Result<Option<Checkpoint>> {
+        let key = format!("mat:checkpoint:{}", handler_name);
+        let val = self.store.read_raw(&key).await?;
+        match val {
+            Some(v) => Ok(Some(serde_json::from_str(&v)?)),
+            None => Ok(None),
+        }
     }
-)?;
+
+    pub async fn save(&self, checkpoint: &Checkpoint) -> Result<()> {
+        let key = format!("mat:checkpoint:{}", checkpoint.handler_name);
+        let val = serde_json::to_string(checkpoint)?;
+        self.store.write_raw(&key, &val).await?;
+        Ok(())
+    }
+}
+```
+
+**失败事件表**:
+
+```sql
+CREATE TABLE IF NOT EXISTS failed_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL,
+    handler_name TEXT NOT NULL,
+    error_text TEXT NOT NULL,
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 5,
+    next_retry_at TIMESTAMP NOT NULL,
+    dead_letter BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 防止同一事件 + handler 重复记录
+CREATE UNIQUE INDEX IF NOT EXISTS idx_failed_events_dedup
+    ON failed_events(event_id, handler_name);
 ```
 
 ## 生命周期管理
@@ -293,51 +468,98 @@ let context = coordinator.query(
 ```
 RawEvent (EventStore)
     ↓ [实时]
-SessionView (内存 + 热存储)
+SessionView / ContextCompactor (内存 + 热存储)
     ↓ [会话结束后]
-KnowledgeView (温存储，按频率分层)
+KnowledgeView / MemoryProvider (温存储，按频率分层)
     ↓ [90天未访问]
 Archive (冷存储，只读)
 ```
 
-### LifecycleManager 职责
+### 生命周期职责
 
 **1. 会话归档**:
-- 会话结束后，SessionView 从内存清除
-- 有价值的事件提取到 KnowledgeView
+- 会话结束后，ContextCompactor 中的内存上下文清除
+- 有价值的事件通过 MemoryUpdateHandler 提取到 MemoryProvider
 - 原始事件保留在 EventStore
 
-**2. 知识衰减**:
+**2. 知识衰减**（复用现有 FrequencyManager）:
 - 保持当前的频率衰减机制（hot → warm → cold → archived）
-- 基于访问日志自动调整
+- Hot: 24h 内访问 (1.2x), Warm: 7d 内 (1.1x), Cold: 30d 内 (1.0x), Archived: 超过 30d
+- Profile/Decisions/Reference 豁免衰减
 
-**3. EventStore 压缩**:
+**3. EventStore 压缩**（Phase 4+）:
 - 定期压缩旧事件（合并、去重）
 - 保留关键事件（用户消息、重要决策）
 - 可选：超过 N 天的事件移到归档表
 
-### 配置
+## Agent Loop 集成
+
+### AgentLoop 结构变更
 
 ```rust
-pub struct LifecycleConfig {
-    pub session_ttl_hours: u64,           // 会话在内存保留时间
-    pub event_retention_days: u64,        // EventStore 保留时间
-    pub archive_after_days: u64,          // 归档阈值
-    pub compress_interval_hours: u64,     // 压缩间隔
-}
-
-impl Default for LifecycleConfig {
-    fn default() -> Self {
-        Self {
-            session_ttl_hours: 24,
-            event_retention_days: 365,
-            archive_after_days: 90,
-            compress_interval_hours: 24,
-        }
-    }
+pub struct AgentLoop {
+    // ... 现有字段 ...
+    coordinator: Arc<HistoryCoordinator>,  // 替代 4 个独立引用
 }
 ```
 
+### AgentContext 集成
+
+现有 `AgentContext` enum dispatch（Persistent/Stateless）模式保持不变。变更仅影响 `PersistentContext` 内部实现：
+
+```rust
+pub enum AgentContext {
+    Persistent(PersistentContext),
+    Stateless(StatelessContext),
+}
+
+// PersistentContext 内部使用 coordinator，但 AgentContext 的公共 API 不变
+pub struct PersistentContext {
+    coordinator: Arc<HistoryCoordinator>,  // 替代直接的 event_store + compactor
+    // ...
+}
+```
+
+## 迁移策略
+
+### 四阶段增量迁移
+
+**Phase 1: Facade 引入（1 周）**
+- 创建 `HistoryCoordinator` 作为现有直接调用的门面
+- Agent loop 通过 coordinator 调用，行为不变
+- 验证：所有现有测试通过
+- **回滚策略**: 删除 coordinator 调用，恢复直接调用（无数据变更）
+
+**Phase 2: Trait 提取（1 周）**
+- 从 `SqliteEventStore` 提取 `EventStore` trait
+- 从 `MemoryManager` 提取 `MemoryProvider` trait
+- Coordinator 依赖 trait 而非具体类型
+- 添加 `sequence` 列 + 回填（见 EventStore 部分）
+- 验证：trait 实现正确委托
+- **回滚策略**: trait impl 只是委托层，删除 trait 并恢复具体类型引用即可。`sequence` 列为新增列，不影响现有查询。
+- **停机**: 无需停机。ALTER TABLE + UPDATE 在 SQLite 中即时完成。
+
+**Phase 3: 物化引擎接入（1 周）**
+- 实现 `MaterializationEngine` + EventHandler trait
+- 创建 IndexingHandler、CompactionHandler 包装现有组件
+- EventStore 添加 broadcast channel
+- 从 agent loop 移除对 IndexingService、MemoryWatcher 的直接调用
+- 验证：事件正确传播，checkpoint 正确推进
+- **回滚策略**: 关闭 MaterializationEngine 的 broadcast 订阅，恢复 agent loop 中的直接调用。failed_events 表为新增，不影响现有数据。
+- **停机**: 无需停机。broadcast channel 为内存结构，重启即生效。
+
+**Phase 4: 清理（0.5 周）**
+- 移除 agent loop 中的旧直接方法调用
+- Coordinator 是唯一接口
+- 旧方法标记 `#[deprecated]`（不立即移除，留一个版本周期）
+- 验证：完整集成测试通过
+
+### 向后兼容
+
+- 所有现有公共 API 保留，内部委托给新接口
+- `MemoryManager` 保留现有方法签名，额外实现 `MemoryProvider` trait
+- `SqliteEventStore` 保留现有方法，额外实现 `EventStore` trait
+- 旧代码路径标记 `#[deprecated]` 而非立即移除
 
 ## 错误处理与一致性保证
 
@@ -348,125 +570,85 @@ impl Default for LifecycleConfig {
 - 视图更新失败不影响写入（最终一致性）
 - 通过 checkpoint 机制保证视图最终追上
 
-**2. 视图重建**:
-
-```rust
-impl ViewCoordinator {
-    pub fn rebuild_view(&self, view_name: &str) -> Result<()> {
-        // 1. 清空目标视图
-        // 2. 重置 checkpoint 到 0
-        // 3. 从 EventStore 重放所有事件
-        // 4. 重建完成
-    }
-}
-```
-
-**3. 幂等性保证**:
-- 所有 EventHandler 必须幂等
-- 使用 `event.sequence` 去重
+**2. 幂等性保证**:
+- 所有 EventHandler 必须幂等（使用 `event.sequence` 去重）
+- Handler 自行维护已处理集合或使用 upsert 语义
 - 视图更新使用 upsert 语义
 
-**4. 故障恢复**:
+**3. 故障恢复**:
 - MaterializationEngine 启动时从 checkpoint 恢复
-- 处理失败的事件记录到 `failed_events` 表
-- 定期重试失败事件（指数退避）
+- 失败事件记录到 `failed_events` 表
+- 定期重试（指数退避，最大重试 5 次）
+- 超过重试限制的事件标记为 `dead_letter = TRUE`，供人工检查
+
+### 边界场景
+
+**Checkpoint 偏斜**（Handler A 在 sequence 100，Handler B 在 95，系统崩溃）:
+- 每个 handler 独立维护 checkpoint
+- 重启后各 handler 从自己的 checkpoint 恢复
+- Handler A 从 101 开始，Handler B 从 96 开始
+- 幂等性保证重复处理安全
+
+**毒丸事件**（导致 handler 反复失败）:
+- 重试 5 次后标记 `dead_letter = TRUE`
+- dead_letter 事件不再重试，但记录在案
+- 监控指标跟踪 dead_letter 数量，触发告警
+
+**部分 handler 完成**（3 个 handler 中 2 个成功，1 个失败）:
+- 成功的 handler 各自推进 checkpoint
+- 失败的 handler 记录到 failed_events
+- 下次重试仅处理失败的 handler（checkpoint 不同步不影响）
 
 ### 监控指标
 
 ```rust
-pub struct MaterializationMetrics {
-    pub event_lag: i64,              // 视图落后的事件数
-    pub processing_latency_ms: f64,  // 处理延迟
-    pub failed_events_count: usize,  // 失败事件数
-    pub view_rebuild_count: usize,   // 重建次数
+pub struct EngineMetrics {
+    pub event_lag: i64,                          // 最慢 handler 落后的事件数
+    pub processing_latency_ms: f64,              // 处理延迟
+    pub failed_events_count: usize,              // 失败事件数
+    pub dead_letter_count: usize,                // 毒丸事件数
+    pub handler_status: HashMap<String, HandlerStatus>,
+}
+
+pub struct HandlerStatus {
+    pub last_sequence: i64,                      // handler 的 checkpoint
+    pub lag: i64,                                // 落后当前序列多少
+    pub last_error: Option<String>,              // 最近一次错误
+    pub last_processed_at: DateTime<Utc>,        // 最近处理时间
 }
 ```
 
-## 实现路线图
+## 未来演进路径
 
-### 阶段 1: EventStore 重构（1-2 周）
+当前设计是完整 CQRS 的**增量实现路径**。如果未来需要完整 CQRS：
 
-**目标**: 收缩 EventStore 职责，添加事件订阅机制
+1. `HistoryCoordinator` → `ViewCoordinator`（扩展路由逻辑，添加跨视图聚合）
+2. `ContextCompactor` → `SessionView`（独立存储，支持 token 预算感知查询）
+3. `MemoryProvider` → `KnowledgeView`（添加独立存储引擎）
+4. 新增 `DecisionView`（添加新的 EventHandler + SQLite 表）
+5. `CheckpointStore` → 独立 SQLite 表（从 kv store 升级）
+6. 视图重建机制（清空目标视图 → 重置 checkpoint → 从 EventStore 重放）
 
-- 添加 `sequence` 和 `schema_version` 字段
-- 实现事件订阅接口
-- 移除历史截断、语义搜索等高级功能
-- 保持向后兼容
-
-### 阶段 2: MaterializationEngine 实现（2-3 周）
-
-**目标**: 构建物化引擎核心框架
-
-- 实现 EventHandler trait 和注册机制
-- 实现 Checkpoint 存储和恢复
-- 实现基础的 SessionViewHandler
-- 添加监控指标
-
-### 阶段 3: 视图迁移（2-3 周）
-
-**目标**: 将现有功能迁移到物化视图
-
-- 实现 SessionView（替代 process_history）
-- 迁移 KnowledgeView（复用现有 Memory 系统）
-- 实现 DecisionView
-- 实现 ViewCoordinator
-
-### 阶段 4: Agent Loop 集成（1 周）
-
-**目标**: 替换 Agent Loop 中的历史处理逻辑
-
-- 用 ViewCoordinator 替代 process_history()
-- 用 ViewCoordinator 替代 MemoryManager
-- 更新测试
-
-### 阶段 5: 生命周期管理（1-2 周）
-
-**目标**: 实现完整的数据生命周期
-
-- 实现 LifecycleManager
-- 实现会话归档
-- 实现 EventStore 压缩
-- 添加配置选项
-
-## 迁移策略
-
-### 向后兼容
-
-**数据迁移**:
-1. 现有 EventStore 数据保持不变
-2. 添加 `sequence` 列（自动生成）
-3. 添加 `schema_version` 列（默认值 1）
-4. 现有 Memory 文件保持不变
-
-**API 兼容**:
-- 保留现有的 `process_history()` 作为 deprecated wrapper
-- 保留现有的 `MemoryManager` 接口，内部委托给 ViewCoordinator
-- 提供迁移期的双写模式（同时写入旧系统和新系统）
-
-### 灰度发布
-
-1. **Phase 1**: 新系统只读，旧系统继续写入
-2. **Phase 2**: 双写模式，新旧系统同时写入
-3. **Phase 3**: 新系统主写，旧系统只读（验证）
-4. **Phase 4**: 完全切换到新系统，移除旧代码
+每个升级步骤都是独立的，不需要推翻现有实现。
 
 ## 风险与缓解
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| 视图更新延迟影响用户体验 | 中 | 监控延迟指标，优化 handler 性能 |
-| 视图重建耗时过长 | 中 | 增量重建，分批处理 |
-| EventStore 存储膨胀 | 高 | 实现压缩和归档机制 |
-| 知识提取准确性不足 | 中 | 人工审核 + 持续优化提取规则 |
-| 迁移过程数据不一致 | 高 | 双写验证 + 回滚机制 |
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| Handler 处理延迟影响下次查询 | 中 | SessionContext 走 Compactor（同步），不受异步 handler 影响 |
+| Broadcast 慢消费者丢失事件 | 低 | 设置合理 buffer（64），Checkpoint 兜底恢复 |
+| 迁移过程中新旧路径并存 | 中 | Phase 1 门面模式确保行为不变，逐步切换 |
+| Handler 幂等性实现遗漏 | 中 | 代码审查 + 集成测试验证重复处理安全性 |
+| EventStore 存储膨胀 | 高 | Phase 4+ 实现压缩和归档机制 |
+| 知识提取准确性不足 | 中 | MemoryUpdateHandler 可配置规则 + 持续优化 |
 
 ## 总结
 
-本设计通过**事件溯源 + CQRS** 模式彻底解决了历史记录模块的架构问题：
+本设计通过**事件溯源 + CQRS** 模式解决历史记录模块的架构问题，通过**接口优先重构**的实施路径降低风险：
 
-✅ **职责清晰**: EventStore = 事实记录，Views = 知识提取  
-✅ **检索明确**: ViewCoordinator 统一路由，查询类型明确  
-✅ **生命周期清晰**: 明确的数据流和归档策略  
-✅ **边界清晰**: 写入单一路径，读取多样化  
-✅ **可维护性**: 视图可重建，调试友好  
-✅ **扩展性**: 新增查询需求只需添加新视图
+- **EventStore trait** — 职责从 6 项收缩到 3 项（append、query、subscribe）
+- **HistoryCoordinator** — Agent Loop 从 5+ 个调用点缩减到 1 个
+- **MaterializationEngine** — 事件驱动处理替代直接调用，支持 checkpoint 和故障恢复
+- **四阶段迁移** — 每阶段独立可测，有回滚策略，无 "big bang" 风险
+
+估计工期：3-4 周（Phase 1-3） + 0.5 周（Phase 4 清理）
