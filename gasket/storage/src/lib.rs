@@ -31,7 +31,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
 pub use cron::CronJobRow;
-pub use event_store::{EventStore, StoreError};
+pub use event_store::{EventFilter, EventStore, EventStoreTrait, StoreError};
 
 // ── History re-exports ──
 pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
@@ -522,6 +522,31 @@ impl SqliteStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_type ON summary_index(summary_type)")
             .execute(&self.pool)
             .await?;
+
+        // ── Materialization engine tables ──
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS failed_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id      TEXT NOT NULL,
+                handler_name  TEXT NOT NULL,
+                error_text    TEXT NOT NULL,
+                retry_count   INTEGER DEFAULT 0,
+                max_retries   INTEGER DEFAULT 5,
+                next_retry_at TEXT NOT NULL,
+                dead_letter   INTEGER DEFAULT 0,
+                created_at    TEXT DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_failed_events_dedup
+             ON failed_events(event_id, handler_name)",
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }

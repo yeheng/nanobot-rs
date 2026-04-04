@@ -80,6 +80,7 @@ impl PipelineHook for HistoryRecallHook {
         HookPoint::AfterHistory
     }
 
+    #[allow(deprecated)]
     async fn run(&self, ctx: &mut MutableContext<'_>) -> Result<HookAction, AgentError> {
         if self.k == 0 {
             return Ok(HookAction::Continue);

@@ -4,10 +4,14 @@ pub mod compactor;
 pub mod context;
 pub mod executor;
 pub mod executor_core;
+pub mod handlers;
+pub mod history_coordinator;
 pub mod indexing;
 pub mod loop_;
+pub mod materialization;
 pub mod memory;
 pub mod memory_manager;
+pub mod memory_provider;
 pub mod prompt;
 pub mod request;
 pub mod skill_loader;
@@ -26,8 +30,13 @@ pub use gasket_storage::{
     count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
     HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
+pub use history_coordinator::ContextMessage;
 pub use indexing::IndexingService;
 pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
+pub use materialization::{
+    Checkpoint, CheckpointStore, EventHandler, FailedEventStore, HandlerContext,
+    MaterializationEngine,
+};
 pub use memory::MemoryStore;
 pub use memory_manager::{MemoryContext, MemoryManager, PhaseBreakdown};
 pub use stream::StreamEvent;

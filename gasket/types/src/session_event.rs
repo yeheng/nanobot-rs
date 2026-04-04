@@ -27,6 +27,9 @@ pub struct SessionEvent {
 
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
+
+    /// Monotonically increasing sequence number for incremental sync and checkpointing.
+    pub sequence: i64,
 }
 
 /// Event type enumeration.
@@ -208,6 +211,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         let json = serde_json::to_string(&event).unwrap();

@@ -36,6 +36,8 @@ use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{EventType, Session, SessionEvent};
 
+use super::history_coordinator::HistoryCoordinator;
+
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
 /// This enum provides two variants:
@@ -66,6 +68,9 @@ pub struct PersistentContext {
     /// regardless of whether compaction/summarization is enabled.
     #[cfg(feature = "local-embedding")]
     pub embedder: Option<Arc<gasket_storage::TextEmbedder>>,
+    /// Optional HistoryCoordinator for unified history queries.
+    /// Set after construction once all dependencies are available.
+    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 
 impl std::fmt::Debug for PersistentContext {
@@ -73,6 +78,46 @@ impl std::fmt::Debug for PersistentContext {
         f.debug_struct("PersistentContext")
             .field("event_store", &"EventStore { .. }")
             .finish()
+    }
+}
+
+impl PersistentContext {
+    /// Set the HistoryCoordinator for this context.
+    /// Called after construction once all dependencies are available.
+    pub fn set_coordinator(&mut self, coordinator: Arc<HistoryCoordinator>) {
+        self.coordinator = Some(coordinator);
+    }
+
+    /// Spawn the MaterializationEngine as a background task with custom handlers.
+    ///
+    /// This is the main integration point — the caller constructs handlers
+    /// with their specific dependencies and passes them in.
+    /// The engine subscribes to EventStore's broadcast and processes events
+    /// through each handler sequentially. Checkpoint-based recovery ensures
+    /// no data loss on restart.
+    pub fn spawn_materialization_with_handlers(
+        &self,
+        handlers: Vec<Box<dyn super::materialization::EventHandler>>,
+    ) {
+        use super::materialization::{CheckpointStore, FailedEventStore, MaterializationEngine};
+        use gasket_storage::EventStoreTrait;
+
+        let checkpoint_store = CheckpointStore::new(self.sqlite_store.clone());
+        let pool = self.sqlite_store.pool();
+        let failed_store = FailedEventStore::new(pool);
+
+        // Arc<EventStore> coerces to Arc<dyn EventStoreTrait> since
+        // EventStore implements EventStoreTrait.
+        let event_store: Arc<dyn EventStoreTrait> = self.event_store.clone();
+
+        let engine =
+            MaterializationEngine::new(event_store, handlers, checkpoint_store, failed_store);
+
+        tokio::spawn(async move {
+            if let Err(e) = engine.run().await {
+                tracing::error!("MaterializationEngine error: {:?}", e);
+            }
+        });
     }
 }
 
@@ -101,6 +146,7 @@ impl AgentContext {
             sqlite_store,
             #[cfg(feature = "local-embedding")]
             embedder: None,
+            coordinator: None,
         })
     }
 
@@ -212,6 +258,10 @@ impl AgentContext {
     /// # Returns
     ///
     /// A vector of session events in chronological order (oldest first).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(SessionContext) instead"
+    )]
     pub async fn get_history(&self, key: &str, branch: Option<&str>) -> Vec<SessionEvent> {
         match self {
             Self::Persistent(ctx) => ctx
@@ -238,6 +288,10 @@ impl AgentContext {
     /// # Returns
     ///
     /// A vector of message contents, sorted by relevance score (highest first).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(SemanticSearch) instead"
+    )]
     pub async fn recall_history(
         &self,
         key: &str,
@@ -282,6 +336,10 @@ impl AgentContext {
     ///
     /// For `Persistent` context, queries the event store for the most recent
     /// `EventType::Summary` event. For `Stateless` context, returns `None`.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(LatestSummary) instead"
+    )]
     pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
         match self {
             Self::Persistent(ctx) => {
@@ -329,6 +387,7 @@ impl AgentContext {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use chrono::Utc;
@@ -373,7 +432,8 @@ mod tests {
                 token_len INTEGER NOT NULL DEFAULT 0,
                 event_data TEXT,
                 extra TEXT DEFAULT '{}',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0
             )
             "#,
         )
@@ -409,6 +469,7 @@ mod tests {
             embedding: None,
             metadata: Default::default(),
             created_at: chrono::Utc::now(),
+            sequence: 0,
         };
         let result = context.save_event(event).await;
         assert!(result.is_ok());
@@ -452,6 +513,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         let result = context.save_event(event).await;
@@ -478,6 +540,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(e1.clone()).await.unwrap();
 
@@ -492,6 +555,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(e2.clone()).await.unwrap();
 
@@ -522,6 +586,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(main_event).await.unwrap();
 
@@ -537,6 +602,7 @@ mod tests {
                 ..Default::default()
             },
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(feature_event).await.unwrap();
 
@@ -570,6 +636,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
 
         context.save_event(event).await.unwrap();
@@ -598,6 +665,7 @@ mod tests {
             embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
+            sequence: 0,
         };
         context.save_event(event).await.unwrap();
 
