@@ -926,10 +926,7 @@ mod tests {
 /// the concrete type, enabling test doubles and future alternative backends.
 #[async_trait::async_trait]
 impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
-    async fn load_for_context(
-        &self,
-        query: &MemoryQuery,
-    ) -> anyhow::Result<MemoryContext> {
+    async fn load_for_context(&self, query: &MemoryQuery) -> anyhow::Result<MemoryContext> {
         self.load_for_context(query).await
     }
 
@@ -949,7 +946,7 @@ impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
             .memories
             .into_iter()
             .map(|m| MemoryHit {
-                path: m.metadata.id.clone(),
+                path: format!("{}/{}", m.metadata.scenario.dir_name(), m.metadata.id),
                 scenario: m.metadata.scenario,
                 title: m.metadata.title.clone(),
                 tags: m.metadata.tags,
