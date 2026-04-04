@@ -4,6 +4,7 @@ pub mod compactor;
 pub mod context;
 pub mod executor;
 pub mod executor_core;
+pub mod history_coordinator;
 pub mod indexing;
 pub mod loop_;
 pub mod memory;
@@ -20,6 +21,7 @@ pub mod subagent_tracker;
 pub use compactor::ContextCompactor;
 pub use context::AgentContext;
 pub use context::PersistentContext;
+pub use history_coordinator::ContextMessage;
 pub use executor::ToolExecutor;
 pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
 pub use gasket_storage::{
