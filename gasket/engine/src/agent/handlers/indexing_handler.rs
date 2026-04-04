@@ -29,10 +29,7 @@ impl EventHandler for IndexingHandler {
 
     async fn handle(&self, ctx: &HandlerContext<'_>) -> anyhow::Result<()> {
         self.indexing_service
-            .index_events(
-                &ctx.event.session_key,
-                std::slice::from_ref(ctx.event),
-            )
+            .index_events(&ctx.event.session_key, std::slice::from_ref(ctx.event))
             .await;
         Ok(())
     }

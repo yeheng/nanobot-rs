@@ -192,7 +192,7 @@ struct AgentInitState {
     skills_context: Option<String>,
     hooks: Arc<crate::hooks::HookRegistry>,
     compactor: Arc<ContextCompactor>,
-    memory_manager: Option<MemoryManager>,
+    memory_manager: Option<Arc<MemoryManager>>,
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -256,7 +256,8 @@ pub struct AgentLoop {
     /// Replaces the previous async fire-and-forget background compression.
     compactor: Option<Arc<ContextCompactor>>,
     /// Long-term memory manager (optional — only active if ~/.gasket/memory/ exists).
-    memory_manager: Option<MemoryManager>,
+    /// Wrapped in Arc so it can be shared with the MaterializationEngine's MemoryUpdateHandler.
+    memory_manager: Option<Arc<MemoryManager>>,
 }
 
 impl AgentLoop {
@@ -413,6 +414,35 @@ impl AgentLoop {
         // Try to initialize long-term memory manager (graceful if not available)
         let memory_manager = Self::try_init_memory_manager(&sqlite_store).await;
 
+        // Build and spawn MaterializationEngine as a background task.
+        // The engine subscribes to EventStore's broadcast channel and
+        // dispatches events to registered handlers (indexing, compaction,
+        // memory updates) for event-driven processing.
+        {
+            use crate::agent::handlers::{
+                CompactionHandler, IndexingHandler, MemoryUpdateHandler,
+            };
+            use crate::agent::indexing::IndexingService;
+            use crate::agent::materialization::EventHandler;
+
+            let indexing_service = IndexingService::new(sqlite_store.clone());
+            let mut handlers: Vec<Box<dyn EventHandler>> = vec![
+                Box::new(IndexingHandler::new(indexing_service)),
+                Box::new(CompactionHandler::new(compactor.clone())),
+            ];
+
+            // Add memory update handler if memory manager is available
+            if let Some(ref mgr) = memory_manager {
+                use crate::agent::memory_provider::MemoryProvider;
+                let memory_provider: Arc<dyn MemoryProvider> = mgr.clone();
+                handlers.push(Box::new(MemoryUpdateHandler::new(memory_provider)));
+            }
+
+            if let AgentContext::Persistent(ref persistent_ctx) = context {
+                persistent_ctx.spawn_materialization_with_handlers(handlers);
+            }
+        }
+
         Ok(AgentInitState {
             context,
             system_prompt,
@@ -502,7 +532,7 @@ impl AgentLoop {
     /// Returns None if the memory directory doesn't exist or init fails.
     async fn try_init_memory_manager(
         sqlite_store: &gasket_storage::SqliteStore,
-    ) -> Option<MemoryManager> {
+    ) -> Option<Arc<MemoryManager>> {
         use gasket_storage::memory::memory_base_dir;
 
         let base_dir = memory_base_dir();
@@ -521,7 +551,7 @@ impl AgentLoop {
                     return None;
                 }
                 debug!("Memory manager initialized successfully");
-                Some(mgr)
+                Some(Arc::new(mgr))
             }
             Err(e) => {
                 warn!("Failed to create memory manager: {}", e);

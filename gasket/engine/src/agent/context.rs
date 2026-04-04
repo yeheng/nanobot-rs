@@ -110,12 +110,8 @@ impl PersistentContext {
         // EventStore implements EventStoreTrait.
         let event_store: Arc<dyn EventStoreTrait> = self.event_store.clone();
 
-        let engine = MaterializationEngine::new(
-            event_store,
-            handlers,
-            checkpoint_store,
-            failed_store,
-        );
+        let engine =
+            MaterializationEngine::new(event_store, handlers, checkpoint_store, failed_store);
 
         tokio::spawn(async move {
             if let Err(e) = engine.run().await {

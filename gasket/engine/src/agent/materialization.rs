@@ -100,11 +100,7 @@ impl FailedEventStore {
         Ok(())
     }
 
-    pub async fn mark_dead_letter(
-        &self,
-        event_id: &str,
-        handler_name: &str,
-    ) -> Result<()> {
+    pub async fn mark_dead_letter(&self, event_id: &str, handler_name: &str) -> Result<()> {
         sqlx::query(
             "UPDATE failed_events SET dead_letter = 1
              WHERE event_id = ? AND handler_name = ?",
@@ -163,16 +159,11 @@ impl MaterializationEngine {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        "MaterializationEngine lagged {} events, will catch up",
-                        n
-                    );
+                    tracing::warn!("MaterializationEngine lagged {} events, will catch up", n);
                     // Checkpoint guarantees no data loss — recover on restart
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::info!(
-                        "MaterializationEngine broadcast closed, shutting down"
-                    );
+                    tracing::info!("MaterializationEngine broadcast closed, shutting down");
                     break;
                 }
             }
