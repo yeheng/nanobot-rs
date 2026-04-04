@@ -6,13 +6,13 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use gasket_storage::memory::{MemoryHit, MemoryQuery};
-use gasket_storage::EventStore;
+use gasket_storage::{EventFilter, EventStoreTrait};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
 
 use super::compactor::ContextCompactor;
 use super::memory_manager::MemoryContext;
-use super::memory_manager::MemoryManager;
+use super::memory_provider::MemoryProvider;
 
 /// History query intent — the only query entry point type.
 ///
@@ -77,16 +77,16 @@ pub struct ContextMessage {
 /// Allows simple type transformations (SessionEvent → ContextMessage)
 /// but contains NO business logic.
 pub struct HistoryCoordinator {
-    event_store: Arc<EventStore>,
+    event_store: Arc<dyn EventStoreTrait>,
     compactor: Arc<ContextCompactor>,
-    memory: Arc<MemoryManager>,
+    memory: Arc<dyn MemoryProvider>,
 }
 
 impl HistoryCoordinator {
     pub fn new(
-        event_store: Arc<EventStore>,
+        event_store: Arc<dyn EventStoreTrait>,
         compactor: Arc<ContextCompactor>,
-        memory: Arc<MemoryManager>,
+        memory: Arc<dyn MemoryProvider>,
     ) -> Self {
         Self {
             event_store,
@@ -102,10 +102,14 @@ impl HistoryCoordinator {
                 session_key,
                 token_budget,
             } => {
-                // Phase 1: delegate to existing get_branch_history + trim
+                // Use query_events with branch filter (trait method, not concrete get_branch_history)
                 let events = self
                     .event_store
-                    .get_branch_history(&session_key, "main")
+                    .query_events(&EventFilter {
+                        session_key: Some(session_key),
+                        branch: Some("main".to_string()),
+                        ..Default::default()
+                    })
                     .await
                     .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
 
@@ -163,26 +167,25 @@ impl HistoryCoordinator {
             } => {
                 let events = self
                     .event_store
-                    .get_branch_history(&session_key, "main")
+                    .query_events(&EventFilter {
+                        session_key: Some(session_key),
+                        branch: Some("main".to_string()),
+                        time_range: Some((start, end)),
+                        ..Default::default()
+                    })
                     .await
                     .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
-                let filtered: Vec<_> = events
-                    .into_iter()
-                    .filter(|e| e.created_at >= start && e.created_at <= end)
-                    .collect();
-                Ok(HistoryResult::Events(filtered))
+                Ok(HistoryResult::Events(events))
             }
         }
     }
 
-    /// Save event — delegates to EventStore
+    /// Save event — delegates to EventStoreTrait::append()
     pub async fn save_event(
         &self,
         event: &gasket_types::session_event::SessionEvent,
     ) -> Result<()> {
-        self.event_store
-            .append_event(event)
-            .await
-            .map_err(|e| anyhow::anyhow!("event store error: {}", e))
+        self.event_store.append(event).await?;
+        Ok(())
     }
 }
