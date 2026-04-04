@@ -652,6 +652,7 @@ impl AgentLoop {
             .unwrap_or_else(|| content.to_string());
 
         // ── 2. Load session history (enum dispatch) ─────
+        #[allow(deprecated)]
         let history_events = self.context.get_history(&session_key_str, None).await;
 
         // ── 3. Save user event ────────────────
@@ -696,6 +697,7 @@ impl AgentLoop {
         }
 
         // Load the latest summary checkpoint (if any) for context injection
+        #[allow(deprecated)]
         let existing_summary = self
             .context
             .load_latest_summary(&session_key_str, "main")

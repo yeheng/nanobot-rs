@@ -258,6 +258,10 @@ impl AgentContext {
     /// # Returns
     ///
     /// A vector of session events in chronological order (oldest first).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(SessionContext) instead"
+    )]
     pub async fn get_history(&self, key: &str, branch: Option<&str>) -> Vec<SessionEvent> {
         match self {
             Self::Persistent(ctx) => ctx
@@ -284,6 +288,10 @@ impl AgentContext {
     /// # Returns
     ///
     /// A vector of message contents, sorted by relevance score (highest first).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(SemanticSearch) instead"
+    )]
     pub async fn recall_history(
         &self,
         key: &str,
@@ -328,6 +336,10 @@ impl AgentContext {
     ///
     /// For `Persistent` context, queries the event store for the most recent
     /// `EventType::Summary` event. For `Stateless` context, returns `None`.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use HistoryCoordinator::query(LatestSummary) instead"
+    )]
     pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
         match self {
             Self::Persistent(ctx) => {
@@ -375,6 +387,7 @@ impl AgentContext {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use chrono::Utc;
