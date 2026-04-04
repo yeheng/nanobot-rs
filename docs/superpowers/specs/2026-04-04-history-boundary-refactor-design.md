@@ -68,17 +68,10 @@ pub struct NewEvent {
 /// 事件 ID，复用现有 Uuid 类型
 pub type EventId = Uuid;
 
-/// 语义搜索结果（MemoryFile 的轻量视图）
-pub struct MemoryHit {
-    pub id: String,
-    pub title: String,
-    pub content: String,
-    pub scenario: Scenario,
-    pub frequency: Frequency,
-    pub tags: Vec<String>,
-    pub score: f64,  // 综合得分 = embedding_score × frequency_bonus
-    pub token_count: usize,
-}
+/// 语义搜索结果 — 复用 storage::memory::types::MemoryHit
+/// 现有定义: path, title, scenario, frequency, tags, score (f32), tokens
+/// 通过 MemoryProvider::search() 返回，与现有 RetrievalEngine 输出一致
+pub use gasket_storage::memory::types::MemoryHit;
 ```
 
 ## 组件设计
@@ -364,7 +357,7 @@ IndexingHandler → CompactionHandler → MemoryUpdateHandler → DedupHandler
 **Checkpoint 存储**（复用 SqliteStore 的现有 kv 接口）:
 
 ```rust
-/// 复用 SqliteStore::kv_get() / kv_set() 存储 checkpoint
+/// 复用 SqliteStore 的 kv 接口（kv.rs 中的 read_raw / write_raw）存储 checkpoint
 /// key 格式: "mat:checkpoint:{handler_name}"
 /// value: serde_json serialize 的 Checkpoint 结构
 pub struct CheckpointStore {
@@ -374,14 +367,17 @@ pub struct CheckpointStore {
 impl CheckpointStore {
     pub async fn load(&self, handler_name: &str) -> Result<Option<Checkpoint>> {
         let key = format!("mat:checkpoint:{}", handler_name);
-        let val = self.store.kv_get(&key).await?;
-        // serde_json deserialize
+        let val = self.store.read_raw(&key).await?;
+        match val {
+            Some(v) => Ok(Some(serde_json::from_str(&v)?)),
+            None => Ok(None),
+        }
     }
 
     pub async fn save(&self, checkpoint: &Checkpoint) -> Result<()> {
         let key = format!("mat:checkpoint:{}", checkpoint.handler_name);
         let val = serde_json::to_string(checkpoint)?;
-        self.store.kv_set(&key, &val).await?;
+        self.store.write_raw(&key, &val).await?;
         Ok(())
     }
 }
