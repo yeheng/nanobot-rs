@@ -93,11 +93,20 @@ pub enum HistoryQuery {
 /// 历史查询结果
 #[derive(Debug)]
 pub enum HistoryResult {
-    Context(Vec<String>),            // Compactor 返回的消息文本
+    /// Compactor 返回的上下文消息
+    /// 包含 role + content，可直接用于 LLM 调用
+    Context(Vec<ContextMessage>),
     Summary(Option<String>),         // Compactor 返回的摘要
     Memories(Vec<MemoryHit>),        // MemoryProvider 返回
     MemoryContext(MemoryContext),     // MemoryProvider 返回
     Events(Vec<SessionEvent>),       // EventStore 返回
+}
+
+/// 上下文消息 — 包含 role 信息，可直接映射到 ChatMessage
+#[derive(Debug, Clone)]
+pub struct ContextMessage {
+    pub role: String,       // "user" | "assistant" | "system"
+    pub content: String,
 }
 ```
 
@@ -339,13 +348,22 @@ git commit -m "feat(engine): implement SessionContext and LatestSummary routing"
 
 ```rust
 HistoryQuery::SemanticSearch { query, top_k } => {
-    // Phase 1: 委托给 MemoryManager 的 search
-    let hits = self.memory.search(&query, top_k).await?;
-    Ok(HistoryResult::Memories(hits))
+    // Phase 1: 委托给 MemoryManager::load_for_context()
+    // 注意：MemoryManager 没有 search() 公共方法
+    // 使用 load_for_context 配合 MemoryQuery 进行语义检索
+    let memory_query = MemoryQuery {
+        text: Some(query),
+        tags: vec![],
+        scenario: None,
+        max_tokens: Some(top_k * 200),  // 估算每个 hit ~200 tokens
+    };
+    let ctx = self.memory.load_for_context(&memory_query).await?;
+    // 从 MemoryContext 中提取 hits
+    Ok(HistoryResult::MemoryContext(ctx))
 }
 ```
 
-注意：需要确认 `MemoryManager` 是否有 `search()` 公共方法。如果没有，需要先在 `MemoryManager` 中暴露。
+注意：MemoryManager 没有 `search()` 公共方法。现有检索通过 `load_for_context()` 内部的三阶段加载完成。Phase 2 提取 MemoryProvider trait 时再暴露独立的 `search()` 方法。
 
 - [ ] **Step 2: 运行编译**
 
@@ -952,6 +970,9 @@ impl MaterializationEngine {
 
     /// 启动事件处理循环
     /// 订阅 EventStore broadcast channel，逐事件处理
+    ///
+    /// 注意：首次运行时 CheckpointStore::load() 返回 None，
+    /// 此时所有 handler 从 sequence 0 开始处理（全量回放）
     pub async fn run(mut self) -> Result<()> {
         let mut rx = self.event_store.subscribe();
 
@@ -1092,8 +1113,12 @@ impl EventHandler for IndexingHandler {
     }
 
     async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()> {
-        let events = std::slice::from_ref(ctx.event);
-        self.indexing_service.index_events(events).await;
+        // IndexingService::index_events 需要 session_key 参数
+        // 传入单元素切片（当前事件）
+        self.indexing_service.index_events(
+            &ctx.event.session_key,
+            std::slice::from_ref(ctx.event),
+        ).await;
         Ok(())
     }
 
