@@ -49,6 +49,56 @@ impl FileIndexManager {
         Self::new(memory_base_dir())
     }
 
+    /// Scan .md files in a scenario directory and return parsed metadata entries.
+    ///
+    /// This bypasses `_INDEX.md` entirely, reading YAML frontmatter directly
+    /// from each file. Use this when you need guaranteed-fresh metadata without
+    /// depending on a potentially stale index cache.
+    ///
+    /// The `_INDEX.md` file is only used as a human-readable report, not as
+    /// program input.
+    pub async fn scan_entries(&self, scenario: Scenario) -> Result<Vec<MemoryIndexEntry>> {
+        let dir = self.base_dir.join(scenario.dir_name());
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+
+        while let Some(entry) = read_dir.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".md") || name == "_INDEX.md" || name.starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => {
+                    if let Ok((meta, _)) = parse_memory_file(&content) {
+                        entries.push(MemoryIndexEntry {
+                            id: meta.id,
+                            title: meta.title,
+                            memory_type: meta.r#type,
+                            tags: meta.tags,
+                            frequency: meta.frequency,
+                            tokens: meta.tokens as u32,
+                            filename: name,
+                            updated: meta.updated,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping unparseable memory file {}: {}", name, e);
+                }
+            }
+        }
+
+        // Sort: hot first, then warm, then cold, then archived
+        entries.sort_by(|a, b| b.frequency.cmp(&a.frequency));
+        Ok(entries)
+    }
+
     /// Regenerate _INDEX.md for a scenario.
     /// Scans all .md files, parses frontmatter, writes atomic index.
     /// Preserves any existing HUMAN_NOTES section.
@@ -614,6 +664,66 @@ tokens: 25
         // Verify the actual index exists
         let index_path = dir.join("_INDEX.md");
         assert!(index_path.exists(), "Index file should exist");
+    }
+
+    #[tokio::test]
+    async fn test_scan_entries_bypasses_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_test_store(&temp_dir.path().to_path_buf());
+
+        // Create scenario directory
+        let dir = temp_dir.path().join("knowledge");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        // Create memory files
+        let memory_content = r#"---
+id: mem_scan_hot
+title: Hot Memory
+type: note
+scenario: knowledge
+tags:
+  - test
+frequency: hot
+created: 2026-04-03T00:00:00Z
+updated: 2026-04-03T00:00:00Z
+last_accessed: 2026-04-03T00:00:00Z
+tokens: 100
+---
+"#;
+        tokio::fs::write(dir.join("hot.md"), memory_content)
+            .await
+            .unwrap();
+
+        let memory_cold = r#"---
+id: mem_scan_cold
+title: Cold Memory
+type: note
+scenario: knowledge
+tags:
+  - old
+frequency: cold
+created: 2026-04-01T00:00:00Z
+updated: 2026-04-01T00:00:00Z
+last_accessed: 2026-04-01T00:00:00Z
+tokens: 50
+---
+"#;
+        tokio::fs::write(dir.join("cold.md"), memory_cold)
+            .await
+            .unwrap();
+
+        // scan_entries should work WITHOUT regenerating _INDEX.md
+        let entries = store.scan_entries(Scenario::Knowledge).await.unwrap();
+        assert_eq!(2, entries.len());
+
+        // Hot should come first (sorted by frequency)
+        assert_eq!("Hot Memory", entries[0].title);
+        assert_eq!(Frequency::Hot, entries[0].frequency);
+        assert_eq!("Cold Memory", entries[1].title);
+        assert_eq!(Frequency::Cold, entries[1].frequency);
+
+        // Verify _INDEX.md does NOT exist (we never called regenerate)
+        assert!(!dir.join("_INDEX.md").exists());
     }
 
     #[test]

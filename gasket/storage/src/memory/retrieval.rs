@@ -1,12 +1,31 @@
-//! Retrieval engine combining tag and embedding search with normalized scoring.
+//! Retrieval engine combining tag and embedding search with frequency-boosted scoring.
+//!
+//! Scoring strategy (no magic numbers):
+//! 1. **Tags as hard filter**: If the query has tags, results must match at least one.
+//! 2. **Embedding similarity as primary score**: Raw cosine similarity (0.0–1.0).
+//! 3. **Frequency as bonus multiplier**: Hot = 1.2x, Warm = 1.1x, Cold = 1.0x.
+//!
+//! Final score = embedding_similarity × frequency_bonus
 
 use super::embedding_store::EmbeddingStore;
 use super::index::FileIndexManager;
 use super::types::*;
 use anyhow::Result;
 
-const TAG_WEIGHT: f32 = 0.4;
-const EMBEDDING_WEIGHT: f32 = 0.6;
+/// Frequency bonus multipliers for scoring.
+///
+/// Hot items get a 20% boost, Warm get 10%, Cold items get no bonus.
+/// Archived items are excluded from search entirely.
+impl Frequency {
+    fn bonus(self) -> f32 {
+        match self {
+            Frequency::Hot => 1.2,
+            Frequency::Warm => 1.1,
+            Frequency::Cold => 1.0,
+            Frequency::Archived => 0.0, // excluded
+        }
+    }
+}
 
 /// A merged search result with combined scoring.
 #[derive(Debug, Clone)]
@@ -38,6 +57,9 @@ impl RetrievalEngine {
     }
 
     /// Tag-only search: scan _INDEX.md entries for tag matches.
+    ///
+    /// Tags act as a hard filter (must match at least one). Score is based on
+    /// tag match ratio × frequency bonus.
     pub async fn search_by_tags(
         &self,
         query_tags: &[String],
@@ -59,31 +81,37 @@ impl RetrievalEngine {
 
             if let Ok(index) = self.index_manager.read_index(scen).await {
                 for entry in &index.entries {
+                    // Hard filter: exclude archived
                     if matches!(entry.frequency, Frequency::Archived) {
                         continue;
                     }
 
+                    // Hard filter: must match at least one tag
                     let matching = entry
                         .tags
                         .iter()
                         .filter(|t| query_tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
                         .count();
 
-                    if matching > 0 {
-                        let tag_score = matching as f32 / query_tags.len().max(1) as f32;
-                        results.push(SearchResult {
-                            memory_path: entry.filename.clone(),
-                            scenario: scen,
-                            title: entry.title.clone(),
-                            tags: entry.tags.clone(),
-                            frequency: entry.frequency,
-                            score: tag_score * TAG_WEIGHT,
-                            tag_score,
-                            embedding_score: 0.0,
-                            tokens: entry.tokens,
-                            id: entry.id.clone(),
-                        });
+                    if matching == 0 {
+                        continue;
                     }
+
+                    let tag_score = matching as f32 / query_tags.len().max(1) as f32;
+                    let final_score = tag_score * entry.frequency.bonus();
+
+                    results.push(SearchResult {
+                        memory_path: entry.filename.clone(),
+                        scenario: scen,
+                        title: entry.title.clone(),
+                        tags: entry.tags.clone(),
+                        frequency: entry.frequency,
+                        score: final_score,
+                        tag_score,
+                        embedding_score: 0.0,
+                        tokens: entry.tokens,
+                        id: entry.id.clone(),
+                    });
                 }
             }
         }
@@ -99,7 +127,7 @@ impl RetrievalEngine {
         Ok(results)
     }
 
-    /// Embedding-only search: cosine similarity.
+    /// Embedding-only search: cosine similarity with frequency bonus.
     pub async fn search_by_embedding(
         &self,
         _query: &str,
@@ -118,13 +146,15 @@ impl RetrievalEngine {
             let scenario = Scenario::from_dir_name(&hit.scenario).unwrap_or(Scenario::Knowledge);
             let frequency = Frequency::from_str_lossy(&hit.frequency);
 
+            let final_score = emb_score * frequency.bonus();
+
             results.push(SearchResult {
                 memory_path: hit.memory_path,
                 scenario,
                 title: String::new(), // not stored in embedding table
                 tags: hit.tags,
                 frequency,
-                score: emb_score * EMBEDDING_WEIGHT,
+                score: final_score,
                 tag_score: 0.0,
                 embedding_score: emb_score,
                 tokens: hit.token_count,
@@ -134,9 +164,15 @@ impl RetrievalEngine {
         Ok(results)
     }
 
-    /// Combined search: merge tag and embedding results with normalized scoring.
+    /// Combined search: tag hard-filter + embedding primary score + frequency bonus.
+    ///
+    /// Strategy:
+    /// 1. If query has tags, run tag search as a hard filter to get candidate set
+    /// 2. Run embedding search for semantic similarity
+    /// 3. Merge: embedding score is primary, frequency provides bonus multiplier
+    /// 4. If tags were specified, only include results that matched at least one tag
     pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>> {
-        let limit = 20; // fetch more than needed, truncate later
+        let limit = 20;
 
         // Run both searches
         let tag_results = if !query.tags.is_empty() {
@@ -156,35 +192,51 @@ impl RetrievalEngine {
             Vec::new()
         };
 
-        // Merge with normalized scoring
+        // Build tag-matched set for hard filtering
+        let tag_matched_keys: std::collections::HashSet<String> = tag_results
+            .iter()
+            .map(|r| {
+                if r.memory_path.is_empty() {
+                    format!("{}:{}", r.scenario.dir_name(), r.title)
+                } else {
+                    format!("{}:{}", r.scenario.dir_name(), r.memory_path)
+                }
+            })
+            .collect();
+
+        // Merge results
         let mut merged: std::collections::HashMap<String, SearchResult> =
             std::collections::HashMap::new();
 
+        // Insert tag results
         for r in tag_results {
-            // Use memory_path as key, empty path uses title as fallback
             let key = if r.memory_path.is_empty() {
                 format!("{}:{}", r.scenario.dir_name(), r.title)
             } else {
                 format!("{}:{}", r.scenario.dir_name(), r.memory_path)
             };
-            let entry = merged.entry(key.clone()).or_insert_with(|| r.clone());
-            entry.tag_score = r.tag_score;
-            entry.score = entry.tag_score * TAG_WEIGHT + entry.embedding_score * EMBEDDING_WEIGHT;
+            merged.entry(key).or_insert(r);
         }
 
+        // Merge embedding results (embedding score is primary)
         for r in emb_results {
             let key = if r.memory_path.is_empty() {
                 format!("{}:{}", r.scenario.dir_name(), r.title)
             } else {
                 format!("{}:{}", r.scenario.dir_name(), r.memory_path)
             };
+
+            // If tags were specified and this result doesn't match any tag, skip it
+            if !tag_matched_keys.is_empty() && !tag_matched_keys.contains(&key) {
+                continue;
+            }
+
             merged
                 .entry(key)
                 .and_modify(|existing| {
                     existing.embedding_score = r.embedding_score;
-                    existing.score = existing.tag_score * TAG_WEIGHT
-                        + existing.embedding_score * EMBEDDING_WEIGHT;
-                    // Copy title/path from embedding result if we had it
+                    // Recalculate: embedding primary × frequency bonus
+                    existing.score = existing.embedding_score * existing.frequency.bonus();
                     if existing.title.is_empty() && !r.title.is_empty() {
                         existing.title = r.title.clone();
                     }
@@ -360,7 +412,7 @@ tokens: 50
             .unwrap();
         assert_eq!(tag_results[0].tag_score, 1.0);
         assert_eq!(tag_results[0].embedding_score, 0.0);
-        assert!((tag_results[0].score - 0.4).abs() < 0.001); // 1.0 * 0.4
+        assert!((tag_results[0].score - 1.1).abs() < 0.001); // 1.0 * 1.1 (Warm bonus)
 
         // Test embedding-only search
         let emb_results = engine
@@ -369,7 +421,7 @@ tokens: 50
             .unwrap();
         assert_eq!(emb_results[0].tag_score, 0.0);
         assert!((emb_results[0].embedding_score - 1.0).abs() < 0.001); // cosine = 1.0, normalized
-        assert!((emb_results[0].score - 0.6).abs() < 0.001); // 1.0 * 0.6
+        assert!((emb_results[0].score - 1.1).abs() < 0.001); // 1.0 * 1.1 (Warm bonus)
     }
 
     #[tokio::test]
@@ -481,9 +533,8 @@ tokens: 50
         // Both scores should be present
         assert!(results[0].tag_score > 0.0);
         assert!(results[0].embedding_score > 0.0);
-        // Combined score should use both weights
-        let expected =
-            results[0].tag_score * TAG_WEIGHT + results[0].embedding_score * EMBEDDING_WEIGHT;
+        // Combined score: embedding primary × frequency bonus
+        let expected = results[0].embedding_score * results[0].frequency.bonus();
         assert!((results[0].score - expected).abs() < 0.001);
     }
 }

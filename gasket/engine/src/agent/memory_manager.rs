@@ -179,13 +179,16 @@ impl MemoryManager {
 
     /// Phase 1: Load profile + active memories (always loaded).
     ///
-    /// Loads:
-    /// - All .md files in profile/ directory
-    /// - Files matching "current*" and "backlog*" in active/ directory
+    /// Strategy:
+    /// - All .md files in profile/ directory (profile is always high-priority)
+    /// - Active files with Hot frequency first, then Warm if budget allows
+    /// - Skips Cold and Archived items
     async fn load_bootstrap(&self, loaded: &mut HashSet<String>) -> Result<Vec<MemoryFile>> {
         let mut memories = Vec::new();
+        let budget = self.budget.bootstrap;
+        let mut tokens_used = 0;
 
-        // Load all profile files
+        // Load all profile files (profile data is always loaded)
         if let Ok(profile_files) = self.store.list(Scenario::Profile).await {
             for filename in profile_files {
                 if !loaded.insert(format!("profile/{}", filename)) {
@@ -193,7 +196,11 @@ impl MemoryManager {
                 }
                 match self.store.read(Scenario::Profile, &filename).await {
                     Ok(mem) => {
-                        debug!("Bootstrap: loaded profile/{}", filename);
+                        tokens_used += mem.metadata.tokens;
+                        debug!(
+                            "Bootstrap: loaded profile/{} ({} tokens)",
+                            filename, mem.metadata.tokens
+                        );
                         memories.push(mem);
                     }
                     Err(e) => {
@@ -203,25 +210,71 @@ impl MemoryManager {
             }
         }
 
-        // Load active/current* and active/backlog* files
+        // Load active files by frequency priority (Hot first, then Warm)
         if let Ok(active_files) = self.store.list(Scenario::Active).await {
+            // Collect metadata for priority-based loading
+            let mut hot_items = Vec::new();
+            let mut warm_items = Vec::new();
+
             for filename in active_files {
-                // Only load current* and backlog* files
-                if !filename.starts_with("current") && !filename.starts_with("backlog") {
+                let key = format!("active/{}", filename);
+                if loaded.contains(&key) {
                     continue;
                 }
-                if !loaded.insert(format!("active/{}", filename)) {
-                    continue; // Already loaded
-                }
+                // Read frontmatter to determine frequency
                 match self.store.read(Scenario::Active, &filename).await {
-                    Ok(mem) => {
-                        debug!("Bootstrap: loaded active/{}", filename);
-                        memories.push(mem);
-                    }
+                    Ok(mem) => match mem.metadata.frequency {
+                        Frequency::Hot => hot_items.push((filename, mem)),
+                        Frequency::Warm => warm_items.push((filename, mem)),
+                        Frequency::Cold | Frequency::Archived => {
+                            debug!(
+                                "Bootstrap: skipping active/{} (frequency: {:?})",
+                                filename, mem.metadata.frequency
+                            );
+                        }
+                    },
                     Err(e) => {
-                        warn!("Bootstrap: failed to load active/{}: {}", filename, e);
+                        warn!("Bootstrap: failed to read active/{}: {}", filename, e);
                     }
                 }
+            }
+
+            // Load Hot items first
+            for (filename, mem) in hot_items {
+                let key = format!("active/{}", filename);
+                if tokens_used + mem.metadata.tokens > budget {
+                    debug!(
+                        "Bootstrap: budget exhausted at hot item active/{}",
+                        filename
+                    );
+                    break;
+                }
+                tokens_used += mem.metadata.tokens;
+                loaded.insert(key);
+                debug!(
+                    "Bootstrap: loaded hot active/{} ({} tokens)",
+                    filename, mem.metadata.tokens
+                );
+                memories.push(mem);
+            }
+
+            // Then load Warm items if budget allows
+            for (filename, mem) in warm_items {
+                let key = format!("active/{}", filename);
+                if tokens_used + mem.metadata.tokens > budget {
+                    debug!(
+                        "Bootstrap: budget exhausted at warm item active/{}",
+                        filename
+                    );
+                    break;
+                }
+                tokens_used += mem.metadata.tokens;
+                loaded.insert(key);
+                debug!(
+                    "Bootstrap: loaded warm active/{} ({} tokens)",
+                    filename, mem.metadata.tokens
+                );
+                memories.push(mem);
             }
         }
 
@@ -231,7 +284,7 @@ impl MemoryManager {
     /// Phase 2: Load scenario-specific hot/warm items.
     ///
     /// Strategy:
-    /// 1. Read _INDEX.md for the scenario
+    /// 1. Scan .md files directly for fresh metadata (no _INDEX.md dependency)
     /// 2. Load hot items first (regardless of tags)
     /// 3. Load warm items matching query tags
     /// 4. Stop when budget exceeded
@@ -249,11 +302,11 @@ impl MemoryManager {
             return Ok(memories);
         }
 
-        // Read index
-        let index = match self.index_manager.read_index(scenario).await {
-            Ok(idx) => idx,
+        // Scan files directly — no _INDEX.md dependency
+        let entries = match self.index_manager.scan_entries(scenario).await {
+            Ok(e) => e,
             Err(e) => {
-                warn!("Scenario: failed to read index for {:?}: {}", scenario, e);
+                warn!("Scenario: failed to scan {:?}: {}", scenario, e);
                 return Ok(memories);
             }
         };
@@ -261,11 +314,7 @@ impl MemoryManager {
         let mut tokens_used = 0;
 
         // Phase 2a: Load hot items first
-        for entry in index
-            .entries
-            .iter()
-            .filter(|e| e.frequency == Frequency::Hot)
-        {
+        for entry in entries.iter().filter(|e| e.frequency == Frequency::Hot) {
             let key = format!("{}/{}", scenario.dir_name(), entry.filename);
             if loaded.contains(&key) {
                 continue;
@@ -290,11 +339,7 @@ impl MemoryManager {
         }
 
         // Phase 2b: Load warm items matching tags
-        for entry in index
-            .entries
-            .iter()
-            .filter(|e| e.frequency == Frequency::Warm)
-        {
+        for entry in entries.iter().filter(|e| e.frequency == Frequency::Warm) {
             let key = format!("{}/{}", scenario.dir_name(), entry.filename);
             if loaded.contains(&key) {
                 continue;
@@ -475,11 +520,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bootstrap_loads_profile_and_active() {
+    async fn test_bootstrap_loads_by_frequency_not_filename() {
         let (manager, temp_dir) = setup_manager().await;
         let memory_dir = temp_dir.path().join("memory");
 
-        // Create profile files
+        // Create profile files (always loaded)
         create_memory_file(
             &memory_dir,
             Scenario::Profile,
@@ -503,7 +548,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Create active files
+        // Create active files with Hot/Warm frequency — names don't matter
         create_memory_file(
             &memory_dir,
             Scenario::Active,
@@ -527,14 +572,28 @@ mod tests {
         .await
         .unwrap();
 
-        // Create knowledge file (should NOT be in bootstrap)
+        // Create active file with Cold frequency — should NOT be in bootstrap
+        create_memory_file(
+            &memory_dir,
+            Scenario::Active,
+            "old_idea.md",
+            "Old Idea",
+            &["active"],
+            Frequency::Cold,
+            100,
+        )
+        .await
+        .unwrap();
+
+        // Create knowledge file — should NOT be in bootstrap (Phase 1)
+        // Cold frequency so it won't auto-load in Phase 2 either
         create_memory_file(
             &memory_dir,
             Scenario::Knowledge,
             "test.md",
             "Test Knowledge",
             &["test"],
-            Frequency::Warm,
+            Frequency::Cold,
             100,
         )
         .await
@@ -544,12 +603,64 @@ mod tests {
         let query = MemoryQuery::new();
         let context = manager.load_for_context(&query).await.unwrap();
 
-        // Should load all profile + active files (4 files)
+        // Should load profile (2) + active Hot/Warm (2) = 4 files
+        // Cold active file and Cold knowledge file excluded from bootstrap
         assert_eq!(context.memories.len(), 4);
-        assert_eq!(context.phase_breakdown.bootstrap_tokens, 700); // 100+150+200+250
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 700);
         assert_eq!(context.phase_breakdown.scenario_tokens, 0);
         assert_eq!(context.phase_breakdown.on_demand_tokens, 0);
         assert_eq!(context.tokens_used, 700);
+
+        // Verify Cold file was excluded
+        assert!(!context
+            .memories
+            .iter()
+            .any(|m| m.metadata.title == "Old Idea"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_loads_arbitrary_named_hot_files() {
+        let (manager, temp_dir) = setup_manager().await;
+        let memory_dir = temp_dir.path().join("memory");
+
+        // Create active files with arbitrary names — only frequency matters
+        create_memory_file(
+            &memory_dir,
+            Scenario::Active,
+            "todo.md", // NOT "current*" or "backlog*"
+            "Todo List",
+            &["active"],
+            Frequency::Hot,
+            100,
+        )
+        .await
+        .unwrap();
+        create_memory_file(
+            &memory_dir,
+            Scenario::Active,
+            "sprint_plan.md", // NOT "current*" or "backlog*"
+            "Sprint Plan",
+            &["active"],
+            Frequency::Warm,
+            150,
+        )
+        .await
+        .unwrap();
+
+        let query = MemoryQuery::new();
+        let context = manager.load_for_context(&query).await.unwrap();
+
+        // Both files should load regardless of filename
+        assert_eq!(context.memories.len(), 2);
+        assert!(context
+            .memories
+            .iter()
+            .any(|m| m.metadata.title == "Todo List"));
+        assert!(context
+            .memories
+            .iter()
+            .any(|m| m.metadata.title == "Sprint Plan"));
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 250);
     }
 
     #[tokio::test]

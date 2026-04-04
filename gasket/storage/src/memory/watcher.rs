@@ -21,12 +21,25 @@
 //! - `_INDEX.md` files (auto-generated indexes)
 //! - Dotfiles (hidden files starting with `.`)
 
+//!
+//! # Auto-Indexing
+//!
+//! The `AutoIndexHandler` connects file watcher events to automatic index
+//! regeneration and embedding updates. When enabled, modifying a `.md` memory
+//! file triggers:
+//! 1. Regeneration of the scenario's `_INDEX.md`
+//! 2. Upsert/delete of the file's embedding in SQLite
+
 use super::types::Scenario;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+// ============================================================================
+// Watch event types
+// ============================================================================
 
 /// Events emitted by the memory watcher after debouncing.
 #[derive(Debug, Clone)]
@@ -78,19 +91,10 @@ impl Default for WatcherConfig {
 /// - `.tmp` files (temporary editor files)
 /// - `_INDEX.md` files (auto-generated indexes)
 /// - Dotfiles (hidden files starting with `.`)
-///
-/// # Examples
-///
-/// ```ignore
-/// assert!(should_ignore(Path::new("knowledge/.history/old.md")));
-/// assert!(should_ignore(Path::new("active/.tmp")));
-/// assert!(should_ignore(Path::new("knowledge/_INDEX.md")));
-/// assert!(!should_ignore(Path::new("knowledge/rust.md")));
-/// ```
 pub fn should_ignore(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
 
-    // Ignore .history directory (anywhere in path: .history/, knowledge/.history/, or .history at start)
+    // Ignore .history directory
     if path_str.contains("/.history/")
         || path_str.contains("\\.history\\")
         || path_str.starts_with(".history/")
@@ -122,23 +126,17 @@ pub fn should_ignore(path: &Path) -> bool {
 }
 
 /// Extract scenario from a file path relative to memory base dir.
-///
-/// Parses the first path component and attempts to convert it to a `Scenario`.
-///
-/// # Examples
-///
-/// ```ignore
-/// let path = PathBuf::from("knowledge/rust-async.md");
-/// assert_eq!(Some(Scenario::Knowledge), scenario_from_path(&path));
-///
-/// let path = PathBuf::from("invalid/file.md");
-/// assert_eq!(None, scenario_from_path(&path));
-/// ```
 pub fn scenario_from_path(path: &Path) -> Option<Scenario> {
-    path.iter()
+    path
+        .iter()
         .next()
         .and_then(|s| s.to_str())
         .and_then(Scenario::from_dir_name)
+}
+
+/// Extract the relative path from a full path by stripping the base_dir prefix.
+fn relative_path<'a>(full_path: &'a Path, base_dir: &Path) -> Option<PathBuf> {
+    full_path.strip_prefix(base_dir).ok().map(|p| p.to_path_buf())
 }
 
 // ============================================================================
@@ -180,13 +178,6 @@ impl MemoryWatcher {
     ///
     /// Returns a receiver for debounced events. This spawns a background task
     /// that watches the filesystem and debounces events.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The base directory doesn't exist
-    /// - The watcher cannot be initialized (OS-specific)
-    /// - The directory cannot be watched (permissions, etc.)
     pub async fn start(&self) -> Result<mpsc::Receiver<WatchEvent>> {
         use notify::{RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
         use std::sync::mpsc as sync_mpsc;
@@ -195,15 +186,12 @@ impl MemoryWatcher {
         let base_dir = self.config.base_dir.clone();
         let debounce = Duration::from_millis(self.config.debounce_ms);
 
-        // Ensure base directory exists
         if !base_dir.exists() {
             tokio::fs::create_dir_all(&base_dir).await?;
         }
 
-        // Create a channel for raw events from notify
         let (raw_tx, raw_rx) = sync_mpsc::channel();
 
-        // Create the watcher
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
@@ -215,22 +203,22 @@ impl MemoryWatcher {
 
         watcher.watch(&base_dir, RecursiveMode::Recursive)?;
 
-        // Spawn debounce task
+        // Hold the watcher so it's dropped when the task ends
+        let _watcher = watcher;
+
         tokio::spawn(async move {
             if let Err(e) = debounce_loop(raw_rx, tx, debounce).await {
                 tracing::error!("Watcher debounce loop error: {:?}", e);
             }
+            drop(_watcher);
         });
 
         Ok(rx)
     }
 
     /// Stop watching (no-op for the current implementation).
-    ///
-    /// The background task will naturally terminate when the channel is closed.
     pub async fn stop(&self) {
         // Dropping the watcher handles cleanup automatically
-        // The debounce task will end when its sender is dropped
     }
 }
 
@@ -243,49 +231,38 @@ async fn debounce_loop(
 ) -> Result<()> {
     use tokio::sync::mpsc as tokio_mpsc;
 
-    // Create a bridge channel for async communication
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::channel(100);
 
-    // Spawn a thread to forward events from sync channel to async channel
     std::thread::spawn(move || {
         while let Ok(event) = raw_rx.recv() {
             if bridge_tx.blocking_send(event).is_err() {
-                break; // Async channel closed
+                break;
             }
         }
     });
 
-    // Track pending paths with their last event time
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
-
-    // Interval to check for settled events
     let check_interval = Duration::from_millis(500);
 
     loop {
-        // Receive all available events with a timeout
         let mut events_received = false;
         while let Ok(event) = bridge_rx.try_recv() {
             events_received = true;
             for path in &event.paths {
-                // Filter out ignored paths early
                 if should_ignore(path) {
                     continue;
                 }
-
-                // Update timestamp for this path (clone to owned PathBuf)
                 pending.insert(path.to_path_buf(), Instant::now());
             }
         }
 
-        // Only check for settled events if we received something or on interval
         if events_received {
             tokio::time::sleep(check_interval).await;
         } else {
             tokio::time::sleep(check_interval).await;
-            continue; // Skip check if no events
+            continue;
         }
 
-        // Check for settled paths (stable for debounce duration)
         let now = Instant::now();
         let settled_paths: Vec<_> = pending
             .iter()
@@ -293,24 +270,16 @@ async fn debounce_loop(
             .map(|(path, _)| path.clone())
             .collect();
 
-        // Process settled paths
         for path in settled_paths {
             pending.remove(&path);
 
-            // Determine event type by checking file existence
             let event = if path.exists() {
-                // File exists - check if we've seen it before
-                // For simplicity, treat all existing files as Modified
-                // (Created vs Modified is often indistinguishable in practice)
                 WatchEvent::Modified(path)
             } else {
-                // File doesn't exist - it was deleted
                 WatchEvent::Deleted(path)
             };
 
-            // Send event
             if tx.send(event).await.is_err() {
-                // Channel closed, exit loop
                 return Ok(());
             }
         }
@@ -321,8 +290,6 @@ async fn debounce_loop(
 #[cfg(not(feature = "memory-watcher"))]
 impl MemoryWatcher {
     /// Start watching (no-op when feature is disabled).
-    ///
-    /// Returns an empty channel that will never yield events.
     pub async fn start(&self) -> Result<mpsc::Receiver<WatchEvent>> {
         let (_tx, rx) = mpsc::channel(1);
         Ok(rx)
@@ -331,6 +298,160 @@ impl MemoryWatcher {
     /// Stop watching (no-op when feature is disabled).
     pub async fn stop(&self) {
         // No-op
+    }
+}
+
+// ============================================================================
+// Auto-index handler
+// ============================================================================
+
+/// Handler that processes file watcher events and triggers auto-indexing.
+///
+/// Connects `MemoryWatcher` events to index regeneration and embedding updates.
+/// When a `.md` file is created or modified:
+/// - Regenerates the scenario's `_INDEX.md`
+/// - Upserts the file's embedding in SQLite
+///
+/// When a `.md` file is deleted:
+/// - Regenerates the scenario's `_INDEX.md`
+/// - Deletes the file's embedding from SQLite
+pub struct AutoIndexHandler {
+    index_manager: super::index::FileIndexManager,
+    embedding_store: super::embedding_store::EmbeddingStore,
+    base_dir: PathBuf,
+}
+
+impl AutoIndexHandler {
+    /// Create a new auto-index handler.
+    pub fn new(
+        index_manager: super::index::FileIndexManager,
+        embedding_store: super::embedding_store::EmbeddingStore,
+        base_dir: PathBuf,
+    ) -> Self {
+        Self {
+            index_manager,
+            embedding_store,
+            base_dir,
+        }
+    }
+
+    /// Process a single watch event.
+    ///
+    /// For Created/Modified events:
+    /// 1. Extract the scenario from the file path
+    /// 2. Regenerate the scenario index via `FileIndexManager`
+    /// 3. Read the file frontmatter and upsert embedding
+    ///
+    /// For Deleted events:
+    /// 1. Extract the scenario from the file path
+    /// 2. Regenerate the scenario index
+    /// 3. Delete the embedding from `EmbeddingStore`
+    pub async fn process_event(&self, event: &WatchEvent) {
+        let path = event.path();
+
+        // Extract relative path for scenario detection
+        let rel_path = match relative_path(path, &self.base_dir) {
+            Some(p) => p,
+            None => {
+                tracing::debug!(
+                    "AutoIndex: path outside base dir: {:?}",
+                    path.display()
+                );
+                return;
+            }
+        };
+
+        let scenario = match scenario_from_path(&rel_path) {
+            Some(s) => s,
+            None => {
+                tracing::debug!(
+                    "AutoIndex: unknown scenario for {:?}",
+                    rel_path.display()
+                );
+                return;
+            }
+        };
+
+        // Always regenerate the scenario index
+        if let Err(e) = self.index_manager.regenerate(scenario).await {
+            tracing::error!(
+                "AutoIndex: failed to regenerate {:?}: {}",
+                scenario, e
+            );
+        }
+
+        match event {
+            WatchEvent::Created(_) | WatchEvent::Modified(_) => {
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                if let Ok(content) = tokio::fs::read_to_string(path).await {
+                    if let Ok((meta, _)) =
+                        super::frontmatter::parse_memory_file(&content)
+                    {
+                        let embedding = vec![0.0f32; 384]; // TODO: actual embedder
+                        match self
+                            .embedding_store
+                            .upsert(
+                                &filename,
+                                scenario.dir_name(),
+                                &meta.tags,
+                                meta.frequency,
+                                &embedding,
+                                meta.tokens as u32,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                tracing::debug!(
+                                    "AutoIndex: upserted embedding for {}",
+                                    filename
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "AutoIndex: failed to upsert embedding: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            WatchEvent::Deleted(_) => {
+                let path_str = path.to_string_lossy();
+                match self.embedding_store.delete(&path_str).await {
+                    Ok(()) => {
+                        tracing::debug!(
+                            "AutoIndex: deleted embedding for {}",
+                            path_str
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "AutoIndex: failed to delete embedding: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start listening in a loop, processing events from a watcher.
+    ///
+    /// This method runs in a background task, draining events from the watcher
+    /// channel and processing each one via `process_event`.
+    pub async fn run(
+        &self,
+        mut rx: mpsc::Receiver<WatchEvent>,
+    ) {
+        while let Some(event) = rx.recv().await {
+            self.process_event(&event).await;
+        }
+        tracing::info!("AutoIndex handler stopped");
     }
 }
 
@@ -344,11 +465,8 @@ mod tests {
 
     #[test]
     fn test_should_ignore_history() {
-        // Unix paths
         assert!(should_ignore(Path::new("knowledge/.history/old.md")));
         assert!(should_ignore(Path::new(".history/file.md")));
-
-        // Windows paths
         assert!(should_ignore(Path::new("knowledge\\.history\\old.md")));
     }
 
@@ -382,7 +500,6 @@ mod tests {
 
     #[test]
     fn test_scenario_from_path() {
-        // Valid scenarios
         let path = PathBuf::from("knowledge/rust-async.md");
         assert_eq!(Some(Scenario::Knowledge), scenario_from_path(&path));
 
@@ -401,24 +518,32 @@ mod tests {
         let path = PathBuf::from("reference/doc-link.md");
         assert_eq!(Some(Scenario::Reference), scenario_from_path(&path));
 
-        // Invalid scenario
         let path = PathBuf::from("invalid/file.md");
         assert_eq!(None, scenario_from_path(&path));
 
-        // Empty path
         let path = PathBuf::from("");
         assert_eq!(None, scenario_from_path(&path));
 
-        // File only (no directory)
         let path = PathBuf::from("file.md");
         assert_eq!(None, scenario_from_path(&path));
+    }
+
+    #[test]
+    fn test_relative_path_extraction() {
+        let base = Path::new("/home/user/.gasket/memory");
+        let full = Path::new("/home/user/.gasket/memory/knowledge/rust.md");
+        let rel = relative_path(full, base);
+        assert_eq!(Some(PathBuf::from("knowledge/rust.md")), rel);
+
+        // Path outside base_dir
+        let outside = Path::new("/tmp/other.md");
+        assert_eq!(None, relative_path(outside, base));
     }
 
     #[test]
     fn test_watcher_config_default() {
         let config = WatcherConfig::default();
         assert_eq!(2000, config.debounce_ms);
-        // base_dir should point to ~/.gasket/memory
         let path_str = config.base_dir.to_string_lossy();
         assert!(
             path_str.contains(".gasket") && path_str.contains("memory"),
@@ -458,11 +583,7 @@ mod tests {
             debounce_ms: 100,
         };
         let watcher = MemoryWatcher::new(config);
-
-        // Start watcher (should create base_dir)
         let _rx = watcher.start().await.unwrap();
-
-        // Verify base_dir was created
         assert!(base_dir.exists());
     }
 
@@ -472,35 +593,30 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir = temp_dir.path().join("memory");
 
-        // Create knowledge subdirectory
         tokio::fs::create_dir_all(base_dir.join("knowledge"))
             .await
             .unwrap();
 
         let config = WatcherConfig {
             base_dir: base_dir.clone(),
-            debounce_ms: 100, // Short debounce for testing
+            debounce_ms: 100,
         };
         let watcher = MemoryWatcher::new(config);
         let mut rx = watcher.start().await.unwrap();
 
-        // Create a new file
         let test_file = base_dir.join("knowledge/test.md");
         tokio::fs::write(&test_file, "# Test\n\nContent")
             .await
             .unwrap();
 
-        // Wait for debounce + small buffer
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Check for event (timeout if no event)
         let timeout = Duration::from_secs(2);
         let event = tokio::time::timeout(timeout, rx.recv()).await;
 
         if let Ok(Some(event)) = event {
             assert!(event.path().ends_with("knowledge/test.md"));
         }
-        // If timeout, that's okay for this test (timing-dependent)
     }
 
     #[cfg(feature = "memory-watcher")]
@@ -520,22 +636,14 @@ mod tests {
         let watcher = MemoryWatcher::new(config);
         let mut rx = watcher.start().await.unwrap();
 
-        // Create an _INDEX.md file (should be ignored)
         let index_file = base_dir.join("knowledge/_INDEX.md");
         tokio::fs::write(&index_file, "# Index").await.unwrap();
 
-        // Wait for debounce
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Should not receive any event (channel stays empty)
         let timeout = Duration::from_millis(100);
         let result = tokio::time::timeout(timeout, rx.recv()).await;
-
-        // Should timeout (no event received)
-        assert!(
-            result.is_err(),
-            "Should not receive events for _INDEX.md files"
-        );
+        assert!(result.is_err(), "Should not receive events for _INDEX.md files");
     }
 
     #[cfg(not(feature = "memory-watcher"))]
@@ -543,14 +651,7 @@ mod tests {
     async fn test_watcher_noop_without_feature() {
         let watcher = MemoryWatcher::with_defaults();
         let mut rx = watcher.start().await.unwrap();
-
-        // Channel should be closed immediately (sender dropped)
-        // recv() should return None immediately, not timeout
         let result = rx.recv().await;
-
-        assert!(
-            result.is_none(),
-            "Channel should return None when closed without feature"
-        );
+        assert!(result.is_none(), "Channel should return None when closed without feature");
     }
 }

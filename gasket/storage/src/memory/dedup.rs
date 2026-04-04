@@ -106,12 +106,23 @@ impl DedupScanner {
         }
     }
 
-    /// Run dedup scan across all scenarios.
+    /// Run dedup scan across all scenarios using per-file Top-K search.
     ///
-    /// Compares embeddings pairwise within each scenario, flags pairs above
-    /// threshold, and inserts them into the dedup_reports table.
+    /// Instead of O(N²) pairwise comparison, for each memory embedding we use
+    /// the existing `search_by_similarity` to find the Top-K nearest neighbors.
+    /// This reduces complexity from O(N²) to O(N*K) where K is the neighbor limit.
+    ///
+    /// # Arguments
+    /// * `top_k` - Number of nearest neighbors to check per file (default: 10)
     pub async fn run_scan(&self) -> Result<DedupReport> {
+        self.run_scan_with_k(10).await
+    }
+
+    /// Run dedup scan with a custom Top-K neighbor limit.
+    pub async fn run_scan_with_k(&self, top_k: usize) -> Result<DedupReport> {
         let mut report = DedupReport::default();
+
+        use std::collections::HashSet;
 
         for scenario in Scenario::all() {
             report.scenarios_scanned += 1;
@@ -126,22 +137,51 @@ impl DedupScanner {
                 }
             };
 
-            // Compute pairwise similarity
+            // Track seen pairs to avoid duplicates (A→B and B→A)
+            let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
             let mut pairs: Vec<DedupPair> = Vec::new();
-            for i in 0..embeddings.len() {
-                for j in (i + 1)..embeddings.len() {
-                    let (path_a, vec_a) = &embeddings[i];
-                    let (path_b, vec_b) = &embeddings[j];
 
-                    let sim = Self::cosine_similarity(vec_a, vec_b);
-                    if sim > self.similarity_threshold {
+            for (path, vec) in &embeddings {
+                // Use search_by_similarity to find Top-K nearest neighbors
+                let neighbors = match self
+                    .embedding_store
+                    .search_by_similarity(vec, Some(*scenario), top_k)
+                    .await
+                {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::error!("Failed to search neighbors for {}: {}", path, e);
+                        report.errors += 1;
+                        continue;
+                    }
+                };
+
+                for hit in neighbors {
+                    // Skip self-matches
+                    if hit.memory_path == *path {
+                        continue;
+                    }
+
+                    // Normalize pair ordering to avoid duplicates
+                    let pair_key = if *path < hit.memory_path {
+                        (path.clone(), hit.memory_path.clone())
+                    } else {
+                        (hit.memory_path.clone(), path.clone())
+                    };
+
+                    if seen_pairs.contains(&pair_key) {
+                        continue;
+                    }
+                    seen_pairs.insert(pair_key.clone());
+
+                    if hit.similarity > self.similarity_threshold {
                         report.pairs_found += 1;
                         pairs.push(DedupPair {
-                            memory_a: path_a.clone(),
-                            memory_b: path_b.clone(),
+                            memory_a: pair_key.0,
+                            memory_b: pair_key.1,
                             scenario: *scenario,
-                            similarity: sim,
-                            suggestion: DedupSuggestion::from_similarity(sim),
+                            similarity: hit.similarity,
+                            suggestion: DedupSuggestion::from_similarity(hit.similarity),
                         });
                     }
                 }

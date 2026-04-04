@@ -54,7 +54,9 @@ pub use retrieval::{RetrievalEngine, SearchResult};
 pub use lifecycle::{AccessEntry, AccessLog, DecayReport, FlushReport, FrequencyManager};
 
 // Re-export file watcher
-pub use watcher::{scenario_from_path, should_ignore, MemoryWatcher, WatchEvent, WatcherConfig};
+pub use watcher::{
+    scenario_from_path, should_ignore, AutoIndexHandler, MemoryWatcher, WatchEvent, WatcherConfig,
+};
 
 // Re-export deduplication scanner
 pub use dedup::{DedupPair, DedupReport, DedupReportEntry, DedupScanner, DedupSuggestion};
