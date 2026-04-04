@@ -1,581 +1,1451 @@
 # 历史记录模块重新设计实现计划
 
-> 基于规格: `docs/superpowers/specs/2026-04-04-history-redesign-design.md`
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-## 计划概述
+**Goal:** 通过接口优先边界重构，将历史记录模块重构为事件溯源 + CQRS 架构
 
-**目标**: 将历史记录模块重构为事件溯源 + 物化视图（CQRS）架构
+**Architecture:** 引入 HistoryCoordinator 作为 Agent Loop 的唯一历史相关入口，提取 EventStore trait 和 MemoryProvider trait 收窄职责边界，通过 MaterializationEngine + EventHandler 包装现有组件实现事件驱动物化。
 
-**总工期**: 8-10 周
+**Tech Stack:** Rust (edition 2021), tokio (async runtime), sqlx (SQLite), tokio::sync::broadcast (事件发布), serde_json (序列化)
 
-**关键里程碑**:
-1. EventStore 重构（2 周）
-2. MaterializationEngine 实现（3 周）
-3. 视图迁移（3 周）
-4. Agent Loop 集成（1 周）
-5. 生命周期管理（2 周）
+**Spec:** `docs/superpowers/specs/2026-04-04-history-redesign-design.md`
 
 ---
 
-## 阶段 1: EventStore 重构（1-2 周）
+## 文件结构图
 
-### 目标
-收缩 EventStore 职责为纯事件日志，添加事件订阅机制
+### 新建文件
 
-### 任务清单
+| 文件 | 职责 |
+|---|---|
+| `gasket/engine/src/agent/history_coordinator.rs` | HistoryCoordinator + HistoryQuery + HistoryResult |
+| `gasket/engine/src/agent/materialization.rs` | MaterializationEngine + EventHandler trait + HandlerContext + Checkpoint + CheckpointStore |
+| `gasket/engine/src/agent/handlers/mod.rs` | Handler 模块导出 |
+| `gasket/engine/src/agent/handlers/indexing_handler.rs` | IndexingHandler |
+| `gasket/engine/src/agent/handlers/compaction_handler.rs` | CompactionHandler |
+| `gasket/engine/src/agent/handlers/memory_update_handler.rs` | MemoryUpdateHandler |
 
-#### 1.1 数据模型扩展
-- [ ] 在 `types/src/session_event.rs` 添加 `sequence: i64` 字段
-- [ ] 在 `types/src/session_event.rs` 添加 `schema_version: u32` 字段
-- [ ] 更新 `SessionEvent` 构造函数，自动设置 `schema_version = 1`
-- [ ] 在 `storage/src/event_store.rs` 的 SQLite schema 添加 `sequence` 列（自增）
-- [ ] 在 `storage/src/event_store.rs` 的 SQLite schema 添加 `schema_version` 列（默认 1）
+### 修改文件
 
-**文件**: 
-- `gasket/types/src/session_event.rs`
-- `gasket/storage/src/event_store.rs`
+| 文件 | 变更 |
+|---|---|
+| `gasket/storage/src/event_store.rs` | 添加 broadcast channel、sequence 列、EventStore trait impl |
+| `gasket/storage/src/lib.rs` | 导出 EventStore trait |
+| `gasket/engine/src/agent/mod.rs` | 添加新模块 |
+| `gasket/engine/src/agent/context.rs` | 内部使用 HistoryCoordinator |
+| `gasket/engine/src/agent/loop_.rs` | 通过 Coordinator 调用 |
+| `gasket/engine/src/agent/memory_manager.rs` | 实现 MemoryProvider trait |
 
-**验证**: 运行现有测试，确保向后兼容
+---
 
+## Phase 1: Facade 引入
 
-#### 1.2 事件订阅机制
-- [ ] 在 `storage/src/event_store.rs` 添加 `EventSubscriber` trait
-- [ ] 实现 `subscribe()` 方法，支持注册回调
-- [ ] 实现 `publish()` 内部方法，在 `append_event()` 后调用
-- [ ] 使用 `tokio::sync::broadcast` 实现发布-订阅
-- [ ] 添加订阅者管理（注册、取消注册）
+> 目标：创建 HistoryCoordinator 门面，Agent Loop 行为不变
 
-**接口设计**:
+### Task 1: 定义 HistoryQuery 和 HistoryResult 类型
+
+**Files:**
+- Create: `gasket/engine/src/agent/history_coordinator.rs`
+
+- [ ] **Step 1: 创建 history_coordinator.rs，定义查询和结果类型**
+
 ```rust
-pub trait EventSubscriber: Send + Sync {
-    fn on_event(&self, event: &SessionEvent) -> Result<()>;
+// gasket/engine/src/agent/history_coordinator.rs
+
+use chrono::{DateTime, Utc};
+use gasket_types::session_event::SessionEvent;
+use gasket_storage::memory::types::{MemoryHit, MemoryQuery, MemoryContext};
+
+/// 历史查询意图 — 唯一的查询入口类型
+#[derive(Debug)]
+pub enum HistoryQuery {
+    /// 获取会话最近上下文（token 预算内）
+    /// 路由到 ContextCompactor
+    SessionContext {
+        session_key: String,
+        token_budget: usize,
+    },
+    /// 获取最新摘要
+    /// 路由到 ContextCompactor::load_summary()
+    LatestSummary {
+        session_key: String,
+    },
+    /// 跨会话语义搜索
+    /// 路由到 MemoryProvider::search()
+    SemanticSearch {
+        query: String,
+        top_k: usize,
+    },
+    /// 三阶段记忆加载
+    /// 路由到 MemoryProvider::load_for_context()
+    MemoryContext {
+        query: MemoryQuery,
+    },
+    /// 时间范围原始事件
+    /// 路由到 EventStore::query()
+    TimeRange {
+        session_key: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
+}
+
+/// 历史查询结果
+#[derive(Debug)]
+pub enum HistoryResult {
+    Context(Vec<String>),            // Compactor 返回的消息文本
+    Summary(Option<String>),         // Compactor 返回的摘要
+    Memories(Vec<MemoryHit>),        // MemoryProvider 返回
+    MemoryContext(MemoryContext),     // MemoryProvider 返回
+    Events(Vec<SessionEvent>),       // EventStore 返回
+}
+```
+
+- [ ] **Step 2: 运行编译验证类型定义**
+
+Run: `cargo build --package gasket-engine 2>&1 | head -20`
+Expected: 编译错误 — mod 未注册（下一步注册）
+
+- [ ] **Step 3: 在 agent/mod.rs 中注册模块**
+
+在 `gasket/engine/src/agent/mod.rs` 的 `mod` 块中添加:
+```rust
+pub mod history_coordinator;
+```
+
+在 pub use 块中添加:
+```rust
+pub use history_coordinator::{HistoryQuery, HistoryResult};
+```
+
+- [ ] **Step 4: 运行编译确认通过**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: `Finished` (可能有 warning 但无 error)
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add gasket/engine/src/agent/history_coordinator.rs gasket/engine/src/agent/mod.rs
+git commit -m "feat(engine): add HistoryQuery and HistoryResult types"
+```
+
+---
+
+### Task 2: 实现 HistoryCoordinator 门面
+
+**Files:**
+- Modify: `gasket/engine/src/agent/history_coordinator.rs`
+
+- [ ] **Step 1: 添加 HistoryCoordinator struct 和路由方法**
+
+在 `history_coordinator.rs` 中追加（在 imports 之后）:
+
+```rust
+use std::sync::Arc;
+use gasket_storage::EventStore;
+use crate::agent::compactor::ContextCompactor;
+use crate::agent::memory_manager::MemoryManager;
+
+/// 历史查询协调器 — Agent Loop 的唯一历史相关接口
+///
+/// 薄路由层：根据查询意图路由到最优组件。
+/// 不包含业务逻辑，所有计算委托给现有组件。
+pub struct HistoryCoordinator {
+    event_store: Arc<EventStore>,
+    compactor: Arc<ContextCompactor>,
+    memory: Arc<MemoryManager>,
+}
+
+impl HistoryCoordinator {
+    pub fn new(
+        event_store: Arc<EventStore>,
+        compactor: Arc<ContextCompactor>,
+        memory: Arc<MemoryManager>,
+    ) -> Self {
+        Self { event_store, compactor, memory }
+    }
+
+    /// 统一查询入口
+    pub async fn query(&self, query: HistoryQuery) -> anyhow::Result<HistoryResult> {
+        match query {
+            HistoryQuery::SessionContext { session_key, token_budget } => {
+                // TODO Phase 1: 直接委托给现有逻辑
+                // Phase 2+: 委托给 ContextCompactor::get_context()
+                todo!("Phase 1 — wire to existing process_history")
+            }
+            HistoryQuery::LatestSummary { session_key } => {
+                todo!("Phase 1 — wire to existing load_latest_summary")
+            }
+            HistoryQuery::SemanticSearch { query, top_k } => {
+                todo!("Phase 1 — wire to existing recall_history")
+            }
+            HistoryQuery::MemoryContext { query } => {
+                let ctx = self.memory.load_for_context(&query).await?;
+                Ok(HistoryResult::MemoryContext(ctx))
+            }
+            HistoryQuery::TimeRange { session_key, start, end } => {
+                let events = self.event_store
+                    .get_branch_history(&session_key, "main")
+                    .await?;
+                let filtered: Vec<_> = events
+                    .into_iter()
+                    .filter(|e| e.created_at >= start && e.created_at <= end)
+                    .collect();
+                Ok(HistoryResult::Events(filtered))
+            }
+        }
+    }
+
+    /// 保存事件 — 委托给 EventStore
+    pub async fn save_event(
+        &self,
+        event: &gasket_types::session_event::SessionEvent,
+    ) -> anyhow::Result<()> {
+        self.event_store.append_event(event).await?;
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 2: 在 mod.rs 中导出 HistoryCoordinator**
+
+在 `gasket/engine/src/agent/mod.rs` 的 `pub use` 中添加:
+```rust
+pub use history_coordinator::HistoryCoordinator;
+```
+
+- [ ] **Step 3: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过（todo! 宏会 panic 但编译无 error）
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/history_coordinator.rs gasket/engine/src/agent/mod.rs
+git commit -m "feat(engine): add HistoryCoordinator facade with routing"
+```
+
+---
+
+### Task 3: 在 AgentContext 中注入 HistoryCoordinator
+
+**Files:**
+- Modify: `gasket/engine/src/agent/context.rs`
+
+- [ ] **Step 1: 在 PersistentContext 中添加 coordinator 字段**
+
+在 `context.rs` 的 `PersistentContext` struct 中添加:
+```rust
+pub struct PersistentContext {
+    pub event_store: Arc<EventStore>,
+    pub sqlite_store: Arc<gasket_storage::SqliteStore>,
+    pub coordinator: Option<Arc<HistoryCoordinator>>,  // NEW — Phase 1 可选
+    // ... 其余字段 ...
+}
+```
+
+- [ ] **Step 2: 添加 coordinator setter 方法**
+
+在 `PersistentContext` impl 中添加:
+```rust
+pub fn set_coordinator(&mut self, coordinator: Arc<HistoryCoordinator>) {
+    self.coordinator = Some(coordinator);
+}
+```
+
+- [ ] **Step 3: 运行编译和测试**
+
+Run: `cargo build --package gasket-engine && cargo test --package gasket-engine 2>&1 | tail -10`
+Expected: 编译通过，现有测试通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/context.rs
+git commit -m "feat(engine): add optional HistoryCoordinator to PersistentContext"
+```
+
+---
+
+### Task 4: 实现 SessionContext 和 LatestSummary 路由
+
+**Files:**
+- Modify: `gasket/engine/src/agent/history_coordinator.rs`
+
+- [ ] **Step 1: 实现 SessionContext 路由**
+
+替换 HistoryCoordinator 中 `SessionContext` 的 `todo!()`:
+
+```rust
+HistoryQuery::SessionContext { session_key, token_budget } => {
+    // Phase 1: 委托给现有 get_branch_history + process_history
+    let events = self.event_store
+        .get_branch_history(&session_key, "main")
+        .await?;
+
+    // 简单 token budget 裁剪：从最近事件开始，直到超出预算
+    let mut selected = Vec::new();
+    let mut tokens_used = 0;
+    for event in events.into_iter().rev() {
+        let event_tokens = event.metadata.content_token_len;
+        if tokens_used + event_tokens > token_budget {
+            break;
+        }
+        tokens_used += event_tokens;
+        selected.push(event.content);
+    }
+    selected.reverse();
+    Ok(HistoryResult::Context(selected))
+}
+```
+
+- [ ] **Step 2: 实现 LatestSummary 路由**
+
+替换 `LatestSummary` 的 `todo!()`:
+
+```rust
+HistoryQuery::LatestSummary { session_key } => {
+    let summary = self.event_store
+        .get_latest_summary(&session_key, "main")
+        .await?;
+    Ok(HistoryResult::Summary(summary.map(|e| e.content)))
+}
+```
+
+- [ ] **Step 3: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/history_coordinator.rs
+git commit -m "feat(engine): implement SessionContext and LatestSummary routing"
+```
+
+---
+
+### Task 5: 实现 SemanticSearch 路由
+
+**Files:**
+- Modify: `gasket/engine/src/agent/history_coordinator.rs`
+
+- [ ] **Step 1: 实现 SemanticSearch 路由**
+
+替换 `SemanticSearch` 的 `todo!()`:
+
+```rust
+HistoryQuery::SemanticSearch { query, top_k } => {
+    // Phase 1: 委托给 MemoryManager 的 search
+    let hits = self.memory.search(&query, top_k).await?;
+    Ok(HistoryResult::Memories(hits))
+}
+```
+
+注意：需要确认 `MemoryManager` 是否有 `search()` 公共方法。如果没有，需要先在 `MemoryManager` 中暴露。
+
+- [ ] **Step 2: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 3: 运行全量测试**
+
+Run: `cargo test --workspace 2>&1 | tail -15`
+Expected: 所有现有测试通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/history_coordinator.rs
+git commit -m "feat(engine): implement SemanticSearch routing via MemoryManager"
+```
+
+---
+
+## Phase 2: Trait 提取
+
+> 目标：从具体类型提取 EventStore trait 和 MemoryProvider trait，Coordinator 依赖 trait
+
+### Task 6: 添加 sequence 列到 SessionEvent
+
+**Files:**
+- Modify: `gasket/types/src/session_event.rs`
+- Modify: `gasket/storage/src/event_store.rs`
+
+- [ ] **Step 1: 在 SessionEvent struct 中添加 sequence 字段**
+
+在 `gasket/types/src/session_event.rs` 的 `SessionEvent` struct 中添加:
+```rust
+pub struct SessionEvent {
+    // ... 现有字段 ...
+    /// 单调递增序列号，用于增量同步和 checkpoint
+    pub sequence: i64,
+}
+```
+
+- [ ] **Step 2: 在 SessionEvent 的构造处添加默认值**
+
+找到所有创建 `SessionEvent` 的位置，添加 `sequence: 0` 作为默认值。
+使用 grep 查找:
+```bash
+grep -rn "SessionEvent {" gasket/ --include="*.rs"
+```
+
+每个构造处添加 `sequence: 0`（后续在 append_event 时由 EventStore 生成真实值）。
+
+- [ ] **Step 3: 在 EventStore 的 SQL schema 中添加 sequence 列**
+
+在 `gasket/storage/src/event_store.rs` 的建表语句中添加:
+```sql
+sequence INTEGER NOT NULL DEFAULT 0,
+```
+
+- [ ] **Step 4: 在 append_event 中生成 sequence 值**
+
+在 `EventStore::append_event()` 方法中，插入前查询当前最大 sequence 并 +1:
+```rust
+let max_seq: i64 = sqlx::query_scalar(
+    "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?"
+)
+.bind(&event.session_key)
+.fetch_one(&*self.pool)
+.await?;
+
+// 插入时使用 max_seq + 1
+```
+
+- [ ] **Step 5: 在 EventRow 的 row_to_event 映射中添加 sequence**
+
+- [ ] **Step 6: 运行编译和测试**
+
+Run: `cargo build --workspace && cargo test --workspace 2>&1 | tail -15`
+Expected: 编译通过，所有测试通过
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add gasket/types/src/session_event.rs gasket/storage/src/event_store.rs
+git commit -m "feat(storage): add sequence column to SessionEvent for incremental sync"
+```
+
+---
+
+### Task 7: 定义 EventStore trait
+
+**Files:**
+- Modify: `gasket/storage/src/event_store.rs`
+- Modify: `gasket/storage/src/lib.rs`
+
+- [ ] **Step 1: 在 event_store.rs 顶部定义 EventStore trait**
+
+```rust
+use tokio::sync::broadcast;
+
+/// EventStore trait — 事件日志的窄接口
+///
+/// 职责：追加事件、查询事件、订阅事件流
+/// 不包含：截断、摘要管理、embedding 生成
+#[async_trait::async_trait]
+pub trait EventStoreTrait: Send + Sync {
+    /// 追加事件到存储
+    async fn append(&self, event: &SessionEvent) -> Result<EventId, StoreError>;
+
+    /// 按过滤条件查询事件
+    async fn query_events(&self, filter: EventFilter) -> Result<Vec<SessionEvent>, StoreError>;
+
+    /// 订阅新事件流
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent>;
+}
+
+/// 事件查询过滤条件
+#[derive(Debug, Default)]
+pub struct EventFilter {
+    pub session_key: Option<String>,
+    pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    pub event_types: Option<Vec<EventType>>,
+    pub event_ids: Option<Vec<Uuid>>,
+    pub limit: Option<usize>,
+    pub branch: Option<String>,
+}
+```
+
+注意：trait 命名为 `EventStoreTrait` 以避免与现有 `EventStore` struct 冲突。在 Phase 4 中可以 rename struct。
+
+- [ ] **Step 2: 在 lib.rs 中导出 trait**
+
+在 `gasket/storage/src/lib.rs` 的 pub use 块中添加:
+```rust
+pub use event_store::{EventStoreTrait, EventFilter};
+```
+
+- [ ] **Step 3: 运行编译**
+
+Run: `cargo build --package gasket-storage 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/storage/src/event_store.rs gasket/storage/src/lib.rs
+git commit -m "feat(storage): define EventStoreTrait with append, query, subscribe"
+```
+
+---
+
+### Task 8: 为 SqliteEventStore 添加 broadcast channel 并实现 trait
+
+**Files:**
+- Modify: `gasket/storage/src/event_store.rs`
+
+- [ ] **Step 1: 在 EventStore struct 中添加 broadcast sender**
+
+```rust
+pub struct EventStore {
+    pool: SqlitePool,
+    tx: broadcast::Sender<SessionEvent>,
 }
 
 impl EventStore {
-    pub fn subscribe(&self, subscriber: Arc<dyn EventSubscriber>) -> SubscriptionId;
-    pub fn unsubscribe(&self, id: SubscriptionId);
+    pub fn new(pool: SqlitePool) -> Self {
+        let (tx, _) = broadcast::channel(64);
+        Self { pool, tx }
+    }
 }
 ```
 
-**文件**: `gasket/storage/src/event_store.rs`
+- [ ] **Step 2: 在 append_event 末尾发送 broadcast**
 
-#### 1.3 事件重放接口
-- [ ] 实现 `replay_events(from_sequence, to_sequence)` 方法
-- [ ] 支持按序列号范围查询
-- [ ] 支持按时间范围查询
-- [ ] 添加批量读取优化（每次 1000 条）
+在 `append_event()` 成功插入后:
+```rust
+// 发送通知（忽略 send 错误 — 无订阅者时正常）
+let _ = self.tx.send(event.clone());
+```
 
-**文件**: `gasket/storage/src/event_store.rs`
+- [ ] **Step 3: 实现 EventStoreTrait for EventStore**
 
-#### 1.4 移除冗余功能
-- [ ] 标记 `process_history()` 为 deprecated（保留实现）
-- [ ] 从 EventStore 移除语义搜索相关代码（保留 embedding 字段）
-- [ ] 文档注释说明职责变更
+```rust
+#[async_trait::async_trait]
+impl EventStoreTrait for EventStore {
+    async fn append(&self, event: &SessionEvent) -> Result<EventId, StoreError> {
+        self.append_event(event).await?;
+        Ok(event.id)
+    }
 
-**文件**: 
-- `gasket/storage/src/processor.rs`
-- `gasket/storage/src/event_store.rs`
+    async fn query_events(&self, filter: EventFilter) -> Result<Vec<SessionEvent>, StoreError> {
+        // 委托给现有方法
+        let session_key = filter.session_key.unwrap_or_default();
+        let branch = filter.branch.unwrap_or_else(|| "main".to_string());
+        let mut events = self.get_branch_history(&session_key, &branch).await?;
 
-### 验收标准
-- ✅ 所有现有测试通过
-- ✅ 新增字段有默认值，不破坏现有数据
-- ✅ 事件订阅机制可以注册多个订阅者
-- ✅ 事件重放可以按序列号和时间范围查询
+        // 应用过滤
+        if let Some(time_range) = filter.time_range {
+            events.retain(|e| e.created_at >= time_range.0 && e.created_at <= time_range.1);
+        }
+        if let Some(event_types) = &filter.event_types {
+            events.retain(|e| event_types.contains(&e.event_type));
+        }
+        if let Some(event_ids) = &filter.event_ids {
+            let ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
+            return self.get_events_by_ids(&session_key, &ids).await;
+        }
+        if let Some(limit) = filter.limit {
+            events.truncate(limit);
+        }
+        Ok(events)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
+        self.tx.subscribe()
+    }
+}
+```
+
+- [ ] **Step 4: 运行编译和测试**
+
+Run: `cargo build --workspace && cargo test --workspace 2>&1 | tail -15`
+Expected: 编译通过，所有测试通过
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add gasket/storage/src/event_store.rs
+git commit -m "feat(storage): add broadcast channel and implement EventStoreTrait"
+```
 
 ---
 
-## 阶段 2: MaterializationEngine 实现（2-3 周）
+### Task 9: 定义 MemoryProvider trait
 
-### 目标
-构建物化引擎核心框架，支持事件处理和 checkpoint 管理
+**Files:**
+- Create: `gasket/engine/src/agent/memory_provider.rs`
+- Modify: `gasket/engine/src/agent/mod.rs`
 
-### 任务清单
+- [ ] **Step 1: 创建 memory_provider.rs**
 
-#### 2.1 核心类型定义
-- [ ] 创建 `storage/src/materialization/mod.rs`
-- [ ] 定义 `EventHandler` trait
-- [ ] 定义 `Checkpoint` 结构体
-- [ ] 定义 `MaterializationEngine` 结构体
-- [ ] 定义 `MaterializationMetrics` 结构体
+```rust
+// gasket/engine/src/agent/memory_provider.rs
 
-**文件**: `gasket/storage/src/materialization/mod.rs`
+use anyhow::Result;
+use async_trait::async_trait;
+use gasket_storage::memory::types::{
+    MemoryHit, MemoryQuery, MemoryContext,
+};
+use gasket_types::session_event::SessionEvent;
 
+/// MemoryProvider trait — 记忆系统的查询接口
+///
+/// 从 MemoryManager 提取，保持 async 签名与现有实现匹配
+#[async_trait]
+pub trait MemoryProvider: Send + Sync {
+    /// 三阶段加载（bootstrap/scenario/on-demand）
+    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
 
-#### 2.2 Checkpoint 存储
-- [ ] 创建 SQLite 表 `materialization_checkpoints`
-- [ ] 实现 `CheckpointStore` 结构体
-- [ ] 实现 `save_checkpoint(handler_name, sequence)` 方法
-- [ ] 实现 `load_checkpoint(handler_name)` 方法
-- [ ] 实现 `reset_checkpoint(handler_name)` 方法
+    /// 语义搜索
+    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
 
-**Schema**:
-```sql
-CREATE TABLE materialization_checkpoints (
-    handler_name TEXT PRIMARY KEY,
-    last_sequence INTEGER NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
+    /// 从事件中提取知识（由 MemoryUpdateHandler 调用）
+    async fn update_from_event(&self, event: &SessionEvent) -> Result<()>;
+}
 ```
 
-**文件**: `gasket/storage/src/materialization/checkpoint.rs`
+- [ ] **Step 2: 在 mod.rs 中注册模块**
 
-#### 2.3 MaterializationEngine 实现
-- [ ] 实现 `MaterializationEngine::new()`
-- [ ] 实现 `register_handler()` 方法
-- [ ] 实现 `start()` 方法（启动事件处理循环）
-- [ ] 实现 `stop()` 方法（优雅停止）
-- [ ] 实现事件处理循环（从 checkpoint 恢复 → 订阅新事件）
-- [ ] 实现错误处理和重试逻辑
+```rust
+pub mod memory_provider;
+```
 
-**文件**: `gasket/storage/src/materialization/engine.rs`
+- [ ] **Step 3: 为 MemoryManager 实现 MemoryProvider trait**
 
-#### 2.4 失败事件处理
-- [ ] 创建 SQLite 表 `failed_events`
-- [ ] 实现失败事件记录
-- [ ] 实现定期重试机制（指数退避）
-- [ ] 实现死信队列（超过最大重试次数）
+在 `gasket/engine/src/agent/memory_manager.rs` 末尾添加:
+```rust
+#[async_trait]
+impl MemoryProvider for MemoryManager {
+    async fn load_for_context(&self, query: &MemoryQuery) -> anyhow::Result<MemoryContext> {
+        // 委托给现有方法
+        self.load_for_context(query).await
+    }
 
-**Schema**:
+    async fn search(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<MemoryHit>> {
+        // 需要在 MemoryManager 中暴露 search 方法
+        // 如果不存在，创建一个委托给 RetrievalEngine 的方法
+        todo!("expose search in MemoryManager or delegate to RetrievalEngine")
+    }
+
+    async fn update_from_event(&self, _event: &SessionEvent) -> anyhow::Result<()> {
+        // Phase 3: 由 MemoryUpdateHandler 实现
+        Ok(())
+    }
+}
+```
+
+注意：`search()` 需要确认 MemoryManager 内部是否有对应的公共方法。如果没有，需要暴露一个。
+
+- [ ] **Step 4: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -10`
+Expected: 编译通过（search 的 todo! 会在运行时 panic 但编译无 error）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add gasket/engine/src/agent/memory_provider.rs gasket/engine/src/agent/mod.rs gasket/engine/src/agent/memory_manager.rs
+git commit -m "feat(engine): define MemoryProvider trait and implement for MemoryManager"
+```
+
+---
+
+### Task 10: 更新 HistoryCoordinator 使用 trait
+
+**Files:**
+- Modify: `gasket/engine/src/agent/history_coordinator.rs`
+
+- [ ] **Step 1: 更新 HistoryCoordinator 使用泛型 trait**
+
+```rust
+use gasket_storage::{EventStoreTrait, EventFilter};
+use crate::agent::memory_provider::MemoryProvider;
+
+pub struct HistoryCoordinator {
+    event_store: Arc<dyn EventStoreTrait>,
+    compactor: Arc<ContextCompactor>,
+    memory: Arc<dyn MemoryProvider>,
+}
+
+impl HistoryCoordinator {
+    pub fn new(
+        event_store: Arc<dyn EventStoreTrait>,
+        compactor: Arc<ContextCompactor>,
+        memory: Arc<dyn MemoryProvider>,
+    ) -> Self {
+        Self { event_store, compactor, memory }
+    }
+}
+```
+
+- [ ] **Step 2: 更新路由方法使用 trait 接口**
+
+`save_event` 改用 trait:
+```rust
+pub async fn save_event(
+    &self,
+    event: &SessionEvent,
+) -> anyhow::Result<()> {
+    self.event_store.append(event).await?;
+    Ok(())
+}
+```
+
+`TimeRange` 路由改用 `query_events`:
+```rust
+HistoryQuery::TimeRange { session_key, start, end } => {
+    let events = self.event_store.query_events(EventFilter {
+        session_key: Some(session_key),
+        time_range: Some((start, end)),
+        ..Default::default()
+    }).await?;
+    Ok(HistoryResult::Events(events))
+}
+```
+
+- [ ] **Step 3: 更新 PersistentContext 的 coordinator 类型**
+
+在 `context.rs` 中将 coordinator 类型改为:
+```rust
+pub coordinator: Option<Arc<HistoryCoordinator>>,
+```
+（HistoryCoordinator 内部已使用 trait，外部类型不变）
+
+- [ ] **Step 4: 运行编译和测试**
+
+Run: `cargo build --workspace && cargo test --workspace 2>&1 | tail -15`
+Expected: 编译通过，所有测试通过
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add gasket/engine/src/agent/history_coordinator.rs gasket/engine/src/agent/context.rs
+git commit -m "refactor(engine): HistoryCoordinator uses EventStoreTrait and MemoryProvider"
+```
+
+---
+
+## Phase 3: 物化引擎接入
+
+> 目标：实现 MaterializationEngine + EventHandler，事件驱动替代直接调用
+
+### Task 11: 定义 EventHandler trait 和 HandlerContext
+
+**Files:**
+- Create: `gasket/engine/src/agent/materialization.rs`
+
+- [ ] **Step 1: 创建 materialization.rs — 定义核心类型**
+
+```rust
+// gasket/engine/src/agent/materialization.rs
+
+use std::sync::Arc;
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use gasket_storage::EventStoreTrait;
+use gasket_types::session_event::SessionEvent;
+use serde::{Serialize, Deserialize};
+
+/// Handler 上下文 — 提供事件 + 状态查询能力
+pub struct HandlerContext<'a> {
+    pub event: &'a SessionEvent,
+    pub event_store: &'a dyn EventStoreTrait,
+}
+
+/// 事件处理器 trait — 所有 handler 必须实现
+#[async_trait]
+pub trait EventHandler: Send + Sync {
+    /// 基于事件属性判断是否处理（无副作用）
+    fn can_handle(&self, event: &SessionEvent) -> bool;
+
+    /// 处理事件
+    async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()>;
+
+    /// Handler 名称（用于 checkpoint 和日志）
+    fn name(&self) -> &str;
+}
+
+/// Checkpoint — 记录每个 handler 的处理进度
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub handler_name: String,
+    pub last_sequence: i64,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+- [ ] **Step 2: 实现 CheckpointStore**
+
+在同一个文件中追加:
+```rust
+use std::sync::Arc;
+use gasket_storage::SqliteStore;
+
+/// Checkpoint 存储 — 复用 SqliteStore 的 kv 接口
+/// key: "mat:checkpoint:{handler_name}"
+/// value: JSON 序列化的 Checkpoint
+pub struct CheckpointStore {
+    store: Arc<SqliteStore>,
+}
+
+impl CheckpointStore {
+    pub fn new(store: Arc<SqliteStore>) -> Self {
+        Self { store }
+    }
+
+    pub async fn load(&self, handler_name: &str) -> Result<Option<Checkpoint>> {
+        let key = format!("mat:checkpoint:{}", handler_name);
+        let val = self.store.read_raw(&key).await?;
+        match val {
+            Some(v) => Ok(Some(serde_json::from_str(&v)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn save(&self, checkpoint: &Checkpoint) -> Result<()> {
+        let key = format!("mat:checkpoint:{}", checkpoint.handler_name);
+        let val = serde_json::to_string(checkpoint)?;
+        self.store.write_raw(&key, &val).await?;
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 3: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/materialization.rs
+git commit -m "feat(engine): define EventHandler trait, HandlerContext, Checkpoint, CheckpointStore"
+```
+
+---
+
+### Task 12: 实现失败事件表和 FailedEventStore
+
+**Files:**
+- Modify: `gasket/engine/src/agent/materialization.rs`
+
+- [ ] **Step 1: 在 event_store.rs 中添加 failed_events 建表语句**
+
+在 `gasket/storage/src/event_store.rs` 的初始化方法中，添加建表:
 ```sql
-CREATE TABLE failed_events (
+CREATE TABLE IF NOT EXISTS failed_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL,
     handler_name TEXT NOT NULL,
-    event_id TEXT NOT NULL,
-    event_sequence INTEGER NOT NULL,
-    error_message TEXT NOT NULL,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    last_retry_at TIMESTAMP,
-    created_at TIMESTAMP NOT NULL
+    error_text TEXT NOT NULL,
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 5,
+    next_retry_at TEXT NOT NULL,
+    dead_letter INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_failed_events_dedup
+    ON failed_events(event_id, handler_name);
 ```
 
-**文件**: `gasket/storage/src/materialization/failed_events.rs`
+- [ ] **Step 2: 在 materialization.rs 中定义 FailedEventStore**
 
+```rust
+pub struct FailedEventStore {
+    pool: SqlitePool,
+}
 
-#### 2.5 基础 SessionViewHandler 实现
-- [ ] 创建 `storage/src/materialization/handlers/session_view.rs`
-- [ ] 实现 `SessionViewHandler` 结构体
-- [ ] 实现 `EventHandler` trait
-- [ ] 实现 `can_handle()` - 处理所有事件类型
-- [ ] 实现 `handle()` - 追加事件到内存队列
-- [ ] 实现基础的 token 计数和截断逻辑
+impl FailedEventStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
 
-**文件**: `gasket/storage/src/materialization/handlers/session_view.rs`
+    pub async fn record_failure(
+        &self,
+        event_id: &str,
+        handler_name: &str,
+        error: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO failed_events
+             (event_id, handler_name, error_text, retry_count, next_retry_at)
+             VALUES (?, ?, ?, 0, datetime('now', '+30 seconds'))"
+        )
+        .bind(event_id)
+        .bind(handler_name)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 
-#### 2.6 监控指标
-- [ ] 实现 `MaterializationMetrics` 收集
-- [ ] 添加 `event_lag` 计算（最新事件序列号 - checkpoint）
-- [ ] 添加 `processing_latency_ms` 统计
-- [ ] 添加 `failed_events_count` 统计
-- [ ] 集成到现有的 OpenTelemetry 系统
+    pub async fn mark_dead_letter(
+        &self,
+        event_id: &str,
+        handler_name: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE failed_events SET dead_letter = 1
+             WHERE event_id = ? AND handler_name = ?"
+        )
+        .bind(event_id)
+        .bind(handler_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+```
 
-**文件**: `gasket/storage/src/materialization/metrics.rs`
+- [ ] **Step 3: 运行编译**
 
-### 验收标准
-- ✅ MaterializationEngine 可以启动和停止
-- ✅ 可以注册多个 EventHandler
-- ✅ Checkpoint 机制正常工作（重启后从上次位置继续）
-- ✅ 失败事件会被记录和重试
-- ✅ SessionViewHandler 可以处理事件并维护内存队列
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/storage/src/event_store.rs gasket/engine/src/agent/materialization.rs
+git commit -m "feat(storage): add failed_events table and FailedEventStore"
+```
 
 ---
 
-## 阶段 3: 视图迁移（2-3 周）
+### Task 13: 实现 MaterializationEngine 核心
 
-### 目标
-实现三个物化视图并迁移现有功能
+**Files:**
+- Modify: `gasket/engine/src/agent/materialization.rs`
+- Modify: `gasket/engine/src/agent/mod.rs`
 
-### 任务清单
+- [ ] **Step 1: 实现 MaterializationEngine struct 和事件处理循环**
 
-#### 3.1 SessionView 完整实现
-- [ ] 创建 `storage/src/views/session_view.rs`
-- [ ] 实现 `SessionView` 结构体（内存 + SQLite 混合）
-- [ ] 实现 `get_context(session_key, token_budget)` 方法
-- [ ] 实现摘要生成逻辑（复用 ContextCompactor）
-- [ ] 实现 token 预算管理
-- [ ] 创建 SQLite 表存储摘要
+```rust
+use tokio::sync::broadcast;
 
-**Schema**:
-```sql
-CREATE TABLE session_summaries (
-    session_key TEXT PRIMARY KEY,
-    summary TEXT NOT NULL,
-    token_count INTEGER NOT NULL,
-    last_event_sequence INTEGER NOT NULL,
-    updated_at TIMESTAMP NOT NULL
+/// 物化引擎 — 事件驱动的处理管道
+pub struct MaterializationEngine {
+    event_store: Arc<dyn EventStoreTrait>,
+    handlers: Vec<Box<dyn EventHandler>>,
+    checkpoint_store: CheckpointStore,
+    failed_store: FailedEventStore,
+}
+
+impl MaterializationEngine {
+    pub fn new(
+        event_store: Arc<dyn EventStoreTrait>,
+        handlers: Vec<Box<dyn EventHandler>>,
+        checkpoint_store: CheckpointStore,
+        failed_store: FailedEventStore,
+    ) -> Self {
+        Self { event_store, handlers, checkpoint_store, failed_store }
+    }
+
+    /// 启动事件处理循环
+    /// 订阅 EventStore broadcast channel，逐事件处理
+    pub async fn run(mut self) -> Result<()> {
+        let mut rx = self.event_store.subscribe();
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Err(e) = self.process_event(&event).await {
+                        tracing::error!(
+                            "MaterializationEngine error processing event {}: {:?}",
+                            event.id, e
+                        );
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("MaterializationEngine lagged {} events, will catch up", n);
+                    // Checkpoint 保证不丢失 — 重启后从 checkpoint 恢复
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    tracing::info!("MaterializationEngine broadcast closed, shutting down");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 处理单个事件 — 遍历所有匹配的 handler
+    async fn process_event(&self, event: &SessionEvent) -> Result<()> {
+        let ctx = HandlerContext {
+            event,
+            event_store: self.event_store.as_ref(),
+        };
+
+        for handler in &self.handlers {
+            if !handler.can_handle(event) {
+                continue;
+            }
+
+            match handler.handle(&ctx).await {
+                Ok(()) => {
+                    // 推进 checkpoint
+                    let checkpoint = Checkpoint {
+                        handler_name: handler.name().to_string(),
+                        last_sequence: event.sequence,
+                        updated_at: Utc::now(),
+                    };
+                    self.checkpoint_store.save(&checkpoint).await?;
+                }
+                Err(e) => {
+                    // 记录失败
+                    let error_msg = format!("{:?}", e);
+                    self.failed_store
+                        .record_failure(&event.id.to_string(), handler.name(), &error_msg)
+                        .await?;
+                    tracing::error!(
+                        "Handler {} failed for event {}: {}",
+                        handler.name(), event.id, error_msg
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 2: 在 mod.rs 中注册模块并导出**
+
+```rust
+pub mod materialization;
+pub use materialization::{
+    EventHandler, HandlerContext, Checkpoint, CheckpointStore,
+    FailedEventStore, MaterializationEngine,
+};
+```
+
+- [ ] **Step 3: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add gasket/engine/src/agent/materialization.rs gasket/engine/src/agent/mod.rs
+git commit -m "feat(engine): implement MaterializationEngine with broadcast event loop"
+```
+
+---
+
+### Task 14: 创建 handlers 模块和 IndexingHandler
+
+**Files:**
+- Create: `gasket/engine/src/agent/handlers/mod.rs`
+- Create: `gasket/engine/src/agent/handlers/indexing_handler.rs`
+- Modify: `gasket/engine/src/agent/mod.rs`
+
+- [ ] **Step 1: 创建 handlers/mod.rs**
+
+```rust
+// gasket/engine/src/agent/handlers/mod.rs
+pub mod indexing_handler;
+pub mod compaction_handler;
+pub mod memory_update_handler;
+
+pub use indexing_handler::IndexingHandler;
+pub use compaction_handler::CompactionHandler;
+pub use memory_update_handler::MemoryUpdateHandler;
+```
+
+- [ ] **Step 2: 创建 IndexingHandler**
+
+```rust
+// gasket/engine/src/agent/handlers/indexing_handler.rs
+
+use anyhow::Result;
+use async_trait::async_trait;
+use gasket_types::session_event::SessionEvent;
+use crate::agent::indexing::IndexingService;
+use crate::agent::materialization::{EventHandler, HandlerContext};
+
+/// Indexing Handler — 包装现有 IndexingService
+/// 为所有有内容的事件生成 embedding
+pub struct IndexingHandler {
+    indexing_service: IndexingService,
+}
+
+impl IndexingHandler {
+    pub fn new(indexing_service: IndexingService) -> Self {
+        Self { indexing_service }
+    }
+}
+
+#[async_trait]
+impl EventHandler for IndexingHandler {
+    fn can_handle(&self, event: &SessionEvent) -> bool {
+        !event.content.is_empty()
+    }
+
+    async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()> {
+        let events = std::slice::from_ref(ctx.event);
+        self.indexing_service.index_events(events).await;
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "indexing"
+    }
+}
+```
+
+- [ ] **Step 3: 在 agent/mod.rs 中注册 handlers 模块**
+
+```rust
+pub mod handlers;
+```
+
+- [ ] **Step 4: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -10`
+Expected: 编译通过
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add gasket/engine/src/agent/handlers/
+git commit -m "feat(engine): create handlers module with IndexingHandler"
+```
+
+---
+
+### Task 15: 实现 CompactionHandler
+
+**Files:**
+- Create: `gasket/engine/src/agent/handlers/compaction_handler.rs`
+
+- [ ] **Step 1: 创建 CompactionHandler**
+
+```rust
+// gasket/engine/src/agent/handlers/compaction_handler.rs
+
+use anyhow::Result;
+use async_trait::async_trait;
+use gasket_types::session_event::{SessionEvent, EventType};
+use gasket_storage::EventStoreTrait;
+use crate::agent::compactor::ContextCompactor;
+use crate::agent::materialization::{EventHandler, HandlerContext};
+
+const COMPACTION_EVENT_THRESHOLD: usize = 50;
+
+/// Compaction Handler — 包装现有 ContextCompactor
+/// 在 AssistantMessage 后检查会话事件数，超过阈值触发压缩
+pub struct CompactionHandler {
+    compactor: std::sync::Arc<ContextCompactor>,
+    threshold: usize,
+}
+
+impl CompactionHandler {
+    pub fn new(compactor: std::sync::Arc<ContextCompactor>) -> Self {
+        Self {
+            compactor,
+            threshold: COMPACTION_EVENT_THRESHOLD,
+        }
+    }
+
+    pub fn with_threshold(mut self, threshold: usize) -> Self {
+        self.threshold = threshold;
+        self
+    }
+}
+
+#[async_trait]
+impl EventHandler for CompactionHandler {
+    fn can_handle(&self, event: &SessionEvent) -> bool {
+        matches!(event.event_type, EventType::AssistantMessage)
+    }
+
+    async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()> {
+        // 查询当前会话事件数
+        let events = ctx.event_store.query_events(
+            gasket_storage::EventFilter {
+                session_key: Some(ctx.event.session_key.clone()),
+                ..Default::default()
+            }
+        ).await?;
+
+        if events.len() >= self.threshold {
+            // 触发压缩 — 委托给 ContextCompactor
+            let evicted: Vec<_> = events[..events.len() - 10].to_vec();
+            let _ = self.compactor.compact(
+                &ctx.event.session_key,
+                &evicted,
+                &[],
+            ).await;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "compaction"
+    }
+}
+```
+
+- [ ] **Step 2: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add gasket/engine/src/agent/handlers/compaction_handler.rs
+git commit -m "feat(engine): add CompactionHandler wrapping ContextCompactor"
+```
+
+---
+
+### Task 16: 实现 MemoryUpdateHandler
+
+**Files:**
+- Create: `gasket/engine/src/agent/handlers/memory_update_handler.rs`
+
+- [ ] **Step 1: 创建 MemoryUpdateHandler**
+
+```rust
+// gasket/engine/src/agent/handlers/memory_update_handler.rs
+
+use anyhow::Result;
+use async_trait::async_trait;
+use gasket_types::session_event::{SessionEvent, EventType};
+use crate::agent::memory_provider::MemoryProvider;
+use crate::agent::materialization::{EventHandler, HandlerContext};
+
+/// Memory Update Handler — 包装现有 MemoryManager
+/// 分析 UserMessage 事件，提取知识到记忆文件
+pub struct MemoryUpdateHandler {
+    memory: std::sync::Arc<dyn MemoryProvider>,
+}
+
+impl MemoryUpdateHandler {
+    pub fn new(memory: std::sync::Arc<dyn MemoryProvider>) -> Self {
+        Self { memory }
+    }
+}
+
+#[async_trait]
+impl EventHandler for MemoryUpdateHandler {
+    fn can_handle(&self, event: &SessionEvent) -> bool {
+        matches!(event.event_type, EventType::UserMessage)
+    }
+
+    async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()> {
+        // 委托给 MemoryProvider 的 update_from_event
+        self.memory.update_from_event(ctx.event).await
+    }
+
+    fn name(&self) -> &str {
+        "memory_update"
+    }
+}
+```
+
+- [ ] **Step 2: 运行编译**
+
+Run: `cargo build --package gasket-engine 2>&1 | tail -5`
+Expected: 编译通过
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add gasket/engine/src/agent/handlers/memory_update_handler.rs
+git commit -m "feat(engine): add MemoryUpdateHandler wrapping MemoryProvider"
+```
+
+---
+
+### Task 17: 将 MaterializationEngine 接入系统
+
+**Files:**
+- Modify: `gasket/engine/src/agent/context.rs`
+
+- [ ] **Step 1: 在 PersistentContext 中创建和启动 MaterializationEngine**
+
+在 `PersistentContext` 的构建逻辑中:
+```rust
+// 构建 handlers
+let handlers: Vec<Box<dyn EventHandler>> = vec![
+    Box::new(IndexingHandler::new(indexing_service.clone())),
+    Box::new(CompactionHandler::new(compactor.clone())),
+    Box::new(MemoryUpdateHandler::new(memory.clone())),
+];
+
+// 构建引擎
+let checkpoint_store = CheckpointStore::new(sqlite_store.clone());
+let failed_store = FailedEventStore::new(pool.clone());
+let engine = MaterializationEngine::new(
+    event_store.clone(),
+    handlers,
+    checkpoint_store,
+    failed_store,
 );
+
+// 在后台 tokio task 中运行
+tokio::spawn(async move {
+    if let Err(e) = engine.run().await {
+        tracing::error!("MaterializationEngine error: {:?}", e);
+    }
+});
 ```
 
-**文件**: `gasket/storage/src/views/session_view.rs`
+注意：具体集成位置取决于 PersistentContext 的构建方式。需要在 `AgentContext::persistent()` 或对应的 builder 中添加。
 
+- [ ] **Step 2: 运行编译和测试**
 
-#### 3.2 KnowledgeView 迁移
-- [ ] 创建 `storage/src/views/knowledge_view.rs`
-- [ ] 实现 `KnowledgeExtractor` handler
-- [ ] 复用现有的 Memory 文件系统（`storage/src/memory/`）
-- [ ] 实现知识提取规则（决策、模式、偏好识别）
-- [ ] 集成到 MaterializationEngine
+Run: `cargo build --workspace && cargo test --workspace 2>&1 | tail -15`
+Expected: 编译通过，所有测试通过
 
-**提取规则示例**:
-- 用户明确表达偏好 → profile/preferences.md
-- 做出技术选择并说明理由 → decisions/*.md
-- 学习新概念或模式 → knowledge/*.md
+- [ ] **Step 3: 提交**
 
-**文件**: `gasket/storage/src/views/knowledge_view.rs`
-
-#### 3.3 DecisionView 实现
-- [ ] 创建 `storage/src/views/decision_view.rs`
-- [ ] 创建 SQLite 表 `decisions`
-- [ ] 实现 `DecisionTracker` handler
-- [ ] 实现决策识别逻辑（关键词匹配 + 上下文分析）
-- [ ] 实现 `query_by_tags()` 方法
-- [ ] 实现 `query_by_time_range()` 方法
-
-**Schema**:
-```sql
-CREATE TABLE decisions (
-    id TEXT PRIMARY KEY,
-    session_key TEXT NOT NULL,
-    event_id TEXT NOT NULL,
-    decision_text TEXT NOT NULL,
-    context TEXT,
-    tags TEXT,
-    created_at TIMESTAMP NOT NULL,
-    FOREIGN KEY (event_id) REFERENCES events(id)
-);
-CREATE INDEX idx_decisions_tags ON decisions(tags);
-CREATE INDEX idx_decisions_created ON decisions(created_at);
-```
-
-**文件**: `gasket/storage/src/views/decision_view.rs`
-
-
-#### 3.4 ViewCoordinator 实现
-- [ ] 创建 `storage/src/views/coordinator.rs`
-- [ ] 定义 `HistoryQuery` 枚举
-- [ ] 实现 `ViewCoordinator` 结构体
-- [ ] 实现 `query()` 方法（路由逻辑）
-- [ ] 实现查询结果统一封装
-
-**文件**: `gasket/storage/src/views/coordinator.rs`
-
-#### 3.5 EmbeddingIndexer Handler
-- [ ] 创建 `storage/src/materialization/handlers/embedding_indexer.rs`
-- [ ] 实现 `EmbeddingIndexer` handler
-- [ ] 为新事件生成 embedding（如果启用 local-embedding）
-- [ ] 更新 `memory_embeddings` 表
-- [ ] 集成到 MaterializationEngine
-
-**文件**: `gasket/storage/src/materialization/handlers/embedding_indexer.rs`
-
-### 验收标准
-- ✅ SessionView 可以返回 token-budget-aware 的上下文
-- ✅ KnowledgeView 可以从事件中提取知识到 Memory 文件
-- ✅ DecisionView 可以识别和存储决策
-- ✅ ViewCoordinator 可以根据查询类型路由到正确的视图
-- ✅ 所有视图都通过 MaterializationEngine 更新
-
----
-
-## 阶段 4: Agent Loop 集成（1 周）
-
-### 目标
-替换 Agent Loop 中的历史处理逻辑
-
-### 任务清单
-
-#### 4.1 集成 ViewCoordinator
-- [ ] 在 `engine/src/agent/loop_.rs` 中引入 `ViewCoordinator`
-- [ ] 替换 `process_history()` 调用为 `coordinator.query(SessionContext)`
-- [ ] 替换 `MemoryManager` 调用为 `coordinator.query(SemanticSearch)`
-- [ ] 保留旧接口作为 deprecated wrapper（向后兼容）
-
-**文件**: `gasket/engine/src/agent/loop_.rs`
-
-
-#### 4.2 启动 MaterializationEngine
-- [ ] 在 `cli/src/commands/agent.rs` 启动时初始化 MaterializationEngine
-- [ ] 注册所有 handlers（SessionViewHandler, KnowledgeExtractor, DecisionTracker, EmbeddingIndexer）
-- [ ] 订阅 EventStore 事件
-- [ ] 在程序退出时优雅停止
-
-**文件**: `gasket/cli/src/commands/agent.rs`
-
-#### 4.3 更新测试
-- [ ] 更新 `engine/tests/` 中的集成测试
-- [ ] 添加 ViewCoordinator 的单元测试
-- [ ] 添加端到端测试（写入事件 → 视图更新 → 查询）
-
-**文件**: `gasket/engine/tests/`
-
-### 验收标准
-- ✅ Agent Loop 使用 ViewCoordinator 获取历史上下文
-- ✅ MaterializationEngine 在后台运行
-- ✅ 所有现有功能正常工作
-- ✅ 测试全部通过
-
----
-
-## 阶段 5: 生命周期管理（1-2 周）
-
-### 目标
-实现完整的数据生命周期管理
-
-### 任务清单
-
-#### 5.1 LifecycleManager 实现
-- [ ] 创建 `storage/src/lifecycle/manager.rs`
-- [ ] 实现 `LifecycleManager` 结构体
-- [ ] 实现 `LifecycleConfig` 配置
-- [ ] 实现定时任务调度（使用 tokio::time::interval）
-
-**文件**: `gasket/storage/src/lifecycle/manager.rs`
-
-
-#### 5.2 会话归档
-- [ ] 实现会话结束检测（基于 session_idle_timeout）
-- [ ] 实现 SessionView 内存清理
-- [ ] 实现知识提取触发（会话结束时）
-- [ ] 保留 EventStore 中的原始事件
-
-**文件**: `gasket/storage/src/lifecycle/session_archiver.rs`
-
-#### 5.3 知识衰减
-- [ ] 实现频率衰减逻辑（hot → warm → cold → archived）
-- [ ] 实现访问日志批量写入
-- [ ] 实现定期衰减任务（每天运行）
-- [ ] 保持 profile 场景永不衰减
-
-**文件**: `gasket/storage/src/lifecycle/frequency_decay.rs`
-
-#### 5.4 EventStore 压缩
-- [ ] 实现旧事件压缩策略
-- [ ] 保留关键事件（用户消息、重要决策）
-- [ ] 实现归档表迁移（可选）
-- [ ] 实现定期压缩任务（每周运行）
-
-**Schema**:
-```sql
-CREATE TABLE archived_events (
-    -- 与 events 表结构相同
-    -- 用于存储超过保留期的事件
-);
-```
-
-**文件**: `gasket/storage/src/lifecycle/event_compactor.rs`
-
-#### 5.5 配置集成
-- [ ] 在 `~/.gasket/config.yaml` 添加 lifecycle 配置段
-- [ ] 实现配置加载
-- [ ] 提供合理的默认值
-
-**配置示例**:
-```yaml
-lifecycle:
-  session_ttl_hours: 24
-  event_retention_days: 365
-  archive_after_days: 90
-  compress_interval_hours: 24
-```
-
-**文件**: `gasket/engine/src/config/mod.rs`
-
-### 验收标准
-- ✅ 会话结束后自动归档
-- ✅ 知识频率自动衰减
-- ✅ EventStore 定期压缩
-- ✅ 配置可以自定义生命周期参数
-
----
-
-
-## 迁移策略
-
-### 数据迁移脚本
-- [ ] 创建 `cli/src/commands/migrate.rs`
-- [ ] 实现 `migrate history-v2` 子命令
-- [ ] 为现有事件生成 `sequence` 值
-- [ ] 为现有事件设置 `schema_version = 1`
-- [ ] 验证迁移结果
-
-**文件**: `gasket/cli/src/commands/migrate.rs`
-
-### 灰度发布计划
-
-**Phase 1: 只读模式（1 周）**
-- [ ] 部署新代码，MaterializationEngine 启动但不影响写入
-- [ ] 监控视图更新延迟
-- [ ] 验证视图数据正确性
-
-**Phase 2: 双写模式（1 周）**
-- [ ] 启用 ViewCoordinator 查询
-- [ ] 保留旧的 process_history() 作为备份
-- [ ] 对比新旧系统结果
-- [ ] 修复发现的问题
-
-**Phase 3: 主写模式（1 周）**
-- [ ] ViewCoordinator 成为主查询路径
-- [ ] 旧系统只读（用于验证）
-- [ ] 监控性能和准确性
-
-**Phase 4: 完全切换（1 周）**
-- [ ] 移除旧代码
-- [ ] 清理 deprecated 接口
-- [ ] 更新文档
-
----
-
-## 风险缓解
-
-### 性能风险
-**风险**: 视图更新延迟影响用户体验
-**缓解**: 
-- 监控 `event_lag` 指标，设置告警阈值（< 100 事件）
-- 优化 handler 性能，使用批量处理
-- 必要时增加 handler 并行度
-
-### 数据一致性风险
-**风险**: 迁移过程数据不一致
-**缓解**:
-- 双写验证期间对比结果
-- 提供视图重建功能
-- 保留回滚机制
-
-### 存储膨胀风险
-**风险**: EventStore 存储快速增长
-**缓解**:
-- 尽早实现压缩机制
-- 监控存储使用量
-- 提供手动归档工具
-
----
-
-
-## 关键文件清单
-
-### 新增文件
-```
-gasket/storage/src/materialization/
-├── mod.rs                      # 模块入口
-├── engine.rs                   # MaterializationEngine 核心
-├── checkpoint.rs               # Checkpoint 存储
-├── failed_events.rs            # 失败事件处理
-├── metrics.rs                  # 监控指标
-└── handlers/
-    ├── mod.rs
-    ├── session_view.rs         # SessionViewHandler
-    ├── knowledge_extractor.rs  # KnowledgeExtractor
-    ├── decision_tracker.rs     # DecisionTracker
-    └── embedding_indexer.rs    # EmbeddingIndexer
-
-gasket/storage/src/views/
-├── mod.rs
-├── session_view.rs             # SessionView 实现
-├── knowledge_view.rs           # KnowledgeView 实现
-├── decision_view.rs            # DecisionView 实现
-└── coordinator.rs              # ViewCoordinator
-
-gasket/storage/src/lifecycle/
-├── mod.rs
-├── manager.rs                  # LifecycleManager
-├── session_archiver.rs         # 会话归档
-├── frequency_decay.rs          # 频率衰减
-└── event_compactor.rs          # 事件压缩
-
-gasket/cli/src/commands/migrate.rs  # 数据迁移工具
-```
-
-### 修改文件
-```
-gasket/types/src/session_event.rs   # 添加 sequence, schema_version
-gasket/storage/src/event_store.rs   # 添加订阅机制
-gasket/storage/src/processor.rs     # 标记为 deprecated
-gasket/engine/src/agent/loop_.rs    # 集成 ViewCoordinator
-gasket/cli/src/commands/agent.rs    # 启动 MaterializationEngine
-gasket/engine/src/config/mod.rs     # 添加 lifecycle 配置
+```bash
+git add gasket/engine/src/agent/context.rs
+git commit -m "feat(engine): wire MaterializationEngine into PersistentContext"
 ```
 
 ---
 
-## 测试策略
+## Phase 4: 清理
 
-### 单元测试
-- [ ] EventStore 订阅机制测试
-- [ ] MaterializationEngine 核心逻辑测试
-- [ ] Checkpoint 存储和恢复测试
-- [ ] 各个 Handler 的处理逻辑测试
-- [ ] ViewCoordinator 路由逻辑测试
+> 目标：移除 Agent Loop 中的旧直接方法调用，Coordinator 是唯一接口
 
-### 集成测试
-- [ ] 端到端流程测试（写入 → 物化 → 查询）
-- [ ] 视图重建测试
-- [ ] 失败重试测试
-- [ ] 生命周期管理测试
+### Task 18: 更新 AgentLoop 使用 HistoryCoordinator
 
-### 性能测试
-- [ ] 事件处理吞吐量测试（目标: > 1000 events/s）
-- [ ] 视图查询延迟测试（目标: < 100ms）
-- [ ] 内存使用测试
-- [ ] 并发写入测试
+**Files:**
+- Modify: `gasket/engine/src/agent/loop_.rs`
 
----
+- [ ] **Step 1: 在 AgentLoop struct 中添加 coordinator 字段**
 
+```rust
+pub struct AgentLoop {
+    // ... 现有字段 ...
+    coordinator: Option<Arc<HistoryCoordinator>>,
+}
+```
 
-## 文档更新
+- [ ] **Step 2: 逐步替换直接调用**
 
-### 需要更新的文档
-- [ ] `docs/architecture.md` - 更新架构图，添加物化视图层
-- [ ] `docs/memory.md` - 更新为反映新的数据流
-- [ ] `README.md` - 更新快速开始指南
-- [ ] API 文档 - 更新 EventStore 和 ViewCoordinator 接口
+在 `prepare_pipeline()` 或 `process_direct()` 中，将:
+```rust
+let history = context.get_history();
+```
+替换为:
+```rust
+let result = coordinator.query(
+    HistoryQuery::SessionContext { session_key, token_budget }
+).await?;
+```
 
----
+对每个现有调用点逐一替换，每替换一个就编译测试一次。
 
-## 时间线
+主要替换点（用 grep 确认）:
+- `context.get_history()` → `HistoryQuery::SessionContext`
+- `context.load_latest_summary()` → `HistoryQuery::LatestSummary`
+- `context.recall_history()` → `HistoryQuery::SemanticSearch`
+- `memory_manager.load_for_context()` → `HistoryQuery::MemoryContext`
+- `indexing_service.index_events()` → 由 MaterializationEngine 自动处理
 
-| 阶段 | 任务 | 工期 | 依赖 |
-|------|------|------|------|
-| 1 | EventStore 重构 | 1-2 周 | 无 |
-| 2 | MaterializationEngine 实现 | 2-3 周 | 阶段 1 |
-| 3 | 视图迁移 | 2-3 周 | 阶段 2 |
-| 4 | Agent Loop 集成 | 1 周 | 阶段 3 |
-| 5 | 生命周期管理 | 1-2 周 | 阶段 4 |
-| - | 灰度发布 | 4 周 | 阶段 5 |
+- [ ] **Step 3: 运行编译和测试**
 
-**总工期**: 8-10 周（开发） + 4 周（灰度发布） = 12-14 周
+Run: `cargo build --workspace && cargo test --workspace 2>&1 | tail -15`
+Expected: 编译通过，所有测试通过
 
----
+- [ ] **Step 4: 提交**
 
-## 成功指标
-
-### 功能指标
-- ✅ 所有现有功能正常工作
-- ✅ 视图可以从 EventStore 重建
-- ✅ 查询性能满足要求（< 100ms）
-- ✅ 数据一致性验证通过
-
-### 性能指标
-- ✅ 事件处理延迟 < 100ms (p99)
-- ✅ 视图更新延迟 < 100ms (p99)
-- ✅ 查询响应时间 < 100ms (p95)
-- ✅ 内存使用增长 < 20%
-
-### 质量指标
-- ✅ 测试覆盖率 > 80%
-- ✅ 零数据丢失
-- ✅ 零破坏性变更（向后兼容）
+```bash
+git add gasket/engine/src/agent/loop_.rs
+git commit -m "refactor(engine): AgentLoop uses HistoryCoordinator for all history queries"
+```
 
 ---
 
-## 总结
+### Task 19: 标记旧方法为 deprecated
 
-本实现计划将历史记录模块重构为事件溯源 + 物化视图架构，分 5 个阶段完成：
+**Files:**
+- Modify: `gasket/engine/src/agent/context.rs`
 
-1. **EventStore 重构** - 添加订阅机制，收缩职责
-2. **MaterializationEngine** - 构建物化引擎核心
-3. **视图迁移** - 实现三个专门化视图
-4. **Agent Loop 集成** - 替换现有历史处理逻辑
-5. **生命周期管理** - 实现完整的数据生命周期
+- [ ] **Step 1: 为旧直接方法添加 #[deprecated] 标记**
 
-通过灰度发布策略，确保平滑迁移，最小化风险。
+```rust
+impl PersistentContext {
+    #[deprecated(since = "0.2.0", note = "Use HistoryCoordinator::query(SessionContext) instead")]
+    pub async fn get_history(&self, key: &str, branch: Option<&str>) -> Vec<SessionEvent> {
+        // 保留现有实现，委托给内部逻辑
+    }
 
+    #[deprecated(since = "0.2.0", note = "Use HistoryCoordinator::query(LatestSummary) instead")]
+    pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
+        // 保留现有实现
+    }
+
+    #[deprecated(since = "0.2.0", note = "Use HistoryCoordinator::query(SemanticSearch) instead")]
+    pub async fn recall_history(&self, key: &str, query_embedding: &[f32], top_k: usize) -> anyhow::Result<Vec<String>> {
+        // 保留现有实现
+    }
+}
+```
+
+- [ ] **Step 2: 运行编译（预期有 deprecation warnings）**
+
+Run: `cargo build --workspace 2>&1 | grep "deprecated" | head -10`
+Expected: 看到新添加的 deprecation warnings，但无 error
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add gasket/engine/src/agent/context.rs
+git commit -m "refactor(engine): deprecate old direct methods in favor of HistoryCoordinator"
+```
+
+---
+
+### Task 20: 最终集成验证
+
+**Files:**
+- 全项目
+
+- [ ] **Step 1: 运行完整测试套件**
+
+Run: `cargo test --workspace 2>&1 | tail -20`
+Expected: 所有测试通过
+
+- [ ] **Step 2: 运行 clippy**
+
+Run: `cargo clippy --workspace 2>&1 | grep -v "cosine_similarity" | grep -v "bootstrap_tokens" | grep -v "scenario_tokens" | tail -10`
+Expected: 无新的 clippy warnings
+
+- [ ] **Step 3: 检查 git diff 确认变更范围**
+
+Run: `git diff HEAD~15 --stat`
+Expected: 新文件约 6 个，修改文件约 6 个
+
+- [ ] **Step 4: 最终提交**
+
+```bash
+git add -A
+git commit -m "chore: history module boundary refactor complete — Phase 1-4
+
+Architecture changes:
+- EventStoreTrait: narrow interface (append, query, subscribe)
+- MemoryProvider: extracted from MemoryManager
+- HistoryCoordinator: single entry point for AgentLoop
+- MaterializationEngine: event-driven pipeline with checkpoint + retry
+- 4-phase migration: facade → traits → engine → cleanup
+
+Fixes: EventStore scope creep, memory/compaction overlap,
+       agent loop coupling, data flow clarity"
+```
