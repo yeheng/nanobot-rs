@@ -36,6 +36,8 @@ use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{EventType, Session, SessionEvent};
 
+use super::history_coordinator::HistoryCoordinator;
+
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
 /// This enum provides two variants:
@@ -66,6 +68,9 @@ pub struct PersistentContext {
     /// regardless of whether compaction/summarization is enabled.
     #[cfg(feature = "local-embedding")]
     pub embedder: Option<Arc<gasket_storage::TextEmbedder>>,
+    /// Optional HistoryCoordinator for unified history queries.
+    /// Set after construction once all dependencies are available.
+    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 
 impl std::fmt::Debug for PersistentContext {
@@ -73,6 +78,14 @@ impl std::fmt::Debug for PersistentContext {
         f.debug_struct("PersistentContext")
             .field("event_store", &"EventStore { .. }")
             .finish()
+    }
+}
+
+impl PersistentContext {
+    /// Set the HistoryCoordinator for this context.
+    /// Called after construction once all dependencies are available.
+    pub fn set_coordinator(&mut self, coordinator: Arc<HistoryCoordinator>) {
+        self.coordinator = Some(coordinator);
     }
 }
 
@@ -101,6 +114,7 @@ impl AgentContext {
             sqlite_store,
             #[cfg(feature = "local-embedding")]
             embedder: None,
+            coordinator: None,
         })
     }
 
