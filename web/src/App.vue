@@ -2,16 +2,25 @@
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Menu, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import ChatArea from './components/ChatArea.vue';
 
 // Types
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments?: string;
+  status: 'running' | 'complete' | 'error';
+  result?: string | null;
+  duration?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'bot' | 'system';
   content: string;
   thinking?: string;
-  toolCalls?: any[];
+  toolCalls?: ToolCall[];
   steps?: any[];
   timestamp: number;
 }
@@ -204,9 +213,15 @@ const appendMessage = (sessionId: string, message: Message) => {
   if (session) {
     session.messages.push(message);
     session.updatedAt = Date.now();
-    // Update name based on first user message
+    // Update name based on first user message (sanitized)
     if (session.name === 'New Chat' && message.role === 'user' && message.content) {
-      session.name = message.content.slice(0, 30) + (message.content.length > 30 ? '...' : '');
+      // Sanitize: remove control characters, trim whitespace, limit length
+      const sanitizedName = message.content
+        .replace(/[\u0000-\u001F\u007F]/g, '') // Remove control characters
+        .replace(/\s+/g, ' ') // Normalize whitespace
+        .trim()
+        .slice(0, 50); // Increased to 50 chars for better context
+      session.name = sanitizedName + (message.content.length > 50 ? '...' : '');
     }
   }
 };
@@ -283,6 +298,11 @@ const clearSessionMessages = (sessionId: string) => {
 };
 
 const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
+
+// Cleanup on unmount
+onUnmounted(() => {
+  if (saveTimer) clearTimeout(saveTimer);
+});
 </script>
 
 <template>

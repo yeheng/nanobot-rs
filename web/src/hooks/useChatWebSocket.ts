@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue';
+import { onUnmounted, ref } from 'vue';
 
 export interface WebSocketStatus {
   isConnected: boolean;
@@ -35,7 +35,7 @@ export function useChatWebSocket(
       ws.value.close();
     }
 
-    const wsUrl = `ws://localhost:3000/ws?user_id=${encodeURIComponent(sessionId)}`;
+    const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:3000'}/ws?user_id=${encodeURIComponent(sessionId)}`;
     ws.value = new WebSocket(wsUrl);
 
     ws.value.onopen = () => {

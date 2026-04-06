@@ -52,7 +52,7 @@ export type SubagentWsMessage =
   | { type: 'subagent_thinking'; id: string; content: string }
   | { type: 'subagent_content'; id: string; content: string }
   | { type: 'subagent_tool_start'; id: string; name: string; arguments?: string }
-  | { type: 'subagent_tool_end'; id: string; name: string; output?: string }
+  | { type: 'subagent_tool_end'; id: string; tool_id?: string; name: string; output?: string }
   | { type: 'subagent_completed'; id: string; index: number; summary: string; tool_count: number }
   | { type: 'subagent_error'; id: string; index: number; error: string };
 

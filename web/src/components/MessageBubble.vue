@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from 'vue';
-import { ChevronDown, ChevronRight, Check, Brain, Copy, CheckCheck, Loader2, AlertCircle, Wrench, MessageSquare } from 'lucide-vue-next';
+import DOMPurify from 'dompurify';
+import hljs from 'highlight.js';
+import { AlertCircle, Brain, Check, CheckCheck, ChevronDown, ChevronRight, Copy, Loader2, MessageSquare, Wrench } from 'lucide-vue-next';
 import { Marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
-import hljs from 'highlight.js';
-import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../App.vue';
 
 // Initialize mermaid
@@ -32,8 +32,9 @@ mermaid.initialize({
 const mermaidRenderer = {
   code({ text, lang }: { text: string; lang?: string }) {
     if (lang === 'mermaid') {
-      const id = `mermaid-${Date.now()}-${mermaidIdCounter++}`;
-      return `<div class="mermaid-container"><pre class="mermaid" id="${id}">${text}</pre></div>`;
+      // Use more reliable ID generation with random suffix to avoid conflicts
+      const id = `mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      return `<div class="mermaid-container"><pre class="mermaid" id="${id}" data-processed="false">${text}</pre></div>`;
     }
     return false;
   }
@@ -104,14 +105,29 @@ const renderMarkdown = (text: string) => {
   return DOMPurify.sanitize(rawHtml, { ADD_TAGS: ['pre'], ADD_ATTR: ['class', 'id'] });
 };
 
-// Render mermaid diagrams
+// Render mermaid diagrams with fallback handling
 const renderMermaidDiagrams = async () => {
   await nextTick();
   try {
     const elements = document.querySelectorAll('pre.mermaid:not([data-processed])');
-    if (elements.length > 0) await mermaid.run({ nodes: elements as any });
+    if (elements.length > 0) {
+      await mermaid.run({ 
+        nodes: elements as any,
+        suppressErrors: true 
+      });
+    }
   } catch (e) {
     console.warn('Mermaid rendering error:', e);
+    // Fallback: add error class to failed diagrams for visual feedback
+    const failedElements = document.querySelectorAll('pre.mermaid:not([data-processed])');
+    failedElements.forEach(el => {
+      el.classList.add('mermaid-error');
+      el.title = 'Failed to render diagram. Click to see raw code.';
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => {
+        el.classList.toggle('show-raw');
+      });
+    });
   }
 };
 

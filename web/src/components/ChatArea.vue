@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick, computed } from 'vue';
-import { Send, Cpu, Trash2, Wifi, WifiOff, Upload, Square, ArrowDown, Sparkles, AlertCircle, X as XIcon, RotateCcw } from 'lucide-vue-next';
-import type { Message } from '../App.vue';
-import type { SubagentState } from '../types';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { useChatWebSocket } from '@/hooks/useChatWebSocket';
+import { AlertCircle, ArrowDown, Cpu, RotateCcw, Send, Sparkles, Square, Trash2, Upload, Wifi, WifiOff, X as XIcon } from 'lucide-vue-next';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import type { Message, ToolCall } from '../App.vue';
+import type { SubagentState } from '../types';
 import MessageBubble from './MessageBubble.vue';
 import SubagentPanel from './SubagentPanel.vue';
-import { useChatWebSocket } from '@/hooks/useChatWebSocket';
 
 // Helper function to get scrollable element from ScrollArea
 const getScrollElement = (scrollArea: InstanceType<typeof ScrollArea> | null): HTMLElement | null => {
@@ -30,8 +30,8 @@ const emit = defineEmits<{
   (e: 'append-to-message', messageId: string, content: string, field?: 'content' | 'thinking'): void;
   (e: 'update-message', messageId: string, updates: Partial<Message>): void;
   (e: 'ensure-tool-calls', messageId: string): void;
-  (e: 'push-tool-call', messageId: string, toolCall: any): void;
-  (e: 'update-tool-call', messageId: string, toolId: string, updates: any): void;
+  (e: 'push-tool-call', messageId: string, toolCall: ToolCall): void;
+  (e: 'update-tool-call', messageId: string, toolId: string, updates: Partial<ToolCall>): void;
   (e: 'clear-messages'): void;
 }>();
 
@@ -111,14 +111,27 @@ function handleSubagentToolStart(msg: { id: string; name: string; arguments?: st
       output: null,
     });
     subagent.toolCount++;
+    // Store tool ID mapping for later matching
+    (subagent as any)._toolIdMap = (subagent as any)._toolIdMap || {};
+    (subagent as any)._toolIdMap[msg.name + '_' + Date.now()] = toolId;
   }
 }
 
-function handleSubagentToolEnd(msg: { id: string; name: string; output?: string }) {
+function handleSubagentToolEnd(msg: { id: string; tool_id?: string; name: string; output?: string }) {
   const subagent = activeSubagents.value.get(msg.id);
   if (subagent && subagent.toolCalls.length > 0) {
-    // 找到匹配的运行中工具
-    const tool = [...subagent.toolCalls].reverse().find(t => t.name === msg.name && t.status === 'running');
+    let tool: any | undefined;
+    
+    // Prefer tool_id if provided by backend
+    if (msg.tool_id) {
+      tool = subagent.toolCalls.find(t => t.id === msg.tool_id);
+    }
+    
+    // Fallback: find by name and running status (most recent first)
+    if (!tool) {
+      tool = [...subagent.toolCalls].reverse().find(t => t.name === msg.name && t.status === 'running');
+    }
+    
     if (tool) {
       tool.status = 'complete';
       tool.output = msg.output;
@@ -383,9 +396,10 @@ watch(() => props.sessionId, () => {
   nextTick(() => scrollToBottom());
 });
 
-watch(() => props.messages, () => {
+// Watch message length changes for auto-scroll (avoid deep watch for performance)
+watch(() => props.messages.length, () => {
   nextTick(() => scrollToBottom());
-}, { deep: true });
+});
 
 // Methods
 const showError = (message: string) => {
