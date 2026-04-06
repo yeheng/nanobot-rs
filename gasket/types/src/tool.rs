@@ -78,6 +78,9 @@ pub struct ToolContext {
     /// Subagent spawner for tools that need to spawn subagents.
     /// Uses a trait object to decouple tools from concrete SubagentManager.
     pub spawner: Option<std::sync::Arc<dyn SubagentSpawner>>,
+    /// Token tracker for budget enforcement across parent and subagents.
+    /// Shared via Arc so subagents accumulate to the same tracker.
+    pub token_tracker: Option<std::sync::Arc<crate::token_tracker::TokenTracker>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -86,6 +89,7 @@ impl std::fmt::Debug for ToolContext {
             .field("session_key", &self.session_key)
             .field("outbound_tx", &self.outbound_tx.is_some())
             .field("spawner", &self.spawner.as_ref().map(|_| "SubagentSpawner"))
+            .field("token_tracker", &self.token_tracker.as_ref().map(|_| "TokenTracker"))
             .finish()
     }
 }
@@ -103,6 +107,11 @@ impl ToolContext {
 
     pub fn spawner(mut self, s: std::sync::Arc<dyn SubagentSpawner>) -> Self {
         self.spawner = Some(s);
+        self
+    }
+
+    pub fn token_tracker(mut self, tracker: std::sync::Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
         self
     }
 }

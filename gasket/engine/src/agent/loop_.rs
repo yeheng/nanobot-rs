@@ -130,7 +130,7 @@ pub struct AgentResponse {
     /// Model name used for this response
     pub model: Option<String>,
     /// Token usage for this request (if tracking enabled)
-    pub token_usage: Option<crate::token_tracker::TokenUsage>,
+    pub token_usage: Option<gasket_types::TokenUsage>,
     /// Cost for this request (if pricing configured)
     pub cost: f64,
 }
@@ -253,6 +253,8 @@ pub struct AgentLoop {
     pricing: Option<crate::token_tracker::ModelPricing>,
     /// Subagent spawner for spawn/spawn_parallel tools
     spawner: Option<Arc<dyn SubagentSpawner>>,
+    /// Token tracker for budget enforcement across parent and subagents
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     /// Synchronous context compactor — runs after response, before next request.
     /// Replaces the previous async fire-and-forget background compression.
     compactor: Option<Arc<ContextCompactor>>,
@@ -317,6 +319,7 @@ impl AgentLoop {
             hooks,
             pricing,
             spawner: None,
+            token_tracker: None,
             compactor: Some(compactor),
             memory_manager,
         })
@@ -452,6 +455,7 @@ impl AgentLoop {
             hooks: HookRegistry::empty(),
             pricing: None,
             spawner: None,
+            token_tracker: None,
             compactor: None,
             memory_manager: None,
         })
@@ -473,6 +477,12 @@ impl AgentLoop {
     /// Set the subagent spawner for spawn/spawn_parallel tools.
     pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
         self.spawner = Some(spawner);
+        self
+    }
+
+    /// Set the token tracker for budget enforcement across parent and subagents.
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
         self
     }
 
@@ -816,6 +826,7 @@ impl AgentLoop {
         let hooks = self.hooks.clone();
         let context = self.context.clone();
         let spawner = self.spawner.clone();
+        let token_tracker = self.token_tracker.clone();
         let compactor = self.compactor.clone();
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
@@ -833,6 +844,9 @@ impl AgentLoop {
                     price_output_per_million: p.price_output_per_million,
                     currency: p.currency.clone(),
                 });
+            }
+            if let Some(ref tracker) = token_tracker {
+                options = options.with_token_tracker(tracker.clone());
             }
 
             let result = executor
@@ -888,6 +902,9 @@ impl AgentLoop {
                 price_output_per_million: pricing.price_output_per_million,
                 currency: pricing.currency.clone(),
             });
+        }
+        if let Some(ref tracker) = self.token_tracker {
+            options = options.with_token_tracker(tracker.clone());
         }
 
         let result = executor.execute_with_options(messages, &options).await?;

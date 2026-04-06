@@ -1,134 +1,15 @@
 //! Token usage tracking and cost calculation
 //!
 //! Provides token counting using tiktoken-rs and cost estimation based on provider pricing.
+//!
+//! Note: TokenTracker and TokenUsage are now defined in gasket_types for cross-crate sharing.
+//! This module re-exports the types and adds engine-specific utilities.
 
-use serde::{Deserialize, Serialize};
+pub use gasket_types::{ModelPricing, SessionTokenStats, TokenTracker, TokenUsage};
+
 use std::sync::OnceLock;
 use tiktoken_rs::CoreBPE;
 use tracing::warn;
-
-/// Token usage information from an LLM response
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TokenUsage {
-    /// Number of tokens in the input/prompt
-    pub input_tokens: usize,
-    /// Number of tokens in the output/completion
-    pub output_tokens: usize,
-    /// Total tokens (input + output)
-    pub total_tokens: usize,
-}
-
-impl TokenUsage {
-    /// Create a new TokenUsage from input and output token counts
-    pub fn new(input_tokens: usize, output_tokens: usize) -> Self {
-        Self {
-            input_tokens,
-            output_tokens,
-            total_tokens: input_tokens + output_tokens,
-        }
-    }
-
-    /// Create TokenUsage from API response fields
-    pub fn from_api_fields(prompt_tokens: usize, completion_tokens: usize) -> Self {
-        Self::new(prompt_tokens, completion_tokens)
-    }
-}
-
-/// Pricing configuration for a model
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ModelPricing {
-    /// Price per million input tokens (in USD or configured currency)
-    pub price_input_per_million: f64,
-    /// Price per million output tokens (in USD or configured currency)
-    pub price_output_per_million: f64,
-    /// Currency code (e.g., "USD", "CNY")
-    pub currency: String,
-}
-
-impl ModelPricing {
-    /// Create new pricing configuration
-    pub fn new(
-        price_input_per_million: f64,
-        price_output_per_million: f64,
-        currency: &str,
-    ) -> Self {
-        Self {
-            price_input_per_million,
-            price_output_per_million,
-            currency: currency.to_string(),
-        }
-    }
-
-    /// Calculate cost for given token counts
-    pub fn calculate_cost(&self, input_tokens: usize, output_tokens: usize) -> f64 {
-        let input_cost = (input_tokens as f64) * self.price_input_per_million / 1_000_000.0;
-        let output_cost = (output_tokens as f64) * self.price_output_per_million / 1_000_000.0;
-        input_cost + output_cost
-    }
-}
-
-/// Token and cost tracking for a session
-#[derive(Debug, Clone, Default)]
-pub struct SessionTokenStats {
-    /// Total input tokens across all requests
-    pub total_input_tokens: usize,
-    /// Total output tokens across all requests
-    pub total_output_tokens: usize,
-    /// Total cost accumulated
-    pub total_cost: f64,
-    /// Number of LLM requests made
-    pub request_count: usize,
-    /// Currency for cost display
-    pub currency: String,
-}
-
-impl SessionTokenStats {
-    /// Create a new session stats tracker
-    pub fn new(currency: &str) -> Self {
-        Self {
-            currency: currency.to_string(),
-            ..Default::default()
-        }
-    }
-
-    /// Add token usage from a single request
-    pub fn add_usage(&mut self, usage: &TokenUsage, cost: f64) {
-        self.total_input_tokens += usage.input_tokens;
-        self.total_output_tokens += usage.output_tokens;
-        self.total_cost += cost;
-        self.request_count += 1;
-    }
-
-    /// Get total tokens (input + output)
-    pub fn total_tokens(&self) -> usize {
-        self.total_input_tokens + self.total_output_tokens
-    }
-
-    /// Get average tokens per request
-    pub fn avg_tokens_per_request(&self) -> f64 {
-        if self.request_count == 0 {
-            return 0.0;
-        }
-        self.total_tokens() as f64 / self.request_count as f64
-    }
-
-    /// Format a summary string for display
-    pub fn format_summary(&self) -> String {
-        let currency_symbol = if self.currency == "CNY" { "¥" } else { "$" };
-        format!(
-            "\n[Session Summary]\n  \
-             Requests: {}\n  \
-             Total Tokens: {} (Input: {} | Output: {})\n  \
-             Total Cost: {}{:.4}",
-            self.request_count,
-            self.total_tokens(),
-            self.total_input_tokens,
-            self.total_output_tokens,
-            currency_symbol,
-            self.total_cost
-        )
-    }
-}
 
 /// Global cached BPE encoder (cl100k_base, covers GPT-4/GPT-3.5).
 static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();

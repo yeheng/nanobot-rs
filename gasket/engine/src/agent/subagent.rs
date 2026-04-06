@@ -106,6 +106,8 @@ pub struct SubagentManager {
     timeout_secs: u64,
     /// Optional model resolver for switching models in subagents.
     model_resolver: Option<Arc<dyn ModelResolver>>,
+    /// Token tracker shared across parent and subagents for budget enforcement.
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -144,6 +146,8 @@ pub struct SubagentTaskBuilder<'a> {
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
     /// Optional hooks registry (uses empty registry if None)
     hooks: Option<Arc<HookRegistry>>,
+    /// Token tracker shared with parent for budget enforcement
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
 }
 
 impl<'a> SubagentTaskBuilder<'a> {
@@ -160,6 +164,7 @@ impl<'a> SubagentTaskBuilder<'a> {
             session_key: None,
             cancellation_token: None,
             hooks: None,
+            token_tracker: None,
         }
     }
 
@@ -225,6 +230,15 @@ impl<'a> SubagentTaskBuilder<'a> {
         self
     }
 
+    /// Set the token tracker for budget enforcement across parent and subagents.
+    ///
+    /// When set, the subagent will accumulate its token usage to the shared tracker,
+    /// enabling unified budget enforcement across all parallel spawns.
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
+        self
+    }
+
     /// Resolve the provider for this subagent task.
     fn resolve_provider(&self) -> Arc<dyn LlmProvider> {
         self.provider
@@ -259,6 +273,7 @@ impl<'a> SubagentTaskBuilder<'a> {
         let hooks = self.hooks.clone();
         let event_tx = self.event_tx.clone();
         let system_prompt_override = self.system_prompt;
+        let token_tracker = self.token_tracker.clone();
 
         // Spawn background task
         tokio::spawn(async move {
@@ -349,6 +364,26 @@ impl<'a> SubagentTaskBuilder<'a> {
                 &cancellation_token,
             )
             .await;
+
+            // Accumulate token usage to parent tracker if provided
+            if let Some(ref tracker) = token_tracker {
+                if let Ok(ref resp) = response {
+                    if let Some(ref usage) = resp.token_usage {
+                        // Convert from gasket_types::TokenUsage (used in AgentResponse) to gasket_types::TokenUsage (tracker format)
+                        let token_usage = gasket_types::TokenUsage::new(
+                            usage.input_tokens,
+                            usage.output_tokens,
+                        );
+                        tracker.accumulate(&token_usage, resp.cost);
+                        tracing::debug!(
+                            "[Subagent {}] Accumulated {} tokens (cost: ${:.4}) to parent tracker",
+                            subagent_id,
+                            token_usage.total_tokens,
+                            resp.cost
+                        );
+                    }
+                }
+            }
 
             // Dispatch result
             Self::dispatch_result(
@@ -613,6 +648,7 @@ impl SubagentManager {
             session_key: Arc::new(std::sync::Mutex::new(None)),
             timeout_secs: super::loop_::DEFAULT_SUBAGENT_TIMEOUT_SECS,
             model_resolver,
+            token_tracker: None,
         }
     }
 
@@ -687,6 +723,12 @@ impl SubagentManager {
     /// Get a clone of the outbound sender for external use
     pub fn outbound_sender(&self) -> mpsc::Sender<OutboundMessage> {
         self.outbound_tx.clone()
+    }
+
+    /// Set the token tracker for budget enforcement across parent and subagents.
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
+        self
     }
 
     /// Create a task builder for fluent subagent configuration.
@@ -967,6 +1009,11 @@ impl SubagentSpawner for SubagentManager {
 
         // Prepare spawn configuration using Builder pattern
         let mut builder = self.task(subagent_id.clone(), task.clone());
+
+        // Pass token_tracker to subagent for unified budget enforcement
+        if let Some(ref token_tracker) = self.token_tracker {
+            builder = builder.with_token_tracker(token_tracker.clone());
+        }
 
         // Resolve model_id to provider and config if provided
         if let Some(ref mid) = model_id {

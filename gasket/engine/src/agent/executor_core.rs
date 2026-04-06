@@ -43,6 +43,8 @@ pub struct ExecutorOptions<'a> {
     pub pricing: Option<crate::token_tracker::ModelPricing>,
     /// Vault values for log redaction
     pub vault_values: &'a [String],
+    /// Token tracker shared across parent and subagents for budget enforcement
+    pub token_tracker: Option<std::sync::Arc<crate::token_tracker::TokenTracker>>,
 }
 
 impl<'a> ExecutorOptions<'a> {
@@ -59,6 +61,11 @@ impl<'a> ExecutorOptions<'a> {
         self.vault_values = values;
         self
     }
+
+    pub fn with_token_tracker(mut self, tracker: std::sync::Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
+        self
+    }
 }
 
 // ── Execution Result ─────────────────────────────────────────
@@ -69,7 +76,7 @@ pub struct ExecutionResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
-    pub token_usage: Option<crate::token_tracker::TokenUsage>,
+    pub token_usage: Option<gasket_types::TokenUsage>,
     pub cost: f64,
 }
 
@@ -303,8 +310,15 @@ impl<'a> AgentExecutor<'a> {
         }
 
         // Step 5: Execute tool calls
-        self.handle_tool_calls(&response, executor, state, event_tx)
-            .await;
+        self.handle_tool_calls(
+            &response,
+            executor,
+            state,
+            event_tx,
+            options,
+            options.vault_values,
+        )
+        .await;
 
         // Step 6: Check max iterations
         if let Some(outcome) = self.check_max_iterations(iteration) {
@@ -370,6 +384,8 @@ impl<'a> AgentExecutor<'a> {
         executor: &ToolExecutor<'_>,
         state: &mut ExecutionState,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        options: &ExecutorOptions<'_>,
+        _vault_values: &[String],
     ) {
         if response.tool_calls.is_empty() {
             if let Some(ref c) = response.content {
@@ -397,9 +413,18 @@ impl<'a> AgentExecutor<'a> {
 
         // Create context with spawner if available (needed for spawn/spawn_parallel tools)
         let ctx = if let Some(ref spawner) = self.spawner {
-            ToolContext::default().spawner(spawner.clone())
+            let mut ctx = ToolContext::default().spawner(spawner.clone());
+            // Pass token_tracker to tools for unified budget enforcement
+            if let Some(ref tracker) = options.token_tracker {
+                ctx = ctx.token_tracker(tracker.clone());
+            }
+            ctx
         } else {
-            ToolContext::default()
+            let mut ctx = ToolContext::default();
+            if let Some(ref tracker) = options.token_tracker {
+                ctx = ctx.token_tracker(tracker.clone());
+            }
+            ctx
         };
 
         // Execute tool calls in parallel
@@ -497,7 +522,7 @@ impl<'a> AgentExecutor<'a> {
 
         // Accumulate token usage and cost
         if let Some(ref api_usage) = response.usage {
-            let usage = crate::token_tracker::TokenUsage::from_api_fields(
+            let usage = gasket_types::TokenUsage::from_api_fields(
                 api_usage.input_tokens,
                 api_usage.output_tokens,
             );
@@ -582,13 +607,13 @@ mod tests {
         let mut state = ExecutionState::new(vec![]);
         let pricing = crate::token_tracker::ModelPricing::new(1.0, 2.0, "USD");
 
-        let usage1 = crate::token_tracker::TokenUsage::new(100, 50);
+        let usage1 = gasket_types::TokenUsage::new(100, 50);
         state.accumulate_usage(&usage1, Some(&pricing));
 
         assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
         assert!((state.total_cost - 0.0002).abs() < 0.00001);
 
-        let usage2 = crate::token_tracker::TokenUsage::new(200, 100);
+        let usage2 = gasket_types::TokenUsage::new(200, 100);
         state.accumulate_usage(&usage2, Some(&pricing));
 
         assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 300);
@@ -600,7 +625,7 @@ mod tests {
     #[test]
     fn test_execution_state_no_pricing() {
         let mut state = ExecutionState::new(vec![]);
-        let usage = crate::token_tracker::TokenUsage::new(100, 50);
+        let usage = gasket_types::TokenUsage::new(100, 50);
 
         state.accumulate_usage(&usage, None);
 
