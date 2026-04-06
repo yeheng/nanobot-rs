@@ -10,6 +10,18 @@ use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+/// Parse a session_key string into (channel, chat_id) components.
+///
+/// Uses `splitn(2, ':')` to handle session keys in the format "channel:chat_id".
+/// Returns empty strings if parsing fails.
+fn parse_session_key(session_key: &str) -> (String, String) {
+    let parts: Vec<&str> = session_key.splitn(2, ':').collect();
+    match parts.as_slice() {
+        [channel, chat_id] => (channel.to_string(), chat_id.to_string()),
+        _ => (String::new(), String::new()),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("Database error: {0}")]
@@ -227,13 +239,18 @@ impl EventStore {
             .transpose()?;
         let extra = serde_json::to_string(&event.metadata.extra)?;
 
+        // Parse session_key into channel/chat_id
+        let (channel, chat_id) = parse_session_key(&event.session_key);
+
         let mut tx = self.pool.begin().await?;
 
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT OR IGNORE INTO sessions_v2 (key, created_at, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO sessions_v2 (key, channel, chat_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&event.session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -245,13 +262,15 @@ impl EventStore {
         sqlx::query(
             r#"
             INSERT INTO session_events
-            (id, session_key, event_type, content, embedding, branch,
+            (id, session_key, channel, chat_id, event_type, content, embedding, branch,
              tools_used, token_usage, token_len, event_data, extra, created_at, sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())
         .bind(&event.session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .bind(event_type_tag)
         .bind(&event.content)
         .bind(
@@ -478,6 +497,32 @@ impl EventStore {
 
         row.map(|r| r.try_into()).transpose()
     }
+
+    /// Query all sessions for a given channel.
+    ///
+    /// Returns session keys ordered by updated_at descending.
+    pub async fn get_sessions_by_channel(&self, channel: &str) -> Result<Vec<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT key FROM sessions_v2 WHERE channel = ? ORDER BY updated_at DESC",
+        )
+        .bind(channel)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
+
+    /// Query all sessions for a given chat_id across channels.
+    ///
+    /// Returns session keys ordered by updated_at descending.
+    pub async fn get_sessions_by_chat_id(&self, chat_id: &str) -> Result<Vec<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT key FROM sessions_v2 WHERE chat_id = ? ORDER BY updated_at DESC",
+        )
+        .bind(chat_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
 }
 
 #[async_trait]
@@ -545,6 +590,8 @@ impl EventStoreTrait for EventStore {
 struct EventRow {
     id: String,
     session_key: String,
+    channel: String,
+    chat_id: String,
     event_type: String,
     content: String,
     embedding: Option<Vec<u8>>,
@@ -582,12 +629,19 @@ impl TryFrom<EventRow> for SessionEvent {
         let extra: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&row.extra)?;
         let embedding = row.embedding.map(|b| bytemuck::cast_slice(&b).to_vec());
 
+        // Reconstruct session_key from channel/chat_id for backward compatibility
+        let session_key = if !row.channel.is_empty() && !row.chat_id.is_empty() {
+            format!("{}:{}", row.channel, row.chat_id)
+        } else {
+            row.session_key
+        };
+
         Ok(SessionEvent {
             id: row
                 .id
                 .parse()
                 .map_err(|_| StoreError::InvalidUuid(row.id.clone()))?,
-            session_key: row.session_key,
+            session_key,
             event_type,
             content: row.content,
             embedding,
@@ -631,7 +685,9 @@ mod tests {
                 updated_at TEXT NOT NULL,
                 last_consolidated_event TEXT,
                 total_events INTEGER NOT NULL DEFAULT 0,
-                total_tokens INTEGER NOT NULL DEFAULT 0
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT ''
             )
             "#,
         )
@@ -644,6 +700,8 @@ mod tests {
             CREATE TABLE session_events (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT '',
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,
