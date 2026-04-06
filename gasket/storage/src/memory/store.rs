@@ -51,6 +51,11 @@ impl FileMemoryStore {
         Self { base_dir }
     }
 
+    /// Get the base directory of this store.
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_dir
+    }
+
     /// Create store using default ~/.gasket/memory/ path.
     pub fn default_path() -> Self {
         Self::new(memory_base_dir())

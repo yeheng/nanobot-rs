@@ -26,6 +26,7 @@ pub struct MemoryIndexEntry {
     pub updated: String,
     pub scenario: Scenario,
     pub last_accessed: String,
+    pub file_mtime: u64,
 }
 
 /// Scanner for memory file metadata within a scenario directory.
@@ -65,6 +66,13 @@ impl FileIndexManager {
             }
 
             let path = entry.path();
+            let file_mtime = tokio::fs::metadata(&path)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
             match tokio::fs::read_to_string(&path).await {
                 Ok(content) => {
                     match parse_memory_file(&content) {
@@ -80,6 +88,7 @@ impl FileIndexManager {
                                 updated: meta.updated,
                                 scenario,
                                 last_accessed: meta.last_accessed,
+                                file_mtime,
                             });
                         }
                         Err(e) => {
@@ -104,6 +113,7 @@ impl FileIndexManager {
                                 updated: now.clone(),
                                 scenario,
                                 last_accessed: now,
+                                file_mtime,
                             });
                         }
                     }

@@ -4,7 +4,6 @@ pub mod compactor;
 pub mod context;
 pub mod executor;
 pub mod executor_core;
-pub mod handlers;
 pub mod history_coordinator;
 pub mod indexing;
 pub mod loop_;

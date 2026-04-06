@@ -236,6 +236,16 @@ impl FrequencyManager {
                 } else {
                     report.decayed += 1;
 
+                    // Read file mtime after write
+                    let file_path = store.base_dir().join(scenario.dir_name()).join(filename);
+                    let file_mtime = tokio::fs::metadata(&file_path)
+                        .await
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+
                     // O(1) SQLite upsert for this single entry
                     let entry = super::index::MemoryIndexEntry {
                         id: updated_meta.id,
@@ -248,6 +258,7 @@ impl FrequencyManager {
                         updated: updated_meta.updated,
                         scenario,
                         last_accessed: updated_meta.last_accessed.clone(),
+                        file_mtime,
                     };
                     if let Err(e) = metadata_store.upsert_entry(&entry).await {
                         tracing::warn!(
@@ -361,6 +372,16 @@ impl FrequencyManager {
                 continue;
             }
 
+            // Read file mtime after write
+            let file_path = store.base_dir().join(scenario.dir_name()).join(&filename);
+            let file_mtime = tokio::fs::metadata(&file_path)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+
             // O(1) SQLite upsert for this single entry
             let entry = super::index::MemoryIndexEntry {
                 id: updated_meta.id,
@@ -373,6 +394,7 @@ impl FrequencyManager {
                 updated: updated_meta.updated,
                 scenario,
                 last_accessed: updated_meta.last_accessed.clone(),
+                file_mtime,
             };
             if let Err(e) = metadata_store.upsert_entry(&entry).await {
                 tracing::warn!(

@@ -14,19 +14,16 @@
 //!
 //! Agent writes (`create_memory`, `update_memory`, `delete_memory`) synchronously
 //! update both the filesystem (SSOT) and SQLite metadata/embeddings. The file
-//! watcher serves as a best-effort fallback for external edits only — agent writes
-//! are tracked via `recently_modified_by_us` so the watcher skips redundant re-indexing.
+//! watcher uses mtime comparison to detect external edits.
 
 use anyhow::Result;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-/// Facade managing three-phase memory loading for the agent loop.
+/// Facade managing three-phase memory loading for agent loop.
 pub struct MemoryManager {
     store: FileMemoryStore,
     index_manager: FileIndexManager,
@@ -34,9 +31,6 @@ pub struct MemoryManager {
     embedding_store: EmbeddingStore,
     retrieval: RetrievalEngine,
     budget: TokenBudget,
-    /// Tracks files recently modified by agent writes. The watcher checks this
-    /// set and skips re-indexing for entries found here (SQLite already updated).
-    recently_modified_by_us: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MemoryManager {
@@ -63,7 +57,6 @@ impl MemoryManager {
             embedding_store,
             retrieval,
             budget,
-            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
@@ -89,7 +82,6 @@ impl MemoryManager {
             embedding_store,
             retrieval,
             budget,
-            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
@@ -109,13 +101,7 @@ impl MemoryManager {
             embedding_store,
             retrieval,
             budget,
-            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         }
-    }
-
-    /// Get a handle to the `recently_modified_by_us` set for sharing with the watcher.
-    pub fn recently_modified_tracker(&self) -> Arc<RwLock<HashSet<String>>> {
-        Arc::clone(&self.recently_modified_by_us)
     }
 
     /// Initialize memory system (create directories, sync metadata to SQLite).
@@ -146,8 +132,7 @@ impl MemoryManager {
 
     /// Create a new memory file and synchronously update SQLite (write-through).
     ///
-    /// Writes the file to disk, then upserts metadata + embedding into SQLite.
-    /// Marks the file in `recently_modified_by_us` so the watcher skips it.
+    /// Writes the file to disk, reads file_mtime, then upserts metadata + embedding into SQLite.
     pub async fn create_memory(
         &self,
         scenario: Scenario,
@@ -185,7 +170,17 @@ impl MemoryManager {
             .update(scenario, &filename, &file_content)
             .await?;
 
-        // 2. Upsert metadata into SQLite
+        // 2. Read file mtime
+        let file_path = self.store.base_dir().join(scenario.dir_name()).join(&filename);
+        let file_mtime = tokio::fs::metadata(&file_path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+
+        // 3. Upsert metadata into SQLite
         let entry = MemoryIndexEntry {
             id: meta.id,
             title: meta.title,
@@ -197,10 +192,11 @@ impl MemoryManager {
             updated: meta.updated,
             scenario,
             last_accessed: meta.last_accessed,
+            file_mtime,
         };
         self.metadata_store.upsert_entry(&entry).await?;
 
-        // 3. Upsert embedding (placeholder vector until real embedder)
+        // 4. Upsert embedding (placeholder vector until real embedder)
         let embedding = vec![0.0f32; 384];
         self.embedding_store
             .upsert(
@@ -212,10 +208,6 @@ impl MemoryManager {
                 tokens as u32,
             )
             .await?;
-
-        // 4. Track so watcher skips
-        let key = format!("{}/{}", scenario.dir_name(), filename);
-        self.recently_modified_by_us.write().await.insert(key);
 
         info!(
             "Created memory: {}/{} ({} tokens)",
@@ -251,7 +243,17 @@ impl MemoryManager {
         // 3. Write file atomically (store.update handles version history)
         self.store.update(scenario, filename, &file_content).await?;
 
-        // 4. Upsert metadata into SQLite
+        // 4. Read file mtime
+        let file_path = self.store.base_dir().join(scenario.dir_name()).join(filename);
+        let file_mtime = tokio::fs::metadata(&file_path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+
+        // 5. Upsert metadata into SQLite
         let entry = MemoryIndexEntry {
             id: meta.id,
             title: meta.title,
@@ -263,10 +265,11 @@ impl MemoryManager {
             updated: meta.updated,
             scenario,
             last_accessed: meta.last_accessed,
+            file_mtime,
         };
         self.metadata_store.upsert_entry(&entry).await?;
 
-        // 5. Upsert embedding
+        // 6. Upsert embedding
         let embedding = vec![0.0f32; 384];
         self.embedding_store
             .upsert(
@@ -278,10 +281,6 @@ impl MemoryManager {
                 meta.tokens as u32,
             )
             .await?;
-
-        // 6. Track so watcher skips
-        let key = format!("{}/{}", scenario.dir_name(), filename);
-        self.recently_modified_by_us.write().await.insert(key);
 
         info!("Updated memory: {}/{}", scenario.dir_name(), filename);
         Ok(())
@@ -300,10 +299,6 @@ impl MemoryManager {
         // 3. Delete embedding
         let path_str = format!("{}/{}", scenario.dir_name(), filename);
         self.embedding_store.delete(&path_str).await?;
-
-        // 4. Track so watcher skips (and clean up if present)
-        let key = format!("{}/{}", scenario.dir_name(), filename);
-        self.recently_modified_by_us.write().await.insert(key);
 
         info!("Deleted memory: {}/{}", scenario.dir_name(), filename);
         Ok(())

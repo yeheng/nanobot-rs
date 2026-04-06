@@ -342,9 +342,9 @@ impl AutoIndexHandler {
     ///
     /// For Created/Modified events:
     /// 1. Extract the scenario from the file path
-    /// 2. Parse the file's YAML frontmatter
-    /// 3. UPSERT a single row into `memory_metadata`
-    /// 4. UPSERT the file's embedding
+    /// 2. Read disk mtime and compare with SQLite mtime
+    /// 3. If disk_mtime <= sqlite_mtime, skip (SQLite already up-to-date)
+    /// 4. Otherwise, parse YAML frontmatter and UPSERT metadata + embedding
     ///
     /// For Deleted events:
     /// 1. Delete the file's row from `memory_metadata`
@@ -376,6 +376,37 @@ impl AutoIndexHandler {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
+                // Read disk mtime
+                let disk_mtime = match tokio::fs::metadata(path).await {
+                    Ok(m) => m
+                        .modified()
+                        .ok()
+                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0),
+                    Err(_) => {
+                        tracing::debug!("AutoIndex: cannot read metadata for {:?}", path);
+                        return;
+                    }
+                };
+
+                // Query SQLite for stored mtime
+                let sqlite_mtime = self
+                    .metadata_store
+                    .get_file_mtime(scenario, &filename)
+                    .await
+                    .unwrap_or(0);
+
+                // Cache invalidation check: if disk_mtime <= sqlite_mtime, skip
+                if disk_mtime <= sqlite_mtime {
+                    tracing::debug!(
+                        "AutoIndex: skipping, SQLite up-to-date (disk={} <= sqlite={})",
+                        disk_mtime,
+                        sqlite_mtime
+                    );
+                    return;
+                }
+
                 if let Ok(content) = tokio::fs::read_to_string(path).await {
                     let entry = match super::frontmatter::parse_memory_file(&content) {
                         Ok((meta, _)) => {
@@ -392,6 +423,7 @@ impl AutoIndexHandler {
                                     updated: meta.updated,
                                     scenario,
                                     last_accessed: meta.last_accessed.clone(),
+                                    file_mtime: disk_mtime,
                                 },
                                 meta.tags.clone(),
                                 meta.frequency,
@@ -420,6 +452,7 @@ impl AutoIndexHandler {
                                     updated: now.clone(),
                                     scenario,
                                     last_accessed: now,
+                                    file_mtime: disk_mtime,
                                 },
                                 vec!["broken-frontmatter".to_string()],
                                 super::types::Frequency::Archived,
