@@ -63,25 +63,42 @@ impl EmbeddingStore {
         Ok(())
     }
 
-    /// Search by tag matching (returns all entries whose tags JSON contains any query tag).
+    /// Search by tag matching using `json_each` for accurate array-element lookup.
+    ///
+    /// Returns all entries whose tags JSON array contains any of the query tags.
+    /// Uses `json_each` instead of fragile `LIKE` substring matching.
     pub async fn search_by_tags(
         &self,
         tags: &[String],
         scenario: Option<Scenario>,
         limit: usize,
     ) -> Result<Vec<EmbeddingHit>> {
-        // Build LIKE clauses for each tag
-        let mut conditions = Vec::new();
-        for tag in tags {
-            conditions.push(format!("tags LIKE '%\"{}\"%'", tag.replace('\'', "''")));
-        }
-        let tag_filter = conditions.join(" OR ");
+        // Build EXISTS subqueries using json_each for each tag
+        let tag_exists: Vec<String> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                format!(
+                    "EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?{})",
+                    i + 1
+                )
+            })
+            .collect();
 
-        let scenario_filter = scenario
-            .map(|s| format!(" AND scenario = '{}'", s.dir_name()))
-            .unwrap_or_default();
+        let scenario_idx = tags.len() + 1;
+        let limit_idx = if scenario.is_some() {
+            scenario_idx + 1
+        } else {
+            scenario_idx
+        };
 
-        let query = format!(
+        let where_scenario = if scenario.is_some() {
+            format!(" AND scenario = ?{}", scenario_idx)
+        } else {
+            String::new()
+        };
+
+        let sql = format!(
             "SELECT memory_path, scenario, tags, frequency, token_count
              FROM memory_embeddings
              WHERE frequency != 'archived'{} AND ({})
@@ -91,11 +108,22 @@ impl EmbeddingStore {
                  WHEN 'cold' THEN 2
                  ELSE 3
              END
-             LIMIT {}",
-            scenario_filter, tag_filter, limit
+             LIMIT ?{}",
+            where_scenario,
+            tag_exists.join(" OR "),
+            limit_idx
         );
 
-        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
+        let mut query = sqlx::query(&sql);
+        for tag in tags {
+            query = query.bind(tag);
+        }
+        if let Some(s) = scenario {
+            query = query.bind(s.dir_name());
+        }
+        query = query.bind(limit as i64);
+
+        let rows = query.fetch_all(&self.pool).await?;
         let mut hits = Vec::new();
         for row in rows {
             let path: String = row.get("memory_path");

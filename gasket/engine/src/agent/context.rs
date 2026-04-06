@@ -34,7 +34,7 @@ use tracing::debug;
 use crate::error::AgentError;
 use gasket_storage::EventStore;
 use gasket_types::SessionKey;
-use gasket_types::{EventType, Session, SessionEvent};
+use gasket_types::{Session, SessionEvent};
 
 use super::history_coordinator::HistoryCoordinator;
 
@@ -197,52 +197,14 @@ impl AgentContext {
                     .await
                     .map_err(|e| AgentError::Other(format!("Failed to persist event: {}", e)))?;
 
-                // Auto-generate embedding for semantic recall (decoupled from compaction).
-                // Only UserMessage and AssistantMessage events are worth indexing.
-                let worth_indexing = matches!(
-                    &event.event_type,
-                    EventType::UserMessage | EventType::AssistantMessage
-                );
-                if worth_indexing {
-                    Self::generate_embedding(ctx, &event).await;
-                }
+                // Embedding generation is handled by the IndexingHandler in the
+                // background MaterializationEngine pipeline — no need to
+                // generate inline on the hot path.
 
                 Ok(())
             }
             Self::Stateless => Ok(()),
         }
-    }
-
-    /// Generate and persist an embedding for a saved event.
-    ///
-    /// This is decoupled from compaction — every saved message gets indexed
-    /// for semantic recall, even if no summarization occurs.
-    #[cfg(feature = "local-embedding")]
-    async fn generate_embedding(ctx: &PersistentContext, event: &SessionEvent) {
-        let Some(ref embedder) = ctx.embedder else {
-            return;
-        };
-
-        match embedder.embed(&event.content) {
-            Ok(embedding) => {
-                let event_id = event.id.to_string();
-                if let Err(e) = ctx
-                    .sqlite_store
-                    .save_embedding(&event_id, &event.session_key, &embedding)
-                    .await
-                {
-                    debug!("Failed to save embedding for event {}: {}", event_id, e);
-                }
-            }
-            Err(e) => {
-                debug!("Failed to generate embedding for event {}: {}", event.id, e);
-            }
-        }
-    }
-
-    #[cfg(not(feature = "local-embedding"))]
-    async fn generate_embedding(_ctx: &PersistentContext, _event: &SessionEvent) {
-        // No-op when local-embedding is disabled
     }
 
     /// Get history for a session.

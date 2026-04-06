@@ -25,6 +25,7 @@ pub struct MemoryIndexEntry {
     pub filename: String,
     pub updated: String,
     pub scenario: Scenario,
+    pub last_accessed: String,
 }
 
 /// Scanner for memory file metadata within a scenario directory.
@@ -77,6 +78,7 @@ impl FileIndexManager {
                             filename: name,
                             updated: meta.updated,
                             scenario,
+                            last_accessed: meta.last_accessed,
                         });
                     }
                 }

@@ -159,7 +159,7 @@ impl MemoryManager {
 
         let total_used = bootstrap_tokens + scenario_tokens + on_demand_tokens;
 
-        // Enforce hard cap
+        // Enforce hard cap — recalculate breakdown from actual truncated list
         if total_used > self.budget.total_cap {
             warn!(
                 "Total tokens {} exceeds cap {}, truncating",
@@ -168,20 +168,38 @@ impl MemoryManager {
             let mut truncated = Vec::new();
             let mut accum = 0;
             for mem in loaded {
-                // Check if adding this memory would exceed the cap
                 if accum + mem.metadata.tokens > self.budget.total_cap {
                     break;
                 }
                 accum += mem.metadata.tokens;
                 truncated.push(mem);
             }
+
+            // Recalculate phase breakdown from the actual truncated list
+            let mut actual_bootstrap = 0usize;
+            let mut actual_scenario = 0usize;
+            let mut actual_on_demand = 0usize;
+            for mem in &truncated {
+                match mem.metadata.scenario {
+                    Scenario::Profile => actual_bootstrap += mem.metadata.tokens,
+                    Scenario::Active => actual_bootstrap += mem.metadata.tokens,
+                    _ => {
+                        if mem.metadata.frequency == Frequency::Hot {
+                            actual_scenario += mem.metadata.tokens;
+                        } else {
+                            actual_on_demand += mem.metadata.tokens;
+                        }
+                    }
+                }
+            }
+
             return Ok(MemoryContext {
                 memories: truncated,
                 tokens_used: accum,
                 phase_breakdown: PhaseBreakdown {
-                    bootstrap_tokens,
-                    scenario_tokens,
-                    on_demand_tokens,
+                    bootstrap_tokens: actual_bootstrap,
+                    scenario_tokens: actual_scenario,
+                    on_demand_tokens: actual_on_demand,
                 },
             });
         }

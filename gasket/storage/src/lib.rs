@@ -429,6 +429,7 @@ impl SqliteStore {
                 tags        TEXT NOT NULL DEFAULT '[]',
                 tokens      INTEGER NOT NULL DEFAULT 0,
                 updated     TEXT NOT NULL DEFAULT '',
+                last_accessed TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (scenario, path)
             )",
         )

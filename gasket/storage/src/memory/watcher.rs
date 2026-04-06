@@ -387,6 +387,7 @@ impl AutoIndexHandler {
                             filename: filename.clone(),
                             updated: meta.updated,
                             scenario,
+                            last_accessed: meta.last_accessed.clone(),
                         };
                         if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
                             tracing::error!("AutoIndex: failed to upsert metadata: {}", e);

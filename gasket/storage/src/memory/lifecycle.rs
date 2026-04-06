@@ -166,13 +166,16 @@ impl FrequencyManager {
         }
     }
 
-    /// Run batch decay on all memories.
+    /// Run batch decay on stale memories, driven by SQLite queries.
     ///
-    /// Scans all scenarios, updates decayed frequencies, upserts to SQLite.
+    /// Instead of scanning the entire filesystem (O(N) disk reads), this method
+    /// queries SQLite for candidates whose `last_accessed` is older than the
+    /// shortest decay threshold (7 days for hot→warm). Only those O(k) files
+    /// are read from disk and potentially rewritten.
     ///
     /// # Process
-    /// 1. For each scenario, list all .md files
-    /// 2. Parse frontmatter and recalculate frequency
+    /// 1. Query SQLite for entries with `last_accessed` older than 7 days
+    /// 2. For each candidate, read the .md file and recalculate frequency
     /// 3. If frequency changed, rewrite frontmatter + O(1) SQLite upsert
     ///
     /// Returns a report with statistics about the decay run.
@@ -182,90 +185,87 @@ impl FrequencyManager {
     ) -> Result<DecayReport> {
         let mut report = DecayReport::default();
 
-        for &scenario in Scenario::all() {
-            let files = match store.list(scenario).await {
-                Ok(f) => f,
+        // Step 1: Query SQLite for candidates — O(1) disk I/O (index scan)
+        // Use 7 days (shortest threshold) to catch all potentially decayable entries.
+        let candidates = metadata_store.get_decay_candidates(7).await?;
+        report.total_scanned = candidates.len();
+
+        // Step 2: Only read/write the k candidates, not all N files
+        for candidate in candidates {
+            let scenario = candidate.scenario;
+            let filename = &candidate.filename;
+
+            // Read current metadata from file
+            let memory_file = match store.read(scenario, filename).await {
+                Ok(m) => m,
                 Err(e) => {
-                    tracing::warn!("Failed to list files for scenario {:?}: {}", scenario, e);
+                    tracing::warn!(
+                        "Failed to read memory file {}/{}: {}",
+                        scenario,
+                        filename,
+                        e
+                    );
                     report.errors += 1;
                     continue;
                 }
             };
 
-            for filename in files {
-                report.total_scanned += 1;
+            let current_freq = memory_file.metadata.frequency;
+            let last_accessed = &memory_file.metadata.last_accessed;
 
-                // Read current metadata
-                let memory_file = match store.read(scenario, &filename).await {
-                    Ok(m) => m,
-                    Err(e) => {
+            // Recalculate frequency based on decay rules
+            let new_freq =
+                Self::recalculate(current_freq, last_accessed, memory_file.metadata.scenario);
+
+            // If frequency changed, update the file + SQLite
+            if new_freq != current_freq {
+                let mut updated_meta = memory_file.metadata.clone();
+                updated_meta.frequency = new_freq;
+                updated_meta.updated = Utc::now().to_rfc3339();
+
+                let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
+
+                if let Err(e) = store.update(scenario, filename, &new_content).await {
+                    tracing::warn!(
+                        "Failed to update frequency for {}/{}: {}",
+                        scenario,
+                        filename,
+                        e
+                    );
+                    report.errors += 1;
+                } else {
+                    report.decayed += 1;
+
+                    // O(1) SQLite upsert for this single entry
+                    let entry = super::index::MemoryIndexEntry {
+                        id: updated_meta.id,
+                        title: updated_meta.title,
+                        memory_type: updated_meta.r#type,
+                        tags: updated_meta.tags,
+                        frequency: updated_meta.frequency,
+                        tokens: updated_meta.tokens as u32,
+                        filename: filename.clone(),
+                        updated: updated_meta.updated,
+                        scenario,
+                        last_accessed: updated_meta.last_accessed.clone(),
+                    };
+                    if let Err(e) = metadata_store.upsert_entry(&entry).await {
                         tracing::warn!(
-                            "Failed to read memory file {}/{}: {}",
+                            "Failed to upsert metadata for {}/{}: {}",
                             scenario,
                             filename,
                             e
                         );
                         report.errors += 1;
-                        continue;
                     }
-                };
 
-                let current_freq = memory_file.metadata.frequency;
-                let last_accessed = &memory_file.metadata.last_accessed;
-
-                // Recalculate frequency
-                let new_freq =
-                    Self::recalculate(current_freq, last_accessed, memory_file.metadata.scenario);
-
-                // If frequency changed, update the file + SQLite
-                if new_freq != current_freq {
-                    let mut updated_meta = memory_file.metadata.clone();
-                    updated_meta.frequency = new_freq;
-                    updated_meta.updated = Utc::now().to_rfc3339();
-
-                    let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
-
-                    if let Err(e) = store.update(scenario, &filename, &new_content).await {
-                        tracing::warn!(
-                            "Failed to update frequency for {}/{}: {}",
-                            scenario,
-                            filename,
-                            e
-                        );
-                        report.errors += 1;
-                    } else {
-                        report.decayed += 1;
-
-                        // O(1) SQLite upsert for this single entry
-                        let entry = super::index::MemoryIndexEntry {
-                            id: updated_meta.id,
-                            title: updated_meta.title,
-                            memory_type: updated_meta.r#type,
-                            tags: updated_meta.tags,
-                            frequency: updated_meta.frequency,
-                            tokens: updated_meta.tokens as u32,
-                            filename: filename.clone(),
-                            updated: updated_meta.updated,
-                            scenario,
-                        };
-                        if let Err(e) = metadata_store.upsert_entry(&entry).await {
-                            tracing::warn!(
-                                "Failed to upsert metadata for {}/{}: {}",
-                                scenario,
-                                filename,
-                                e
-                            );
-                            report.errors += 1;
-                        }
-
-                        tracing::debug!(
-                            "Decayed {}/{}: {:?} -> {:?}",
-                            scenario,
-                            filename,
-                            current_freq,
-                            new_freq
-                        );
-                    }
+                    tracing::debug!(
+                        "Decayed {}/{}: {:?} -> {:?}",
+                        scenario,
+                        filename,
+                        current_freq,
+                        new_freq
+                    );
                 }
             }
         }
@@ -372,6 +372,7 @@ impl FrequencyManager {
                 filename: filename.clone(),
                 updated: updated_meta.updated,
                 scenario,
+                last_accessed: updated_meta.last_accessed.clone(),
             };
             if let Err(e) = metadata_store.upsert_entry(&entry).await {
                 tracing::warn!(
@@ -672,6 +673,21 @@ mod tests {
             )
             .await
             .unwrap();
+
+            // Sync this entry to SQLite so get_decay_candidates can find it
+            let entry = super::super::index::MemoryIndexEntry {
+                id: meta.id.clone(),
+                title: meta.title.clone(),
+                memory_type: meta.r#type.clone(),
+                tags: meta.tags.clone(),
+                frequency: meta.frequency,
+                tokens: meta.tokens as u32,
+                filename: filename.clone(),
+                updated: meta.updated.clone(),
+                scenario: meta.scenario,
+                last_accessed: meta.last_accessed.clone(),
+            };
+            metadata_store.upsert_entry(&entry).await.unwrap();
         }
 
         // Run decay batch
@@ -679,8 +695,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(report.total_scanned, 3);
-        assert!(report.decayed >= 2); // At least the stale ones should decay
+        assert_eq!(report.total_scanned, 2); // Only the 2 stale entries are candidates
+        assert!(report.decayed >= 2); // Both stale ones should decay
 
         // Verify decayed frequencies
         let files = store.list(Scenario::Active).await.unwrap();
