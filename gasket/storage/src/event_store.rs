@@ -330,6 +330,56 @@ impl EventStore {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    /// Load events with sequence > after_sequence for a session (watermark-based query).
+    ///
+    /// This is the core read-path method for the watermark-based compaction design.
+    /// Returns only events not yet covered by the summary's high-water mark,
+    /// using the composite index on (session_key, sequence) for efficient lookup.
+    pub async fn get_events_after_sequence(
+        &self,
+        session_key: &str,
+        after_sequence: i64,
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT * FROM session_events
+            WHERE session_key = ? AND sequence > ?
+            ORDER BY sequence ASC
+            "#,
+        )
+        .bind(session_key)
+        .bind(after_sequence)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
+    /// Load events with sequence <= target_sequence for compaction input.
+    ///
+    /// Returns events that are about to be summarized, excluding summary events
+    /// to avoid circular references. Used by the compactor to gather input
+    /// for LLM summarization.
+    pub async fn get_events_up_to_sequence(
+        &self,
+        session_key: &str,
+        target_sequence: i64,
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT * FROM session_events
+            WHERE session_key = ? AND sequence <= ? AND event_type != 'summary'
+            ORDER BY sequence ASC
+            "#,
+        )
+        .bind(session_key)
+        .bind(target_sequence)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
     pub async fn get_events_by_ids(
         &self,
         session_key: &str,
@@ -367,6 +417,41 @@ impl EventStore {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Get the maximum sequence number for a session.
+    ///
+    /// Returns 0 if the session has no events. Used by the compaction
+    /// pipeline to determine the current high-water mark.
+    pub async fn get_max_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+        let max_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
+        )
+        .bind(session_key)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(max_seq)
+    }
+
+    /// Garbage-collect events that have been summarized.
+    ///
+    /// Deletes all events with `sequence <= target_sequence` for the given session.
+    /// This is called after a successful compaction — the summary's
+    /// `covered_upto_sequence` watermark guarantees these events are covered.
+    pub async fn delete_events_upto(
+        &self,
+        session_key: &str,
+        target_sequence: i64,
+    ) -> Result<u64, StoreError> {
+        let result = sqlx::query(
+            "DELETE FROM session_events WHERE session_key = ? AND sequence <= ?",
+        )
+        .bind(session_key)
+        .bind(target_sequence)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Get the most recent summary event for a session branch.

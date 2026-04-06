@@ -111,9 +111,9 @@ pub use token_tracker::{
 
 // ── Tools ──────────────────────────────────────────────────
 pub use tools::{
-    CronTool, EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool,
-    MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, SubagentSpawner, ToolRegistry,
-    WebFetchTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, ExecTool, ListDirTool, MemorySearchTool, MessageTool, ReadFileTool,
+    SpawnParallelTool, SpawnTool, SubagentSpawner, ToolRegistry, WebFetchTool, WebSearchTool,
+    WriteFileTool,
 };
 
 // ── Vault ──────────────────────────────────────────────────

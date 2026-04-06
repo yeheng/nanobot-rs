@@ -144,8 +144,8 @@ struct PipelineState {
     content: String,
     messages: Vec<ChatMessage>,
     local_vault_values: Vec<String>,
-    /// Events evicted during history truncation — compacted post-response.
-    evicted_events: Vec<SessionEvent>,
+    /// Estimated token count of the current context (for compaction threshold check).
+    estimated_tokens: usize,
 }
 
 /// Owned snapshot of `PipelineState` fields needed for post-response finalization.
@@ -156,7 +156,8 @@ struct FinalizeContext {
     session_key_str: String,
     content: String,
     local_vault_values: Vec<String>,
-    evicted_events: Vec<SessionEvent>,
+    /// Estimated token count — used to decide if compaction should be triggered.
+    estimated_tokens: usize,
 }
 
 impl PipelineState {
@@ -165,7 +166,7 @@ impl PipelineState {
             session_key_str: self.session_key_str,
             content: self.content,
             local_vault_values: self.local_vault_values,
-            evicted_events: self.evicted_events,
+            estimated_tokens: self.estimated_tokens,
         };
         (self.messages, ctx)
     }
@@ -401,7 +402,7 @@ impl AgentLoop {
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
 
         let mut compactor =
-            ContextCompactor::new(provider, event_store.clone(), model, token_budget);
+            ContextCompactor::new(provider, event_store.clone(), sqlite_store.clone(), model, token_budget);
         if let Some(prompt) = summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt);
         }
@@ -651,9 +652,14 @@ impl AgentLoop {
             .and_then(|m| m.content.clone())
             .unwrap_or_else(|| content.to_string());
 
-        // ── 2. Load session history (enum dispatch) ─────
-        #[allow(deprecated)]
-        let history_events = self.context.get_history(&session_key_str, None).await;
+        // ── 2. Load summary with watermark (read path optimization) ─────
+        // Instead of loading ALL history and trimming, we first load the
+        // summary's watermark and then only query events after that point.
+        // This dramatically reduces SQLite I/O for long conversations.
+        let (existing_summary, watermark) = self
+            .context
+            .load_summary_with_watermark(&session_key_str)
+            .await;
 
         // ── 3. Save user event ────────────────
         let user_event = SessionEvent {
@@ -668,20 +674,31 @@ impl AgentLoop {
         };
         self.context.save_event(user_event).await?;
 
-        // ── 4. Token-budget-aware history trimming ──────────────────
+        // ── 4. Load only events after the watermark ──────────────────
+        // The watermark tells us which events are already covered by the
+        // summary. We only need events with sequence > watermark.
+        let history_events = self
+            .context
+            .get_events_after_watermark(&session_key_str, watermark)
+            .await;
+
+        // ── 4.5. Token-budget trimming (safety net) ──────────────────
+        // Even with the watermark, we still apply token budget trimming
+        // as a safety net for very active sessions where recent events
+        // alone exceed the budget.
         let processed = process_history(history_events, &self.history_config);
         let history_snapshot = processed.events;
-        let evicted_events = processed.evicted;
         if processed.filtered_count > 0 {
             debug!(
-                "History trimmed: {} kept, {} evicted, ~{} tokens",
+                "History trimmed: {} kept, {} evicted, ~{} tokens (watermark={})",
                 history_snapshot.len(),
-                evicted_events.len(),
+                processed.evicted.len(),
                 processed.estimated_tokens,
+                watermark,
             );
         }
 
-        // ── 5. Load existing summary + prompt assembly ─────────────────
+        // ── 5. Prompt assembly ─────────────────
         let mut system_prompts = Vec::new();
         if !self.system_prompt.is_empty() {
             system_prompts.push(self.system_prompt.clone());
@@ -696,18 +713,15 @@ impl AgentLoop {
             system_prompts.push(mem_text.clone());
         }
 
-        // Load the latest summary checkpoint (if any) for context injection
-        #[allow(deprecated)]
-        let existing_summary = self
-            .context
-            .load_latest_summary(&session_key_str, "main")
-            .await;
-
         let mut messages = Self::assemble_prompt(
             history_snapshot,
             &content,
             &system_prompts,
-            existing_summary.as_deref(),
+            if existing_summary.is_empty() {
+                None
+            } else {
+                Some(existing_summary.as_str())
+            },
             None, // History recall handled by hooks
         );
 
@@ -734,7 +748,7 @@ impl AgentLoop {
             content,
             messages,
             local_vault_values,
-            evicted_events,
+            estimated_tokens: processed.estimated_tokens,
         }))
     }
 
@@ -944,27 +958,13 @@ async fn finalize_response(
     }
 
     // ── Non-blocking post-response compaction ─────────────
-    // Compaction is spawned as a background task (eventually consistent).
-    // The next request uses the existing summary from DB; if compaction
-    // finishes in time, the request after that sees the updated one.
-    // This eliminates Actor-blocking — zero user-facing latency impact.
-    if !ctx.evicted_events.is_empty() {
+    // Compaction uses watermark-based background processing.
+    // The compactor internally checks the AtomicBool guard, threshold,
+    // and spawns the actual compression task via tokio::spawn.
+    // Zero user-facing latency impact.
+    if ctx.estimated_tokens > 0 {
         if let Some(compactor) = compactor {
-            let compactor = std::sync::Arc::clone(compactor);
-            let sk = session_key_str.clone();
-            let evicted = ctx.evicted_events.clone();
-            let vault = local_vault_values.clone();
-            tokio::spawn(async move {
-                match compactor.compact(&sk, &evicted, &vault).await {
-                    Ok(Some(summary)) => debug!(
-                        "Background compaction done for {}: {} tokens",
-                        sk,
-                        crate::agent::count_tokens(&summary)
-                    ),
-                    Ok(None) => debug!("Background compaction for {}: no summary generated", sk),
-                    Err(e) => warn!("Background compaction failed for {}: {}", sk, e),
-                }
-            });
+            compactor.try_compact(session_key_str, ctx.estimated_tokens, local_vault_values);
         }
     }
 

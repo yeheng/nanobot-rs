@@ -127,33 +127,49 @@ impl SqliteStore {
 
     // ── Session Summary API ──
 
-    /// Save or replace a session summary (upsert).
+    /// Save or replace a session summary with its sequence watermark (upsert).
+    ///
+    /// The `covered_upto_sequence` is the high-water mark: all events with
+    /// `sequence <= covered_upto_sequence` are covered by this summary and
+    /// can be safely garbage-collected.
     pub async fn save_session_summary(
         &self,
         session_key: &str,
         content: &str,
+        covered_upto_sequence: i64,
     ) -> anyhow::Result<()> {
         let created_at = chrono::Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT OR REPLACE INTO session_summaries (session_key, content, created_at) VALUES ($1, $2, $3)",
+            "INSERT OR REPLACE INTO session_summaries (session_key, content, covered_upto_sequence, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(session_key)
         .bind(content)
+        .bind(covered_upto_sequence)
         .bind(&created_at)
         .execute(&self.pool)
         .await?;
-        debug!("Saved session summary: {}", session_key);
+        debug!(
+            "Saved session summary for {}: covering up to sequence {}",
+            session_key, covered_upto_sequence
+        );
         Ok(())
     }
 
-    /// Load a session summary.
-    pub async fn load_session_summary(&self, session_key: &str) -> anyhow::Result<Option<String>> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT content FROM session_summaries WHERE session_key = $1")
-                .bind(session_key)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|(c,)| c))
+    /// Load a session summary and its sequence watermark.
+    ///
+    /// Returns `Some((content, covered_upto_sequence))` if a summary exists,
+    /// or `None` if no summary has been generated for this session yet.
+    pub async fn load_session_summary(
+        &self,
+        session_key: &str,
+    ) -> anyhow::Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT content, covered_upto_sequence FROM session_summaries WHERE session_key = $1",
+        )
+        .bind(session_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 
     /// Delete a session summary.
@@ -329,12 +345,16 @@ impl SqliteStore {
         .await?;
 
         // ── Session summaries ──
+        // Stores the rolling summary with a sequence watermark (high-water mark)
+        // indicating which events are already covered by the summary.
+        // Events with sequence <= covered_upto_sequence can be garbage-collected.
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_summaries (
-                session_key TEXT PRIMARY KEY,
-                content     TEXT NOT NULL,
-                created_at  TEXT NOT NULL
+                session_key            TEXT PRIMARY KEY,
+                content                TEXT NOT NULL,
+                covered_upto_sequence  INTEGER NOT NULL DEFAULT 0,
+                created_at             TEXT NOT NULL
             )",
         )
         .execute(&self.pool)
@@ -479,6 +499,7 @@ impl SqliteStore {
                 event_data      TEXT,
                 extra           TEXT DEFAULT '{}',
                 created_at      TEXT NOT NULL,
+                sequence        INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
             )
             "#,
@@ -559,6 +580,49 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
+        // ── Migrations for existing databases ──
+
+        // Add covered_upto_sequence column to session_summaries if it doesn't exist.
+        // SQLite ALTER TABLE ADD COLUMN is safe — it's a no-op if the column already exists
+        // in modern SQLite versions, but we guard with a pragma check for older versions.
+        let has_watermark: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('session_summaries') WHERE name = 'covered_upto_sequence'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        if !has_watermark {
+            sqlx::query(
+                "ALTER TABLE session_summaries ADD COLUMN covered_upto_sequence INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Add sequence column to session_events if it doesn't exist (migration for older DBs).
+        let has_sequence: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('session_events') WHERE name = 'sequence'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        if !has_sequence {
+            sqlx::query(
+                "ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Index for efficient watermark-based queries on session_events
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON session_events(session_key, sequence)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -621,14 +685,14 @@ mod tests {
             .is_none());
 
         store
-            .save_session_summary("test:123", "This is a summary of the conversation.")
+            .save_session_summary("test:123", "This is a summary of the conversation.", 42)
             .await
             .unwrap();
 
         let summary = store.load_session_summary("test:123").await.unwrap();
         assert_eq!(
             summary,
-            Some("This is a summary of the conversation.".to_string())
+            Some(("This is a summary of the conversation.".to_string(), 42))
         );
     }
 
@@ -637,23 +701,23 @@ mod tests {
         let store = temp_store().await;
 
         store
-            .save_session_summary("key1", "Summary v1")
+            .save_session_summary("key1", "Summary v1", 10)
             .await
             .unwrap();
         store
-            .save_session_summary("key1", "Summary v2")
+            .save_session_summary("key1", "Summary v2", 20)
             .await
             .unwrap();
 
         let summary = store.load_session_summary("key1").await.unwrap();
-        assert_eq!(summary, Some("Summary v2".to_string()));
+        assert_eq!(summary, Some(("Summary v2".to_string(), 20)));
     }
 
     #[tokio::test]
     async fn test_sqlite_session_summary_delete() {
         let store = temp_store().await;
 
-        store.save_session_summary("key1", "Summary").await.unwrap();
+        store.save_session_summary("key1", "Summary", 5).await.unwrap();
         assert!(store.delete_session_summary("key1").await.unwrap());
         assert!(!store.delete_session_summary("key1").await.unwrap());
         assert!(store.load_session_summary("key1").await.unwrap().is_none());

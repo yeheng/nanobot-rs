@@ -157,6 +157,64 @@ impl AgentContext {
         matches!(self, Self::Persistent(_))
     }
 
+    /// Load the summary and its sequence watermark for a session.
+    ///
+    /// Returns `(summary_text, covered_upto_sequence)`.
+    /// For `Stateless` context or if no summary exists, returns `("", 0)`.
+    pub async fn load_summary_with_watermark(&self, session_key: &str) -> (String, i64) {
+        match self {
+            Self::Persistent(ctx) => {
+                match ctx.sqlite_store.load_session_summary(session_key).await {
+                    Ok(Some((content, watermark))) => (content, watermark),
+                    Ok(None) => (String::new(), 0),
+                    Err(e) => {
+                        debug!("Failed to load summary for {}: {}", session_key, e);
+                        (String::new(), 0)
+                    }
+                }
+            }
+            Self::Stateless => (String::new(), 0),
+        }
+    }
+
+    /// Load events after a sequence watermark for a session.
+    ///
+    /// Returns only events with `sequence > watermark`, i.e., events not yet
+    /// covered by the summary. For `Stateless` context, returns empty vector.
+    pub async fn get_events_after_watermark(
+        &self,
+        session_key: &str,
+        watermark: i64,
+    ) -> Vec<SessionEvent> {
+        match self {
+            Self::Persistent(ctx) => {
+                if watermark == 0 {
+                    // No summary exists — load all history
+                    ctx.event_store
+                        .get_branch_history(session_key, "main")
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to load history for '{}': {}", session_key, e);
+                            Vec::new()
+                        })
+                } else {
+                    ctx.event_store
+                        .get_events_after_sequence(session_key, watermark)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                "Failed to load events after watermark for '{}': {}",
+                                session_key,
+                                e
+                            );
+                            Vec::new()
+                        })
+                }
+            }
+            Self::Stateless => vec![],
+        }
+    }
+
     /// Load a session for the given key.
     ///
     /// For `Persistent` context, loads events from EventStore and reconstructs session state.

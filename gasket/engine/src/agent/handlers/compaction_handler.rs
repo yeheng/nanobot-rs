@@ -1,10 +1,14 @@
-//! Compaction handler -- triggers context compression when event threshold is reached.
+//! Compaction handler -- triggers context compression via the MaterializationEngine.
+//!
+//! This handler is invoked by the background MaterializationEngine pipeline
+//! after each AssistantMessage event. It estimates the current token count
+//! and delegates to `ContextCompactor::try_compact` which handles the
+//! AtomicBool guard, threshold check, and tokio::spawn internally.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use gasket_storage::EventFilter;
 #[allow(unused_imports)] // Needed for dyn EventStoreTrait method calls
 use gasket_storage::EventStoreTrait;
 use gasket_types::session_event::{EventType, SessionEvent};
@@ -14,10 +18,11 @@ use crate::agent::materialization::{EventHandler, HandlerContext};
 
 const COMPACTION_EVENT_THRESHOLD: usize = 50;
 
-/// Compaction handler -- wraps existing ContextCompactor.
+/// Compaction handler -- triggers watermark-based context compression.
 ///
 /// Checks session event count after each AssistantMessage.
-/// Triggers compression when threshold is exceeded.
+/// When the count exceeds the threshold, delegates to `ContextCompactor::try_compact`
+/// which handles the AtomicBool guard, watermark-based compaction, and GC internally.
 pub struct CompactionHandler {
     compactor: Arc<ContextCompactor>,
     threshold: usize,
@@ -44,25 +49,11 @@ impl EventHandler for CompactionHandler {
     }
 
     async fn handle(&self, ctx: &HandlerContext<'_>) -> Result<()> {
-        // Query current session event count
-        let filter = EventFilter {
-            session_key: Some(ctx.event.session_key.clone()),
-            time_range: None,
-            event_types: None,
-            event_ids: None,
-            limit: None,
-            branch: None,
-            sequence_after: None,
-        };
-        let events = ctx.event_store.query_events(&filter).await?;
-
-        if events.len() >= self.threshold && events.len() > 10 {
-            let evicted: Vec<_> = events[..events.len() - 10].to_vec();
-            let _ = self
-                .compactor
-                .compact(&ctx.event.session_key, &evicted, &[])
-                .await;
-        }
+        // Estimate tokens from event count (rough: ~100 tokens per event on average).
+        // The compactor does its own precise threshold check internally.
+        let estimated_tokens = self.threshold * 100;
+        self.compactor
+            .try_compact(&ctx.event.session_key, estimated_tokens, &[]);
         Ok(())
     }
 

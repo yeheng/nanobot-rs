@@ -6,7 +6,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use gasket_storage::memory::{MemoryHit, MemoryQuery};
-use gasket_storage::{EventFilter, EventStoreTrait};
+use gasket_storage::{EventFilter, EventStoreTrait, SqliteStore};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
 
@@ -17,21 +17,20 @@ use super::memory_provider::MemoryProvider;
 /// History query intent — the only query entry point type.
 ///
 /// Each variant routes to a specific backend component:
-/// - `SessionContext` → ContextCompactor (LSM-tree: L0 events + L1 summary)
-/// - `LatestSummary` → ContextCompactor::load_summary()
+/// - `SessionContext` → EventStore + token budget trimming
+/// - `LatestSummary` → SqliteStore::load_session_summary() (watermark-based)
 /// - `SemanticSearch` → MemoryProvider::search()
 /// - `MemoryContext` → MemoryProvider::load_for_context()
 /// - `TimeRange` → EventStore::query()
 #[derive(Debug)]
 pub enum HistoryQuery {
     /// Get recent context for this session within a token budget.
-    /// Routes to ContextCompactor.
     SessionContext {
         session_key: String,
         token_budget: usize,
     },
-    /// Get the latest summary.
-    /// Routes to ContextCompactor::load_summary().
+    /// Get the latest summary with its sequence watermark.
+    /// Routes to SqliteStore::load_session_summary().
     LatestSummary { session_key: String },
     /// Cross-session semantic search.
     /// Routes to MemoryProvider::search().
@@ -53,8 +52,8 @@ pub enum HistoryQuery {
 pub enum HistoryResult {
     /// Context messages with role info, ready for LLM consumption.
     Context(Vec<ContextMessage>),
-    /// Summary from compactor.
-    Summary(Option<String>),
+    /// Summary from session_summaries table: (content, covered_upto_sequence).
+    Summary(Option<(String, i64)>),
     /// Memory hits from semantic search.
     Memories(Vec<MemoryHit>),
     /// Full memory context from three-phase loading.
@@ -79,6 +78,7 @@ pub struct ContextMessage {
 pub struct HistoryCoordinator {
     event_store: Arc<dyn EventStoreTrait>,
     _compactor: Arc<ContextCompactor>,
+    sqlite_store: Arc<SqliteStore>,
     memory: Arc<dyn MemoryProvider>,
 }
 
@@ -86,11 +86,13 @@ impl HistoryCoordinator {
     pub fn new(
         event_store: Arc<dyn EventStoreTrait>,
         compactor: Arc<ContextCompactor>,
+        sqlite_store: Arc<SqliteStore>,
         memory: Arc<dyn MemoryProvider>,
     ) -> Self {
         Self {
             event_store,
             _compactor: compactor,
+            sqlite_store,
             memory,
         }
     }
@@ -102,7 +104,6 @@ impl HistoryCoordinator {
                 session_key,
                 token_budget,
             } => {
-                // Use query_events with branch filter (trait method, not concrete get_branch_history)
                 let events = self
                     .event_store
                     .query_events(&EventFilter {
@@ -137,16 +138,15 @@ impl HistoryCoordinator {
                 Ok(HistoryResult::Context(selected))
             }
             HistoryQuery::LatestSummary { session_key } => {
+                // Use the dedicated session_summaries table (watermark-based)
                 let summary = self
-                    .event_store
-                    .get_latest_summary(&session_key, "main")
+                    .sqlite_store
+                    .load_session_summary(&session_key)
                     .await
-                    .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
-                Ok(HistoryResult::Summary(summary.map(|e| e.content)))
+                    .map_err(|e| anyhow::anyhow!("sqlite store error: {}", e))?;
+                Ok(HistoryResult::Summary(summary))
             }
             HistoryQuery::SemanticSearch { query, top_k } => {
-                // MemoryManager doesn't expose public search().
-                // Use load_for_context with text-based MemoryQuery.
                 let memory_query = MemoryQuery {
                     text: Some(query),
                     tags: vec![],
