@@ -83,12 +83,19 @@ impl SimpleRateLimiter {
 
     /// Check if a message from the given sender is allowed.
     /// Returns true if allowed, false if rate limited.
+    ///
+    /// Stale sender keys (all timestamps expired) are pruned to prevent
+    /// unbounded HashMap growth in long-running processes.
     pub fn check(&self, sender_id: &str) -> bool {
         let mut map = self.timestamps.lock().unwrap();
-        let ts = map.entry(sender_id.to_string()).or_default();
         let now = Instant::now();
 
-        // Evict expired entries
+        // Opportunistically prune all stale senders
+        map.retain(|_, ts| ts.iter().any(|t| now.duration_since(*t) <= self.window));
+
+        let ts = map.entry(sender_id.to_string()).or_default();
+
+        // Evict expired entries for this sender
         while let Some(&front) = ts.front() {
             if now.duration_since(front) > self.window {
                 ts.pop_front();
@@ -325,6 +332,26 @@ mod tests {
 
         assert!(auth.is_allowed("anyone"));
         assert!(auth.is_allowed("user1"));
+    }
+
+    #[test]
+    fn test_rate_limiter_cleans_up_stale_senders() {
+        let rl = SimpleRateLimiter::new(2, std::time::Duration::from_millis(50));
+
+        // Use up quota for user1
+        assert!(rl.check("user1"));
+        assert!(rl.check("user1"));
+
+        // Wait for timestamps to expire
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // A check for user2 triggers prune of stale senders
+        assert!(rl.check("user2"));
+
+        // user1's entry should be pruned — map should only contain user2
+        let map = rl.timestamps.lock().unwrap();
+        assert!(!map.contains_key("user1"));
+        assert!(map.contains_key("user2"));
     }
 
     #[test]

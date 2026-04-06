@@ -191,37 +191,62 @@ impl MetadataStore {
     ///
     /// Returns: profile → active(hot, warm) → scenario(hot, warm).
     /// Excludes cold and archived. Warm scenario items are filtered by tag
-    /// match when tags are provided.
+    /// match when tags are provided — using SQL `json_each` EXISTS subqueries
+    /// so SQLite returns only matching rows instead of loading the full table.
     pub async fn query_for_loading(
         &self,
         scenario: Scenario,
         tags: &[String],
     ) -> Result<Vec<MemoryIndexEntry>> {
+        if tags.is_empty() {
+            // No tag filtering — simple query, return all warm items
+            let sql = format!(
+                "SELECT {META_COLUMNS}
+                 FROM memory_metadata
+                 WHERE frequency NOT IN ('archived', 'cold')
+                   AND (scenario IN ('profile', 'active') OR scenario = '{}')
+                 ORDER BY
+                   CASE scenario WHEN 'profile' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+                   CASE frequency WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END",
+                scenario.dir_name()
+            );
+            return self.rows_to_entries(&sql).await;
+        }
+
+        // Build tag EXISTS subqueries using json_each for accurate matching
+        let tag_exists: Vec<String> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                format!(
+                    "EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?{})",
+                    i + 1
+                )
+            })
+            .collect();
+
+        // profile/active + hot items always included; warm scenario items require tag match
         let sql = format!(
             "SELECT {META_COLUMNS}
              FROM memory_metadata
              WHERE frequency NOT IN ('archived', 'cold')
-               AND (scenario IN ('profile', 'active') OR scenario = '{}')
+               AND (scenario IN ('profile', 'active')
+                    OR frequency = 'hot'
+                    OR (scenario = '{}' AND ({})))
              ORDER BY
                CASE scenario WHEN 'profile' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
                CASE frequency WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END",
-            scenario.dir_name()
+            scenario.dir_name(),
+            tag_exists.join(" OR ")
         );
 
-        let mut entries = self.rows_to_entries(&sql).await?;
-
-        // Filter warm items for the target scenario by tag match
-        if !tags.is_empty() {
-            entries.retain(|e| {
-                matches!(e.scenario, Scenario::Profile | Scenario::Active)
-                    || e.frequency == Frequency::Hot
-                    || e.tags
-                        .iter()
-                        .any(|t| tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
-            });
+        let mut q = sqlx::query(&sql);
+        for tag in tags {
+            q = q.bind(tag);
         }
 
-        Ok(entries)
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(Self::parse_rows(rows))
     }
 
     /// Get decay candidates: entries whose `last_accessed` is older than the
@@ -517,6 +542,56 @@ mod tests {
         let result = meta.query_entries(Scenario::Knowledge).await.unwrap();
         assert_eq!(1, result.len());
         assert_eq!("V2", result[0].title);
+    }
+
+    #[tokio::test]
+    async fn test_query_for_loading_filters_by_tags_in_sql() {
+        let (_store, meta) = setup().await;
+
+        // Knowledge warm with matching tag
+        let matching = make_entry(
+            "mem_match",
+            "Matching",
+            vec!["rust"],
+            Frequency::Warm,
+            Scenario::Knowledge,
+            "2026-04-06T00:00:00Z",
+        );
+        // Knowledge warm with non-matching tag
+        let non_matching = make_entry(
+            "mem_nomatch",
+            "No Match",
+            vec!["python"],
+            Frequency::Warm,
+            Scenario::Knowledge,
+            "2026-04-06T00:00:00Z",
+        );
+        // Knowledge hot — should always appear regardless of tags
+        let hot = make_entry(
+            "mem_hot",
+            "Hot Item",
+            vec!["python"],
+            Frequency::Hot,
+            Scenario::Knowledge,
+            "2026-04-06T00:00:00Z",
+        );
+
+        meta.sync_entries(Scenario::Knowledge, &[matching, non_matching, hot])
+            .await
+            .unwrap();
+
+        // Query with tag "rust"
+        let result = meta
+            .query_for_loading(Scenario::Knowledge, &["rust".to_string()])
+            .await
+            .unwrap();
+
+        // Should get: matching (warm, tag match) + hot (always included)
+        // Should NOT get: non_matching (warm, tag mismatch)
+        assert_eq!(2, result.len());
+        assert!(result.iter().any(|e| e.id == "mem_match"));
+        assert!(result.iter().any(|e| e.id == "mem_hot"));
+        assert!(!result.iter().any(|e| e.id == "mem_nomatch"));
     }
 
     #[tokio::test]

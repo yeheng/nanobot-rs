@@ -324,6 +324,10 @@ pub async fn run_router_actor<H>(
 }
 
 /// Router actor with configurable session idle timeout.
+///
+/// Includes periodic GC (every 5 minutes) to evict dead session entries
+/// whose `Sender` has been closed (session actor timed out). Without this,
+/// the `sessions` HashMap grows indefinitely in long-running gateway processes.
 pub async fn run_router_actor_with_timeout<H>(
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
@@ -334,38 +338,61 @@ pub async fn run_router_actor_with_timeout<H>(
 {
     tracing::info!("Router Actor started");
     let mut sessions: HashMap<SessionKey, mpsc::Sender<InboundMessage>> = HashMap::new();
+    let mut cleanup_interval = tokio::time::interval(Duration::from_secs(300));
 
-    while let Some(msg) = inbound_rx.recv().await {
-        let key = msg.session_key().clone();
+    loop {
+        tokio::select! {
+            msg = inbound_rx.recv() => {
+                match msg {
+                    Some(msg) => {
+                        let key = msg.session_key().clone();
 
-        let mut needs_respawn = true;
-        if let Some(tx) = sessions.get(&key) {
-            if tx.send(msg.clone()).await.is_ok() {
-                needs_respawn = false;
-            } else {
-                tracing::info!("Session [{}] channel dead, respawning...", key);
+                        let mut needs_respawn = true;
+                        if let Some(tx) = sessions.get(&key) {
+                            if tx.send(msg.clone()).await.is_ok() {
+                                needs_respawn = false;
+                            } else {
+                                tracing::info!("Session [{}] channel dead, respawning...", key);
+                            }
+                        }
+
+                        if needs_respawn {
+                            let (tx, rx) = mpsc::channel(32);
+                            let ob_tx = outbound_tx.clone();
+                            let handler_clone = handler.clone();
+                            let session_key = key.clone();
+
+                            tokio::spawn(run_session_actor(
+                                session_key,
+                                rx,
+                                ob_tx,
+                                handler_clone,
+                                idle_timeout,
+                            ));
+
+                            if let Err(e) = tx.send(msg).await {
+                                tracing::error!("Failed to send to fresh session [{}]: {}", key, e);
+                            }
+                            sessions.insert(key, tx);
+                        }
+                    }
+                    None => break,
+                }
             }
-        }
-
-        if needs_respawn {
-            let (tx, rx) = mpsc::channel(32);
-            let ob_tx = outbound_tx.clone();
-            let handler_clone = handler.clone();
-            let session_key = key.clone();
-
-            tokio::spawn(run_session_actor(
-                session_key,
-                rx,
-                ob_tx,
-                handler_clone,
-                idle_timeout,
-            ));
-
-            // Send to the freshly created channel (guaranteed to succeed)
-            if let Err(e) = tx.send(msg).await {
-                tracing::error!("Failed to send to fresh session [{}]: {}", key, e);
+            _ = cleanup_interval.tick() => {
+                let before = sessions.len();
+                sessions.retain(|key, tx| {
+                    let alive = !tx.is_closed();
+                    if !alive {
+                        tracing::debug!("Router GC: removing dead session [{}]", key);
+                    }
+                    alive
+                });
+                let removed = before - sessions.len();
+                if removed > 0 {
+                    tracing::info!("Router GC: cleaned up {} dead sessions", removed);
+                }
             }
-            sessions.insert(key, tx);
         }
     }
     tracing::info!("Router Actor shutting down");

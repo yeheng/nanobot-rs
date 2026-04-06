@@ -91,17 +91,20 @@ impl ToolCallAccumulator {
     }
 
     /// Finalize all pending tool calls into sorted `ToolCall` objects.
+    ///
+    /// Sorted by integer stream index (the HashMap key), NOT by string ID.
+    /// String sorting would put `call_10` before `call_2`, breaking tool
+    /// execution order when the LLM issues calls with dependencies.
     pub fn finalize(self) -> Vec<ToolCall> {
-        let mut calls: Vec<ToolCall> = self
-            .pending
-            .into_values()
-            .map(|partial| {
+        let mut entries: Vec<_> = self.pending.into_iter().collect();
+        entries.sort_by_key(|(idx, _)| *idx);
+        entries
+            .into_iter()
+            .map(|(_, partial)| {
                 let arguments = parse_json_args(&partial.arguments);
                 ToolCall::new(partial.id, partial.name, arguments)
             })
-            .collect();
-        calls.sort_by_key(|tc| tc.id.clone());
-        calls
+            .collect()
     }
 }
 
@@ -384,5 +387,38 @@ mod tests {
 
         let calls = acc.finalize();
         assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_sorts_by_index_not_id() {
+        let mut acc = ToolCallAccumulator::new();
+
+        // Feed tool calls whose string IDs sort incorrectly:
+        // index 10 has id "call_2", index 2 has id "call_10"
+        acc.feed(&ToolCallDelta {
+            index: 10,
+            id: Some("call_2".to_string()),
+            function_name: Some("tool_a".to_string()),
+            function_arguments: Some(r#"{"x":1}"#.to_string()),
+        });
+        acc.feed(&ToolCallDelta {
+            index: 2,
+            id: Some("call_10".to_string()),
+            function_name: Some("tool_b".to_string()),
+            function_arguments: Some(r#"{"y":2}"#.to_string()),
+        });
+        acc.feed(&ToolCallDelta {
+            index: 5,
+            id: Some("call_3".to_string()),
+            function_name: Some("tool_c".to_string()),
+            function_arguments: Some(r#"{"z":3}"#.to_string()),
+        });
+
+        let calls = acc.finalize();
+        assert_eq!(calls.len(), 3);
+        // Must be sorted by index: 2, 5, 10
+        assert_eq!(calls[0].function.name, "tool_b"); // index 2
+        assert_eq!(calls[1].function.name, "tool_c"); // index 5
+        assert_eq!(calls[2].function.name, "tool_a"); // index 10
     }
 }

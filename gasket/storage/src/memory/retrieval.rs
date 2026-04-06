@@ -189,33 +189,6 @@ mod tests {
     use crate::SqliteStore;
     use tempfile::TempDir;
 
-    async fn setup_engine() -> (RetrievalEngine, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
-        let base_dir = temp_dir.path().to_path_buf();
-
-        let db_path = base_dir.join("test.db");
-        let pool = SqliteStore::with_path(db_path)
-            .await
-            .unwrap()
-            .pool()
-            .clone();
-
-        let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        let metadata_store = MetadataStore::new(pool.clone());
-        let embedding_store = EmbeddingStore::new(pool);
-
-        // Create scenario directories and sync metadata
-        for scen in Scenario::all() {
-            let dir = base_dir.join("memory").join(scen.dir_name());
-            tokio::fs::create_dir_all(&dir).await.unwrap();
-            let entries = index_manager.scan_entries(*scen).await.unwrap_or_default();
-            metadata_store.sync_entries(*scen, &entries).await.unwrap();
-        }
-
-        let engine = RetrievalEngine::new(metadata_store, embedding_store);
-        (engine, temp_dir)
-    }
-
     async fn setup_engine_with_files() -> (RetrievalEngine, MetadataStore, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let base_dir = temp_dir.path().to_path_buf();
@@ -227,7 +200,6 @@ mod tests {
             .pool()
             .clone();
 
-        let index_manager = FileIndexManager::new(base_dir.join("memory"));
         let metadata_store = MetadataStore::new(pool.clone());
         let embedding_store = EmbeddingStore::new(pool);
 

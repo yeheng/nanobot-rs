@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use dialoguer::{Confirm, Select};
 use gasket_sandbox::approval::{ApprovalRequest, PermissionLevel};
 use gasket_sandbox::{ApprovalInteraction, SandboxError};
-use tokio::time::timeout;
 
 /// Default timeout for user interaction (5 minutes)
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -121,42 +120,35 @@ impl Default for CliInteraction {
 #[async_trait]
 impl ApprovalInteraction for CliInteraction {
     async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel, SandboxError> {
-        // Clone request for the blocking task
         let request = request.clone();
-        let timeout_duration = self.timeout;
 
-        // Run the interactive prompt with timeout
-        let result = timeout(
-            timeout_duration,
-            tokio::task::spawn_blocking(move || {
-                // Create a temporary CliInteraction for the blocking context
-                let cli = CliInteraction::with_timeout(timeout_duration);
-                cli.run_prompt(&request)
-            }),
-        )
+        // Run the interactive prompt in a blocking context.
+        //
+        // NOTE: No timeout wrapper! dialoguer reads from stdin which is a
+        // blocking OS operation. tokio::time::timeout cannot cancel a
+        // spawn_blocking thread — it only drops the JoinHandle, leaving the
+        // OS thread permanently stuck in stdin. After repeated timeouts this
+        // exhausts Tokio's blocking thread pool (default 512 threads), causing
+        // a deadlocked gateway.
+        //
+        // In CLI mode, the human operator decides when to respond. The
+        // terminal session itself is the natural timeout boundary.
+        let result = tokio::task::spawn_blocking(move || {
+            let cli = CliInteraction::new();
+            cli.run_prompt(&request)
+        })
         .await;
 
         match result {
-            // timeout succeeded, spawn_blocking succeeded, prompt succeeded
-            Ok(Ok(Ok(level))) => Ok(level),
-            // timeout succeeded, spawn_blocking succeeded, prompt failed
-            Ok(Ok(Err(e))) => Err(e),
-            // timeout succeeded, spawn_blocking failed (panic/cancel)
-            Ok(Err(join_err)) => Err(SandboxError::ApprovalFailed(format!(
+            // spawn_blocking succeeded, prompt succeeded
+            Ok(Ok(level)) => Ok(level),
+            // spawn_blocking succeeded, prompt failed
+            Ok(Err(e)) => Err(e),
+            // spawn_blocking task panicked or was cancelled
+            Err(join_err) => Err(SandboxError::ApprovalFailed(format!(
                 "Blocking task failed: {}",
                 join_err
             ))),
-            // Timeout expired
-            Err(_) => {
-                println!(
-                    "\n⏰ Approval request timed out after {} seconds",
-                    timeout_duration.as_secs()
-                );
-                println!("❌ Operation automatically denied.");
-                Err(SandboxError::ApprovalTimeout {
-                    timeout_secs: timeout_duration.as_secs(),
-                })
-            }
         }
     }
 }

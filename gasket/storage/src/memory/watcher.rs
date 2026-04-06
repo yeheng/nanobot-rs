@@ -31,10 +31,11 @@
 
 use super::types::Scenario;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+#[cfg(feature = "memory-watcher")]
+use std::time::{Duration, Instant};
 
 // ============================================================================
 // Watch event types
@@ -230,6 +231,7 @@ async fn debounce_loop(
     tx: mpsc::Sender<WatchEvent>,
     debounce: Duration,
 ) -> Result<()> {
+    use std::collections::HashMap;
     use tokio::sync::mpsc as tokio_mpsc;
 
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::channel(100);

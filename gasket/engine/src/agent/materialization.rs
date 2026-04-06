@@ -159,11 +159,98 @@ impl MaterializationEngine {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("MaterializationEngine lagged {} events, will catch up", n);
-                    // Checkpoint guarantees no data loss — recover on restart
+                    tracing::warn!(
+                        "MaterializationEngine lagged {} events, recovering from checkpoint",
+                        n
+                    );
+                    if let Err(e) = self.recover_from_lag().await {
+                        tracing::error!("Lag recovery failed: {:?}", e);
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::info!("MaterializationEngine broadcast closed, shutting down");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Recover missed events by replaying from each handler's last checkpoint.
+    ///
+    /// Called when the broadcast channel overflows (Lagged). Loops until
+    /// caught up so that even large gaps (days of downtime) are fully replayed.
+    async fn recover_from_lag(&self) -> Result<()> {
+        for handler in &self.handlers {
+            let checkpoint = self.checkpoint_store.load(handler.name()).await?;
+            let last_seq = checkpoint.map(|c| c.last_sequence).unwrap_or(0);
+
+            // Replay in batches to avoid unbounded memory
+            let batch_size = 1000usize;
+            let mut cursor = last_seq;
+
+            loop {
+                let filter = gasket_storage::EventFilter {
+                    sequence_after: Some(cursor),
+                    limit: Some(batch_size),
+                    ..Default::default()
+                };
+
+                let batch = self.event_store.query_events(&filter).await?;
+                if batch.is_empty() {
+                    break; // caught up
+                }
+
+                tracing::info!(
+                    "Handler {}: replaying {} events after sequence {}",
+                    handler.name(),
+                    batch.len(),
+                    cursor
+                );
+
+                for event in &batch {
+                    if !handler.can_handle(event) {
+                        continue;
+                    }
+
+                    let ctx = HandlerContext {
+                        event,
+                        event_store: self.event_store.as_ref(),
+                    };
+
+                    match handler.handle(&ctx).await {
+                        Ok(()) => {
+                            let cp = Checkpoint {
+                                handler_name: handler.name().to_string(),
+                                last_sequence: event.sequence,
+                                updated_at: Utc::now(),
+                            };
+                            self.checkpoint_store.save(&cp).await?;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Handler {} failed during recovery for event {}: {}",
+                                handler.name(),
+                                event.id,
+                                e
+                            );
+                            // Record failure but continue replaying
+                            let error_msg = format!("{:?}", e);
+                            let _ = self
+                                .failed_store
+                                .record_failure(&event.id.to_string(), handler.name(), &error_msg)
+                                .await;
+                        }
+                    }
+                }
+
+                // Advance cursor past last processed event
+                if let Some(last) = batch.last() {
+                    cursor = last.sequence;
+                }
+
+                // If we got fewer than batch_size, we're caught up
+                if batch.len() < batch_size {
                     break;
                 }
             }

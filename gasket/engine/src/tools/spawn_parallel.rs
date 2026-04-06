@@ -1,5 +1,7 @@
 //! Parallel spawn tool for concurrent subagent execution with result aggregation
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -147,12 +149,17 @@ impl Tool for SpawnParallelTool {
 
         info!("Spawning {} parallel subagent tasks", task_specs.len());
 
-        // Spawn all tasks concurrently
+        // Spawn tasks with bounded concurrency to avoid API rate limits (429).
+        // Max 5 concurrent LLM calls is a safe default across most providers.
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
         let mut handles = Vec::with_capacity(task_specs.len());
         for spec in task_specs {
             let spawner_clone = spawner.clone();
-            let handle =
-                tokio::spawn(async move { spawner_clone.spawn(spec.task, spec.model_id).await });
+            let sem = semaphore.clone();
+            let handle = tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                spawner_clone.spawn(spec.task, spec.model_id).await
+            });
             handles.push(handle);
         }
 
