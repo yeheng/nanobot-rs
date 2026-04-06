@@ -99,8 +99,8 @@ trait Tool: Send + Sync {
 | `web_search` | web | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
 | `send_message` | communication | 通过 Bus 发消息到渠道 |
 | `cron` | system | 管理定时任务 (CRUD) |
-| `memory_search` | memory | 搜索结构化记忆 (FTS5) |
-| `history_search` | memory | 搜索会话历史 |
+| `memory_search` | memory | 通过 SQLite MetadataStore 搜索结构化记忆 |
+| `memorize` | memory | 写入结构化长期记忆 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
 
 ### 辅助模块

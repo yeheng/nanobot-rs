@@ -450,6 +450,7 @@ impl SqliteStore {
                 tokens      INTEGER NOT NULL DEFAULT 0,
                 updated     TEXT NOT NULL DEFAULT '',
                 last_accessed TEXT NOT NULL DEFAULT '',
+                file_mtime  BIGINT NOT NULL DEFAULT 0,
                 PRIMARY KEY (scenario, path)
             )",
         )
@@ -470,6 +471,8 @@ impl SqliteStore {
             r#"
             CREATE TABLE IF NOT EXISTS sessions_v2 (
                 key             TEXT PRIMARY KEY,
+                channel         TEXT NOT NULL DEFAULT '',
+                chat_id         TEXT NOT NULL DEFAULT '',
                 current_branch  TEXT NOT NULL DEFAULT 'main',
                 branches        TEXT NOT NULL DEFAULT '{}',
                 created_at      TEXT NOT NULL,
@@ -489,6 +492,8 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS session_events (
                 id              TEXT PRIMARY KEY,
                 session_key     TEXT NOT NULL,
+                channel         TEXT NOT NULL DEFAULT '',
+                chat_id         TEXT NOT NULL DEFAULT '',
                 event_type      TEXT NOT NULL,
                 content         TEXT NOT NULL,
                 embedding       BLOB,
@@ -510,6 +515,31 @@ impl SqliteStore {
         // Indexes for session_events
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_events_session_branch ON session_events(session_key, branch)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Indexes for channel/chat_id queries
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)",
         )
         .execute(&self.pool)
         .await?;

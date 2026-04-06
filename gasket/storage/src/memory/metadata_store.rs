@@ -105,7 +105,7 @@ impl MetadataStore {
     /// Get file_mtime for a specific entry by scenario and filename.
     pub async fn get_file_mtime(&self, scenario: Scenario, filename: &str) -> Result<u64> {
         let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT file_mtime FROM memory_metadata WHERE scenario = ? AND path = ?"
+            "SELECT file_mtime FROM memory_metadata WHERE scenario = ? AND path = ?",
         )
         .bind(scenario.dir_name())
         .bind(filename)
@@ -384,6 +384,7 @@ mod tests {
             updated: "2026-04-06".into(),
             scenario,
             last_accessed: last_accessed.into(),
+            file_mtime: 0, // Test doesn't need real mtime
         }
     }
 

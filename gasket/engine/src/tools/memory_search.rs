@@ -178,9 +178,7 @@ impl MemorySearchTool {
         let entries = store
             .query_by_tags(search_tags, None, parsed.limit)
             .await
-            .map_err(|e| {
-                ToolError::ExecutionError(format!("MetadataStore query failed: {}", e))
-            })?;
+            .map_err(|e| ToolError::ExecutionError(format!("MetadataStore query failed: {}", e)))?;
 
         if entries.is_empty() {
             return Ok(format!(
@@ -210,11 +208,7 @@ impl MemorySearchTool {
 
             output.push_str(&format!(
                 "━━━ {} ━━━\n  Scenario: {} | Tags:{} | Tokens: {}\n  {}\n\n",
-                entry.title,
-                entry.scenario,
-                tags_display,
-                entry.tokens,
-                snippet,
+                entry.title, entry.scenario, tags_display, entry.tokens, snippet,
             ));
         }
 
@@ -276,11 +270,13 @@ impl MemorySearchTool {
                 ToolError::ExecutionError(format!("Failed to read directory: {}", e))
             })?;
 
-            while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to read entry: {}", e))
-            })? {
+            while let Some(entry) = read_dir
+                .next_entry()
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Failed to read entry: {}", e)))?
+            {
                 let path = entry.path();
-                if !path.extension().is_some_and(|ext| ext == "md") {
+                if path.extension().is_none_or(|ext| ext != "md") {
                     continue;
                 }
 
@@ -299,7 +295,11 @@ impl MemorySearchTool {
                     continue;
                 }
 
-                let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let filename = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let snippet = {
                     let body = if content.trim_start().starts_with("---") {
                         if let Some(end) = content[3..].find("\n---") {

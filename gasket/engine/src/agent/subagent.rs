@@ -370,10 +370,8 @@ impl<'a> SubagentTaskBuilder<'a> {
                 if let Ok(ref resp) = response {
                     if let Some(ref usage) = resp.token_usage {
                         // Convert from gasket_types::TokenUsage (used in AgentResponse) to gasket_types::TokenUsage (tracker format)
-                        let token_usage = gasket_types::TokenUsage::new(
-                            usage.input_tokens,
-                            usage.output_tokens,
-                        );
+                        let token_usage =
+                            gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
                         tracker.accumulate(&token_usage, resp.cost);
                         tracing::debug!(
                             "[Subagent {}] Accumulated {} tokens (cost: ${:.4}) to parent tracker",

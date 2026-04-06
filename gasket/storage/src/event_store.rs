@@ -264,7 +264,7 @@ impl EventStore {
             INSERT INTO session_events
             (id, session_key, channel, chat_id, event_type, content, embedding, branch,
              tools_used, token_usage, token_len, event_data, extra, created_at, sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())

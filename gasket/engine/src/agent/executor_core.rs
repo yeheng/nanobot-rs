@@ -62,7 +62,10 @@ impl<'a> ExecutorOptions<'a> {
         self
     }
 
-    pub fn with_token_tracker(mut self, tracker: std::sync::Arc<crate::token_tracker::TokenTracker>) -> Self {
+    pub fn with_token_tracker(
+        mut self,
+        tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
+    ) -> Self {
         self.token_tracker = Some(tracker);
         self
     }

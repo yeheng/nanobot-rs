@@ -174,5 +174,4 @@ tools:
   exec:
     enabled: true
     timeout_seconds: 60
-  history_search_limit: 50
   mcp_servers: []

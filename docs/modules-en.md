@@ -95,8 +95,8 @@ trait Tool: Send + Sync {
 | `web_search` | web | Web search (Brave/Tavily/Exa/Firecrawl) |
 | `message` | communication | Send message through Bus to channel |
 | `cron` | system | Manage scheduled tasks (CRUD) |
-| `memory_search` | memory | Search structured memories (FTS5) |
-| `history_search` | memory | Search session history |
+| `memory_search` | memory | Search structured memories via SQLite MetadataStore |
+| `memorize` | memory | Write structured long-term memories |
 | MCP tools | mcp | Dynamic tools provided by MCP servers |
 
 ### Helper Modules

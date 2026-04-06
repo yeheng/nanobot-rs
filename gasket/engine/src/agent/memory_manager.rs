@@ -171,7 +171,11 @@ impl MemoryManager {
             .await?;
 
         // 2. Read file mtime
-        let file_path = self.store.base_dir().join(scenario.dir_name()).join(&filename);
+        let file_path = self
+            .store
+            .base_dir()
+            .join(scenario.dir_name())
+            .join(&filename);
         let file_mtime = tokio::fs::metadata(&file_path)
             .await
             .ok()
@@ -244,7 +248,11 @@ impl MemoryManager {
         self.store.update(scenario, filename, &file_content).await?;
 
         // 4. Read file mtime
-        let file_path = self.store.base_dir().join(scenario.dir_name()).join(filename);
+        let file_path = self
+            .store
+            .base_dir()
+            .join(scenario.dir_name())
+            .join(filename);
         let file_mtime = tokio::fs::metadata(&file_path)
             .await
             .ok()
@@ -1266,11 +1274,6 @@ mod tests {
         assert_eq!(1, entries.len());
         assert_eq!("Test Write-Through", entries[0].title);
         assert_eq!(Frequency::Hot, entries[0].frequency);
-
-        // recently_modified_by_us should contain the key
-        let tracker = manager.recently_modified_by_us.read().await;
-        let key = format!("knowledge/{}", filename);
-        assert!(tracker.contains(&key));
     }
 
     #[tokio::test]

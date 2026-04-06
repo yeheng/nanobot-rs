@@ -708,6 +708,7 @@ mod tests {
                 updated: meta.updated.clone(),
                 scenario: meta.scenario,
                 last_accessed: meta.last_accessed.clone(),
+                file_mtime: 0, // Test doesn't need real mtime
             };
             metadata_store.upsert_entry(&entry).await.unwrap();
         }

@@ -178,12 +178,14 @@ impl TokenTracker {
 
     /// Get total input tokens
     pub fn input_tokens(&self) -> usize {
-        self.total_input_tokens.load(std::sync::atomic::Ordering::Relaxed)
+        self.total_input_tokens
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get total output tokens
     pub fn output_tokens(&self) -> usize {
-        self.total_output_tokens.load(std::sync::atomic::Ordering::Relaxed)
+        self.total_output_tokens
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get total tokens (input + output)
@@ -199,7 +201,8 @@ impl TokenTracker {
 
     /// Get request count
     pub fn request_count(&self) -> usize {
-        self.request_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.request_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get budget limit (0 = unlimited)

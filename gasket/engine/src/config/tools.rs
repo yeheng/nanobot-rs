@@ -183,7 +183,6 @@ fn default_exec_timeout() -> u64 {
     120
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -100,7 +100,7 @@ pub struct EventMetadata {
     pub tools_used: Vec<String>,
 
     /// Token statistics (LLM API input/output tokens)
-    pub token_usage: Option<TokenUsage>,
+    pub token_usage: Option<crate::token_tracker::TokenUsage>,
 
     /// Pre-computed content token count via tiktoken BPE encoding.
     /// Calculated once at write time in `append_event` to avoid
@@ -111,13 +111,6 @@ pub struct EventMetadata {
     /// Extension fields
     #[serde(default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Token usage statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
 }
 
 /// Session - aggregate root for events.

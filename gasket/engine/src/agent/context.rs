@@ -391,6 +391,8 @@ mod tests {
             r#"
             CREATE TABLE sessions_v2 (
                 key TEXT PRIMARY KEY,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT '',
                 current_branch TEXT NOT NULL DEFAULT 'main',
                 branches TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
@@ -410,6 +412,8 @@ mod tests {
             CREATE TABLE session_events (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT '',
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,

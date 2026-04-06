@@ -12,8 +12,8 @@
 
 pub mod events;
 pub mod session_event;
-pub mod tool;
 pub mod token_tracker;
+pub mod tool;
 
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
@@ -22,11 +22,11 @@ pub use events::{
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,
 };
-pub use tool::{
-    simple_schema, SubagentResponse, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError,
-    ToolMetadata, ToolResult,
-};
 pub use token_tracker::{
     calculate_cost, format_cost, format_token_usage, ModelPricing, SessionTokenStats, TokenTracker,
     TokenUsage,
+};
+pub use tool::{
+    simple_schema, SubagentResponse, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError,
+    ToolMetadata, ToolResult,
 };

@@ -89,7 +89,10 @@ impl std::fmt::Debug for ToolContext {
             .field("session_key", &self.session_key)
             .field("outbound_tx", &self.outbound_tx.is_some())
             .field("spawner", &self.spawner.as_ref().map(|_| "SubagentSpawner"))
-            .field("token_tracker", &self.token_tracker.as_ref().map(|_| "TokenTracker"))
+            .field(
+                "token_tracker",
+                &self.token_tracker.as_ref().map(|_| "TokenTracker"),
+            )
             .finish()
     }
 }
@@ -110,7 +113,10 @@ impl ToolContext {
         self
     }
 
-    pub fn token_tracker(mut self, tracker: std::sync::Arc<crate::token_tracker::TokenTracker>) -> Self {
+    pub fn token_tracker(
+        mut self,
+        tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
+    ) -> Self {
         self.token_tracker = Some(tracker);
         self
     }
