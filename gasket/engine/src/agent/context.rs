@@ -87,38 +87,6 @@ impl PersistentContext {
     pub fn set_coordinator(&mut self, coordinator: Arc<HistoryCoordinator>) {
         self.coordinator = Some(coordinator);
     }
-
-    /// Spawn the MaterializationEngine as a background task with custom handlers.
-    ///
-    /// This is the main integration point — the caller constructs handlers
-    /// with their specific dependencies and passes them in.
-    /// The engine subscribes to EventStore's broadcast and processes events
-    /// through each handler sequentially. Checkpoint-based recovery ensures
-    /// no data loss on restart.
-    pub fn spawn_materialization_with_handlers(
-        &self,
-        handlers: Vec<Box<dyn super::materialization::EventHandler>>,
-    ) {
-        use super::materialization::{CheckpointStore, FailedEventStore, MaterializationEngine};
-        use gasket_storage::EventStoreTrait;
-
-        let checkpoint_store = CheckpointStore::new(self.sqlite_store.clone());
-        let pool = self.sqlite_store.pool();
-        let failed_store = FailedEventStore::new(pool);
-
-        // Arc<EventStore> coerces to Arc<dyn EventStoreTrait> since
-        // EventStore implements EventStoreTrait.
-        let event_store: Arc<dyn EventStoreTrait> = self.event_store.clone();
-
-        let engine =
-            MaterializationEngine::new(event_store, handlers, checkpoint_store, failed_store);
-
-        tokio::spawn(async move {
-            if let Err(e) = engine.run().await {
-                tracing::error!("MaterializationEngine error: {:?}", e);
-            }
-        });
-    }
 }
 
 impl AgentContext {
@@ -255,8 +223,7 @@ impl AgentContext {
                     .await
                     .map_err(|e| AgentError::Other(format!("Failed to persist event: {}", e)))?;
 
-                // Embedding generation is handled by the IndexingHandler in the
-                // background MaterializationEngine pipeline — no need to
+                // Embedding generation is handled directly via IndexingService — no need to
                 // generate inline on the hot path.
 
                 Ok(())

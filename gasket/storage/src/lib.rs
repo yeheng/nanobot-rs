@@ -555,31 +555,6 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
 
-        // ── Materialization engine tables ──
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS failed_events (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id      TEXT NOT NULL,
-                handler_name  TEXT NOT NULL,
-                error_text    TEXT NOT NULL,
-                retry_count   INTEGER DEFAULT 0,
-                max_retries   INTEGER DEFAULT 5,
-                next_retry_at TEXT NOT NULL,
-                dead_letter   INTEGER DEFAULT 0,
-                created_at    TEXT DEFAULT (datetime('now'))
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_failed_events_dedup
-             ON failed_events(event_id, handler_name)",
-        )
-        .execute(&self.pool)
-        .await?;
-
         // ── Migrations for existing databases ──
 
         // Add covered_upto_sequence column to session_summaries if it doesn't exist.
@@ -717,7 +692,10 @@ mod tests {
     async fn test_sqlite_session_summary_delete() {
         let store = temp_store().await;
 
-        store.save_session_summary("key1", "Summary", 5).await.unwrap();
+        store
+            .save_session_summary("key1", "Summary", 5)
+            .await
+            .unwrap();
         assert!(store.delete_session_summary("key1").await.unwrap());
         assert!(!store.delete_session_summary("key1").await.unwrap());
         assert!(store.load_session_summary("key1").await.unwrap().is_none());

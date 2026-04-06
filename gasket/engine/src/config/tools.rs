@@ -18,10 +18,6 @@ pub struct ToolsConfig {
     /// Exec tool configuration
     #[serde(default)]
     pub exec: ExecToolConfig,
-
-    /// Maximum number of results returned by history_search (default: 15)
-    #[serde(default = "default_history_search_limit", alias = "historySearchLimit")]
-    pub history_search_limit: usize,
 }
 
 // ── Web Tools ─────────────────────────────────────────────────────────────
@@ -187,9 +183,6 @@ fn default_exec_timeout() -> u64 {
     120
 }
 
-fn default_history_search_limit() -> usize {
-    15
-}
 
 #[cfg(test)]
 mod tests {

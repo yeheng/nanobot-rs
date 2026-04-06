@@ -257,7 +257,6 @@ pub struct AgentLoop {
     /// Replaces the previous async fire-and-forget background compression.
     compactor: Option<Arc<ContextCompactor>>,
     /// Long-term memory manager (optional — only active if ~/.gasket/memory/ exists).
-    /// Wrapped in Arc so it can be shared with the MaterializationEngine's MemoryUpdateHandler.
     memory_manager: Option<Arc<MemoryManager>>,
 }
 
@@ -401,8 +400,13 @@ impl AgentLoop {
     ) -> Result<AgentInitState, AgentError> {
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
 
-        let mut compactor =
-            ContextCompactor::new(provider, event_store.clone(), sqlite_store.clone(), model, token_budget);
+        let mut compactor = ContextCompactor::new(
+            provider,
+            event_store.clone(),
+            sqlite_store.clone(),
+            model,
+            token_budget,
+        );
         if let Some(prompt) = summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt);
         }
@@ -414,33 +418,6 @@ impl AgentLoop {
 
         // Try to initialize long-term memory manager (graceful if not available)
         let memory_manager = Self::try_init_memory_manager(&sqlite_store).await;
-
-        // Build and spawn MaterializationEngine as a background task.
-        // The engine subscribes to EventStore's broadcast channel and
-        // dispatches events to registered handlers (indexing, compaction,
-        // memory updates) for event-driven processing.
-        {
-            use crate::agent::handlers::{CompactionHandler, IndexingHandler, MemoryUpdateHandler};
-            use crate::agent::indexing::IndexingService;
-            use crate::agent::materialization::EventHandler;
-
-            let indexing_service = IndexingService::new(sqlite_store.clone());
-            let mut handlers: Vec<Box<dyn EventHandler>> = vec![
-                Box::new(IndexingHandler::new(indexing_service)),
-                Box::new(CompactionHandler::new(compactor.clone())),
-            ];
-
-            // Add memory update handler if memory manager is available
-            if let Some(ref mgr) = memory_manager {
-                use crate::agent::memory_provider::MemoryProvider;
-                let memory_provider: Arc<dyn MemoryProvider> = mgr.clone();
-                handlers.push(Box::new(MemoryUpdateHandler::new(memory_provider)));
-            }
-
-            if let AgentContext::Persistent(ref persistent_ctx) = context {
-                persistent_ctx.spawn_materialization_with_handlers(handlers);
-            }
-        }
 
         Ok(AgentInitState {
             context,

@@ -29,10 +29,10 @@
 //! watermark wasn't updated, so the next startup loads slightly more history
 //! and triggers compaction again. This is **natural idempotency**.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use tracing::{debug, warn, info};
+use tracing::{debug, info, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_storage::{EventStore, SqliteStore};
@@ -126,10 +126,7 @@ impl ContextCompactor {
     ///
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// If no summary exists, returns `("", 0)`.
-    pub async fn load_summary_with_watermark(
-        &self,
-        session_key: &str,
-    ) -> (String, i64) {
+    pub async fn load_summary_with_watermark(&self, session_key: &str) -> (String, i64) {
         match self.sqlite_store.load_session_summary(session_key).await {
             Ok(Some((content, watermark))) => (content, watermark),
             Ok(None) => (String::new(), 0),
@@ -164,18 +161,23 @@ impl ContextCompactor {
     ) -> bool {
         // Guard: already compressing?
         if self.is_compressing.load(Ordering::Relaxed) {
-            debug!("Compaction already in progress for {}, skipping", session_key);
+            debug!(
+                "Compaction already in progress for {}, skipping",
+                session_key
+            );
             return false;
         }
 
         // Threshold check: only compact when tokens exceed budget * threshold
-        let overflow_threshold =
-            (self.token_budget as f32 * self.compaction_threshold) as usize;
+        let overflow_threshold = (self.token_budget as f32 * self.compaction_threshold) as usize;
         if current_tokens < overflow_threshold {
             debug!(
                 "Skipping compaction for {}: {} tokens < threshold {} (budget={}, threshold={})",
-                session_key, current_tokens, overflow_threshold,
-                self.token_budget, self.compaction_threshold
+                session_key,
+                current_tokens,
+                overflow_threshold,
+                self.token_budget,
+                self.compaction_threshold
             );
             return false;
         }
@@ -186,7 +188,10 @@ impl ContextCompactor {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            debug!("Race: another thread started compaction for {}", session_key);
+            debug!(
+                "Race: another thread started compaction for {}",
+                session_key
+            );
             return false;
         }
 
@@ -214,18 +219,22 @@ impl ContextCompactor {
             };
 
             // 2. Load existing summary
-            let (existing_summary, _old_watermark) = match sqlite_store.load_session_summary(&sk).await {
-                Ok(Some((content, watermark))) => (Some(content), watermark),
-                Ok(None) => (None, 0),
-                Err(e) => {
-                    warn!("Compaction: failed to load summary for {}: {}", sk, e);
-                    flag.store(false, Ordering::SeqCst);
-                    return;
-                }
-            };
+            let (existing_summary, _old_watermark) =
+                match sqlite_store.load_session_summary(&sk).await {
+                    Ok(Some((content, watermark))) => (Some(content), watermark),
+                    Ok(None) => (None, 0),
+                    Err(e) => {
+                        warn!("Compaction: failed to load summary for {}: {}", sk, e);
+                        flag.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
 
             // 3. Load events to compact (up to target, excluding summaries)
-            let events = match event_store.get_events_up_to_sequence(&sk, target_sequence).await {
+            let events = match event_store
+                .get_events_up_to_sequence(&sk, target_sequence)
+                .await
+            {
                 Ok(events) => events,
                 Err(e) => {
                     warn!("Compaction: failed to load events for {}: {}", sk, e);
@@ -256,7 +265,10 @@ impl ContextCompactor {
             let context_tokens = count_tokens(&context_text);
             debug!(
                 "Compaction context for {}: {} tokens, {} events (up to seq {})",
-                sk, context_tokens, events.len(), target_sequence
+                sk,
+                context_tokens,
+                events.len(),
+                target_sequence
             );
 
             // 5. Call LLM for summarization
@@ -312,10 +324,7 @@ impl ContextCompactor {
                             );
                         }
                         Err(e) => {
-                            warn!(
-                                "Compaction: summary saved but GC failed for {}: {}",
-                                sk, e
-                            );
+                            warn!("Compaction: summary saved but GC failed for {}: {}", sk, e);
                             // Non-fatal: summary is saved, GC will retry on next compaction
                         }
                     }

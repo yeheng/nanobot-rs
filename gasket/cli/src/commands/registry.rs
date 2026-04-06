@@ -12,7 +12,7 @@ use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::tools::WebFetchTool;
 use gasket_engine::tools::WebSearchTool;
 use gasket_engine::tools::{
-    EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
+    EditFileTool, ExecTool, ListDirTool, MemorizeTool, MemorySearchTool, ReadFileTool,
     ToolMetadata, ToolRegistry, WriteFileTool,
 };
 use gasket_engine::tools::{SpawnParallelTool, SpawnTool};
@@ -310,8 +310,12 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         );
     }
 
-    // Memory search tool using filesystem-based search
-    let memory_tool = MemorySearchTool::new();
+    // Memory search tool — use SQLite MetadataStore when available
+    let memory_tool = if let Some(ref db) = sqlite_store {
+        MemorySearchTool::with_store(gasket_engine::memory::MetadataStore::new(db.pool().clone()))
+    } else {
+        MemorySearchTool::new()
+    };
 
     tools.register_with_metadata(
         Box::new(memory_tool),
@@ -324,24 +328,17 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // History search tool using SQLite database
-    if let Some(db) = sqlite_store {
-        let history_tool = HistorySearchTool::new(db, config.tools.history_search_limit);
-        tools.register_with_metadata(
-            Box::new(history_tool),
-            ToolMetadata {
-                display_name: "History Search".to_string(),
-                category: "search".to_string(),
-                tags: vec![
-                    "search".to_string(),
-                    "history".to_string(),
-                    "sqlite".to_string(),
-                ],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
-    }
+    // Memorize tool for writing structured long-term memories
+    tools.register_with_metadata(
+        Box::new(MemorizeTool::new()),
+        ToolMetadata {
+            display_name: "Memorize".to_string(),
+            category: "memory".to_string(),
+            tags: vec!["write".to_string(), "memory".to_string()],
+            requires_approval: false,
+            is_mutating: true,
+        },
+    );
 
     // Extra tools (e.g., gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {

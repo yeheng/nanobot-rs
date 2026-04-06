@@ -24,9 +24,9 @@ pub trait MemoryProvider: Send + Sync {
     /// Semantic search across memories.
     async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
 
-    /// Extract knowledge from event (called by MemoryUpdateHandler).
+    /// Extract knowledge from event.
     async fn update_from_event(&self, _event: &SessionEvent) -> Result<()> {
-        // Default: no-op. Phase 3 MemoryUpdateHandler will provide real impl.
+        // Default: no-op.
         Ok(())
     }
 

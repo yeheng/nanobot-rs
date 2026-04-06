@@ -187,5 +187,6 @@ pub mod providers {
 pub mod memory {
     pub use crate::agent::MemoryStore;
     pub use gasket_storage::memory::memory_base_dir;
+    pub use gasket_storage::memory::MetadataStore;
     pub use gasket_storage::{EventStore, SqliteStore, StoreError};
 }

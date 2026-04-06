@@ -444,13 +444,12 @@ impl EventStore {
         session_key: &str,
         target_sequence: i64,
     ) -> Result<u64, StoreError> {
-        let result = sqlx::query(
-            "DELETE FROM session_events WHERE session_key = ? AND sequence <= ?",
-        )
-        .bind(session_key)
-        .bind(target_sequence)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM session_events WHERE session_key = ? AND sequence <= ?")
+                .bind(session_key)
+                .bind(target_sequence)
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected())
     }
 

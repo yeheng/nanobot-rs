@@ -6,7 +6,7 @@
 //! - `web_fetch`: Web content fetching
 //! - `web_search`: Web search
 //! - `memory_search`: Memory search
-//! - `history_search`: Conversation history search
+//! - `memorize`: Write structured long-term memories
 //! - `message`: Send messages to users
 //! - `cron`: Scheduled tasks
 //! - `spawn`: Spawn sub-agents
@@ -15,7 +15,7 @@
 mod base;
 mod cron;
 mod filesystem;
-mod history_search;
+mod memorize;
 mod memory_search;
 mod message;
 mod registry;
@@ -34,7 +34,7 @@ pub use gasket_types::{
 // Re-export tool implementations
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
-pub use history_search::HistorySearchTool;
+pub use memorize::MemorizeTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;

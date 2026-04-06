@@ -31,10 +31,8 @@
 
 use super::types::Scenario;
 use anyhow::Result;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 #[cfg(feature = "memory-watcher")]
 use std::time::{Duration, Instant};
@@ -324,9 +322,6 @@ pub struct AutoIndexHandler {
     metadata_store: super::metadata_store::MetadataStore,
     embedding_store: super::embedding_store::EmbeddingStore,
     base_dir: PathBuf,
-    /// Keys recently written by the agent. If present, skip re-indexing
-    /// (SQLite already up-to-date) and remove the key.
-    recently_modified_by_us: Option<Arc<RwLock<HashSet<String>>>>,
 }
 
 impl AutoIndexHandler {
@@ -340,14 +335,7 @@ impl AutoIndexHandler {
             metadata_store,
             embedding_store,
             base_dir,
-            recently_modified_by_us: None,
         }
-    }
-
-    /// Set the shared tracker for agent-modified files.
-    pub fn with_recently_modified(mut self, tracker: Arc<RwLock<HashSet<String>>>) -> Self {
-        self.recently_modified_by_us = Some(tracker);
-        self
     }
 
     /// Process a single watch event (O(1) — only touches the changed file).
@@ -363,19 +351,6 @@ impl AutoIndexHandler {
     /// 2. Delete the file's embedding
     pub async fn process_event(&self, event: &WatchEvent) {
         let path = event.path();
-
-        // Check if this file was recently modified by the agent (write-through
-        // already updated SQLite). If so, skip and remove from tracker.
-        if let Some(tracker) = &self.recently_modified_by_us {
-            let rel = relative_path(path, &self.base_dir)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let mut guard = tracker.write().await;
-            if guard.remove(&rel) {
-                tracing::debug!("AutoIndex: skipping agent-written file {}", rel);
-                return;
-            }
-        }
 
         // Extract relative path for scenario detection
         let rel_path = match relative_path(path, &self.base_dir) {
