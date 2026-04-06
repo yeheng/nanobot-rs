@@ -17,7 +17,7 @@ use anyhow::Result;
 /// Hot items get a 20% boost, Warm get 10%, Cold items get no bonus.
 /// Archived items are excluded from search entirely.
 impl Frequency {
-    pub(crate) fn bonus(self) -> f32 {
+    pub fn bonus(self) -> f32 {
         match self {
             Frequency::Hot => 1.2,
             Frequency::Warm => 1.1,

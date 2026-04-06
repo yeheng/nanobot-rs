@@ -109,6 +109,20 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Delete a specific entry by scenario and filename.
+    pub async fn delete_by_scenario_and_path(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM memory_metadata WHERE scenario = ? AND path = ?")
+            .bind(scenario.dir_name())
+            .bind(filename)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Query entries matching tags (any-tag match), sorted by frequency priority.
     ///
     /// Archived entries are always excluded. Uses `json_each` for accurate

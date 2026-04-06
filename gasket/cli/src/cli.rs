@@ -52,6 +52,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: VaultCommands,
     },
+
+    /// Memory management commands
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -206,4 +212,10 @@ pub enum VaultCommands {
         /// Path to output file
         file: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryCommands {
+    /// Rebuild the SQLite metadata index from Markdown files
+    Reindex,
 }

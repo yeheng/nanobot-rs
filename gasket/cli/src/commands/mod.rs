@@ -7,6 +7,7 @@ mod auth;
 mod channels;
 mod cron;
 mod gateway;
+mod memory;
 mod onboard;
 pub mod registry;
 mod status;
@@ -19,6 +20,7 @@ pub use cron::{
     cmd_cron_add, cmd_cron_disable, cmd_cron_enable, cmd_cron_list, cmd_cron_remove, cmd_cron_show,
 };
 pub use gateway::cmd_gateway;
+pub use memory::cmd_memory_reindex;
 pub use onboard::cmd_onboard;
 pub use status::{cmd_auth_status, cmd_status};
 pub use vault::{

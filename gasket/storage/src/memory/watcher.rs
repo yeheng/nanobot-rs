@@ -31,8 +31,10 @@
 
 use super::types::Scenario;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 
 #[cfg(feature = "memory-watcher")]
 use std::time::{Duration, Instant};
@@ -322,6 +324,9 @@ pub struct AutoIndexHandler {
     metadata_store: super::metadata_store::MetadataStore,
     embedding_store: super::embedding_store::EmbeddingStore,
     base_dir: PathBuf,
+    /// Keys recently written by the agent. If present, skip re-indexing
+    /// (SQLite already up-to-date) and remove the key.
+    recently_modified_by_us: Option<Arc<RwLock<HashSet<String>>>>,
 }
 
 impl AutoIndexHandler {
@@ -335,7 +340,14 @@ impl AutoIndexHandler {
             metadata_store,
             embedding_store,
             base_dir,
+            recently_modified_by_us: None,
         }
+    }
+
+    /// Set the shared tracker for agent-modified files.
+    pub fn with_recently_modified(mut self, tracker: Arc<RwLock<HashSet<String>>>) -> Self {
+        self.recently_modified_by_us = Some(tracker);
+        self
     }
 
     /// Process a single watch event (O(1) — only touches the changed file).
@@ -351,6 +363,19 @@ impl AutoIndexHandler {
     /// 2. Delete the file's embedding
     pub async fn process_event(&self, event: &WatchEvent) {
         let path = event.path();
+
+        // Check if this file was recently modified by the agent (write-through
+        // already updated SQLite). If so, skip and remove from tracker.
+        if let Some(tracker) = &self.recently_modified_by_us {
+            let rel = relative_path(path, &self.base_dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut guard = tracker.write().await;
+            if guard.remove(&rel) {
+                tracing::debug!("AutoIndex: skipping agent-written file {}", rel);
+                return;
+            }
+        }
 
         // Extract relative path for scenario detection
         let rel_path = match relative_path(path, &self.base_dir) {
@@ -377,20 +402,58 @@ impl AutoIndexHandler {
                     .unwrap_or_default();
 
                 if let Ok(content) = tokio::fs::read_to_string(path).await {
-                    if let Ok((meta, _)) = super::frontmatter::parse_memory_file(&content) {
-                        // O(1) SQLite upsert — only this file, not the whole directory
-                        let entry = super::index::MemoryIndexEntry {
-                            id: meta.id,
-                            title: meta.title,
-                            memory_type: meta.r#type,
-                            tags: meta.tags.clone(),
-                            frequency: meta.frequency,
-                            tokens: meta.tokens as u32,
-                            filename: filename.clone(),
-                            updated: meta.updated,
-                            scenario,
-                            last_accessed: meta.last_accessed.clone(),
-                        };
+                    let entry = match super::frontmatter::parse_memory_file(&content) {
+                        Ok((meta, _)) => {
+                            // O(1) SQLite upsert — only this file, not the whole directory
+                            Some((
+                                super::index::MemoryIndexEntry {
+                                    id: meta.id,
+                                    title: meta.title,
+                                    memory_type: meta.r#type,
+                                    tags: meta.tags.clone(),
+                                    frequency: meta.frequency,
+                                    tokens: meta.tokens as u32,
+                                    filename: filename.clone(),
+                                    updated: meta.updated,
+                                    scenario,
+                                    last_accessed: meta.last_accessed.clone(),
+                                },
+                                meta.tags.clone(),
+                                meta.frequency,
+                                meta.tokens as u32,
+                            ))
+                        }
+                        Err(e) => {
+                            // Broken frontmatter — track as archived so user can fix it
+                            tracing::warn!(
+                                "AutoIndex: broken frontmatter in {}/{}: {} — indexing as archived",
+                                scenario.dir_name(),
+                                filename,
+                                e
+                            );
+                            let stem = filename.trim_end_matches(".md");
+                            let now = chrono::Utc::now().to_rfc3339();
+                            Some((
+                                super::index::MemoryIndexEntry {
+                                    id: stem.to_string(),
+                                    title: format!("[broken] {}", stem),
+                                    memory_type: "error".to_string(),
+                                    tags: vec!["broken-frontmatter".to_string()],
+                                    frequency: super::types::Frequency::Archived,
+                                    tokens: content.len() as u32 / 4,
+                                    filename: filename.clone(),
+                                    updated: now.clone(),
+                                    scenario,
+                                    last_accessed: now,
+                                },
+                                vec!["broken-frontmatter".to_string()],
+                                super::types::Frequency::Archived,
+                                content.len() as u32 / 4,
+                            ))
+                        }
+                    };
+
+                    if let Some((entry, tags, frequency, tokens)) = entry {
                         if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
                             tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
                         }
@@ -401,10 +464,10 @@ impl AutoIndexHandler {
                             .upsert(
                                 &filename,
                                 scenario.dir_name(),
-                                &meta.tags,
-                                meta.frequency,
+                                &tags,
+                                frequency,
                                 &embedding,
-                                meta.tokens as u32,
+                                tokens,
                             )
                             .await
                         {

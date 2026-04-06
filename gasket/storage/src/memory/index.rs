@@ -67,23 +67,49 @@ impl FileIndexManager {
             let path = entry.path();
             match tokio::fs::read_to_string(&path).await {
                 Ok(content) => {
-                    if let Ok((meta, _)) = parse_memory_file(&content) {
-                        entries.push(MemoryIndexEntry {
-                            id: meta.id,
-                            title: meta.title,
-                            memory_type: meta.r#type,
-                            tags: meta.tags,
-                            frequency: meta.frequency,
-                            tokens: meta.tokens as u32,
-                            filename: name,
-                            updated: meta.updated,
-                            scenario,
-                            last_accessed: meta.last_accessed,
-                        });
+                    match parse_memory_file(&content) {
+                        Ok((meta, _)) => {
+                            entries.push(MemoryIndexEntry {
+                                id: meta.id,
+                                title: meta.title,
+                                memory_type: meta.r#type,
+                                tags: meta.tags,
+                                frequency: meta.frequency,
+                                tokens: meta.tokens as u32,
+                                filename: name,
+                                updated: meta.updated,
+                                scenario,
+                                last_accessed: meta.last_accessed,
+                            });
+                        }
+                        Err(e) => {
+                            // Broken frontmatter — create Archived fallback so the file
+                            // is tracked but won't pollute search results.
+                            tracing::warn!(
+                                "Broken frontmatter in {}/{}: {} — indexing as archived",
+                                scenario.dir_name(),
+                                name,
+                                e
+                            );
+                            let stem = name.trim_end_matches(".md");
+                            let now = chrono::Utc::now().to_rfc3339();
+                            entries.push(MemoryIndexEntry {
+                                id: stem.to_string(),
+                                title: format!("[broken] {}", stem),
+                                memory_type: "error".to_string(),
+                                tags: vec!["broken-frontmatter".to_string()],
+                                frequency: Frequency::Archived,
+                                tokens: content.len() as u32 / 4,
+                                filename: name,
+                                updated: now.clone(),
+                                scenario,
+                                last_accessed: now,
+                            });
+                        }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Skipping unparseable memory file {}: {}", name, e);
+                    tracing::warn!("Skipping unreadable memory file {}: {}", name, e);
                 }
             }
         }

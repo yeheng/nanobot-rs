@@ -21,7 +21,9 @@ mod provider;
 #[cfg(feature = "workspace-download")]
 mod workspace_downloader;
 
-use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, VaultCommands};
+use cli::{
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, VaultCommands,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -89,6 +91,9 @@ async fn main() -> Result<()> {
             }
             VaultCommands::Import { file, merge } => commands::cmd_vault_import(file, merge).await,
             VaultCommands::Export { file } => commands::cmd_vault_export(file).await,
+        },
+        Some(Commands::Memory { command }) => match command {
+            MemoryCommands::Reindex => commands::cmd_memory_reindex().await,
         },
         None => {
             // No command - show help

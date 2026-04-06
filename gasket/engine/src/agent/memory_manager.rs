@@ -9,21 +9,34 @@
 //! - **Phase 3 (On-demand, ~1000 tokens)**: Fills remaining budget via search
 //!
 //! Total never exceeds the hard cap (default 3200 tokens).
+//!
+//! # Write-Through Consistency
+//!
+//! Agent writes (`create_memory`, `update_memory`, `delete_memory`) synchronously
+//! update both the filesystem (SSOT) and SQLite metadata/embeddings. The file
+//! watcher serves as a best-effort fallback for external edits only — agent writes
+//! are tracked via `recently_modified_by_us` so the watcher skips redundant re-indexing.
 
 use anyhow::Result;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use tracing::{debug, warn};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 /// Facade managing three-phase memory loading for the agent loop.
 pub struct MemoryManager {
     store: FileMemoryStore,
     index_manager: FileIndexManager,
     metadata_store: MetadataStore,
+    embedding_store: EmbeddingStore,
     retrieval: RetrievalEngine,
     budget: TokenBudget,
+    /// Tracks files recently modified by agent writes. The watcher checks this
+    /// set and skips re-indexing for entries found here (SQLite already updated).
+    recently_modified_by_us: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MemoryManager {
@@ -37,15 +50,20 @@ impl MemoryManager {
         let index_manager = FileIndexManager::new(base_dir.clone());
         let embedding_store = EmbeddingStore::new(pool.clone());
         let metadata_store = MetadataStore::new(pool.clone());
-        let retrieval = RetrievalEngine::new(MetadataStore::new(pool.clone()), embedding_store);
+        let retrieval = RetrievalEngine::new(
+            MetadataStore::new(pool.clone()),
+            EmbeddingStore::new(pool.clone()),
+        );
         let budget = TokenBudget::default();
 
         Ok(Self {
             store,
             index_manager,
             metadata_store,
+            embedding_store,
             retrieval,
             budget,
+            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
@@ -59,14 +77,19 @@ impl MemoryManager {
         let index_manager = FileIndexManager::new(base_dir.clone());
         let embedding_store = EmbeddingStore::new(pool.clone());
         let metadata_store = MetadataStore::new(pool.clone());
-        let retrieval = RetrievalEngine::new(MetadataStore::new(pool.clone()), embedding_store);
+        let retrieval = RetrievalEngine::new(
+            MetadataStore::new(pool.clone()),
+            EmbeddingStore::new(pool.clone()),
+        );
 
         Ok(Self {
             store,
             index_manager,
             metadata_store,
+            embedding_store,
             retrieval,
             budget,
+            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
@@ -75,6 +98,7 @@ impl MemoryManager {
         store: FileMemoryStore,
         index_manager: FileIndexManager,
         metadata_store: MetadataStore,
+        embedding_store: EmbeddingStore,
         retrieval: RetrievalEngine,
         budget: TokenBudget,
     ) -> Self {
@@ -82,9 +106,16 @@ impl MemoryManager {
             store,
             index_manager,
             metadata_store,
+            embedding_store,
             retrieval,
             budget,
+            recently_modified_by_us: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Get a handle to the `recently_modified_by_us` set for sharing with the watcher.
+    pub fn recently_modified_tracker(&self) -> Arc<RwLock<HashSet<String>>> {
+        Arc::clone(&self.recently_modified_by_us)
     }
 
     /// Initialize memory system (create directories, sync metadata to SQLite).
@@ -107,6 +138,250 @@ impl MemoryManager {
                 .await?;
         }
         Ok(())
+    }
+
+    // ========================================================================
+    // Write-through methods: agent writes that synchronously update SQLite
+    // ========================================================================
+
+    /// Create a new memory file and synchronously update SQLite (write-through).
+    ///
+    /// Writes the file to disk, then upserts metadata + embedding into SQLite.
+    /// Marks the file in `recently_modified_by_us` so the watcher skips it.
+    pub async fn create_memory(
+        &self,
+        scenario: Scenario,
+        title: &str,
+        tags: &[String],
+        frequency: Frequency,
+        content: &str,
+    ) -> Result<String> {
+        let id = format!("mem_{}", uuid::Uuid::now_v7());
+        let now = chrono::Utc::now().to_rfc3339();
+        let tokens = content.len() / 4;
+
+        let meta = MemoryMeta {
+            id: id.clone(),
+            title: title.to_string(),
+            r#type: "note".to_string(),
+            scenario,
+            tags: tags.to_vec(),
+            frequency,
+            access_count: 0,
+            created: now.clone(),
+            updated: now.clone(),
+            last_accessed: now,
+            auto_expire: false,
+            expires: None,
+            tokens,
+            superseded_by: None,
+        };
+
+        let filename = format!("{}.md", meta.id);
+        let file_content = serialize_memory_file(&meta, content);
+
+        // 1. Write file atomically
+        self.store
+            .update(scenario, &filename, &file_content)
+            .await?;
+
+        // 2. Upsert metadata into SQLite
+        let entry = MemoryIndexEntry {
+            id: meta.id,
+            title: meta.title,
+            memory_type: meta.r#type,
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.clone(),
+            updated: meta.updated,
+            scenario,
+            last_accessed: meta.last_accessed,
+        };
+        self.metadata_store.upsert_entry(&entry).await?;
+
+        // 3. Upsert embedding (placeholder vector until real embedder)
+        let embedding = vec![0.0f32; 384];
+        self.embedding_store
+            .upsert(
+                &filename,
+                scenario.dir_name(),
+                tags,
+                frequency,
+                &embedding,
+                tokens as u32,
+            )
+            .await?;
+
+        // 4. Track so watcher skips
+        let key = format!("{}/{}", scenario.dir_name(), filename);
+        self.recently_modified_by_us.write().await.insert(key);
+
+        info!(
+            "Created memory: {}/{} ({} tokens)",
+            scenario.dir_name(),
+            filename,
+            tokens
+        );
+        Ok(filename)
+    }
+
+    /// Update an existing memory file and synchronously update SQLite (write-through).
+    ///
+    /// Reads the current file to preserve frontmatter metadata, updates the body,
+    /// then re-upserts metadata + embedding into SQLite.
+    pub async fn update_memory(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        content: &str,
+    ) -> Result<()> {
+        // 1. Read existing file to get current metadata
+        let existing = self.store.read(scenario, filename).await?;
+        let mut meta = existing.metadata;
+
+        // 2. Update metadata fields
+        let now = chrono::Utc::now().to_rfc3339();
+        meta.updated = now.clone();
+        meta.last_accessed = now;
+        meta.tokens = content.len() / 4;
+
+        let file_content = serialize_memory_file(&meta, content);
+
+        // 3. Write file atomically (store.update handles version history)
+        self.store.update(scenario, filename, &file_content).await?;
+
+        // 4. Upsert metadata into SQLite
+        let entry = MemoryIndexEntry {
+            id: meta.id,
+            title: meta.title,
+            memory_type: meta.r#type,
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.to_string(),
+            updated: meta.updated,
+            scenario,
+            last_accessed: meta.last_accessed,
+        };
+        self.metadata_store.upsert_entry(&entry).await?;
+
+        // 5. Upsert embedding
+        let embedding = vec![0.0f32; 384];
+        self.embedding_store
+            .upsert(
+                filename,
+                scenario.dir_name(),
+                &meta.tags,
+                meta.frequency,
+                &embedding,
+                meta.tokens as u32,
+            )
+            .await?;
+
+        // 6. Track so watcher skips
+        let key = format!("{}/{}", scenario.dir_name(), filename);
+        self.recently_modified_by_us.write().await.insert(key);
+
+        info!("Updated memory: {}/{}", scenario.dir_name(), filename);
+        Ok(())
+    }
+
+    /// Delete a memory file and synchronously remove from SQLite (write-through).
+    pub async fn delete_memory(&self, scenario: Scenario, filename: &str) -> Result<()> {
+        // 1. Delete file from disk
+        self.store.delete(scenario, filename).await?;
+
+        // 2. Delete from SQLite metadata
+        self.metadata_store
+            .delete_by_scenario_and_path(scenario, filename)
+            .await?;
+
+        // 3. Delete embedding
+        let path_str = format!("{}/{}", scenario.dir_name(), filename);
+        self.embedding_store.delete(&path_str).await?;
+
+        // 4. Track so watcher skips (and clean up if present)
+        let key = format!("{}/{}", scenario.dir_name(), filename);
+        self.recently_modified_by_us.write().await.insert(key);
+
+        info!("Deleted memory: {}/{}", scenario.dir_name(), filename);
+        Ok(())
+    }
+
+    /// Full reindex: scan all files from disk and rebuild SQLite metadata.
+    ///
+    /// Used by the CLI `gasket memory reindex` command to repair stale indexes.
+    pub async fn reindex(&self) -> Result<ReindexReport> {
+        info!("Starting full memory reindex");
+        let mut total_files = 0usize;
+        let mut total_errors = 0usize;
+
+        for scenario in Scenario::all() {
+            let entries = self.index_manager.scan_entries(*scenario).await?;
+            let file_count = entries.len();
+            let error_count = entries
+                .iter()
+                .filter(|e| e.frequency == Frequency::Archived && e.title.starts_with("[broken]"))
+                .count();
+
+            self.metadata_store
+                .sync_entries(*scenario, &entries)
+                .await?;
+
+            total_files += file_count;
+            total_errors += error_count;
+            info!(
+                "Reindexed {}: {} files, {} errors",
+                scenario.dir_name(),
+                file_count,
+                error_count
+            );
+        }
+
+        info!(
+            "Reindex complete: {} files, {} errors",
+            total_files, total_errors
+        );
+        Ok(ReindexReport {
+            total_files,
+            total_errors,
+        })
+    }
+
+    // ========================================================================
+    // Three-phase loading
+    // ========================================================================
+
+    /// When a file read fails because the file was deleted externally,
+    /// clean up the stale SQLite metadata + embedding entries on-the-fly.
+    ///
+    /// Returns `true` if the error was `NotFound` (caller should skip).
+    async fn cleanup_stale_if_not_found(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        error: &anyhow::Error,
+    ) -> bool {
+        if let Some(io_err) = error.root_cause().downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::NotFound {
+                warn!(
+                    "File gone from disk, cleaning stale SQLite entry: {}/{}",
+                    scenario.dir_name(),
+                    filename
+                );
+                let _ = self
+                    .metadata_store
+                    .delete_by_scenario_and_path(scenario, filename)
+                    .await;
+                let _ = self
+                    .embedding_store
+                    .delete(&format!("{}/{}", scenario.dir_name(), filename))
+                    .await;
+                return true;
+            }
+        }
+        false
     }
 
     /// Combined three-phase loading respecting total budget.
@@ -248,15 +523,20 @@ impl MemoryManager {
                     memories.push(mem);
                 }
                 Err(e) => {
-                    warn!(
-                        "Bootstrap: failed to load profile/{}: {}",
-                        entry.filename, e
-                    );
+                    if !self
+                        .cleanup_stale_if_not_found(Scenario::Profile, &entry.filename, &e)
+                        .await
+                    {
+                        warn!(
+                            "Bootstrap: failed to load profile/{}: {}",
+                            entry.filename, e
+                        );
+                    }
                 }
             }
         }
 
-        // Load active entries from SQLite (already sorted: Hot → Warm → Cold)
+        // Load active entries from SQLite (already sorted: Hot -> Warm -> Cold)
         let active_entries = self
             .metadata_store
             .query_entries(Scenario::Active)
@@ -289,7 +569,12 @@ impl MemoryManager {
                     memories.push(mem);
                 }
                 Err(e) => {
-                    warn!("Bootstrap: failed to load active/{}: {}", entry.filename, e);
+                    if !self
+                        .cleanup_stale_if_not_found(Scenario::Active, &entry.filename, &e)
+                        .await
+                    {
+                        warn!("Bootstrap: failed to load active/{}: {}", entry.filename, e);
+                    }
                 }
             }
         }
@@ -346,7 +631,12 @@ impl MemoryManager {
                     memories.push(mem);
                 }
                 Err(e) => {
-                    warn!("Scenario: failed to load hot item {}: {}", entry.title, e);
+                    if !self
+                        .cleanup_stale_if_not_found(scenario, &entry.filename, &e)
+                        .await
+                    {
+                        warn!("Scenario: failed to load hot item {}: {}", entry.title, e);
+                    }
                 }
             }
         }
@@ -382,7 +672,12 @@ impl MemoryManager {
                     memories.push(mem);
                 }
                 Err(e) => {
-                    warn!("Scenario: failed to load warm item {}: {}", entry.title, e);
+                    if !self
+                        .cleanup_stale_if_not_found(scenario, &entry.filename, &e)
+                        .await
+                    {
+                        warn!("Scenario: failed to load warm item {}: {}", entry.title, e);
+                    }
                 }
             }
         }
@@ -440,13 +735,25 @@ impl MemoryManager {
                     memories.push(mem);
                 }
                 Err(e) => {
-                    warn!("On-demand: failed to load {}: {}", result.title, e);
+                    if !self
+                        .cleanup_stale_if_not_found(result.scenario, &result.memory_path, &e)
+                        .await
+                    {
+                        warn!("On-demand: failed to load {}: {}", result.title, e);
+                    }
                 }
             }
         }
 
         Ok(memories)
     }
+}
+
+/// Result of a full reindex operation.
+#[derive(Debug)]
+pub struct ReindexReport {
+    pub total_files: usize,
+    pub total_errors: usize,
 }
 
 /// Result of loading memories for context injection.
@@ -842,10 +1149,22 @@ mod tests {
                     .pool()
                     .clone(),
             ),
-            embedding_store,
+            EmbeddingStore::new(
+                SqliteStore::with_path(temp_dir.path().join("test.db"))
+                    .await
+                    .unwrap()
+                    .pool()
+                    .clone(),
+            ),
         );
-        let custom_manager =
-            MemoryManager::with_components(store, index_manager, metadata_store, retrieval, budget);
+        let custom_manager = MemoryManager::with_components(
+            store,
+            index_manager,
+            metadata_store,
+            embedding_store,
+            retrieval,
+            budget,
+        );
 
         let query = MemoryQuery::new();
         let context = custom_manager.load_for_context(&query).await.unwrap();
@@ -924,6 +1243,105 @@ mod tests {
             .count();
         assert_eq!(count, 1, "File should only load once");
     }
+
+    #[tokio::test]
+    async fn test_create_memory_write_through() {
+        let (manager, _temp_dir) = setup_manager().await;
+
+        let filename = manager
+            .create_memory(
+                Scenario::Knowledge,
+                "Test Write-Through",
+                &["test".to_string()],
+                Frequency::Hot,
+                "This is test content for write-through",
+            )
+            .await
+            .unwrap();
+
+        // File should exist on disk
+        assert!(!filename.is_empty());
+
+        // SQLite should have the entry immediately
+        let entries = manager
+            .metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        assert_eq!(1, entries.len());
+        assert_eq!("Test Write-Through", entries[0].title);
+        assert_eq!(Frequency::Hot, entries[0].frequency);
+
+        // recently_modified_by_us should contain the key
+        let tracker = manager.recently_modified_by_us.read().await;
+        let key = format!("knowledge/{}", filename);
+        assert!(tracker.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn test_delete_memory_write_through() {
+        let (manager, temp_dir) = setup_manager().await;
+        let memory_dir = temp_dir.path().join("memory");
+
+        // Create a file first
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "to_delete.md",
+            "To Delete",
+            &["test"],
+            Frequency::Warm,
+            100,
+        )
+        .await
+        .unwrap();
+        manager.sync_all().await.unwrap();
+
+        // Verify it exists
+        let entries_before = manager
+            .metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        assert_eq!(1, entries_before.len());
+
+        // Delete via write-through
+        manager
+            .delete_memory(Scenario::Knowledge, "to_delete.md")
+            .await
+            .unwrap();
+
+        // SQLite should be empty
+        let entries_after = manager
+            .metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        assert_eq!(0, entries_after.len());
+    }
+
+    #[tokio::test]
+    async fn test_reindex() {
+        let (manager, temp_dir) = setup_manager().await;
+        let memory_dir = temp_dir.path().join("memory");
+
+        // Create some files
+        create_memory_file(
+            &memory_dir,
+            Scenario::Knowledge,
+            "reindex_test.md",
+            "Reindex Test",
+            &["test"],
+            Frequency::Hot,
+            100,
+        )
+        .await
+        .unwrap();
+
+        let report = manager.reindex().await.unwrap();
+        assert_eq!(1, report.total_files);
+        assert_eq!(0, report.total_errors);
+    }
 }
 
 /// Implement MemoryProvider trait for MemoryManager.
@@ -937,9 +1355,6 @@ impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
     }
 
     async fn search(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<MemoryHit>> {
-        // MemoryManager doesn't expose a public search() method directly.
-        // Use load_for_context with text-based MemoryQuery as a workaround.
-        // Phase 2+ will expose a proper search method via RetrievalEngine.
         let memory_query = MemoryQuery {
             text: Some(query.to_string()),
             tags: vec![],
@@ -947,7 +1362,6 @@ impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
             max_tokens: Some(top_k * 200),
         };
         let ctx = self.load_for_context(&memory_query).await?;
-        // Convert MemoryFile hits to MemoryHit
         let hits: Vec<MemoryHit> = ctx
             .memories
             .into_iter()
@@ -963,5 +1377,32 @@ impl crate::agent::memory_provider::MemoryProvider for MemoryManager {
             .take(top_k)
             .collect();
         Ok(hits)
+    }
+
+    async fn create_memory(
+        &self,
+        scenario: Scenario,
+        _filename: &str,
+        title: &str,
+        tags: &[String],
+        frequency: Frequency,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.create_memory(scenario, title, tags, frequency, content)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_memory(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.update_memory(scenario, filename, content).await
+    }
+
+    async fn delete_memory(&self, scenario: Scenario, filename: &str) -> anyhow::Result<()> {
+        self.delete_memory(scenario, filename).await
     }
 }
