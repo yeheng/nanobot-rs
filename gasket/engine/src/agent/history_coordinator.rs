@@ -78,7 +78,7 @@ pub struct ContextMessage {
 /// but contains NO business logic.
 pub struct HistoryCoordinator {
     event_store: Arc<dyn EventStoreTrait>,
-    compactor: Arc<ContextCompactor>,
+    _compactor: Arc<ContextCompactor>,
     memory: Arc<dyn MemoryProvider>,
 }
 
@@ -90,7 +90,7 @@ impl HistoryCoordinator {
     ) -> Self {
         Self {
             event_store,
-            compactor,
+            _compactor: compactor,
             memory,
         }
     }

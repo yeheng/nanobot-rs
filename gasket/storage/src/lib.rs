@@ -419,15 +419,25 @@ impl SqliteStore {
         .await?;
 
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS dedup_reports (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_a      TEXT NOT NULL,
-                memory_b      TEXT NOT NULL,
-                similarity    REAL NOT NULL,
-                suggestion    TEXT NOT NULL,
-                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-                resolved      INTEGER NOT NULL DEFAULT 0
+            "CREATE TABLE IF NOT EXISTS memory_metadata (
+                id          TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                scenario    TEXT NOT NULL,
+                title       TEXT NOT NULL DEFAULT '',
+                memory_type TEXT NOT NULL DEFAULT 'note',
+                frequency   TEXT NOT NULL DEFAULT 'warm',
+                tags        TEXT NOT NULL DEFAULT '[]',
+                tokens      INTEGER NOT NULL DEFAULT 0,
+                updated     TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (scenario, path)
             )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_meta_scenario_freq
+             ON memory_metadata(scenario, frequency)",
         )
         .execute(&self.pool)
         .await?;

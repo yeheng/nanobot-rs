@@ -420,14 +420,14 @@ impl EventStoreTrait for EventStore {
             events.retain(|e| {
                 event_types.iter().any(|et| {
                     // Match event types by variant kind, ignoring data fields
-                    match (&e.event_type, et) {
-                        (EventType::UserMessage, EventType::UserMessage) => true,
-                        (EventType::AssistantMessage, EventType::AssistantMessage) => true,
-                        (EventType::ToolCall { .. }, EventType::ToolCall { .. }) => true,
-                        (EventType::ToolResult { .. }, EventType::ToolResult { .. }) => true,
-                        (EventType::Summary { .. }, EventType::Summary { .. }) => true,
-                        _ => false,
-                    }
+                    matches!(
+                        (&e.event_type, et),
+                        (EventType::UserMessage, EventType::UserMessage)
+                            | (EventType::AssistantMessage, EventType::AssistantMessage)
+                            | (EventType::ToolCall { .. }, EventType::ToolCall { .. })
+                            | (EventType::ToolResult { .. }, EventType::ToolResult { .. })
+                            | (EventType::Summary { .. }, EventType::Summary { .. })
+                    )
                 })
             });
         }

@@ -4,7 +4,7 @@
 //! along with deferred batched access tracking for performance optimization.
 
 use super::frontmatter::*;
-use super::index::FileIndexManager;
+use super::metadata_store::MetadataStore;
 use super::store::FileMemoryStore;
 use super::types::*;
 use anyhow::Result;
@@ -168,21 +168,19 @@ impl FrequencyManager {
 
     /// Run batch decay on all memories.
     ///
-    /// Scans all scenarios, updates decayed frequencies, regenerates indexes.
+    /// Scans all scenarios, updates decayed frequencies, upserts to SQLite.
     ///
     /// # Process
     /// 1. For each scenario, list all .md files
     /// 2. Parse frontmatter and recalculate frequency
-    /// 3. If frequency changed, rewrite frontmatter
-    /// 4. Regenerate indexes for affected scenarios
+    /// 3. If frequency changed, rewrite frontmatter + O(1) SQLite upsert
     ///
     /// Returns a report with statistics about the decay run.
     pub async fn run_decay_batch(
         store: &FileMemoryStore,
-        index_manager: &FileIndexManager,
+        metadata_store: &MetadataStore,
     ) -> Result<DecayReport> {
         let mut report = DecayReport::default();
-        let mut affected_scenarios: Vec<Scenario> = Vec::new();
 
         for &scenario in Scenario::all() {
             let files = match store.list(scenario).await {
@@ -219,7 +217,7 @@ impl FrequencyManager {
                 let new_freq =
                     Self::recalculate(current_freq, last_accessed, memory_file.metadata.scenario);
 
-                // If frequency changed, update the file
+                // If frequency changed, update the file + SQLite
                 if new_freq != current_freq {
                     let mut updated_meta = memory_file.metadata.clone();
                     updated_meta.frequency = new_freq;
@@ -237,9 +235,29 @@ impl FrequencyManager {
                         report.errors += 1;
                     } else {
                         report.decayed += 1;
-                        if !affected_scenarios.contains(&scenario) {
-                            affected_scenarios.push(scenario);
+
+                        // O(1) SQLite upsert for this single entry
+                        let entry = super::index::MemoryIndexEntry {
+                            id: updated_meta.id,
+                            title: updated_meta.title,
+                            memory_type: updated_meta.r#type,
+                            tags: updated_meta.tags,
+                            frequency: updated_meta.frequency,
+                            tokens: updated_meta.tokens as u32,
+                            filename: filename.clone(),
+                            updated: updated_meta.updated,
+                            scenario,
+                        };
+                        if let Err(e) = metadata_store.upsert_entry(&entry).await {
+                            tracing::warn!(
+                                "Failed to upsert metadata for {}/{}: {}",
+                                scenario,
+                                filename,
+                                e
+                            );
+                            report.errors += 1;
                         }
+
                         tracing::debug!(
                             "Decayed {}/{}: {:?} -> {:?}",
                             scenario,
@@ -252,20 +270,12 @@ impl FrequencyManager {
             }
         }
 
-        // Regenerate indexes for affected scenarios
-        for scenario in affected_scenarios {
-            if let Err(e) = index_manager.regenerate(scenario).await {
-                tracing::warn!("Failed to regenerate index for {:?}: {}", scenario, e);
-                report.errors += 1;
-            }
-        }
-
         Ok(report)
     }
 
     /// Flush access log to disk.
     ///
-    /// Updates frontmatter + frequency for each accessed file, then regenerates indexes.
+    /// Updates frontmatter + frequency for each accessed file, then upserts to SQLite.
     ///
     /// # Process
     /// 1. Drain all entries from access log
@@ -275,18 +285,16 @@ impl FrequencyManager {
     ///    - Increment access_count by the number of accesses
     ///    - Update last_accessed to the latest timestamp
     ///    - Recalculate frequency (check promotion)
-    ///    - Rewrite frontmatter
-    /// 4. Regenerate indexes for affected scenarios
+    ///    - Rewrite frontmatter + O(1) SQLite upsert
     ///
     /// Returns a report with statistics about the flush.
     pub async fn flush_access_log(
         log: &mut AccessLog,
         store: &FileMemoryStore,
-        index_manager: &FileIndexManager,
+        metadata_store: &MetadataStore,
     ) -> Result<FlushReport> {
         let entries = log.drain();
         let mut report = FlushReport::default();
-        let mut affected_scenarios: Vec<Scenario> = Vec::new();
 
         // Group entries by (scenario, filename)
         let mut file_accesses: HashMap<(Scenario, String), Vec<&AccessEntry>> = HashMap::new();
@@ -353,15 +361,25 @@ impl FrequencyManager {
                 continue;
             }
 
-            if !affected_scenarios.contains(&scenario) {
-                affected_scenarios.push(scenario);
-            }
-        }
-
-        // Regenerate indexes for affected scenarios
-        for scenario in affected_scenarios {
-            if let Err(e) = index_manager.regenerate(scenario).await {
-                tracing::warn!("Failed to regenerate index for {:?}: {}", scenario, e);
+            // O(1) SQLite upsert for this single entry
+            let entry = super::index::MemoryIndexEntry {
+                id: updated_meta.id,
+                title: updated_meta.title,
+                memory_type: updated_meta.r#type,
+                tags: updated_meta.tags,
+                frequency: updated_meta.frequency,
+                tokens: updated_meta.tokens as u32,
+                filename: filename.clone(),
+                updated: updated_meta.updated,
+                scenario,
+            };
+            if let Err(e) = metadata_store.upsert_entry(&entry).await {
+                tracing::warn!(
+                    "Failed to upsert metadata for {}/{}: {}",
+                    scenario,
+                    filename,
+                    e
+                );
                 report.errors += 1;
             }
         }
@@ -373,8 +391,20 @@ impl FrequencyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SqliteStore;
     use chrono::Duration;
     use tempfile::TempDir;
+
+    /// Create a MetadataStore backed by a temp SQLite database.
+    async fn setup_metadata(temp_dir: &TempDir) -> MetadataStore {
+        let db_path = temp_dir.path().join("test_metadata.db");
+        let pool = SqliteStore::with_path(db_path)
+            .await
+            .unwrap()
+            .pool()
+            .clone();
+        MetadataStore::new(pool)
+    }
 
     fn create_test_memory(
         scenario: Scenario,
@@ -548,7 +578,7 @@ mod tests {
     async fn test_flush_access_log_updates_metadata() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
-        let index_manager = FileIndexManager::new(temp_dir.path().to_path_buf());
+        let metadata_store = setup_metadata(&temp_dir).await;
 
         store.init().await.unwrap();
 
@@ -569,7 +599,7 @@ mod tests {
         log.record(Scenario::Knowledge, &filename);
 
         // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &index_manager)
+        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
             .await
             .unwrap();
 
@@ -586,7 +616,7 @@ mod tests {
     async fn test_flush_access_log_promotes_frequency() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
-        let index_manager = FileIndexManager::new(temp_dir.path().to_path_buf());
+        let metadata_store = setup_metadata(&temp_dir).await;
 
         store.init().await.unwrap();
 
@@ -607,7 +637,7 @@ mod tests {
         log.record(Scenario::Knowledge, &filename);
 
         // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &index_manager)
+        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
             .await
             .unwrap();
 
@@ -622,7 +652,7 @@ mod tests {
     async fn test_run_decay_batch_updates_stale_memories() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
-        let index_manager = FileIndexManager::new(temp_dir.path().to_path_buf());
+        let metadata_store = setup_metadata(&temp_dir).await;
 
         store.init().await.unwrap();
 
@@ -645,7 +675,7 @@ mod tests {
         }
 
         // Run decay batch
-        let report = FrequencyManager::run_decay_batch(&store, &index_manager)
+        let report = FrequencyManager::run_decay_batch(&store, &metadata_store)
             .await
             .unwrap();
 
@@ -676,7 +706,7 @@ mod tests {
     async fn test_flush_groups_multiple_accesses() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
-        let index_manager = FileIndexManager::new(temp_dir.path().to_path_buf());
+        let metadata_store = setup_metadata(&temp_dir).await;
 
         store.init().await.unwrap();
 
@@ -699,7 +729,7 @@ mod tests {
         log.record(Scenario::Active, &filename);
 
         // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &index_manager)
+        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
             .await
             .unwrap();
 

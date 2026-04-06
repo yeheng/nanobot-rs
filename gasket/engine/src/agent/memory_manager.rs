@@ -1,7 +1,8 @@
 //! Memory manager facade with three-phase loading for context injection.
 //!
 //! The MemoryManager orchestrates the storage-layer components (FileMemoryStore,
-//! FileIndexManager, RetrievalEngine) to provide three-phase memory loading:
+//! FileIndexManager, MetadataStore, RetrievalEngine) to provide three-phase
+//! memory loading backed by SQLite metadata queries:
 //!
 //! - **Phase 1 (Bootstrap, ~700 tokens)**: Always loads profile + active memories
 //! - **Phase 2 (Scenario, ~1500 tokens)**: Loads scenario-specific hot/warm items
@@ -20,6 +21,7 @@ use tracing::{debug, warn};
 pub struct MemoryManager {
     store: FileMemoryStore,
     index_manager: FileIndexManager,
+    metadata_store: MetadataStore,
     retrieval: RetrievalEngine,
     budget: TokenBudget,
 }
@@ -29,19 +31,19 @@ impl MemoryManager {
     ///
     /// # Arguments
     /// * `base_dir` - Memory base directory (e.g., ~/.gasket/memory/)
-    /// * `pool` - SQLite connection pool for EmbeddingStore
+    /// * `pool` - SQLite connection pool for metadata and embedding stores
     pub async fn new(base_dir: PathBuf, pool: &SqlitePool) -> Result<Self> {
         let store = FileMemoryStore::new(base_dir.clone());
         let index_manager = FileIndexManager::new(base_dir.clone());
         let embedding_store = EmbeddingStore::new(pool.clone());
-        // Create a separate index manager instance for retrieval engine
-        let retrieval_index = FileIndexManager::new(base_dir.clone());
-        let retrieval = RetrievalEngine::new(retrieval_index, embedding_store);
+        let metadata_store = MetadataStore::new(pool.clone());
+        let retrieval = RetrievalEngine::new(MetadataStore::new(pool.clone()), embedding_store);
         let budget = TokenBudget::default();
 
         Ok(Self {
             store,
             index_manager,
+            metadata_store,
             retrieval,
             budget,
         })
@@ -56,13 +58,13 @@ impl MemoryManager {
         let store = FileMemoryStore::new(base_dir.clone());
         let index_manager = FileIndexManager::new(base_dir.clone());
         let embedding_store = EmbeddingStore::new(pool.clone());
-        // Create a separate index manager instance for retrieval engine
-        let retrieval_index = FileIndexManager::new(base_dir.clone());
-        let retrieval = RetrievalEngine::new(retrieval_index, embedding_store);
+        let metadata_store = MetadataStore::new(pool.clone());
+        let retrieval = RetrievalEngine::new(MetadataStore::new(pool.clone()), embedding_store);
 
         Ok(Self {
             store,
             index_manager,
+            metadata_store,
             retrieval,
             budget,
         })
@@ -72,20 +74,39 @@ impl MemoryManager {
     pub fn with_components(
         store: FileMemoryStore,
         index_manager: FileIndexManager,
+        metadata_store: MetadataStore,
         retrieval: RetrievalEngine,
         budget: TokenBudget,
     ) -> Self {
         Self {
             store,
             index_manager,
+            metadata_store,
             retrieval,
             budget,
         }
     }
 
-    /// Initialize memory system (create directories, etc.).
+    /// Initialize memory system (create directories, sync metadata to SQLite).
     pub async fn init(&self) -> Result<()> {
-        self.store.init().await
+        self.store.init().await?;
+        self.sync_all().await?;
+        Ok(())
+    }
+
+    /// Sync filesystem metadata into SQLite for all scenarios.
+    ///
+    /// Reads YAML frontmatter from all memory files and upserts into the
+    /// `memory_metadata` SQLite table. Should be called at startup and when
+    /// files change (via watcher).
+    pub async fn sync_all(&self) -> Result<()> {
+        for scenario in Scenario::all() {
+            let entries = self.index_manager.scan_entries(*scenario).await?;
+            self.metadata_store
+                .sync_entries(*scenario, &entries)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Combined three-phase loading respecting total budget.
@@ -98,14 +119,13 @@ impl MemoryManager {
     pub async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext> {
         let mut loaded = Vec::new();
         let mut loaded_filenames = HashSet::new();
-        let mut bootstrap_tokens = 0;
-        let mut scenario_tokens = 0;
+
         let mut on_demand_tokens = 0;
 
         // Phase 1: Bootstrap (always loaded)
         debug!("Phase 1: Loading bootstrap memories");
         let bootstrap_memories = self.load_bootstrap(&mut loaded_filenames).await?;
-        bootstrap_tokens = bootstrap_memories.iter().map(|m| m.metadata.tokens).sum();
+        let bootstrap_tokens = bootstrap_memories.iter().map(|m| m.metadata.tokens).sum();
         loaded.extend(bootstrap_memories);
         debug!("Phase 1 complete: {} tokens", bootstrap_tokens);
 
@@ -115,7 +135,7 @@ impl MemoryManager {
         let scenario_memories = self
             .load_scenario(scenario, &query.tags, &mut loaded_filenames)
             .await?;
-        scenario_tokens = scenario_memories.iter().map(|m| m.metadata.tokens).sum();
+        let scenario_tokens = scenario_memories.iter().map(|m| m.metadata.tokens).sum();
         loaded.extend(scenario_memories);
         debug!("Phase 2 complete: {} tokens", scenario_tokens);
 
@@ -179,102 +199,80 @@ impl MemoryManager {
 
     /// Phase 1: Load profile + active memories (always loaded).
     ///
-    /// Strategy:
-    /// - All .md files in profile/ directory (profile is always high-priority)
-    /// - Active files with Hot frequency first, then Warm if budget allows
+    /// Uses SQLite metadata queries instead of filesystem scanning.
+    /// - All profile entries (always high-priority)
+    /// - Active entries: Hot first, then Warm if budget allows
     /// - Skips Cold and Archived items
     async fn load_bootstrap(&self, loaded: &mut HashSet<String>) -> Result<Vec<MemoryFile>> {
         let mut memories = Vec::new();
         let budget = self.budget.bootstrap;
         let mut tokens_used = 0;
 
-        // Load all profile files (profile data is always loaded)
-        if let Ok(profile_files) = self.store.list(Scenario::Profile).await {
-            for filename in profile_files {
-                if !loaded.insert(format!("profile/{}", filename)) {
-                    continue; // Already loaded
+        // Load all profile entries from SQLite
+        let profile_entries = self
+            .metadata_store
+            .query_entries(Scenario::Profile)
+            .await
+            .unwrap_or_default();
+
+        for entry in &profile_entries {
+            let key = format!("profile/{}", entry.filename);
+            if !loaded.insert(key) {
+                continue;
+            }
+            match self.store.read(Scenario::Profile, &entry.filename).await {
+                Ok(mem) => {
+                    tokens_used += mem.metadata.tokens;
+                    debug!(
+                        "Bootstrap: loaded profile/{} ({} tokens)",
+                        entry.filename, mem.metadata.tokens
+                    );
+                    memories.push(mem);
                 }
-                match self.store.read(Scenario::Profile, &filename).await {
-                    Ok(mem) => {
-                        tokens_used += mem.metadata.tokens;
-                        debug!(
-                            "Bootstrap: loaded profile/{} ({} tokens)",
-                            filename, mem.metadata.tokens
-                        );
-                        memories.push(mem);
-                    }
-                    Err(e) => {
-                        warn!("Bootstrap: failed to load profile/{}: {}", filename, e);
-                    }
+                Err(e) => {
+                    warn!(
+                        "Bootstrap: failed to load profile/{}: {}",
+                        entry.filename, e
+                    );
                 }
             }
         }
 
-        // Load active files by frequency priority (Hot first, then Warm)
-        if let Ok(active_files) = self.store.list(Scenario::Active).await {
-            // Collect metadata for priority-based loading
-            let mut hot_items = Vec::new();
-            let mut warm_items = Vec::new();
+        // Load active entries from SQLite (already sorted: Hot → Warm → Cold)
+        let active_entries = self
+            .metadata_store
+            .query_entries(Scenario::Active)
+            .await
+            .unwrap_or_default();
 
-            for filename in active_files {
-                let key = format!("active/{}", filename);
-                if loaded.contains(&key) {
-                    continue;
-                }
-                // Read frontmatter to determine frequency
-                match self.store.read(Scenario::Active, &filename).await {
-                    Ok(mem) => match mem.metadata.frequency {
-                        Frequency::Hot => hot_items.push((filename, mem)),
-                        Frequency::Warm => warm_items.push((filename, mem)),
-                        Frequency::Cold | Frequency::Archived => {
-                            debug!(
-                                "Bootstrap: skipping active/{} (frequency: {:?})",
-                                filename, mem.metadata.frequency
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Bootstrap: failed to read active/{}: {}", filename, e);
-                    }
-                }
+        for entry in &active_entries {
+            let key = format!("active/{}", entry.filename);
+            if loaded.contains(&key) {
+                continue;
             }
 
-            // Load Hot items first
-            for (filename, mem) in hot_items {
-                let key = format!("active/{}", filename);
-                if tokens_used + mem.metadata.tokens > budget {
-                    debug!(
-                        "Bootstrap: budget exhausted at hot item active/{}",
-                        filename
-                    );
-                    break;
-                }
-                tokens_used += mem.metadata.tokens;
-                loaded.insert(key);
-                debug!(
-                    "Bootstrap: loaded hot active/{} ({} tokens)",
-                    filename, mem.metadata.tokens
-                );
-                memories.push(mem);
+            // Skip Cold and Archived in bootstrap
+            if matches!(entry.frequency, Frequency::Cold | Frequency::Archived) {
+                continue;
             }
 
-            // Then load Warm items if budget allows
-            for (filename, mem) in warm_items {
-                let key = format!("active/{}", filename);
-                if tokens_used + mem.metadata.tokens > budget {
+            if tokens_used + entry.tokens as usize > budget {
+                break;
+            }
+
+            match self.store.read(Scenario::Active, &entry.filename).await {
+                Ok(mem) => {
+                    tokens_used += mem.metadata.tokens;
+                    loaded.insert(key);
                     debug!(
-                        "Bootstrap: budget exhausted at warm item active/{}",
-                        filename
+                        "Bootstrap: loaded active/{} ({:?}, {} tokens)",
+                        entry.filename, entry.frequency, mem.metadata.tokens
                     );
-                    break;
+                    memories.push(mem);
                 }
-                tokens_used += mem.metadata.tokens;
-                loaded.insert(key);
-                debug!(
-                    "Bootstrap: loaded warm active/{} ({} tokens)",
-                    filename, mem.metadata.tokens
-                );
-                memories.push(mem);
+                Err(e) => {
+                    warn!("Bootstrap: failed to load active/{}: {}", entry.filename, e);
+                }
             }
         }
 
@@ -283,11 +281,10 @@ impl MemoryManager {
 
     /// Phase 2: Load scenario-specific hot/warm items.
     ///
-    /// Strategy:
-    /// 1. Scan .md files directly for fresh metadata (no _INDEX.md dependency)
-    /// 2. Load hot items first (regardless of tags)
-    /// 3. Load warm items matching query tags
-    /// 4. Stop when budget exceeded
+    /// Uses SQLite metadata queries instead of filesystem scanning.
+    /// 1. Load hot items first (regardless of tags)
+    /// 2. Load warm items matching query tags
+    /// 3. Stop when budget exceeded
     async fn load_scenario(
         &self,
         scenario: Scenario,
@@ -302,14 +299,12 @@ impl MemoryManager {
             return Ok(memories);
         }
 
-        // Scan files directly — no _INDEX.md dependency
-        let entries = match self.index_manager.scan_entries(scenario).await {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Scenario: failed to scan {:?}: {}", scenario, e);
-                return Ok(memories);
-            }
-        };
+        // Query from SQLite — no filesystem scanning
+        let entries = self
+            .metadata_store
+            .query_entries(scenario)
+            .await
+            .unwrap_or_default();
 
         let mut tokens_used = 0;
 
@@ -599,6 +594,9 @@ mod tests {
         .await
         .unwrap();
 
+        // Sync newly created files to SQLite
+        manager.sync_all().await.unwrap();
+
         // Load with empty query
         let query = MemoryQuery::new();
         let context = manager.load_for_context(&query).await.unwrap();
@@ -647,6 +645,9 @@ mod tests {
         .await
         .unwrap();
 
+        // Sync newly created files to SQLite
+        manager.sync_all().await.unwrap();
+
         let query = MemoryQuery::new();
         let context = manager.load_for_context(&query).await.unwrap();
 
@@ -669,11 +670,7 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
 
         // Regenerate index first (empty)
-        manager
-            .index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        manager.sync_all().await.unwrap();
 
         // Create knowledge files exceeding budget (1500)
         create_memory_file(
@@ -710,12 +707,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Regenerate index
-        manager
-            .index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        // Sync metadata to SQLite
+        manager.sync_all().await.unwrap();
 
         // Load with scenario filter
         let query = MemoryQuery::new()
@@ -734,12 +727,8 @@ mod tests {
         let (manager, temp_dir) = setup_manager().await;
         let memory_dir = temp_dir.path().join("memory");
 
-        // Regenerate index
-        manager
-            .index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        // Sync metadata to SQLite
+        manager.sync_all().await.unwrap();
 
         // Create knowledge files with cold frequency (not loaded in phase 2)
         create_memory_file(
@@ -765,12 +754,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Regenerate index
-        manager
-            .index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        // Sync metadata to SQLite
+        manager.sync_all().await.unwrap();
 
         // Load with text query (triggers on-demand)
         let query = MemoryQuery::new()
@@ -819,11 +804,7 @@ mod tests {
         .await
         .unwrap();
 
-        manager
-            .index_manager
-            .regenerate(Scenario::Profile)
-            .await
-            .unwrap();
+        manager.sync_all().await.unwrap();
 
         // Create manager with custom budget
         let store = FileMemoryStore::new(memory_dir.clone());
@@ -833,12 +814,20 @@ mod tests {
             .unwrap()
             .pool()
             .clone();
-        let embedding_store = EmbeddingStore::new(pool);
-        // Create a separate index manager instance for retrieval engine
-        let retrieval_index = FileIndexManager::new(memory_dir.clone());
-        let retrieval = RetrievalEngine::new(retrieval_index, embedding_store);
+        let embedding_store = EmbeddingStore::new(pool.clone());
+        let metadata_store = MetadataStore::new(pool);
+        let retrieval = RetrievalEngine::new(
+            MetadataStore::new(
+                SqliteStore::with_path(temp_dir.path().join("test.db"))
+                    .await
+                    .unwrap()
+                    .pool()
+                    .clone(),
+            ),
+            embedding_store,
+        );
         let custom_manager =
-            MemoryManager::with_components(store, index_manager, retrieval, budget);
+            MemoryManager::with_components(store, index_manager, metadata_store, retrieval, budget);
 
         let query = MemoryQuery::new();
         let context = custom_manager.load_for_context(&query).await.unwrap();
@@ -871,6 +860,9 @@ mod tests {
             .await
             .unwrap();
 
+        // Sync newly created files to SQLite
+        manager.sync_all().await.unwrap();
+
         // Should load valid file and skip corrupted
         let query = MemoryQuery::new();
         let context = manager.load_for_context(&query).await.unwrap();
@@ -897,11 +889,7 @@ mod tests {
         )
         .await
         .unwrap();
-        manager
-            .index_manager
-            .regenerate(Scenario::Knowledge)
-            .await
-            .unwrap();
+        manager.sync_all().await.unwrap();
 
         // The file should only load once (in scenario phase, not again in on-demand)
         let query = MemoryQuery::new()

@@ -8,7 +8,7 @@
 //! Final score = embedding_similarity × frequency_bonus
 
 use super::embedding_store::EmbeddingStore;
-use super::index::FileIndexManager;
+use super::metadata_store::MetadataStore;
 use super::types::*;
 use anyhow::Result;
 
@@ -17,7 +17,7 @@ use anyhow::Result;
 /// Hot items get a 20% boost, Warm get 10%, Cold items get no bonus.
 /// Archived items are excluded from search entirely.
 impl Frequency {
-    fn bonus(self) -> f32 {
+    pub(crate) fn bonus(self) -> f32 {
         match self {
             Frequency::Hot => 1.2,
             Frequency::Warm => 1.1,
@@ -27,7 +27,7 @@ impl Frequency {
     }
 }
 
-/// A merged search result with combined scoring.
+/// A search result with combined scoring.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub memory_path: String,
@@ -42,21 +42,21 @@ pub struct SearchResult {
     pub id: String,
 }
 
-/// Retrieval engine combining tag and embedding search.
+/// Retrieval engine combining tag and embedding search via SQLite metadata.
 pub struct RetrievalEngine {
-    index_manager: FileIndexManager,
+    metadata_store: MetadataStore,
     embedding_store: EmbeddingStore,
 }
 
 impl RetrievalEngine {
-    pub fn new(index_manager: FileIndexManager, embedding_store: EmbeddingStore) -> Self {
+    pub fn new(metadata_store: MetadataStore, embedding_store: EmbeddingStore) -> Self {
         Self {
-            index_manager,
+            metadata_store,
             embedding_store,
         }
     }
 
-    /// Tag-only search: scan _INDEX.md entries for tag matches.
+    /// Tag-only search via SQLite metadata.
     ///
     /// Tags act as a hard filter (must match at least one). Score is based on
     /// tag match ratio × frequency bonus.
@@ -66,64 +66,38 @@ impl RetrievalEngine {
         scenario: Option<Scenario>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let scenarios_to_search = match scenario {
-            Some(s) => vec![s],
-            None => Scenario::all().to_vec(),
-        };
+        let entries = self
+            .metadata_store
+            .query_by_tags(query_tags, scenario, limit)
+            .await?;
 
-        let mut results = Vec::new();
+        let results: Vec<SearchResult> = entries
+            .into_iter()
+            .filter(|e| !matches!(e.scenario, Scenario::Active | Scenario::Profile))
+            .map(|entry| {
+                let matching = entry
+                    .tags
+                    .iter()
+                    .filter(|t| query_tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
+                    .count();
+                let tag_score = matching as f32 / query_tags.len().max(1) as f32;
+                let final_score = tag_score * entry.frequency.bonus();
 
-        for scen in scenarios_to_search {
-            // Skip active and profile for tag search (they're always loaded)
-            if matches!(scen, Scenario::Active | Scenario::Profile) {
-                continue;
-            }
-
-            if let Ok(index) = self.index_manager.read_index(scen).await {
-                for entry in &index.entries {
-                    // Hard filter: exclude archived
-                    if matches!(entry.frequency, Frequency::Archived) {
-                        continue;
-                    }
-
-                    // Hard filter: must match at least one tag
-                    let matching = entry
-                        .tags
-                        .iter()
-                        .filter(|t| query_tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
-                        .count();
-
-                    if matching == 0 {
-                        continue;
-                    }
-
-                    let tag_score = matching as f32 / query_tags.len().max(1) as f32;
-                    let final_score = tag_score * entry.frequency.bonus();
-
-                    results.push(SearchResult {
-                        memory_path: entry.filename.clone(),
-                        scenario: scen,
-                        title: entry.title.clone(),
-                        tags: entry.tags.clone(),
-                        frequency: entry.frequency,
-                        score: final_score,
-                        tag_score,
-                        embedding_score: 0.0,
-                        tokens: entry.tokens,
-                        id: entry.id.clone(),
-                    });
+                SearchResult {
+                    memory_path: entry.filename,
+                    scenario: entry.scenario,
+                    title: entry.title,
+                    tags: entry.tags,
+                    frequency: entry.frequency,
+                    score: final_score,
+                    tag_score,
+                    embedding_score: 0.0,
+                    tokens: entry.tokens,
+                    id: entry.id,
                 }
-            }
-        }
+            })
+            .collect();
 
-        // Sort by score desc, then frequency rank asc
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.frequency.rank().cmp(&b.frequency.rank()))
-        });
-        results.truncate(limit);
         Ok(results)
     }
 
@@ -140,127 +114,78 @@ impl RetrievalEngine {
             .search_by_similarity(query_embedding, scenario, limit)
             .await?;
 
-        let mut results = Vec::new();
-        for hit in hits {
-            let emb_score = (hit.similarity + 1.0) / 2.0; // normalize [-1,1] → [0,1]
-            let scenario = Scenario::from_dir_name(&hit.scenario).unwrap_or(Scenario::Knowledge);
-            let frequency = Frequency::from_str_lossy(&hit.frequency);
+        let results: Vec<SearchResult> = hits
+            .into_iter()
+            .map(|hit| {
+                let emb_score = (hit.similarity + 1.0) / 2.0; // normalize [-1,1] → [0,1]
+                let scenario =
+                    Scenario::from_dir_name(&hit.scenario).unwrap_or(Scenario::Knowledge);
+                let frequency = Frequency::from_str_lossy(&hit.frequency);
+                let final_score = emb_score * frequency.bonus();
 
-            let final_score = emb_score * frequency.bonus();
-
-            results.push(SearchResult {
-                memory_path: hit.memory_path,
-                scenario,
-                title: String::new(), // not stored in embedding table
-                tags: hit.tags,
-                frequency,
-                score: final_score,
-                tag_score: 0.0,
-                embedding_score: emb_score,
-                tokens: hit.token_count,
-                id: String::new(), // not stored in embedding table
-            });
-        }
-        Ok(results)
-    }
-
-    /// Combined search: tag hard-filter + embedding primary score + frequency bonus.
-    ///
-    /// Strategy:
-    /// 1. If query has tags, run tag search as a hard filter to get candidate set
-    /// 2. Run embedding search for semantic similarity
-    /// 3. Merge: embedding score is primary, frequency provides bonus multiplier
-    /// 4. If tags were specified, only include results that matched at least one tag
-    pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>> {
-        let limit = 20;
-
-        // Run both searches
-        let tag_results = if !query.tags.is_empty() {
-            self.search_by_tags(&query.tags, query.scenario, limit)
-                .await?
-        } else {
-            Vec::new()
-        };
-
-        let emb_results = if let Some(text) = &query.text {
-            // For now, use a dummy embedding if no embedder is configured
-            // Real implementation would call TextEmbedder here
-            let dummy_emb = vec![0.0f32; 384]; // TODO: use actual embedder
-            self.search_by_embedding(text, &dummy_emb, query.scenario, limit)
-                .await?
-        } else {
-            Vec::new()
-        };
-
-        // Build tag-matched set for hard filtering
-        let tag_matched_keys: std::collections::HashSet<String> = tag_results
-            .iter()
-            .map(|r| {
-                if r.memory_path.is_empty() {
-                    format!("{}:{}", r.scenario.dir_name(), r.title)
-                } else {
-                    format!("{}:{}", r.scenario.dir_name(), r.memory_path)
+                SearchResult {
+                    memory_path: hit.memory_path,
+                    scenario,
+                    title: String::new(), // not stored in embedding table
+                    tags: hit.tags,
+                    frequency,
+                    score: final_score,
+                    tag_score: 0.0,
+                    embedding_score: emb_score,
+                    tokens: hit.token_count,
+                    id: String::new(), // not stored in embedding table
                 }
             })
             .collect();
 
-        // Merge results
-        let mut merged: std::collections::HashMap<String, SearchResult> =
-            std::collections::HashMap::new();
-
-        // Insert tag results
-        for r in tag_results {
-            let key = if r.memory_path.is_empty() {
-                format!("{}:{}", r.scenario.dir_name(), r.title)
-            } else {
-                format!("{}:{}", r.scenario.dir_name(), r.memory_path)
-            };
-            merged.entry(key).or_insert(r);
-        }
-
-        // Merge embedding results (embedding score is primary)
-        for r in emb_results {
-            let key = if r.memory_path.is_empty() {
-                format!("{}:{}", r.scenario.dir_name(), r.title)
-            } else {
-                format!("{}:{}", r.scenario.dir_name(), r.memory_path)
-            };
-
-            // If tags were specified and this result doesn't match any tag, skip it
-            if !tag_matched_keys.is_empty() && !tag_matched_keys.contains(&key) {
-                continue;
-            }
-
-            merged
-                .entry(key)
-                .and_modify(|existing| {
-                    existing.embedding_score = r.embedding_score;
-                    // Recalculate: embedding primary × frequency bonus
-                    existing.score = existing.embedding_score * existing.frequency.bonus();
-                    if existing.title.is_empty() && !r.title.is_empty() {
-                        existing.title = r.title.clone();
-                    }
-                    if existing.memory_path.is_empty() && !r.memory_path.is_empty() {
-                        existing.memory_path = r.memory_path.clone();
-                    }
-                })
-                .or_insert(r);
-        }
-
-        let mut results: Vec<SearchResult> = merged.into_values().collect();
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
         Ok(results)
+    }
+
+    /// Combined search: embedding primary score + tag hard filter + frequency bonus.
+    ///
+    /// Flattened strategy:
+    /// 1. Get embedding results (which include tags/frequency from SQLite)
+    /// 2. If tags specified, apply hard filter: score = emb × freq_bonus × tag_filter
+    /// 3. If no embedding results but tags exist, fall back to tag-only search
+    pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>> {
+        let limit = 20;
+
+        // Get embedding results
+        let emb_results = if query.text.is_some() {
+            let dummy_emb = vec![0.0f32; 384]; // TODO: use actual embedder
+            self.search_by_embedding("", &dummy_emb, query.scenario, limit)
+                .await?
+        } else {
+            Vec::new()
+        };
+
+        // If tags specified, apply hard filter on embedding results
+        if !query.tags.is_empty() {
+            if !emb_results.is_empty() {
+                return Ok(emb_results
+                    .into_iter()
+                    .filter(|r| {
+                        r.tags
+                            .iter()
+                            .any(|t| query.tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
+                    })
+                    .collect());
+            }
+            // No embedding results — fall back to tag-only search
+            return self
+                .search_by_tags(&query.tags, query.scenario, limit)
+                .await;
+        }
+
+        // No tags — return embedding results as-is
+        Ok(emb_results)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::FileIndexManager;
     use crate::SqliteStore;
     use tempfile::TempDir;
 
@@ -268,7 +193,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let base_dir = temp_dir.path().to_path_buf();
 
-        // Create SQLite store for embeddings
         let db_path = base_dir.join("test.db");
         let pool = SqliteStore::with_path(db_path)
             .await
@@ -276,29 +200,51 @@ mod tests {
             .pool()
             .clone();
 
-        // Create index manager
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-
-        // Create embedding store
+        let metadata_store = MetadataStore::new(pool.clone());
         let embedding_store = EmbeddingStore::new(pool);
 
-        let engine = RetrievalEngine::new(index_manager, embedding_store);
+        // Create scenario directories and sync metadata
+        for scen in Scenario::all() {
+            let dir = base_dir.join("memory").join(scen.dir_name());
+            tokio::fs::create_dir_all(&dir).await.unwrap();
+            let entries = index_manager.scan_entries(*scen).await.unwrap_or_default();
+            metadata_store.sync_entries(*scen, &entries).await.unwrap();
+        }
+
+        let engine = RetrievalEngine::new(metadata_store, embedding_store);
+        (engine, temp_dir)
+    }
+
+    async fn setup_engine_with_files() -> (RetrievalEngine, MetadataStore, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().to_path_buf();
+
+        let db_path = base_dir.join("test.db");
+        let pool = SqliteStore::with_path(db_path)
+            .await
+            .unwrap()
+            .pool()
+            .clone();
+
+        let index_manager = FileIndexManager::new(base_dir.join("memory"));
+        let metadata_store = MetadataStore::new(pool.clone());
+        let embedding_store = EmbeddingStore::new(pool);
 
         // Create scenario directories
         for scen in Scenario::all() {
             let dir = base_dir.join("memory").join(scen.dir_name());
-            tokio::fs::create_dir_all(dir).await.unwrap();
+            tokio::fs::create_dir_all(&dir).await.unwrap();
         }
 
-        (engine, temp_dir)
+        let engine = RetrievalEngine::new(metadata_store.clone(), embedding_store);
+        (engine, metadata_store, temp_dir)
     }
 
     #[tokio::test]
     async fn test_tag_search_matches_correctly() {
-        let (engine, temp_dir) = setup_engine().await;
+        let (engine, metadata_store, temp_dir) = setup_engine_with_files().await;
         let base_dir = temp_dir.path();
-
-        // Create memory files with different tags
         let knowledge_dir = base_dir.join("memory/knowledge");
 
         let memory1 = r#"---
@@ -339,9 +285,16 @@ tokens: 100
             .await
             .unwrap();
 
-        // Regenerate index
+        // Sync to SQLite
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        let entries = index_manager
+            .scan_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        metadata_store
+            .sync_entries(Scenario::Knowledge, &entries)
+            .await
+            .unwrap();
 
         // Search by "rust" tag
         let results = engine
@@ -356,11 +309,9 @@ tokens: 100
     }
 
     #[tokio::test]
-    async fn test_merged_scoring_normalizes_correctly() {
-        let (engine, temp_dir) = setup_engine().await;
+    async fn test_embedding_scoring_normalizes_correctly() {
+        let (_engine, metadata_store, temp_dir) = setup_engine_with_files().await;
         let base_dir = temp_dir.path();
-
-        // Create memory with embedding
         let knowledge_dir = base_dir.join("memory/knowledge");
 
         let memory1 = r#"---
@@ -382,10 +333,6 @@ tokens: 50
             .await
             .unwrap();
 
-        // Regenerate index
-        let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
-
         // Add embedding
         let pool = SqliteStore::with_path(base_dir.join("test.db"))
             .await
@@ -405,14 +352,7 @@ tokens: 50
             .await
             .unwrap();
 
-        // Test tag-only search
-        let tag_results = engine
-            .search_by_tags(&["test".to_string()], Some(Scenario::Knowledge), 10)
-            .await
-            .unwrap();
-        assert_eq!(tag_results[0].tag_score, 1.0);
-        assert_eq!(tag_results[0].embedding_score, 0.0);
-        assert!((tag_results[0].score - 1.1).abs() < 0.001); // 1.0 * 1.1 (Warm bonus)
+        let engine = RetrievalEngine::new(metadata_store.clone(), emb_store);
 
         // Test embedding-only search
         let emb_results = engine
@@ -420,16 +360,14 @@ tokens: 50
             .await
             .unwrap();
         assert_eq!(emb_results[0].tag_score, 0.0);
-        assert!((emb_results[0].embedding_score - 1.0).abs() < 0.001); // cosine = 1.0, normalized
+        assert!((emb_results[0].embedding_score - 1.0).abs() < 0.001);
         assert!((emb_results[0].score - 1.1).abs() < 0.001); // 1.0 * 1.1 (Warm bonus)
     }
 
     #[tokio::test]
     async fn test_search_excludes_archived() {
-        let (engine, temp_dir) = setup_engine().await;
+        let (engine, metadata_store, temp_dir) = setup_engine_with_files().await;
         let base_dir = temp_dir.path();
-
-        // Create memories with different frequencies
         let knowledge_dir = base_dir.join("memory/knowledge");
 
         for (freq, title) in &[
@@ -459,11 +397,18 @@ tokens: 50
                 .unwrap();
         }
 
-        // Regenerate index
+        // Sync to SQLite
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        let entries = index_manager
+            .scan_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        metadata_store
+            .sync_entries(Scenario::Knowledge, &entries)
+            .await
+            .unwrap();
 
-        // Search by tag - should only return warm, not archived
+        // Search by tag — should only return warm, not archived
         let results = engine
             .search_by_tags(&["test".to_string()], Some(Scenario::Knowledge), 10)
             .await
@@ -476,10 +421,8 @@ tokens: 50
 
     #[tokio::test]
     async fn test_search_deduplicates_results() {
-        let (engine, temp_dir) = setup_engine().await;
+        let (_engine, metadata_store, temp_dir) = setup_engine_with_files().await;
         let base_dir = temp_dir.path();
-
-        // Create memory
         let knowledge_dir = base_dir.join("memory/knowledge");
 
         let memory1 = r#"---
@@ -500,11 +443,18 @@ tokens: 50
             .await
             .unwrap();
 
-        // Regenerate index
+        // Sync to SQLite
         let index_manager = FileIndexManager::new(base_dir.join("memory"));
-        index_manager.regenerate(Scenario::Knowledge).await.unwrap();
+        let entries = index_manager
+            .scan_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
+        metadata_store
+            .sync_entries(Scenario::Knowledge, &entries)
+            .await
+            .unwrap();
 
-        // Add embedding for the same memory
+        // Add embedding
         let pool = SqliteStore::with_path(base_dir.join("test.db"))
             .await
             .unwrap()
@@ -523,15 +473,15 @@ tokens: 50
             .await
             .unwrap();
 
+        let engine = RetrievalEngine::new(metadata_store, emb_store);
+
         // Combined search should deduplicate
         let query = MemoryQuery::new().with_tag("test").with_text("test query");
         let results = engine.search(&query).await.unwrap();
 
-        // Should have exactly 1 result (deduplicated)
+        // Should have exactly 1 result (deduplicated via embedding)
         assert_eq!(1, results.len());
         assert_eq!(results[0].memory_path, "test.md");
-        // Both scores should be present
-        assert!(results[0].tag_score > 0.0);
         assert!(results[0].embedding_score > 0.0);
         // Combined score: embedding primary × frequency bonus
         let expected = results[0].embedding_score * results[0].frequency.bonus();

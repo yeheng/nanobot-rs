@@ -21,11 +21,6 @@ pub fn memory_file_path(scenario: Scenario, filename: &str) -> PathBuf {
     scenario_dir(scenario).join(filename)
 }
 
-/// Path to the _INDEX.md for a scenario.
-pub fn index_path(scenario: Scenario) -> PathBuf {
-    scenario_dir(scenario).join("_INDEX.md")
-}
-
 /// History directory for a scenario.
 pub fn history_dir(scenario: Scenario) -> PathBuf {
     memory_base_dir().join(".history").join(scenario.dir_name())
@@ -38,7 +33,7 @@ pub fn history_file_path(scenario: Scenario, filename: &str, timestamp: &str) ->
     history_dir(scenario).join(format!("{}.{}.md", stem, timestamp))
 }
 
-/// List all memory .md files in a scenario directory (excluding _INDEX.md and dotfiles).
+/// List all memory .md files in a scenario directory (excluding README.md and dotfiles).
 pub async fn list_memory_files(scenario: Scenario) -> std::io::Result<Vec<String>> {
     let dir = scenario_dir(scenario);
     if !dir.exists() {
@@ -48,7 +43,7 @@ pub async fn list_memory_files(scenario: Scenario) -> std::io::Result<Vec<String
     let mut files = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".md") && name != "_INDEX.md" && !name.starts_with('.') {
+        if name.ends_with(".md") && name != "README.md" && !name.starts_with('.') {
             files.push(name);
         }
     }
@@ -98,18 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn index_path_is_index_md() {
-        let decisions_index = index_path(Scenario::Decisions);
-        let path_str = decisions_index.to_string_lossy();
-
-        assert!(
-            path_str.ends_with("decisions/_INDEX.md"),
-            "decisions index should end with 'decisions/_INDEX.md': {}",
-            path_str
-        );
-    }
-
-    #[test]
     fn history_file_path_format() {
         let path = history_file_path(Scenario::Knowledge, "ai-agents.md", "20260403-120000");
         let path_str = path.to_string_lossy();
@@ -135,7 +118,7 @@ mod tests {
         tokio::fs::write(scenario_path.join("valid.md"), "content")
             .await
             .unwrap();
-        tokio::fs::write(scenario_path.join("_INDEX.md"), "index")
+        tokio::fs::write(scenario_path.join("README.md"), "readme")
             .await
             .unwrap();
         tokio::fs::write(scenario_path.join(".hidden.md"), "hidden")
@@ -157,7 +140,7 @@ mod tests {
         tokio::fs::write(gasket_temp.join("memory1.md"), "content1")
             .await
             .unwrap();
-        tokio::fs::write(gasket_temp.join("_INDEX.md"), "index")
+        tokio::fs::write(gasket_temp.join("README.md"), "readme")
             .await
             .unwrap();
         tokio::fs::write(gasket_temp.join(".dotfile.md"), "hidden")

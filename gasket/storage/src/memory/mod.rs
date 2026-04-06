@@ -13,13 +13,13 @@
 //!   for automated lifecycle management
 //! - **Token budget tracking:** Each memory tracks its token count for budget enforcement
 //! - **Supersession:** Old versions can reference their replacements for audit trails
-//! - **Deduplication:** Cross-session duplicate detection via embedding similarity
+//! - **SQLite metadata:** File metadata is indexed in `memory_metadata` table for fast queries
 
-mod dedup;
 mod embedding_store;
 mod frontmatter;
 mod index;
 mod lifecycle;
+mod metadata_store;
 mod path;
 mod retrieval;
 mod store;
@@ -29,9 +29,7 @@ mod watcher;
 pub use types::*;
 
 // Re-export key path resolution functions
-pub use path::{
-    history_dir, index_path, list_memory_files, memory_base_dir, memory_file_path, scenario_dir,
-};
+pub use path::{history_dir, list_memory_files, memory_base_dir, memory_file_path, scenario_dir};
 
 // Re-export frontmatter parsing functions
 pub use frontmatter::{
@@ -41,8 +39,11 @@ pub use frontmatter::{
 // Re-export FileMemoryStore
 pub use store::FileMemoryStore;
 
-// Re-export index manager
-pub use index::{FileIndexManager, MemoryIndex, MemoryIndexEntry};
+// Re-export index scanner (filesystem → MemoryIndexEntry)
+pub use index::{FileIndexManager, MemoryIndexEntry};
+
+// Re-export MetadataStore (SQLite-backed metadata queries)
+pub use metadata_store::MetadataStore;
 
 // Re-export EmbeddingStore
 pub use embedding_store::{EmbeddingHit, EmbeddingStore};
@@ -57,6 +58,3 @@ pub use lifecycle::{AccessEntry, AccessLog, DecayReport, FlushReport, FrequencyM
 pub use watcher::{
     scenario_from_path, should_ignore, AutoIndexHandler, MemoryWatcher, WatchEvent, WatcherConfig,
 };
-
-// Re-export deduplication scanner
-pub use dedup::{DedupPair, DedupReport, DedupReportEntry, DedupScanner, DedupSuggestion};

@@ -138,7 +138,7 @@ impl FileMemoryStore {
             .with_context(|| format!("Failed to delete memory file: {}", filename))
     }
 
-    /// List all memory files in a scenario (excluding _INDEX.md and dotfiles).
+    /// List all memory files in a scenario (excluding README.md and dotfiles).
     pub async fn list(&self, scenario: Scenario) -> Result<Vec<String>> {
         let dir = self.base_dir.join(scenario.dir_name());
         if !dir.exists() {
@@ -148,7 +148,7 @@ impl FileMemoryStore {
         let mut files = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".md") && name != "_INDEX.md" && !name.starts_with('.') {
+            if name.ends_with(".md") && name != "README.md" && !name.starts_with('.') {
                 files.push(name);
             }
         }
@@ -316,8 +316,8 @@ mod tests {
             .create(Scenario::Knowledge, "Real", "concept", &[], "content")
             .await
             .unwrap();
-        // Create _INDEX.md (should be excluded)
-        tokio::fs::write(tmp.path().join("knowledge/_INDEX.md"), "index")
+        // Create README.md (should be excluded)
+        tokio::fs::write(tmp.path().join("knowledge/README.md"), "readme")
             .await
             .unwrap();
         // Create .dotfile (should be excluded)

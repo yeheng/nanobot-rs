@@ -1,7 +1,7 @@
 //! File watcher for memory directory changes.
 //!
 //! Monitors `~/.gasket/memory/` for file system changes with debouncing.
-//! Detects human edits to memory files and triggers re-indexing/re-embedding.
+//! Detects human edits to memory files and triggers SQLite metadata sync.
 //!
 //! # Feature Flags
 //!
@@ -18,17 +18,16 @@
 //! The watcher ignores:
 //! - `.history/` directory (version-controlled backups)
 //! - `.tmp` files (temporary editor files)
-//! - `_INDEX.md` files (auto-generated indexes)
+//! - `README.md` files (human-written notes, not memory entries)
 //! - Dotfiles (hidden files starting with `.`)
 
 //!
 //! # Auto-Indexing
 //!
-//! The `AutoIndexHandler` connects file watcher events to automatic index
-//! regeneration and embedding updates. When enabled, modifying a `.md` memory
-//! file triggers:
-//! 1. Regeneration of the scenario's `_INDEX.md`
-//! 2. Upsert/delete of the file's embedding in SQLite
+//! The `AutoIndexHandler` connects file watcher events to O(1) SQLite upserts.
+//! When enabled, modifying a `.md` memory file triggers:
+//! 1. UPSERT of the file's metadata into the `memory_metadata` SQLite table
+//! 2. UPSERT/delete of the file's embedding in SQLite
 
 use super::types::Scenario;
 use anyhow::Result;
@@ -89,7 +88,7 @@ impl Default for WatcherConfig {
 /// Filters out:
 /// - `.history/` directory (version history)
 /// - `.tmp` files (temporary editor files)
-/// - `_INDEX.md` files (auto-generated indexes)
+/// - `README.md` files (human-written notes)
 /// - Dotfiles (hidden files starting with `.`)
 pub fn should_ignore(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
@@ -108,8 +107,8 @@ pub fn should_ignore(path: &Path) -> bool {
         return true;
     }
 
-    // Ignore _INDEX.md files
-    if path.ends_with("_INDEX.md") {
+    // Ignore README.md files (human-written notes, not memory entries)
+    if path.ends_with("README.md") {
         return true;
     }
 
@@ -307,18 +306,18 @@ impl MemoryWatcher {
 // Auto-index handler
 // ============================================================================
 
-/// Handler that processes file watcher events and triggers auto-indexing.
+/// Handler that processes file watcher events with O(1) SQLite upserts.
 ///
-/// Connects `MemoryWatcher` events to index regeneration and embedding updates.
+/// Connects `MemoryWatcher` events to metadata + embedding sync.
 /// When a `.md` file is created or modified:
-/// - Regenerates the scenario's `_INDEX.md`
-/// - Upserts the file's embedding in SQLite
+/// - Parses its YAML frontmatter
+/// - UPSERTs metadata into the `memory_metadata` SQLite table
+/// - UPSERTs embedding into the `memory_embeddings` SQLite table
 ///
 /// When a `.md` file is deleted:
-/// - Regenerates the scenario's `_INDEX.md`
-/// - Deletes the file's embedding from SQLite
+/// - Deletes the corresponding rows from both SQLite tables
 pub struct AutoIndexHandler {
-    index_manager: super::index::FileIndexManager,
+    metadata_store: super::metadata_store::MetadataStore,
     embedding_store: super::embedding_store::EmbeddingStore,
     base_dir: PathBuf,
 }
@@ -326,28 +325,28 @@ pub struct AutoIndexHandler {
 impl AutoIndexHandler {
     /// Create a new auto-index handler.
     pub fn new(
-        index_manager: super::index::FileIndexManager,
+        metadata_store: super::metadata_store::MetadataStore,
         embedding_store: super::embedding_store::EmbeddingStore,
         base_dir: PathBuf,
     ) -> Self {
         Self {
-            index_manager,
+            metadata_store,
             embedding_store,
             base_dir,
         }
     }
 
-    /// Process a single watch event.
+    /// Process a single watch event (O(1) — only touches the changed file).
     ///
     /// For Created/Modified events:
     /// 1. Extract the scenario from the file path
-    /// 2. Regenerate the scenario index via `FileIndexManager`
-    /// 3. Read the file frontmatter and upsert embedding
+    /// 2. Parse the file's YAML frontmatter
+    /// 3. UPSERT a single row into `memory_metadata`
+    /// 4. UPSERT the file's embedding
     ///
     /// For Deleted events:
-    /// 1. Extract the scenario from the file path
-    /// 2. Regenerate the scenario index
-    /// 3. Delete the embedding from `EmbeddingStore`
+    /// 1. Delete the file's row from `memory_metadata`
+    /// 2. Delete the file's embedding
     pub async fn process_event(&self, event: &WatchEvent) {
         let path = event.path();
 
@@ -368,11 +367,6 @@ impl AutoIndexHandler {
             }
         };
 
-        // Always regenerate the scenario index
-        if let Err(e) = self.index_manager.regenerate(scenario).await {
-            tracing::error!("AutoIndex: failed to regenerate {:?}: {}", scenario, e);
-        }
-
         match event {
             WatchEvent::Created(_) | WatchEvent::Modified(_) => {
                 let filename = path
@@ -382,6 +376,22 @@ impl AutoIndexHandler {
 
                 if let Ok(content) = tokio::fs::read_to_string(path).await {
                     if let Ok((meta, _)) = super::frontmatter::parse_memory_file(&content) {
+                        // O(1) SQLite upsert — only this file, not the whole directory
+                        let entry = super::index::MemoryIndexEntry {
+                            id: meta.id,
+                            title: meta.title,
+                            memory_type: meta.r#type,
+                            tags: meta.tags.clone(),
+                            frequency: meta.frequency,
+                            tokens: meta.tokens as u32,
+                            filename: filename.clone(),
+                            updated: meta.updated,
+                            scenario,
+                        };
+                        if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
+                            tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
+                        }
+
                         let embedding = vec![0.0f32; 384]; // TODO: actual embedder
                         match self
                             .embedding_store
@@ -454,10 +464,10 @@ mod tests {
     }
 
     #[test]
-    fn test_should_ignore_index() {
-        assert!(should_ignore(Path::new("knowledge/_INDEX.md")));
-        assert!(should_ignore(Path::new("_INDEX.md")));
-        assert!(should_ignore(Path::new("decisions/_INDEX.md")));
+    fn test_should_ignore_readme() {
+        assert!(should_ignore(Path::new("knowledge/README.md")));
+        assert!(should_ignore(Path::new("README.md")));
+        assert!(should_ignore(Path::new("decisions/README.md")));
     }
 
     #[test]
@@ -597,7 +607,7 @@ mod tests {
 
     #[cfg(feature = "memory-watcher")]
     #[tokio::test]
-    async fn test_watcher_ignores_index() {
+    async fn test_watcher_ignores_readme() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir = temp_dir.path().join("memory");
 
@@ -612,8 +622,8 @@ mod tests {
         let watcher = MemoryWatcher::new(config);
         let mut rx = watcher.start().await.unwrap();
 
-        let index_file = base_dir.join("knowledge/_INDEX.md");
-        tokio::fs::write(&index_file, "# Index").await.unwrap();
+        let readme_file = base_dir.join("knowledge/README.md");
+        tokio::fs::write(&readme_file, "# My notes").await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -621,7 +631,7 @@ mod tests {
         let result = tokio::time::timeout(timeout, rx.recv()).await;
         assert!(
             result.is_err(),
-            "Should not receive events for _INDEX.md files"
+            "Should not receive events for README.md files"
         );
     }
 
