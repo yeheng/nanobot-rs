@@ -12,8 +12,8 @@ use crate::cron::CronService;
 /// Cron tool for managing scheduled tasks
 pub struct CronTool {
     service: std::sync::Arc<CronService>,
-    channel: std::sync::RwLock<Option<String>>,
-    chat_id: std::sync::RwLock<Option<String>>,
+    channel: parking_lot::RwLock<Option<String>>,
+    chat_id: parking_lot::RwLock<Option<String>>,
 }
 
 impl CronTool {
@@ -21,19 +21,15 @@ impl CronTool {
     pub fn new(service: std::sync::Arc<CronService>) -> Self {
         Self {
             service,
-            channel: std::sync::RwLock::new(None),
-            chat_id: std::sync::RwLock::new(None),
+            channel: parking_lot::RwLock::new(None),
+            chat_id: parking_lot::RwLock::new(None),
         }
     }
 
     /// Set the context for message routing
     pub fn set_context(&self, channel: &str, chat_id: &str) {
-        if let Ok(mut c) = self.channel.write() {
-            *c = Some(channel.to_string());
-        }
-        if let Ok(mut c) = self.chat_id.write() {
-            *c = Some(chat_id.to_string());
-        }
+        *self.channel.write() = Some(channel.to_string());
+        *self.chat_id.write() = Some(chat_id.to_string());
     }
 }
 
@@ -44,7 +40,10 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule tasks to run at specific times"
+        "Schedule tasks to run at specific times. \
+         Actions: 'add' creates a scheduled job with a name, cron expression (e.g., '0 9 * * *' for 9 AM daily), \
+         and message; 'list' shows all jobs; 'remove' deletes a job by its ID. \
+         The job_id returned from 'add' is required for 'remove'."
     }
 
     fn parameters(&self) -> Value {
@@ -54,23 +53,23 @@ impl Tool for CronTool {
                 "action": {
                     "type": "string",
                     "enum": ["add", "list", "remove"],
-                    "description": "Action to perform"
+                    "description": "Action to perform: 'add' creates a job, 'list' shows all jobs, 'remove' deletes a job"
                 },
                 "name": {
                     "type": "string",
-                    "description": "Job name (for add)"
+                    "description": "Job name (required for add, e.g., 'Morning Report')"
                 },
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression (for add, e.g., '0 9 * * *' for 9 AM daily)"
+                    "description": "Cron expression (required for add). Format: 'MIN HOUR DAY MONTH WEEKDAY'. Examples: '0 9 * * *' = 9 AM daily, '0 9 * * Mon' = 9 AM Mondays, '*/5 * * * *' = every 5 minutes"
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message to send at scheduled time (for add)"
+                    "description": "Message to send at scheduled time (required for add)"
                 },
                 "job_id": {
                     "type": "string",
-                    "description": "Job ID to remove (for remove)"
+                    "description": "Job ID to remove (required for remove). Get this from the 'add' action response"
                 }
             },
             "required": ["action"]
@@ -94,76 +93,220 @@ impl Tool for CronTool {
         match args.action.as_str() {
             "add" => {
                 let name = args.name.ok_or_else(|| {
-                    ToolError::InvalidArguments("name is required for add".to_string())
+                    ToolError::InvalidArguments(
+                        "'name' is required for action 'add'. Example: 'Morning Report'"
+                            .to_string(),
+                    )
                 })?;
                 let cron = args.cron.ok_or_else(|| {
-                    ToolError::InvalidArguments("cron is required for add".to_string())
+                    ToolError::InvalidArguments(
+                        "'cron' is required for action 'add'. Example: '0 9 * * *' for 9 AM daily"
+                            .to_string(),
+                    )
                 })?;
                 let message = args.message.ok_or_else(|| {
-                    ToolError::InvalidArguments("message is required for add".to_string())
+                    ToolError::InvalidArguments("'message' is required for action 'add'. This is the text that will be sent at the scheduled time".to_string())
                 })?;
 
                 // Validate cron expression
                 let _: cron::Schedule = cron.parse().map_err(|e| {
-                    ToolError::InvalidArguments(format!("Invalid cron expression: {}", e))
+                    ToolError::InvalidArguments(format!(
+                        "Invalid cron expression '{}'. Expected format: 'MIN HOUR DAY MONTH WEEKDAY'. \
+                         Examples: '0 9 * * *' (9 AM daily), '0 9 * * Mon' (9 AM Mondays), '*/5 * * * *' (every 5 min). Error: {}",
+                        cron, e
+                    ))
                 })?;
 
                 let id = Uuid::new_v4().to_string();
-                let channel = self.channel.read().ok().and_then(|c| c.clone());
-                let chat_id = self.chat_id.read().ok().and_then(|c| c.clone());
+                let channel = self.channel.read().clone();
+                let chat_id = self.chat_id.read().clone();
 
                 let mut job = crate::cron::CronJob::new(&id, &name, &cron, &message);
                 job.channel = channel;
                 job.chat_id = chat_id;
 
                 self.service.add_job(job).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to add cron job '{}': {}", name, e))
+                    ToolError::ExecutionError(format!(
+                        "Failed to add cron job '{}': {}. Please check file system permissions in ~/.gasket/cron/",
+                        name, e
+                    ))
                 })?;
 
-                Ok(format!("Scheduled job '{}' with ID: {}", name, id))
+                Ok(format!(
+                    "✓ Scheduled job '{}'\n\nJob ID: {}\nCron: {}\n\nUse this Job ID with action 'remove' to delete this job later.",
+                    name, id, cron
+                ))
             }
             "list" => {
                 let jobs = self.service.list_jobs().await.map_err(|e| {
                     ToolError::ExecutionError(format!("Failed to list cron jobs: {}", e))
                 })?;
                 if jobs.is_empty() {
-                    return Ok("No scheduled jobs.".to_string());
+                    return Ok("No scheduled jobs. Use action 'add' to create one.".to_string());
                 }
 
-                let mut result = "Scheduled jobs:\n".to_string();
+                let mut result = format!("Scheduled jobs ({} total):\n", jobs.len());
                 for job in jobs {
                     let next = job.next_run.map_or("N/A".to_string(), |t| {
                         t.format("%Y-%m-%d %H:%M UTC").to_string()
                     });
+                    let status = if job.enabled { "✓" } else { "✗" };
                     result.push_str(&format!(
-                        "- {} ({}): {}\n  Cron: {}\n  Next: {}\n\n",
-                        job.name, job.id, job.message, job.cron, next
+                        "\n{} {} (ID: {})\n  Message: {}\n  Cron: {}\n  Next run: {}\n",
+                        status, job.name, job.id, job.message, job.cron, next
                     ));
                 }
                 Ok(result)
             }
             "remove" => {
                 let job_id = args.job_id.ok_or_else(|| {
-                    ToolError::InvalidArguments("job_id is required for remove".to_string())
+                    ToolError::InvalidArguments(
+                        "'job_id' is required for action 'remove'. \
+                         Use action 'list' to see all job IDs, or get the ID from when you created the job with 'add'."
+                            .to_string(),
+                    )
                 })?;
 
                 let removed = self.service.remove_job(&job_id).await.map_err(|e| {
                     ToolError::ExecutionError(format!(
-                        "Failed to remove cron job '{}': {}",
+                        "Failed to remove cron job '{}': {}. Please check file system permissions.",
                         job_id, e
                     ))
                 })?;
 
                 if removed {
-                    Ok(format!("Removed job: {}", job_id))
+                    Ok(format!("✓ Removed job: {}", job_id))
                 } else {
-                    Ok(format!("Job not found: {}", job_id))
+                    Ok(format!(
+                        "Job not found: {}. Use action 'list' to see all available jobs.",
+                        job_id
+                    ))
                 }
             }
             _ => Err(ToolError::InvalidArguments(format!(
-                "Unknown action: {}",
+                "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove'",
                 args.action
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_cron_tool_add_missing_name() {
+        let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let tool = CronTool::new(service);
+
+        let args = json!({
+            "action": "add",
+            "cron": "0 9 * * *",
+            "message": "Test"
+        });
+
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result);
+        assert!(err_msg.contains("name"));
+
+        // Cleanup
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_add_invalid_cron() {
+        let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let tool = CronTool::new(service);
+
+        let args = json!({
+            "action": "add",
+            "name": "Test",
+            "cron": "invalid format",
+            "message": "Test"
+        });
+
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result);
+        assert!(err_msg.contains("Invalid cron"));
+
+        // Cleanup
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_add_and_list() {
+        let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let tool = CronTool::new(service.clone());
+
+        // Add a job
+        let args = json!({
+            "action": "add",
+            "name": "Test Job",
+            "cron": "0 9 * * *",
+            "message": "Test message"
+        });
+
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_ok(), "Add should succeed: {:?}", result);
+        let response = result.unwrap();
+        assert!(response.contains("Test Job"));
+        assert!(response.contains("Job ID:"));
+
+        // List jobs
+        let list_args = json!({"action": "list"});
+        let list_result = tool.execute(list_args, &ToolContext::default()).await;
+        assert!(list_result.is_ok());
+        let list_response = list_result.unwrap();
+        assert!(list_response.contains("Test Job"));
+
+        // Cleanup
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_read_after_write_consistency() {
+        let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let tool = CronTool::new(service.clone());
+
+        // Add a job
+        let args = json!({
+            "action": "add",
+            "name": "Consistency Test",
+            "cron": "0 9 * * *",
+            "message": "Test"
+        });
+
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_ok());
+
+        // IMMEDIATELY list - should see the job without any sleep
+        let list_args = json!({"action": "list"});
+        let list_result = tool.execute(list_args, &ToolContext::default()).await;
+        assert!(list_result.is_ok());
+        let list_response = list_result.unwrap();
+        assert!(
+            list_response.contains("Consistency Test"),
+            "Job should be immediately visible: {}",
+            list_response
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }

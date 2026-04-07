@@ -15,8 +15,8 @@
 //! - **Supersession:** Old versions can reference their replacements for audit trails
 //! - **SQLite metadata:** File metadata is indexed in `memory_metadata` table for fast queries
 
-mod embedding_store;
 mod embedder;
+mod embedding_store;
 mod frontmatter;
 mod index;
 mod lifecycle;
