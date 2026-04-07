@@ -306,9 +306,9 @@ impl IndexingService {
 
 /// Extract body content from a memory file, stripping frontmatter.
 fn extract_body(content: &str) -> &str {
-    if content.starts_with("---") {
-        if let Some(end) = content[3..].find("---") {
-            return content[end + 6..].trim_start();
+    if let Some(stripped) = content.strip_prefix("---") {
+        if let Some(end) = stripped.find("---") {
+            return stripped[end + 3..].trim_start();
         }
     }
     content

@@ -470,7 +470,13 @@ impl AutoIndexHandler {
                             tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
                         }
 
-                        let embedding = vec![0.0f32; 384]; // TODO: actual embedder
+                        let embedding = match self.embedder.embed(&content).await {
+                            Ok(e) => e,
+                            Err(err) => {
+                                tracing::warn!("AutoIndex: embed failed for {}: {}", filename, err);
+                                return;
+                            }
+                        };
                         match self
                             .embedding_store
                             .upsert(
