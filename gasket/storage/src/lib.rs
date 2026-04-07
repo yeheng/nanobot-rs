@@ -520,29 +520,21 @@ impl SqliteStore {
         .await?;
 
         // Indexes for channel/chat_id queries
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)")
+            .execute(&self.pool)
+            .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)")
+            .execute(&self.pool)
+            .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)")
+            .execute(&self.pool)
+            .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)")
+            .execute(&self.pool)
+            .await?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
             .execute(&self.pool)
