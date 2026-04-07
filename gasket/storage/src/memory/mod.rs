@@ -16,6 +16,7 @@
 //! - **SQLite metadata:** File metadata is indexed in `memory_metadata` table for fast queries
 
 mod embedding_store;
+mod embedder;
 mod frontmatter;
 mod index;
 mod lifecycle;
@@ -47,6 +48,9 @@ pub use metadata_store::MetadataStore;
 
 // Re-export EmbeddingStore
 pub use embedding_store::{EmbeddingHit, EmbeddingStore};
+
+// Re-export Embedder trait
+pub use embedder::{Embedder, NoopEmbedder};
 
 // Re-export RetrievalEngine
 pub use retrieval::{RetrievalEngine, SearchResult};

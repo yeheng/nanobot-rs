@@ -32,6 +32,7 @@
 use super::types::Scenario;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "memory-watcher")]
@@ -322,6 +323,7 @@ pub struct AutoIndexHandler {
     metadata_store: super::metadata_store::MetadataStore,
     embedding_store: super::embedding_store::EmbeddingStore,
     base_dir: PathBuf,
+    embedder: Arc<dyn super::embedder::Embedder>,
 }
 
 impl AutoIndexHandler {
@@ -330,11 +332,13 @@ impl AutoIndexHandler {
         metadata_store: super::metadata_store::MetadataStore,
         embedding_store: super::embedding_store::EmbeddingStore,
         base_dir: PathBuf,
+        embedder: Arc<dyn super::embedder::Embedder>,
     ) -> Self {
         Self {
             metadata_store,
             embedding_store,
             base_dir,
+            embedder,
         }
     }
 

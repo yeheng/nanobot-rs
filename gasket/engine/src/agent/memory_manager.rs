@@ -814,6 +814,7 @@ mod tests {
             expires: None,
             tokens,
             superseded_by: None,
+            index: true,
         };
 
         let content = format!("# {}\n\nTest content for {}", title, title);

@@ -174,6 +174,7 @@ mod tests {
             expires: None,
             tokens: 100,
             superseded_by: None,
+            index: true,
         }
     }
 

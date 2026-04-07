@@ -59,7 +59,6 @@ use crate::agent::memory_manager::MemoryManager;
 use gasket_storage::{process_history, EventStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
 
-
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
 /// Default maximum iterations for agent loop

@@ -11,10 +11,10 @@
 //! acts as a safety net for evicted events that may not have embeddings
 //! (e.g. events created before the embedder was configured).
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::task::JoinHandle;
 use crate::agent::indexing_queue::{IndexingQueue, Priority, QueueError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::task::JoinHandle;
 
 use gasket_storage::SqliteStore;
 use gasket_types::SessionEvent;
@@ -211,11 +211,7 @@ impl IndexingService {
     ///
     /// If the queue is not enabled, processes synchronously.
     /// If shutdown is in progress, silently drops the task.
-    pub async fn submit(
-        &self,
-        task: AsyncIndexTask,
-        priority: Priority,
-    ) -> Result<(), QueueError> {
+    pub async fn submit(&self, task: AsyncIndexTask, priority: Priority) -> Result<(), QueueError> {
         let Some(ref queue) = self.queue else {
             // Queue not enabled, process synchronously
             self.process_task(&task).await;
@@ -232,22 +228,32 @@ impl IndexingService {
     /// Process a single task synchronously.
     #[cfg(feature = "local-embedding")]
     async fn process_task(&self, task: &AsyncIndexTask) {
-        let Some(ref embedder) = self.embedder else { return };
+        let Some(ref embedder) = self.embedder else {
+            return;
+        };
 
         match task {
-            AsyncIndexTask::History { session_key, event_id, content } => {
+            AsyncIndexTask::History {
+                session_key,
+                event_id,
+                content,
+            } => {
                 // Check if already indexed
-                if self.store.has_embedding(&event_id.to_string()).await.unwrap_or(false) {
+                if self
+                    .store
+                    .has_embedding(&event_id.to_string())
+                    .await
+                    .unwrap_or(false)
+                {
                     return;
                 }
 
                 match embedder.embed(content) {
                     Ok(embedding) => {
-                        let _ = self.store.save_embedding(
-                            &event_id.to_string(),
-                            session_key,
-                            &embedding
-                        ).await;
+                        let _ = self
+                            .store
+                            .save_embedding(&event_id.to_string(), session_key, &embedding)
+                            .await;
                     }
                     Err(e) => {
                         debug!("Failed to embed history event {}: {}", event_id, e);
@@ -257,16 +263,18 @@ impl IndexingService {
             AsyncIndexTask::Memory { path, content } => {
                 // Extract body without frontmatter
                 let body = extract_body(content);
-                if body.len() < 10 { return; }
+                if body.len() < 10 {
+                    return;
+                }
 
-                match embedder.embed(&body) {
+                match embedder.embed(body) {
                     Ok(embedding) => {
                         let path_str = path.to_string_lossy();
                         // Save to memory_embeddings table
                         let _ = sqlx::query(
                             "INSERT OR REPLACE INTO memory_embeddings
                              (memory_path, scenario, embedding, token_count, updated_at)
-                             VALUES (?1, 'general', ?2, ?3, datetime('now'))"
+                             VALUES (?1, 'general', ?2, ?3, datetime('now'))",
                         )
                         .bind(path_str.as_ref())
                         .bind(bytemuck::cast_slice(&embedding))
@@ -300,7 +308,7 @@ impl IndexingService {
 fn extract_body(content: &str) -> &str {
     if content.starts_with("---") {
         if let Some(end) = content[3..].find("---") {
-            return &content[end + 6..].trim_start();
+            return content[end + 6..].trim_start();
         }
     }
     content
@@ -318,10 +326,8 @@ struct IndexingWorker {
 impl IndexingWorker {
     async fn run(&mut self) {
         while !self.shutdown.load(Ordering::Relaxed) {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(1),
-                self.queue.pop()
-            ).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(1), self.queue.pop()).await
+            {
                 Ok(Some(task)) => self.process_task(&task).await,
                 _ => continue, // Timeout or empty queue
             }
@@ -330,32 +336,44 @@ impl IndexingWorker {
 
     #[cfg(feature = "local-embedding")]
     async fn process_task(&self, task: &AsyncIndexTask) {
-        let Some(ref embedder) = self.embedder else { return };
+        let Some(ref embedder) = self.embedder else {
+            return;
+        };
 
         match task {
-            AsyncIndexTask::History { session_key, event_id, content } => {
-                if self.store.has_embedding(&event_id.to_string()).await.unwrap_or(false) {
+            AsyncIndexTask::History {
+                session_key,
+                event_id,
+                content,
+            } => {
+                if self
+                    .store
+                    .has_embedding(&event_id.to_string())
+                    .await
+                    .unwrap_or(false)
+                {
                     return;
                 }
 
                 if let Ok(embedding) = embedder.embed(content) {
-                    let _ = self.store.save_embedding(
-                        &event_id.to_string(),
-                        session_key,
-                        &embedding
-                    ).await;
+                    let _ = self
+                        .store
+                        .save_embedding(&event_id.to_string(), session_key, &embedding)
+                        .await;
                 }
             }
             AsyncIndexTask::Memory { path, content } => {
                 let body = extract_body(content);
-                if body.len() < 10 { return; }
+                if body.len() < 10 {
+                    return;
+                }
 
-                if let Ok(embedding) = embedder.embed(&body) {
+                if let Ok(embedding) = embedder.embed(body) {
                     let path_str = path.to_string_lossy();
                     let _ = sqlx::query(
                         "INSERT OR REPLACE INTO memory_embeddings
                          (memory_path, scenario, embedding, token_count, updated_at)
-                         VALUES (?1, 'general', ?2, ?3, datetime('now'))"
+                         VALUES (?1, 'general', ?2, ?3, datetime('now'))",
                     )
                     .bind(path_str.as_ref())
                     .bind(bytemuck::cast_slice(&embedding))
