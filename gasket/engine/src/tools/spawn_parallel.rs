@@ -9,6 +9,9 @@ use tracing::{info, instrument};
 
 use super::base::{Tool, ToolContext, ToolError, ToolResult};
 
+/// Maximum byte size of the raw `tasks` JSON value before we attempt deserialization.
+const MAX_TASKS_JSON_BYTES: usize = 32 * 1024; // 32 KiB
+
 pub struct SpawnParallelTool;
 
 impl Default for SpawnParallelTool {
@@ -96,6 +99,25 @@ impl Tool for SpawnParallelTool {
 
     #[instrument(name = "tool.spawn_parallel", skip_all)]
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
+        // Pre-parse guard: reject oversized JSON payloads before serde allocates.
+        // Check both the raw args size and the tasks array element count.
+        let args_str_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0);
+        if args_str_len > MAX_TASKS_JSON_BYTES {
+            return Err(ToolError::InvalidArguments(format!(
+                "Input too large ({} bytes, max {})",
+                args_str_len, MAX_TASKS_JSON_BYTES
+            )));
+        }
+
+        // Cheap pre-check on the tasks array length before full deserialization.
+        if let Some(tasks_arr) = args.get("tasks").and_then(|v| v.as_array()) {
+            if tasks_arr.len() > 10 {
+                return Err(ToolError::InvalidArguments(
+                    "Maximum 10 parallel tasks allowed".to_string(),
+                ));
+            }
+        }
+
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 

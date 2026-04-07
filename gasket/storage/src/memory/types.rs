@@ -398,7 +398,7 @@ pub struct MemoryHit {
 /// ensuring the AI doesn't exceed context window limits.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenBudget {
-    /// Budget for bootstrap/context initialization (default: 700)
+    /// Budget for bootstrap/context initialization (default: 1500)
     #[serde(default = "default_bootstrap")]
     pub bootstrap: usize,
 
@@ -410,13 +410,13 @@ pub struct TokenBudget {
     #[serde(default = "default_on_demand")]
     pub on_demand: usize,
 
-    /// Total cap across all memory operations (default: 3200)
+    /// Total cap across all memory operations (default: 4000)
     #[serde(default = "default_total_cap")]
     pub total_cap: usize,
 }
 
 fn default_bootstrap() -> usize {
-    700
+    1500
 }
 
 fn default_scenario() -> usize {
@@ -428,7 +428,7 @@ fn default_on_demand() -> usize {
 }
 
 fn default_total_cap() -> usize {
-    3200
+    4000
 }
 
 impl Default for TokenBudget {
@@ -594,10 +594,10 @@ mod tests {
     fn token_budget_default() {
         let budget = TokenBudget::default();
 
-        assert_eq!(700, budget.bootstrap);
+        assert_eq!(1500, budget.bootstrap);
         assert_eq!(1500, budget.scenario);
         assert_eq!(1000, budget.on_demand);
-        assert_eq!(3200, budget.total_cap);
+        assert_eq!(4000, budget.total_cap);
     }
 
     #[test]
@@ -605,7 +605,7 @@ mod tests {
         let budget = TokenBudget::default();
 
         // Total should be capped by total_cap
-        assert_eq!(3200, budget.total_budget());
+        assert_eq!(4000, budget.total_budget());
 
         // If we reduce total_cap, total should be limited
         let small_budget = TokenBudget {
