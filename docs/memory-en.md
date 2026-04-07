@@ -6,15 +6,16 @@
 
 ## Overview
 
-The Gasket memory system provides cross-session long-term memory for a personal AI assistant. It uses a **Scenario x Frequency** two-dimensional model to organize memories, stored as plain Markdown files that humans can edit directly.
+The Gasket memory system provides cross-session long-term memory for a personal AI assistant. It uses a **Scenario x Frequency** two-dimensional model to organize memories, stored as plain Markdown files (SSOT) with SQLite metadata indexing for fast queries, editable directly by humans.
 
 **Key features:**
 - **Human-editable** — Every memory is a standalone `.md` file, editable with any text editor
 - **Lazy loading** — Three-phase loading strategy with hard token caps to prevent context explosion
 - **Auto-tiering** — Access frequency automatically adjusts loading priority
 - **Semantic search** — Embedding vectors connect related memories across scenario boundaries
+- **Write-through consistency** — Writes synchronously update both filesystem (SSOT) and SQLite metadata/embedding indexes
 - **Version history** — Previous versions automatically preserved on every edit
-- **Dedup detection** — Scheduled scan finds potential duplicate memories
+- **SQLite metadata index** — Replaces the old `_INDEX.md` materialized view with `json_each` accurate tag matching
 
 ---
 
@@ -23,39 +24,41 @@ The Gasket memory system provides cross-session long-term memory for a personal 
 ```
 ~/.gasket/memory/
 ├── profile/                    # User identity & preferences
-│   ├── _INDEX.md               # Auto-generated index
 │   ├── preferences.md          # Preference settings
 │   └── background.md           # Background information
 ├── active/                     # Current work & focus
-│   ├── _INDEX.md
 │   ├── current.md              # Current focus
 │   └── backlog.md              # Pending items
 ├── knowledge/                  # Learned knowledge
-│   ├── _INDEX.md
 │   └── rust-async-patterns.md
 ├── decisions/                  # Decisions & rationale
-│   ├── _INDEX.md
 │   └── chose-sqlite.md
 ├── episodes/                   # Experiences & events
-│   ├── _INDEX.md
 │   └── fixed-compactor-bug.md
-└── reference/                  # External references
-    ├── _INDEX.md
-    └── useful-links.md
+├── reference/                  # External references
+│   └── useful-links.md
+└── .history/                   # Version history (auto-maintained)
+    ├── knowledge/
+    │   ├── rust-async.2026-04-03T10-00-00.md
+    │   └── rust-async.2026-04-04T15-30-00.md
+    └── decisions/
+        └── chose-sqlite.2026-04-01T08-00-00.md
 ```
+
+> **Note:** The old `_INDEX.md` materialized view files have been removed. All metadata queries go through the SQLite `memory_metadata` table, driven by the `MetadataStore` module.
 
 ---
 
 ## Six Scenarios
 
-| Scenario | Purpose | Loading | Token Budget |
-|----------|---------|---------|-------------|
-| **profile** | User identity, preferences, communication style | Every session, always | ~200 |
-| **active** | Current work focus, pending tasks | Every session, always | ~500 |
-| **knowledge** | Learned concepts, patterns, conventions | On topic match | ~1000 |
-| **decisions** | Choices made and their reasoning | Decision context or semantic search | ~1000 |
-| **episodes** | Experiences, events, and outcomes | Primarily via semantic search | On demand |
-| **reference** | External links, contacts, tools | Explicit request or semantic search | On demand |
+| Scenario | Purpose | Loading | Decay Exempt | Token Budget |
+|----------|---------|---------|-------------|-------------|
+| **profile** | User identity, preferences, communication style | Every session, always | Yes (never decays) | ~200 |
+| **active** | Current work focus, pending tasks | Every session, always | No | ~500 |
+| **knowledge** | Learned concepts, patterns, conventions | On topic match | No | ~1000 |
+| **decisions** | Choices made and their reasoning | Decision context or semantic search | Yes (never decays) | ~1000 |
+| **episodes** | Experiences, events, and outcomes | Primarily via semantic search | No | On demand |
+| **reference** | External links, contacts, tools | Explicit request or semantic search | Yes (never decays) | On demand |
 
 ---
 
@@ -78,6 +81,7 @@ last_accessed: 2026-04-03T15:30:00Z
 auto_expire: false
 expires: null
 tokens: 180
+superseded_by: null
 ---
 
 Chose SQLite over Redis for primary storage because:
@@ -90,58 +94,100 @@ Chose SQLite over Redis for primary storage because:
 
 ### Frequency Tiers
 
-| Tier | Meaning | Loading Strategy |
-|------|---------|-----------------|
-| **hot** | Always loaded | Injected into context when scenario is active |
-| **warm** | On-topic loaded | Injected when tags match |
-| **cold** | On-search only | Loaded only on explicit search |
-| **archived** | Historical | Not proactively loaded, preserved only |
+| Tier | Meaning | Loading Strategy | Search Weight |
+|------|---------|-----------------|---------------|
+| **hot** | Always loaded | Injected into context when scenario is active | ×1.2 |
+| **warm** | On-topic loaded | Injected when tags match | ×1.1 |
+| **cold** | On-search only | Loaded only on explicit search | ×1.0 |
+| **archived** | Historical | Not proactively loaded, preserved only | ×0.0 (excluded) |
 
 ### Tag Rules
 
 - Lowercase only, no spaces, kebab-case (e.g., `rust-async`)
 - Max 10 tags, max 30 chars each
 - Reserved prefixes: `project:`, `session:`, `focus:` (auto-generated by system)
+- Uses SQLite `json_each` for accurate array-element matching, no `LIKE` substring scans
 
 ---
 
-## Three-Phase Loading
+## Three-Phase Loading Strategy
 
 ```
 Phase 1: Bootstrap (~700 tokens, always)
-┌────────────────────────────────────────┐
-│ profile/*.md  (all user identity files) │  ~200 tokens
-│ active/current.md  (current focus)      │  ~200 tokens
-│ active/backlog.md   (pending items)     │  ~250 tokens
-└────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ profile/*.md  (all user identity files)                     │  ~200 tokens
+│ active/*.md   (Hot first, then Warm; skip Cold/Archived)   │  ~500 tokens
+└────────────────────────────────────────────────────────────┘
+         ↑ Driven by MetadataStore SQLite queries
+         ↑ Ordered by frequency: Hot → Warm → Cold
 
-Phase 2: Scenario-aware (~1500 tokens, based on agent behavior)
-┌────────────────────────────────────────┐
-│ Read scenario _INDEX.md → filter hot → │
-│ load files → filter warm by tags →     │
-│ load files                              │
-└────────────────────────────────────────┘
+Phase 2: Scenario-aware (~1500 tokens, based on behavior)
+┌────────────────────────────────────────────────────────────┐
+│ SQLite query: hot items first (no tag check)                │
+│ SQLite query: warm items with tag match (json_each EXISTS)  │
+└────────────────────────────────────────────────────────────┘
+         ↑ SQL json_each EXISTS subqueries
 
 Phase 3: On-demand (~1000 tokens, per query)
-┌────────────────────────────────────────┐
-│ Tag search + embedding similarity →     │
-│ merge & rank → load top-K until budget │
-└────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ RetrievalEngine.search() combined search                    │
+│ → Load Top-K results until budget exhausted                 │
+│ → Skip files already loaded in Phase 1/2                    │
+└────────────────────────────────────────────────────────────┘
 
 Hard cap: 3200 tokens
+         ↑ If exceeded, truncate by load order and recalculate phase breakdown
 ```
 
-### Merge Scoring Algorithm
+### Search Scoring Algorithm
 
-Tag and embedding search results are merged via normalized scoring:
+The retrieval engine uses **embedding-primary scoring + tag hard filter + frequency weighting**:
 
 ```
-TAG_WEIGHT = 0.4, EMBEDDING_WEIGHT = 0.6
+1. Embedding similarity search: cosine_similarity → normalized to [0.0, 1.0]
+2. Tags as hard filter: if query has tags, results must match at least one
+3. Frequency bonus multiplier:
+   - Hot:  emb_score × 1.2
+   - Warm: emb_score × 1.1
+   - Cold: emb_score × 1.0
+   - Archived: excluded entirely
 
-tag_score = matching_tags / query_tags           → [0.0, 1.0]
-emb_score = (cosine_similarity + 1.0) / 2.0     → [0.0, 1.0]
-merged = tag_score * 0.4 + emb_score * 0.6
+final_score = embedding_score × frequency_bonus
 ```
+
+**Fallback strategy:** If the query has tags but no embedding results, automatically falls back to pure tag search via `MetadataStore.query_by_tags()`.
+
+---
+
+## Write-Through Consistency
+
+All agent write operations (create, update, delete) synchronously update both the filesystem and SQLite:
+
+```
+Agent write operation flow:
+┌─────────────────────────────────────────────────────────────┐
+│ create_memory()                                             │
+│   1. Generate UUID v7 ID + YAML frontmatter                │
+│   2. atomic_write() to scenario dir (tmp + rename)          │
+│   3. Read file_mtime                                        │
+│   4. Upsert into memory_metadata table                      │
+│   5. Upsert into memory_embeddings table                    │
+├─────────────────────────────────────────────────────────────┤
+│ update_memory()                                             │
+│   1. Read existing file to preserve frontmatter             │
+│   2. Update updated / last_accessed / tokens fields          │
+│   3. Save old version to .history/ + prune                  │
+│   4. atomic_write() new content                             │
+│   5. Upsert into memory_metadata + memory_embeddings        │
+├─────────────────────────────────────────────────────────────┤
+│ delete_memory()                                             │
+│   1. Delete file from disk                                  │
+│   2. Delete from memory_metadata                            │
+│   3. Delete from memory_embeddings                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The file watcher uses `file_mtime` comparison to detect external edits and avoid reprocessing.
 
 ---
 
@@ -155,21 +201,24 @@ warm → 30 days without access → cold
 cold → 90 days without access → archived
 ```
 
-**Exempt:** Profile is always `hot`, never decays.
+**Exempt scenarios:** Profile, Decisions, and Reference are always `hot`, never decay.
+
+**SQL-driven decay:** `MetadataStore.get_decay_candidates()` queries SQLite for entries with `last_accessed` older than the threshold. Only O(k) candidate files are read/written instead of O(N) full filesystem scans.
 
 ### Auto-Promotion
 
 ```
-cold → accessed (tag match or embedding hit) → warm
-warm → 3+ accesses in 7 days                → hot
+cold → accessed (any access)          → warm
+warm → 3+ accesses in a single flush  → hot
 ```
 
 ### Access Tracking
 
 Uses deferred batched writes to avoid write amplification:
-1. Each time a memory is loaded, append to in-memory access log
+1. Each time a memory is loaded, append to in-memory `AccessLog`
 2. Do NOT immediately write to disk
 3. Flush triggers: log exceeds 50 entries / session end / every 5 minutes
+4. On flush, group by (scenario, filename), O(1) SQLite upsert per file
 
 ---
 
@@ -178,19 +227,20 @@ Uses deferred batched writes to avoid write amplification:
 ### Editable Elements
 
 - Any memory `.md` file (frontmatter + content)
-- The `<!-- HUMAN_NOTES_START -->` to `<!-- HUMAN_NOTES_END -->` section in any `_INDEX.md`
-- `active/current.md` and `active/backlog.md`
+- Files in the `active/` directory
+- Filenames can be arbitrary (not limited to `current.md` / `backlog.md`)
 
-### Auto-Generated Elements (overwritten on regeneration)
+### System-Managed Fields (overwritten on refresh)
 
-- The table section of `_INDEX.md`
-- The `<!-- -->` header comments in `_INDEX.md`
-- The `access_count`, `last_accessed`, `tokens` fields in frontmatter
+- `access_count`, `last_accessed`, `tokens` fields
+- `updated` timestamp
+- `frequency` field (managed by decay/promotion logic)
+- All data in SQLite `memory_metadata` and `memory_embeddings` tables
 
 ### Conflict Resolution
 
-- User edit wins for: `title`, `tags`, `frequency`, `type`
-- System-managed wins for: `access_count`, `last_accessed`, `tokens`, `updated`
+- User edit wins for: `title`, `tags`, `type`, `content`
+- System-managed wins for: `access_count`, `last_accessed`, `tokens`, `updated`, `frequency`
 
 ### Version History
 
@@ -211,13 +261,15 @@ Max 10 history versions per file, oldest auto-pruned.
 
 ## Deduplication
 
-Weekly cross-session dedup scan:
+Cross-session dedup scan (via `EmbeddingStore.get_all_for_scenario()`):
+
 1. Collect all memory embeddings per scenario from SQLite
 2. Compute pairwise cosine similarity within each scenario
 3. Flag pairs where similarity > 0.85
 4. Generate dedup reports for agent review
 
 **Suggestion strategy:**
+
 - Similarity > 0.95 → suggest "merge"
 - Similarity > 0.90 → suggest "supersede" (newer replaces older)
 - Similarity 0.85–0.90 → suggest "keep-both"
@@ -231,8 +283,10 @@ Weekly cross-session dedup scan:
 Monitors `~/.gasket/memory/` for changes (requires `memory-watcher` feature):
 
 - **Debounce:** Wait 2 seconds after last write before processing
-- **Ignored:** `.history/` directory, `.tmp` files, `_INDEX.md`
-- **Events:** New → embed + index; Modified → re-embed + update; Deleted → cleanup + re-index
+- **mtime comparison:** Uses `file_mtime` field to detect external edits, avoid reprocessing
+- **Ignored:** `.history/` directory, `.tmp` files
+- **Events:** New → embed + upsert metadata; Modified → re-embed + update; Deleted → cleanup + delete metadata
+- **Auto-index:** `AutoIndexHandler` syncs SQLite metadata on file changes
 
 ---
 
@@ -241,27 +295,32 @@ Monitors `~/.gasket/memory/` for changes (requires `memory-watcher` feature):
 The memory system uses two auxiliary SQLite tables:
 
 ```sql
+-- File metadata index (replaces old _INDEX.md)
+memory_metadata (
+    id            TEXT NOT NULL,
+    path          TEXT NOT NULL,            -- filename (e.g., mem_xxx.md)
+    scenario      TEXT NOT NULL,            -- scenario directory name
+    title         TEXT NOT NULL DEFAULT '',
+    memory_type   TEXT NOT NULL DEFAULT 'note',
+    frequency     TEXT NOT NULL DEFAULT 'warm',
+    tags          TEXT NOT NULL DEFAULT '[]', -- JSON array, json_each queries
+    tokens        INTEGER NOT NULL DEFAULT 0,
+    updated       TEXT NOT NULL DEFAULT '',
+    last_accessed TEXT NOT NULL DEFAULT '',
+    file_mtime    BIGINT NOT NULL DEFAULT 0, -- nanoseconds since epoch
+    PRIMARY KEY (scenario, path)
+)
+
 -- Embedding storage (semantic search)
 memory_embeddings (
     memory_path TEXT PRIMARY KEY,
     scenario    TEXT NOT NULL,
-    tags        TEXT,           -- JSON array
+    tags        TEXT,                   -- JSON array
     frequency   TEXT NOT NULL DEFAULT 'warm',
-    embedding   BLOB NOT NULL,  -- f32 vector
+    embedding   BLOB NOT NULL,          -- f32 vector
     token_count INTEGER NOT NULL,
-    created_at  TIMESTAMP,
-    updated_at  TIMESTAMP
-)
-
--- Dedup reports
-dedup_reports (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_a    TEXT NOT NULL,
-    memory_b    TEXT NOT NULL,
-    similarity  REAL NOT NULL,
-    suggestion  TEXT NOT NULL,   -- merge | supersede | keep-both
-    created_at  TIMESTAMP,
-    resolved    BOOLEAN DEFAULT FALSE
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 )
 ```
 
@@ -273,22 +332,24 @@ dedup_reports (
 
 | File | Responsibility |
 |------|---------------|
-| `types.rs` | Core types: Scenario, Frequency, MemoryMeta, TokenBudget |
+| `types.rs` | Core types: Scenario, Frequency, MemoryMeta, MemoryFile, MemoryQuery, MemoryHit, TokenBudget |
 | `frontmatter.rs` | YAML frontmatter parsing and serialization |
-| `path.rs` | Path resolution: base dir, scenario dirs, index paths |
-| `store.rs` | FileMemoryStore — filesystem CRUD with version history |
-| `index.rs` | FileIndexManager — _INDEX.md generation and parsing (atomic writes) |
-| `embedding_store.rs` | EmbeddingStore — SQLite embedding vector storage and retrieval |
-| `retrieval.rs` | RetrievalEngine — tag + embedding search with normalized merge scoring |
-| `lifecycle.rs` | AccessLog + FrequencyManager — frequency decay/promotion + batched access tracking |
-| `watcher.rs` | MemoryWatcher — file watching with debouncing (feature-gated) |
-| `dedup.rs` | DedupScanner — cross-session deduplication scanner |
+| `path.rs` | Path resolution: base dir, scenario dirs |
+| `store.rs` | FileMemoryStore — filesystem CRUD, atomic writes, version history (max 10 versions) |
+| `index.rs` | FileIndexManager — directory scanner, parses frontmatter into MemoryIndexEntry (no _INDEX.md generation) |
+| `metadata_store.rs` | MetadataStore — SQLite metadata index with json_each accurate tag matching and SQL-driven decay |
+| `embedding_store.rs` | EmbeddingStore — SQLite embedding vector storage with cosine similarity retrieval |
+| `retrieval.rs` | RetrievalEngine — embedding-primary scoring + tag hard filter + frequency-weighted search |
+| `lifecycle.rs` | AccessLog + FrequencyManager — frequency decay/promotion + batched access tracking + SQL-driven decay |
+| `watcher.rs` | MemoryWatcher — file watching with debouncing + AutoIndexHandler mtime comparison |
 
 ### Engine Layer (`gasket/engine/src/agent/`)
 
 | File | Responsibility |
 |------|---------------|
-| `memory_manager.rs` | MemoryManager facade — three-phase loading + token budget enforcement |
+| `memory_manager.rs` | MemoryManager facade — three-phase loading + write-through CRUD + token budget enforcement |
+| `memory_provider.rs` | MemoryProvider trait — decouples HistoryCoordinator from concrete implementation |
+| `memory.rs` | MemoryStore — thin SqliteStore wrapper for machine-state (sessions, summaries, cron jobs) |
 
 ### Agent Loop Integration
 
@@ -299,6 +360,20 @@ User message → [System Prompts] → [Memory Loading] → [History Processing] 
                                     ↑
                          MemoryManager.load_for_context()
                          Three-phase loading + 3200 token hard cap
+                         Decoupled via MemoryProvider trait
+```
+
+### MemoryProvider Trait
+
+```rust
+pub trait MemoryProvider: Send + Sync {
+    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
+    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
+    async fn update_from_event(&self, _event: &SessionEvent) -> Result<()>;
+    async fn create_memory(&self, scenario, filename, title, tags, frequency, content) -> Result<()>;
+    async fn update_memory(&self, scenario, filename, content) -> Result<()>;
+    async fn delete_memory(&self, scenario, filename) -> Result<()>;
+}
 ```
 
 ---
@@ -323,4 +398,11 @@ Initialize the memory directory:
 mkdir -p ~/.gasket/memory/{profile,active,knowledge,decisions,episodes,reference}
 
 # Or auto-created on first memory write by the agent
+```
+
+Full reindex (repair stale indexes):
+
+```bash
+# CLI command
+cargo run --release --package gasket-cli -- memory reindex
 ```

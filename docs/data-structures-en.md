@@ -206,13 +206,18 @@ pub struct SessionEvent {
 
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
+
+    /// Monotonically increasing sequence number (watermark compaction)
+    pub sequence: i64,
 }
 ```
 
 **Key Design Points:**
 - **UUID v7**: Time-ordered UUIDs provide natural chronological sorting without requiring timestamp indexes
+- **sequence**: Monotonically increasing sequence number for watermark compaction and `get_events_after_sequence()` incremental queries
 - **Embedding**: Optional semantic vector for similarity search and context retrieval
 - **Immutable**: Events are append-only; modifications create new events
+- **session_key**: Format is `"channel:chat_id"` (e.g., `"telegram:12345"`), also split into `channel` and `chat_id` columns
 
 ### 3.2 EventType Enum
 
@@ -293,6 +298,10 @@ pub struct EventMetadata {
     /// Token statistics
     pub token_usage: Option<TokenUsage>,
 
+    /// Content token length (computed at write time, avoids re-calculation on read path)
+    #[serde(default)]
+    pub content_token_len: usize,
+
     /// Extension fields
     #[serde(default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -308,6 +317,7 @@ pub struct TokenUsage {
 - **branch**: Git-like branching support; `None` indicates the main branch
 - **tools_used**: Tracks which tools were invoked during this event's processing
 - **token_usage**: LLM token consumption statistics for cost tracking
+- **content_token_len**: Token count computed once at write time, avoids re-calculation on read path
 - **extra**: Open-ended key-value store for future extensions without schema changes
 
 ### 3.6 Session (Aggregate Root)
@@ -515,33 +525,112 @@ ProcessedHistory {
 
 ## 5. Memory Structures
 
-### 5.1 MemoryEntry
+### 5.1 MemoryMeta
+
+> **Source**: `gasket-storage::memory::types`
+
+YAML frontmatter metadata for memory files.
 
 ```rust
-MemoryEntry {
-    id: String,                           // Unique identifier
-    content: String,                      // Memory content
-    metadata: MemoryMetadata,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-MemoryMetadata {
-    source: Option<String>,               // Source: "user" | "agent" | "system"
-    tags: Vec<String>,                    // Classification tags
-    extra: serde_json::Value,             // Extensible key-value pairs
+MemoryMeta {
+    id: String,                           // UUID v4 unique identifier
+    title: String,                        // Human-readable title
+    r#type: String,                       // Memory type (freeform tag)
+    scenario: Scenario,                   // Scenario classification (6 types)
+    tags: Vec<String>,                    // User-defined tags
+    frequency: Frequency,                 // Access frequency (hot/warm/cold/archived)
+    access_count: u64,                    // Access count
+    created: String,                      // RFC 3339 timestamp
+    updated: String,                      // Last update time
+    last_accessed: String,                // Last access time
+    auto_expire: bool,                    // Whether auto-expiring
+    expires: Option<String>,              // Expiration time
+    tokens: usize,                        // Estimated token count
+    superseded_by: Option<String>,        // ID of replacement memory
 }
 ```
 
-### 5.2 MemoryQuery
+### 5.2 MemoryFile
+
+> **Source**: `gasket-storage::memory::types`
+
+Complete memory file (metadata + Markdown content).
+
+```rust
+MemoryFile {
+    metadata: MemoryMeta,                 // YAML frontmatter metadata
+    content: String,                      // Markdown body
+}
+```
+
+### 5.3 MemoryQuery
+
+> **Source**: `gasket-storage::memory::types`
+
+Memory search query parameters.
 
 ```rust
 MemoryQuery {
     text: Option<String>,                 // Full-text/semantic search
-    tags: Vec<String>,                    // Filter by tags (AND semantics)
-    source: Option<String>,              // Filter by source
-    limit: Option<usize>,                // Result count limit
-    offset: Option<usize>,              // Pagination offset
+    tags: Vec<String>,                    // Filter by tags (ANY semantics)
+    scenario: Option<Scenario>,           // Scenario filter
+    max_tokens: Option<usize>,            // Max token limit
+}
+```
+
+### 5.4 MemoryHit
+
+> **Source**: `gasket-storage::memory::types`
+
+Search result with relevance scoring.
+
+```rust
+MemoryHit {
+    path: String,                         // Path relative to ~/.gasket/memory/
+    scenario: Scenario,                   // Scenario classification
+    title: String,                        // Title
+    tags: Vec<String>,                    // Tags
+    frequency: Frequency,                 // Frequency
+    score: f32,                           // Relevance score (0.0–1.0)
+    tokens: usize,                        // Token count
+}
+```
+
+### 5.5 MemoryProvider Trait
+
+> **Source**: `gasket-engine::agent::memory_provider`
+
+Narrow interface decoupling HistoryCoordinator from MemoryManager.
+
+```rust
+#[async_trait]
+pub trait MemoryProvider: Send + Sync {
+    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
+    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
+    async fn update_from_event(&self, event: &SessionEvent) -> Result<()>;
+    async fn create_memory(&self, scenario, filename, title, tags, frequency, content) -> Result<()>;
+    async fn update_memory(&self, scenario, filename, content) -> Result<()>;
+    async fn delete_memory(&self, scenario, filename) -> Result<()>;
+}
+```
+
+### 5.6 MemoryContext
+
+> **Source**: `gasket-engine::agent::memory_manager`
+
+Result of three-phase loading.
+
+```rust
+MemoryContext {
+    memories: Vec<MemoryFile>,            // Loaded memory files (within token budget)
+    tokens_used: usize,                   // Actual tokens used
+    phase_breakdown: PhaseBreakdown,      // Per-phase token breakdown
+}
+
+PhaseBreakdown {
+    bootstrap_tokens: usize,              // Phase 1 (profile + active)
+    scenario_tokens: usize,               // Phase 2 (scenario hot/warm)
+    on_demand_tokens: usize,              // Phase 3 (search fill)
 }
 ```
 
@@ -594,50 +683,128 @@ InjectionReport {
 ```
 ~/.gasket/gasket.db  (SqliteStore — sqlx::SqlitePool)
 │
-├── sessions              Session metadata
-│   ├── key TEXT PK       Session identifier (e.g., "cli:interactive", "telegram:12345")
-│   └── last_consolidated INTEGER
+│  ─── Session Management (V2 Event Sourcing) ───
 │
-├── session_messages      Each message stored independently (O(1) append)
-│   ├── id INTEGER PK
-│   ├── session_key TEXT  → sessions.key
-│   ├── role TEXT         "user" | "assistant" | "system" | "tool"
-│   ├── content TEXT      Message content
-│   ├── timestamp TEXT    ISO 8601
-│   └── tools_used TEXT   JSON array (nullable)
+├── sessions_v2              Session metadata (V2)
+│   ├── key TEXT PK          Session identifier (e.g., "cli:interactive", "telegram:12345")
+│   ├── channel TEXT         Channel type (e.g., "telegram", "cli")
+│   ├── chat_id TEXT         Chat ID
+│   ├── current_branch TEXT  Current branch (default "main")
+│   ├── branches TEXT        Branch pointers JSON (branch_name → event_id)
+│   ├── created_at TEXT
+│   ├── updated_at TEXT
+│   ├── last_consolidated_event TEXT
+│   ├── total_events INTEGER Event counter
+│   └── total_tokens INTEGER Cumulative tokens
 │
-├── session_summaries     Session summaries (generated by ContextCompactor)
-│   ├── session_key TEXT PK  → sessions.key
-│   └── summary TEXT         Summary content
+├── session_events           Event log (append-only, immutable)
+│   ├── id TEXT PK           UUID v7 time-ordered
+│   ├── session_key TEXT     → sessions_v2.key
+│   ├── channel TEXT         Denormalized for fast channel queries
+│   ├── chat_id TEXT         Denormalized for fast chat queries
+│   ├── event_type TEXT      "user_message" | "assistant_message" | "tool_call" | "tool_result" | "summary"
+│   ├── content TEXT         Message content
+│   ├── embedding BLOB       Optional f32 vector
+│   ├── branch TEXT          Branch name (default "main")
+│   ├── tools_used TEXT      JSON array
+│   ├── token_usage TEXT     JSON TokenUsage
+│   ├── token_len INTEGER    Content token count (computed at write time)
+│   ├── event_data TEXT      Tool/summary type details JSON
+│   ├── extra TEXT           Extension JSON
+│   ├── created_at TEXT      ISO 8601
+│   └── sequence INTEGER     Monotonically increasing (watermark compaction)
+│   Index: idx_events_session_sequence ON (session_key, sequence)
 │
-├── memories              FTS5 full-text search
-│   ├── id TEXT PK
-│   ├── content TEXT      Memory content
-│   ├── source TEXT       Source identifier
+├── session_summaries        Session summary checkpoints
+│   ├── session_key TEXT PK
+│   ├── content TEXT         Summary content
+│   ├── covered_upto_sequence INTEGER  Watermark: covers events up to this sequence
+│   └── created_at TEXT
+│
+├── summary_index            Summary event index
+│   ├── id INTEGER PK AUTOINCREMENT
+│   ├── session_key TEXT
+│   ├── event_id TEXT        Summary event UUID
+│   ├── summary_type TEXT    Summary type tag
+│   ├── topic TEXT           Topic for topic summaries
+│   ├── covered_events TEXT  Covered event IDs JSON array
+│   └── created_at TEXT
+│
+├── session_embeddings       Event embedding index
+│   ├── message_id TEXT PK
+│   ├── session_key TEXT     → sessions_v2.key
+│   ├── embedding BLOB       f32 vector
+│   └── created_at TEXT
+│
+│  ─── Memory System ───
+│
+├── memory_metadata          Memory file metadata (replaces old _INDEX.md)
+│   ├── id TEXT              Memory ID (mem_xxx)
+│   ├── path TEXT            Filename (mem_xxx.md)
+│   ├── scenario TEXT        Scenario directory name
+│   ├── title TEXT           Title
+│   ├── memory_type TEXT     Type (default "note")
+│   ├── frequency TEXT       "hot" | "warm" | "cold" | "archived"
+│   ├── tags TEXT            JSON array (json_each queries)
+│   ├── tokens INTEGER       Token count
+│   ├── updated TEXT         Update time
+│   ├── last_accessed TEXT   Last access time
+│   ├── file_mtime BIGINT    File modification time (nanoseconds)
+│   └── PRIMARY KEY (scenario, path)
+│
+├── memory_embeddings        Memory embedding vectors
+│   ├── memory_path TEXT PK  File path
+│   ├── scenario TEXT        Scenario
+│   ├── tags TEXT            JSON array
+│   ├── frequency TEXT       Frequency
+│   ├── embedding BLOB       f32 vector
+│   ├── token_count INTEGER  Token count
 │   ├── created_at TEXT
 │   └── updated_at TEXT
 │
-├── memory_tags           Memory tags
-│   ├── memory_id TEXT    → memories.id
-│   └── tag TEXT
+│  ─── General Storage ───
 │
-├── kv_store              Key-value pairs
-│   ├── key TEXT PK       e.g., "MEMORY"
-│   └── value TEXT        Workspace file content
+├── kv_store                 Key-value pairs
+│   ├── key TEXT PK          e.g., "MEMORY"
+│   ├── value TEXT           Workspace file content
+│   └── updated_at TEXT
 │
-├── cron_jobs             Scheduled tasks
+├── cron_jobs                Scheduled tasks
 │   ├── id TEXT PK
 │   ├── name TEXT
-│   ├── cron_expr TEXT    Cron expression
-│   ├── message TEXT      Message sent when triggered
+│   ├── cron TEXT            Cron expression
+│   ├── message TEXT         Message sent when triggered
 │   ├── channel TEXT
 │   ├── chat_id TEXT
 │   ├── last_run TEXT
-│   └── next_run TEXT
+│   ├── next_run TEXT
+│   └── enabled INTEGER     Whether enabled
 │
 │  ─── Advanced Search (migrated to tantivy-mcp MCP service) ───
 │
 ├── (tantivy-mcp service)      Standalone MCP server provides full-text search
+```
+
+### Watermark Compaction Design
+
+The event store uses a **High-Water Mark** compaction strategy:
+
+```
+Write path:
+  append_event() → Auto-generate sequence (MAX + 1)
+                  → Insert into session_events
+                  → Update sessions_v2.branches JSON
+
+Read path (compaction recovery):
+  1. get_latest_summary() → Get latest summary event
+  2. summary.covered_upto_sequence → Watermark value
+  3. get_events_after_sequence(watermark) → Load only post-watermark events
+  4. Reconstruct context = summary content + incremental events
+
+Compaction path:
+  1. get_events_up_to_sequence(target) → Get events to compact
+  2. LLM generates summary → Write new Summary event
+  3. delete_events_upto(target) → Clean up compacted old events
 ```
 
 ---

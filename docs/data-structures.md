@@ -225,7 +225,7 @@ pub struct SessionEvent {
     /// 事件唯一标识符（UUID v7 时间有序）
     pub id: Uuid,
 
-    /// 此事件所属的会话
+    /// 此事件所属的会话（格式: "channel:chat_id"）
     pub session_key: String,
 
     /// 事件类型
@@ -242,13 +242,18 @@ pub struct SessionEvent {
 
     /// 创建时间戳
     pub created_at: DateTime<Utc>,
+
+    /// 单调递增序列号（用于水印压缩和增量查询）
+    pub sequence: i64,
 }
 ```
 
 **关键设计点：**
 - **UUID v7**：时间有序 UUID 提供自然时间排序，无需时间戳索引
+- **sequence**：单调递增序列号，用于水印压缩和 `get_events_after_sequence()` 增量查询
 - **嵌入**：可选的语义向量，用于相似性搜索和上下文检索
 - **不可变**：事件仅追加，修改创建新事件
+- **session_key**：格式为 `"channel:chat_id"`（如 `"telegram:12345"`），同时拆分存储到 `channel` 和 `chat_id` 列
 
 ### 3.2 EventType 枚举
 
@@ -329,6 +334,10 @@ pub struct EventMetadata {
     /// Token 统计
     pub token_usage: Option<TokenUsage>,
 
+    /// 内容 token 长度（写入时计算，避免读取路径重算）
+    #[serde(default)]
+    pub content_token_len: usize,
+
     /// 扩展字段
     #[serde(default)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -344,6 +353,7 @@ pub struct TokenUsage {
 - **branch**：类似 Git 的分支支持；`None` 表示主分支
 - **tools_used**：跟踪在此事件的处理期间调用了哪些工具
 - **token_usage**：LLM token 消耗统计，用于成本跟踪
+- **content_token_len**：写入时一次性计算的 content token 数，避免读取路径重算
 - **extra**：开放式的键值存储，用于未来扩展而无需架构更改
 
 ### 3.5 Session（聚合根）
@@ -555,37 +565,112 @@ AgentLoop::process_direct()
 
 ## 4. 记忆结构
 
-### 4.1 MemoryEntry
+### 4.1 MemoryMeta
 
-> **来源**: `gasket-storage` 或 `gasket-types`
+> **来源**: `gasket-storage::memory::types`
+
+记忆文件的 YAML 前置元数据。
 
 ```rust
-MemoryEntry {
-    id: String,                           // 唯一标识
-    content: String,                      // 记忆内容
-    metadata: MemoryMetadata,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-MemoryMetadata {
-    source: Option<String>,               // 来源: "user" | "agent" | "system"
-    tags: Vec<String>,                    // 分类标签
-    extra: serde_json::Value,             // 可扩展键值对
+MemoryMeta {
+    id: String,                           // UUID v4 唯一标识
+    title: String,                        // 人类可读标题
+    r#type: String,                       // 记忆类型（自由标签）
+    scenario: Scenario,                   // 场景分类（6 种）
+    tags: Vec<String>,                    // 用户定义标签
+    frequency: Frequency,                 // 访问频率（hot/warm/cold/archived）
+    access_count: u64,                    // 访问次数
+    created: String,                      // RFC 3339 时间戳
+    updated: String,                      // 最后更新时间
+    last_accessed: String,                // 最后访问时间
+    auto_expire: bool,                    // 是否自动过期
+    expires: Option<String>,              // 过期时间
+    tokens: usize,                        // token 数量估算
+    superseded_by: Option<String>,        // 替代此记忆的新记忆 ID
 }
 ```
 
-### 4.2 MemoryQuery
+### 4.2 MemoryFile
 
-> **来源**: `gasket-core::search`
+> **来源**: `gasket-storage::memory::types`
+
+完整的记忆文件（元数据 + Markdown 内容）。
+
+```rust
+MemoryFile {
+    metadata: MemoryMeta,                 // YAML 前置元数据
+    content: String,                      // Markdown 正文
+}
+```
+
+### 4.3 MemoryQuery
+
+> **来源**: `gasket-storage::memory::types`
+
+记忆搜索查询参数。
 
 ```rust
 MemoryQuery {
     text: Option<String>,                 // 全文/语义搜索
-    tags: Vec<String>,                    // 按标签过滤 (AND 语义)
-    source: Option<String>,              // 按来源过滤
-    limit: Option<usize>,                // 结果数量限制
-    offset: Option<usize>,              // 分页偏移
+    tags: Vec<String>,                    // 按标签过滤（ANY 语义）
+    scenario: Option<Scenario>,           // 场景过滤
+    max_tokens: Option<usize>,            // 最大 token 限制
+}
+```
+
+### 4.4 MemoryHit
+
+> **来源**: `gasket-storage::memory::types`
+
+带相关性评分的搜索结果。
+
+```rust
+MemoryHit {
+    path: String,                         // 相对于 ~/.gasket/memory/ 的路径
+    scenario: Scenario,                   // 场景分类
+    title: String,                        // 标题
+    tags: Vec<String>,                    // 标签
+    frequency: Frequency,                 // 频率
+    score: f32,                           // 相关性评分 (0.0–1.0)
+    tokens: usize,                        // token 数
+}
+```
+
+### 4.5 MemoryProvider Trait
+
+> **来源**: `gasket-engine::agent::memory_provider`
+
+解耦 HistoryCoordinator 与 MemoryManager 的窄接口。
+
+```rust
+#[async_trait]
+pub trait MemoryProvider: Send + Sync {
+    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
+    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
+    async fn update_from_event(&self, event: &SessionEvent) -> Result<()>;
+    async fn create_memory(&self, scenario, filename, title, tags, frequency, content) -> Result<()>;
+    async fn update_memory(&self, scenario, filename, content) -> Result<()>;
+    async fn delete_memory(&self, scenario, filename) -> Result<()>;
+}
+```
+
+### 4.6 MemoryContext
+
+> **来源**: `gasket-engine::agent::memory_manager`
+
+三阶段加载的结果。
+
+```rust
+MemoryContext {
+    memories: Vec<MemoryFile>,            // 加载的记忆文件（在 token 预算内）
+    tokens_used: usize,                   // 实际使用的 token 数
+    phase_breakdown: PhaseBreakdown,      // 分阶段 token 明细
+}
+
+PhaseBreakdown {
+    bootstrap_tokens: usize,              // 阶段 1 (profile + active)
+    scenario_tokens: usize,               // 阶段 2 (场景 hot/warm)
+    on_demand_tokens: usize,              // 阶段 3 (搜索填充)
 }
 ```
 
@@ -644,50 +729,128 @@ InjectionReport {
 ```
 ~/.gasket/gasket.db  (SqliteStore — sqlx::SqlitePool)
 │
-├── sessions              会话元数据
-│   ├── key TEXT PK       会话标识 (如 "cli:interactive", "telegram:12345")
-│   └── last_consolidated INTEGER
+│  ─── 会话管理（V2 事件溯源） ───
 │
-├── session_messages      每条消息独立存储 (O(1) 追加)
-│   ├── id INTEGER PK
-│   ├── session_key TEXT  → sessions.key
-│   ├── role TEXT         "user" | "assistant" | "system" | "tool"
-│   ├── content TEXT      消息内容
-│   ├── timestamp TEXT    ISO 8601
-│   └── tools_used TEXT   JSON 数组 (nullable)
+├── sessions_v2              会话元数据（V2）
+│   ├── key TEXT PK          会话标识 (如 "cli:interactive", "telegram:12345")
+│   ├── channel TEXT         渠道类型 (如 "telegram", "cli")
+│   ├── chat_id TEXT         对话 ID
+│   ├── current_branch TEXT  当前分支 (默认 "main")
+│   ├── branches TEXT        分支指针 JSON (branch_name → event_id)
+│   ├── created_at TEXT
+│   ├── updated_at TEXT
+│   ├── last_consolidated_event TEXT
+│   ├── total_events INTEGER 事件计数
+│   └── total_tokens INTEGER Token 累计
 │
-├── session_summaries     会话摘要 (ContextCompactor 生成)
-│   ├── session_key TEXT PK  → sessions.key
-│   └── summary TEXT         摘要内容
+├── session_events           事件日志（仅追加，不可变）
+│   ├── id TEXT PK           UUID v7 时间有序
+│   ├── session_key TEXT     → sessions_v2.key
+│   ├── channel TEXT         冗余存储，加速渠道查询
+│   ├── chat_id TEXT         冗余存储，加速对话查询
+│   ├── event_type TEXT      "user_message" | "assistant_message" | "tool_call" | "tool_result" | "summary"
+│   ├── content TEXT         消息内容
+│   ├── embedding BLOB       可选 f32 向量
+│   ├── branch TEXT          分支名 (默认 "main")
+│   ├── tools_used TEXT      JSON 数组
+│   ├── token_usage TEXT     JSON TokenUsage
+│   ├── token_len INTEGER    内容 token 数（写入时计算）
+│   ├── event_data TEXT      工具/摘要类型详情 JSON
+│   ├── extra TEXT           扩展 JSON
+│   ├── created_at TEXT      ISO 8601
+│   └── sequence INTEGER     单调递增序列号（水印压缩用）
+│   索引: idx_events_session_sequence ON (session_key, sequence)
 │
-├── memories              FTS5 全文搜索
-│   ├── id TEXT PK
-│   ├── content TEXT      记忆内容
-│   ├── source TEXT       来源标识
+├── session_summaries        会话摘要检查点
+│   ├── session_key TEXT PK
+│   ├── content TEXT         摘要内容
+│   ├── covered_upto_sequence INTEGER  水印：覆盖到此序列号
+│   └── created_at TEXT
+│
+├── summary_index            摘要事件索引
+│   ├── id INTEGER PK AUTOINCREMENT
+│   ├── session_key TEXT
+│   ├── event_id TEXT        摘要事件的 UUID
+│   ├── summary_type TEXT    摘要类型标签
+│   ├── topic TEXT           主题摘要的主题
+│   ├── covered_events TEXT  覆盖的事件 ID JSON 数组
+│   └── created_at TEXT
+│
+├── session_embeddings       事件嵌入索引
+│   ├── message_id TEXT PK
+│   ├── session_key TEXT     → sessions_v2.key
+│   ├── embedding BLOB       f32 向量
+│   └── created_at TEXT
+│
+│  ─── 记忆系统 ───
+│
+├── memory_metadata          记忆文件元数据（替代旧 _INDEX.md）
+│   ├── id TEXT              记忆 ID (mem_xxx)
+│   ├── path TEXT            文件名 (mem_xxx.md)
+│   ├── scenario TEXT        场景目录名
+│   ├── title TEXT           标题
+│   ├── memory_type TEXT     类型 (默认 "note")
+│   ├── frequency TEXT       "hot" | "warm" | "cold" | "archived"
+│   ├── tags TEXT            JSON 数组 (json_each 查询)
+│   ├── tokens INTEGER       token 数
+│   ├── updated TEXT         更新时间
+│   ├── last_accessed TEXT   最后访问时间
+│   ├── file_mtime BIGINT    文件修改时间（纳秒）
+│   └── PRIMARY KEY (scenario, path)
+│
+├── memory_embeddings        记忆嵌入向量
+│   ├── memory_path TEXT PK  文件路径
+│   ├── scenario TEXT        场景
+│   ├── tags TEXT            JSON 数组
+│   ├── frequency TEXT       频率
+│   ├── embedding BLOB       f32 向量
+│   ├── token_count INTEGER  token 数
 │   ├── created_at TEXT
 │   └── updated_at TEXT
 │
-├── memory_tags           记忆标签
-│   ├── memory_id TEXT    → memories.id
-│   └── tag TEXT
+│  ─── 通用存储 ───
 │
-├── kv_store              键值对
-│   ├── key TEXT PK       如 "MEMORY"
-│   └── value TEXT        工作空间文件内容
+├── kv_store                 键值对
+│   ├── key TEXT PK          如 "MEMORY"
+│   ├── value TEXT           工作空间文件内容
+│   └── updated_at TEXT
 │
-├── cron_jobs             定时任务
+├── cron_jobs                定时任务
 │   ├── id TEXT PK
 │   ├── name TEXT
-│   ├── cron_expr TEXT    cron 表达式
-│   ├── message TEXT      触发时发送的消息
+│   ├── cron TEXT            cron 表达式
+│   ├── message TEXT         触发时发送的消息
 │   ├── channel TEXT
 │   ├── chat_id TEXT
 │   ├── last_run TEXT
-│   └── next_run TEXT
+│   ├── next_run TEXT
+│   └── enabled INTEGER     是否启用
 │
 │  ─── 高级搜索 (已迁移到 tantivy-mcp MCP 服务) ───
 │
-├── (tantivy-mcp 服务)         独立的 MCP 服务器提供全文搜索
+├── (tantivy-mcp 服务)        独立的 MCP 服务器提供全文搜索
+```
+
+### 水印压缩设计
+
+事件存储采用 **高水位标记 (High-Water Mark)** 压缩策略：
+
+```
+写入路径:
+  append_event() → 自动生成 sequence (MAX + 1)
+                  → 写入 session_events
+                  → 更新 sessions_v2.branches JSON
+
+读取路径（压缩恢复）:
+  1. get_latest_summary() → 获取最新摘要事件
+  2. summary.covered_upto_sequence → 水印值
+  3. get_events_after_sequence(watermark) → 仅加载水印后的事件
+  4. 重组上下文 = 摘要内容 + 增量事件
+
+压缩路径:
+  1. get_events_up_to_sequence(target) → 获取待压缩事件
+  2. LLM 生成摘要 → 写入新的 Summary 事件
+  3. delete_events_upto(target) → 清理已压缩的旧事件
 ```
 
 ---
