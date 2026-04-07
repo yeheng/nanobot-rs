@@ -11,7 +11,7 @@ mod memory;
 mod onboard;
 pub mod registry;
 mod status;
-mod vault;
+pub mod vault;
 
 pub use agent::cmd_agent;
 pub use auth::cmd_auth_copilot;

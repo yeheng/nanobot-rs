@@ -35,6 +35,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, warn};
 
 use super::crypto::{KdfParams, VaultCrypto};
+use super::scanner::{contains_placeholders, replace_placeholders, scan_placeholders};
 use super::VaultError;
 
 /// Current vault format version
@@ -290,6 +291,38 @@ impl VaultStore {
                 None
             }
         }
+    }
+
+    /// JIT-resolve all `{{vault:key}}` placeholders in a string.
+    ///
+    /// Fast path: if the text contains no placeholders, returns the original
+    /// string without any vault interaction.
+    ///
+    /// # Errors
+    ///
+    /// - `VaultError::Locked` if the vault has not been unlocked
+    /// - `VaultError::NotFound(key)` if a referenced key does not exist
+    pub fn resolve_text(&self, text: &str) -> Result<String, VaultError> {
+        if !contains_placeholders(text) {
+            return Ok(text.to_string());
+        }
+
+        if self.is_locked() {
+            return Err(VaultError::Locked);
+        }
+
+        let placeholders = scan_placeholders(text);
+        let mut replacements = HashMap::new();
+
+        for p in &placeholders {
+            if let Some(value) = self.get(&p.key) {
+                replacements.insert(p.key.clone(), value);
+            } else {
+                return Err(VaultError::NotFound(p.key.clone()));
+            }
+        }
+
+        Ok(replace_placeholders(text, &replacements))
     }
 
     /// Set a sensitive value
@@ -605,5 +638,57 @@ mod tests {
         let long_value = "x".repeat(10000);
         store.set("key", &long_value, None).unwrap();
         assert_eq!(store.get("key"), Some(long_value));
+    }
+
+    // ── resolve_text tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_text_no_placeholders() {
+        let store = VaultStore::new_in_memory();
+        // No placeholders → returns original text, even when locked
+        let result = store.resolve_text("just plain text").unwrap();
+        assert_eq!(result, "just plain text");
+    }
+
+    #[test]
+    fn test_resolve_text_with_placeholder() {
+        let mut store = VaultStore::new_in_memory();
+        store.unlock("password").unwrap();
+        store.set("openai_key", "sk-abc123", None).unwrap();
+
+        let result = store.resolve_text("Bearer {{vault:openai_key}}").unwrap();
+        assert_eq!(result, "Bearer sk-abc123");
+    }
+
+    #[test]
+    fn test_resolve_text_multiple_placeholders() {
+        let mut store = VaultStore::new_in_memory();
+        store.unlock("password").unwrap();
+        store.set("api_key", "sk-key", None).unwrap();
+        store.set("api_secret", "secret-val", None).unwrap();
+
+        let result = store
+            .resolve_text("key={{vault:api_key}}&secret={{vault:api_secret}}")
+            .unwrap();
+        assert_eq!(result, "key=sk-key&secret=secret-val");
+    }
+
+    #[test]
+    fn test_resolve_text_locked_vault() {
+        let store = VaultStore::new_in_memory();
+        // Locked vault → error when placeholders present
+        let result = store.resolve_text("{{vault:some_key}}");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), VaultError::Locked));
+    }
+
+    #[test]
+    fn test_resolve_text_missing_key() {
+        let mut store = VaultStore::new_in_memory();
+        store.unlock("password").unwrap();
+        // Key doesn't exist → NotFound error
+        let result = store.resolve_text("{{vault:nonexistent}}");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), VaultError::NotFound(_)));
     }
 }

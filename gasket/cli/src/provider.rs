@@ -5,6 +5,27 @@ use std::sync::Arc;
 use anyhow::Result;
 use gasket_engine::config::{Config, ProviderType};
 use gasket_engine::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use gasket_engine::vault::{contains_placeholders, VaultStore};
+
+use crate::commands::vault::ensure_unlocked;
+
+/// Check config for vault placeholders and unlock the vault if needed.
+///
+/// Returns `Some(Arc<VaultStore>)` if the config contains vault placeholders
+/// and the vault was successfully unlocked, or `None` if no placeholders
+/// were found (no vault needed).
+pub fn setup_vault(config: &Config) -> anyhow::Result<Option<std::sync::Arc<VaultStore>>> {
+    // Serialize config to JSON and scan for placeholders
+    let config_str = serde_json::to_string(config).unwrap_or_default();
+    if !contains_placeholders(&config_str) {
+        return Ok(None);
+    }
+
+    tracing::info!("[Vault] Detected vault placeholders in config — unlocking vault");
+    let mut store = VaultStore::new()?;
+    ensure_unlocked(&mut store)?;
+    Ok(Some(std::sync::Arc::new(store)))
+}
 
 /// Provider information returned by find_provider
 pub struct ProviderInfo {
@@ -160,7 +181,10 @@ fn find_default_provider(config: &Config) -> Option<String> {
 ///   - `"deepseek/deepseek-chat"` → use the deepseek provider with model deepseek-chat
 ///   - `"zhipu/glm-4"`           → use the zhipu provider with model glm-4
 ///   - `"deepseek-chat"`          → legacy behaviour, use default provider
-pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
+///
+/// If `vault` is provided, `{{vault:key}}` placeholders in API keys are
+/// resolved JIT through the vault store.
+pub fn find_provider(config: &Config, vault: Option<&VaultStore>) -> Result<ProviderInfo> {
     let raw_model = config
         .agents
         .defaults
@@ -206,8 +230,9 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         .get(&provider_name)
         .expect("provider should exist after validation");
 
-    // Resolve API key (empty string for local providers)
-    let api_key = provider_config.api_key.as_deref().unwrap_or("");
+    // Resolve API key — JIT vault resolution if needed
+    let raw_api_key = provider_config.api_key.as_deref().unwrap_or("");
+    let api_key = resolve_secret(raw_api_key, vault)?;
 
     // Resolve model name
     let default_model = get_default_model_for_provider(&provider_name);
@@ -217,7 +242,7 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         spec.model().to_string()
     };
 
-    let provider = build_provider(&provider_name, api_key, provider_config, &model)?;
+    let provider = build_provider(&provider_name, &api_key, provider_config, &model)?;
 
     // Check thinking support for the specific model
     let supports_thinking = provider_config.thinking_enabled_for_model(&model);
@@ -238,4 +263,44 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
         supports_thinking,
         pricing,
     })
+}
+
+/// Resolve a raw secret string through the vault (JIT).
+///
+/// - No placeholders → returns the string as-is
+/// - Has placeholders & vault available → resolves via vault
+/// - Has placeholders & no vault → falls back to env var, then error
+pub fn resolve_secret(raw: &str, vault: Option<&VaultStore>) -> Result<String> {
+    if !contains_placeholders(raw) {
+        return Ok(raw.to_string());
+    }
+
+    // Try vault first
+    if let Some(v) = vault {
+        return v
+            .resolve_text(raw)
+            .map_err(|e| anyhow::anyhow!("Vault error: {}", e));
+    }
+
+    // Fall back to environment variables
+    let placeholders = gasket_engine::vault::scan_placeholders(raw);
+    let mut replacements = std::collections::HashMap::new();
+    for p in &placeholders {
+        let env_key = p.key.to_uppercase();
+        if let Ok(value) = std::env::var(&env_key) {
+            replacements.insert(p.key.clone(), value);
+        } else {
+            anyhow::bail!(
+                "Cannot resolve '{{{{vault:{}}}}}' — no vault available and env var {} not set. \
+                 Set GASKET_VAULT_PASSWORD to unlock the vault.",
+                p.key,
+                env_key
+            );
+        }
+    }
+
+    Ok(gasket_engine::vault::replace_placeholders(
+        raw,
+        &replacements,
+    ))
 }

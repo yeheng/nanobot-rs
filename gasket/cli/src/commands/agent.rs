@@ -17,6 +17,7 @@ use gasket_engine::token_tracker::ModelPricing;
 
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
+use crate::provider::setup_vault;
 
 /// Run the agent command
 pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
@@ -33,8 +34,11 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .context("Could not find home directory")?
         .join(".gasket");
 
+    // Check for vault placeholders and unlock if needed (JIT setup)
+    let vault = setup_vault(&config)?;
+
     // Find a provider
-    let provider_info = crate::provider::find_provider(&config)?;
+    let provider_info = crate::provider::find_provider(&config, vault.as_deref())?;
 
     // Create agent config
     let mut agent_config = super::registry::build_agent_config(&config);
@@ -66,7 +70,11 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
-    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+    let mut provider_registry = ProviderRegistry::from_config(&config);
+    if let Some(ref v) = vault {
+        provider_registry.with_vault(v.clone());
+    }
+    let provider_registry = Arc::new(provider_registry);
 
     // Log available models if any are configured
     if !model_registry.is_empty() {
@@ -102,8 +110,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     ));
 
     // Create model resolver for SubagentManager to support model_id switching in spawn tools
+    let mut resolver_registry = ProviderRegistry::from_config(&config);
+    if let Some(ref v) = vault {
+        resolver_registry.with_vault(v.clone());
+    }
     let model_resolver: Arc<dyn ModelResolver> = Arc::new(CliModelResolver {
-        provider_registry: ProviderRegistry::from_config(&config),
+        provider_registry: resolver_registry,
         model_registry: ModelRegistry::from_config(&config.agents),
     });
 

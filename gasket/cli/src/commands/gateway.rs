@@ -20,10 +20,14 @@ use gasket_engine::tools::CronTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata};
 
 use super::registry::CliModelResolver;
+use crate::provider::setup_vault;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
+
+    // Check for vault placeholders and unlock if needed (JIT setup)
+    let vault = setup_vault(&config)?;
 
     // Validate configuration before starting
     if let Err(errors) = config.validate() {
@@ -85,7 +89,7 @@ pub async fn cmd_gateway() -> Result<()> {
         Arc::new(CronService::with_store(sqlite_store.clone(), workspace.clone()).await);
 
     // Create agent with all dependencies
-    let provider_info = crate::provider::find_provider(&config)?;
+    let provider_info = crate::provider::find_provider(&config, vault.as_deref())?;
     let mut agent_config = super::registry::build_agent_config(&config);
     agent_config.model = provider_info.model.clone();
 
@@ -100,7 +104,11 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
-    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+    let mut provider_registry = ProviderRegistry::from_config(&config);
+    if let Some(ref v) = vault {
+        provider_registry.with_vault(v.clone());
+    }
+    let provider_registry = Arc::new(provider_registry);
 
     // Log available models if any are configured
     if !model_registry.is_empty() {
@@ -130,7 +138,13 @@ pub async fn cmd_gateway() -> Result<()> {
             subagent_tools,
             bus.outbound_sender(),
             Some(Arc::new(CliModelResolver {
-                provider_registry: ProviderRegistry::from_config(&config),
+                provider_registry: {
+                    let mut r = ProviderRegistry::from_config(&config);
+                    if let Some(ref v) = vault {
+                        r.with_vault(v.clone());
+                    }
+                    r
+                },
                 model_registry: ModelRegistry::from_config(&config.agents),
             })),
         )
@@ -275,7 +289,7 @@ pub async fn cmd_gateway() -> Result<()> {
     start_cron_checker(&cron_service, &bus, &mut tasks);
 
     // --- Start all configured channels using unified initializer ---
-    let channel_errors = start_channels(&config, &inbound_processor, &mut tasks);
+    let channel_errors = start_channels(&config, vault.as_deref(), &inbound_processor, &mut tasks);
     if !channel_errors.is_empty() {
         println!(
             "{}",
@@ -313,6 +327,7 @@ pub async fn cmd_gateway() -> Result<()> {
 #[allow(unused_variables, clippy::ptr_arg)]
 fn start_channels(
     config: &gasket_engine::Config,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Vec<String> {
@@ -323,7 +338,8 @@ fn start_channels(
     #[cfg(feature = "telegram")]
     if let Some(telegram_config) = &config.channels.telegram {
         if telegram_config.enabled {
-            if let Err(e) = start_telegram_channel(telegram_config, inbound_processor, tasks) {
+            if let Err(e) = start_telegram_channel(telegram_config, vault, inbound_processor, tasks)
+            {
                 errors.push(format!("Telegram: {}", e));
             }
         }
@@ -333,7 +349,7 @@ fn start_channels(
     #[cfg(feature = "discord")]
     if let Some(discord_config) = &config.channels.discord {
         if discord_config.enabled {
-            if let Err(e) = start_discord_channel(discord_config, inbound_processor, tasks) {
+            if let Err(e) = start_discord_channel(discord_config, vault, inbound_processor, tasks) {
                 errors.push(format!("Discord: {}", e));
             }
         }
@@ -343,7 +359,7 @@ fn start_channels(
     #[cfg(feature = "slack")]
     if let Some(slack_config) = &config.channels.slack {
         if slack_config.enabled {
-            if let Err(e) = start_slack_channel(slack_config, inbound_processor, tasks) {
+            if let Err(e) = start_slack_channel(slack_config, vault, inbound_processor, tasks) {
                 errors.push(format!("Slack: {}", e));
             }
         }
@@ -353,7 +369,7 @@ fn start_channels(
     #[cfg(feature = "feishu")]
     if let Some(feishu_config) = &config.channels.feishu {
         if feishu_config.enabled {
-            if let Err(e) = start_feishu_channel(feishu_config, inbound_processor, tasks) {
+            if let Err(e) = start_feishu_channel(feishu_config, vault, inbound_processor, tasks) {
                 errors.push(format!("Feishu: {}", e));
             }
         }
@@ -369,7 +385,9 @@ fn start_channels(
                     "Email: incomplete configuration (requires IMAP or SMTP with from_address)"
                         .to_string(),
                 );
-            } else if let Err(e) = start_email_channel(email_config, inbound_processor, tasks) {
+            } else if let Err(e) =
+                start_email_channel(email_config, vault, inbound_processor, tasks)
+            {
                 errors.push(format!("Email: {}", e));
             }
         }
@@ -379,7 +397,8 @@ fn start_channels(
     #[cfg(feature = "dingtalk")]
     if let Some(dingtalk_config) = &config.channels.dingtalk {
         if dingtalk_config.enabled {
-            if let Err(e) = start_dingtalk_channel(dingtalk_config, inbound_processor, tasks) {
+            if let Err(e) = start_dingtalk_channel(dingtalk_config, vault, inbound_processor, tasks)
+            {
                 errors.push(format!("DingTalk: {}", e));
             }
         }
@@ -392,17 +411,34 @@ fn start_channels(
     errors
 }
 
+/// Resolve a secret string through vault (JIT).
+/// Returns the original string if no vault is available or no placeholders found.
+fn resolve_channel_secret(raw: &str, vault: Option<&gasket_engine::vault::VaultStore>) -> String {
+    match vault {
+        Some(v) => v.resolve_text(raw).unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to resolve vault placeholder: {}. Using raw value.",
+                e
+            );
+            raw.to_string()
+        }),
+        None => raw.to_string(),
+    }
+}
+
 /// Start a single Telegram channel
 #[cfg(feature = "telegram")]
 fn start_telegram_channel(
     telegram_config: &gasket_engine::config::TelegramConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Telegram channel", "✓".green());
 
+    let resolved_token = resolve_channel_secret(&telegram_config.token, vault);
     let telegram_cfg = gasket_engine::channels::telegram::TelegramConfig {
-        token: telegram_config.token.clone(),
+        token: resolved_token,
         allow_from: telegram_config.allow_from.clone(),
     };
 
@@ -424,13 +460,15 @@ fn start_telegram_channel(
 #[cfg(feature = "discord")]
 fn start_discord_channel(
     discord_config: &gasket_engine::config::DiscordConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Discord channel", "✓".green());
 
+    let resolved_token = resolve_channel_secret(&discord_config.token, vault);
     let discord_cfg = gasket_engine::channels::discord::DiscordConfig {
-        token: discord_config.token.clone(),
+        token: resolved_token,
         allow_from: discord_config.allow_from.clone(),
     };
 
@@ -452,14 +490,17 @@ fn start_discord_channel(
 #[cfg(feature = "slack")]
 fn start_slack_channel(
     slack_config: &gasket_engine::config::SlackConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Slack channel", "✓".green());
 
+    let resolved_bot_token = resolve_channel_secret(&slack_config.bot_token, vault);
+    let resolved_app_token = resolve_channel_secret(&slack_config.app_token, vault);
     let slack_cfg = gasket_engine::channels::slack::SlackConfig {
-        bot_token: slack_config.bot_token.clone(),
-        app_token: slack_config.app_token.clone(),
+        bot_token: resolved_bot_token,
+        app_token: resolved_app_token,
         group_policy: slack_config.group_policy.clone(),
         allow_from: slack_config.allow_from.clone(),
     };
@@ -482,16 +523,27 @@ fn start_slack_channel(
 #[cfg(feature = "feishu")]
 fn start_feishu_channel(
     feishu_config: &gasket_engine::config::FeishuConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} Feishu channel", "✓".green());
 
     let feishu_cfg = gasket_engine::channels::feishu::FeishuConfig {
-        app_id: feishu_config.app_id.clone(),
-        app_secret: feishu_config.app_secret.clone(),
-        verification_token: feishu_config.verification_token.clone(),
-        encrypt_key: feishu_config.encrypt_key.clone(),
+        app_id: resolve_channel_secret(&feishu_config.app_id, vault),
+        app_secret: resolve_channel_secret(&feishu_config.app_secret, vault),
+        verification_token: feishu_config
+            .verification_token
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+            .then(|| {
+                resolve_channel_secret(feishu_config.verification_token.as_ref().unwrap(), vault)
+            }),
+        encrypt_key: feishu_config
+            .encrypt_key
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+            .then(|| resolve_channel_secret(feishu_config.encrypt_key.as_ref().unwrap(), vault)),
         allow_from: feishu_config.allow_from.clone(),
     };
 
@@ -511,6 +563,7 @@ fn start_feishu_channel(
 #[cfg(feature = "email")]
 fn start_email_channel(
     email_config: &gasket_engine::config::EmailConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
@@ -520,11 +573,17 @@ fn start_email_channel(
         imap_host: email_config.imap_host.clone().unwrap_or_default(),
         imap_port: email_config.imap_port,
         imap_username: email_config.imap_username.clone().unwrap_or_default(),
-        imap_password: email_config.imap_password.clone().unwrap_or_default(),
+        imap_password: resolve_channel_secret(
+            &email_config.imap_password.clone().unwrap_or_default(),
+            vault,
+        ),
         smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
         smtp_port: email_config.smtp_port,
         smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
-        smtp_password: email_config.smtp_password.clone().unwrap_or_default(),
+        smtp_password: resolve_channel_secret(
+            &email_config.smtp_password.clone().unwrap_or_default(),
+            vault,
+        ),
         from_address: email_config.from_address.clone().unwrap_or_default(),
         allow_from: email_config.allow_from.clone(),
         consent_granted: email_config.consent_granted,
@@ -548,15 +607,24 @@ fn start_email_channel(
 #[cfg(feature = "dingtalk")]
 fn start_dingtalk_channel(
     dingtalk_config: &gasket_engine::config::DingTalkConfig,
+    vault: Option<&gasket_engine::vault::VaultStore>,
     inbound_processor: &gasket_engine::channels::InboundSender,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<(), String> {
     println!("{} DingTalk channel", "✓".green());
 
     let dingtalk_cfg = gasket_engine::channels::dingtalk::DingTalkConfig {
-        webhook_url: dingtalk_config.webhook_url.clone(),
-        secret: dingtalk_config.secret.clone(),
-        access_token: dingtalk_config.access_token.clone(),
+        webhook_url: resolve_channel_secret(&dingtalk_config.webhook_url, vault),
+        secret: dingtalk_config
+            .secret
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+            .then(|| resolve_channel_secret(dingtalk_config.secret.as_ref().unwrap(), vault)),
+        access_token: dingtalk_config
+            .access_token
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+            .then(|| resolve_channel_secret(dingtalk_config.access_token.as_ref().unwrap(), vault)),
         allow_from: dingtalk_config.allow_from.clone(),
     };
 

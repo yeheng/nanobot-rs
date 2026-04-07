@@ -18,7 +18,7 @@ use tracing::debug;
 const VAULT_PASSWORD_ENV: &str = "GASKET_VAULT_PASSWORD";
 
 /// Get vault password from environment or prompt
-fn get_vault_password(prompt: bool) -> Option<String> {
+pub fn get_vault_password(prompt: bool) -> Option<String> {
     if let Ok(password) = std::env::var(VAULT_PASSWORD_ENV) {
         if !password.is_empty() {
             return Some(password);
@@ -36,7 +36,7 @@ fn get_vault_password(prompt: bool) -> Option<String> {
 }
 
 /// Check if vault is unlocked or needs password
-fn ensure_unlocked(store: &mut VaultStore) -> Result<()> {
+pub fn ensure_unlocked(store: &mut VaultStore) -> Result<()> {
     if store.is_locked() {
         if let Some(password) = get_vault_password(true) {
             store.unlock(&password).context("Failed to unlock vault")?;

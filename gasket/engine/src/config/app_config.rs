@@ -24,6 +24,15 @@ use serde::{Deserialize, Serialize};
 use crate::config_dir;
 use crate::error::ConfigValidationError;
 use crate::token_tracker::ModelPricing;
+use crate::vault::contains_placeholders;
+use crate::vault::VaultStore;
+#[cfg(test)]
+use crate::vault::{replace_placeholders, scan_placeholders};
+
+#[cfg(test)]
+use std::env;
+#[cfg(test)]
+use tracing::debug;
 
 // Re-export channel config types
 pub use gasket_channels::ChannelsConfig;
@@ -230,14 +239,114 @@ impl Config {
     }
 }
 
-/// Load configuration from file
+/// Resolve `{{vault:key}}` placeholders in raw YAML before deserialization.
+///
+/// Resolution order for each placeholder:
+/// 1. **VaultStore** — if the vault file exists and is unlocked
+/// 2. **Environment variable** — key uppercased (e.g. `zhipu_api_key` → `ZHIPU_API_KEY`)
+///
+/// Returns the YAML text with resolved values, or the original text if no
+/// placeholders are found. Returns an error if any placeholder cannot be
+/// resolved (the YAML would fail to parse anyway due to unquoted `{{}}`).
+#[cfg(test)]
+fn resolve_config_placeholders(content: &str) -> anyhow::Result<String> {
+    let placeholders = scan_placeholders(content);
+    if placeholders.is_empty() {
+        return Ok(content.to_string());
+    }
+
+    debug!(
+        "[Config] Found {} vault placeholder(s) in config.yaml",
+        placeholders.len()
+    );
+
+    // Try to open vault store (may fail if file doesn't exist or is locked)
+    let mut vault_store = VaultStore::new().ok();
+
+    // Auto-unlock vault using master password from environment
+    if vault_store.as_ref().is_some_and(|s| s.is_locked()) {
+        if let Ok(password) = env::var("GASKET_MASTER_PASSWORD") {
+            if let Some(ref mut store) = vault_store {
+                match store.unlock(&password) {
+                    Ok(()) => debug!("[Config] Vault auto-unlocked via GASKET_MASTER_PASSWORD"),
+                    Err(e) => debug!("[Config] Failed to unlock vault: {}", e),
+                }
+            }
+        }
+    }
+
+    // Build replacement map
+    let mut replacements = HashMap::new();
+    let mut unresolved = Vec::new();
+
+    for p in &placeholders {
+        // 1. Try vault store
+        if let Some(ref store) = vault_store {
+            if !store.is_locked() {
+                if let Some(value) = store.get(&p.key) {
+                    replacements.insert(p.key.clone(), value);
+                    debug!("[Config] Resolved '{}' from vault store", p.key);
+                    continue;
+                }
+            }
+        }
+
+        // 2. Fall back to environment variable
+        let env_key = p.key.to_uppercase();
+        if let Ok(value) = env::var(&env_key) {
+            replacements.insert(p.key.clone(), value);
+            debug!("[Config] Resolved '{}' from env var {}", p.key, env_key);
+            continue;
+        }
+
+        unresolved.push(p.key.clone());
+    }
+
+    if !unresolved.is_empty() {
+        // Build helpful error message
+        let keys: Vec<String> = unresolved
+            .iter()
+            .map(|k| {
+                let env_hint = format!("{}=<value>", k.to_uppercase());
+                format!("  - {} (env: {})", k, env_hint)
+            })
+            .collect();
+        anyhow::bail!(
+            "Cannot resolve vault placeholder(s) in config.yaml:\n{}\n\
+             Either unlock the vault (`gasket vault unlock`) or set the environment variable.",
+            keys.join("\n")
+        );
+    }
+
+    Ok(replace_placeholders(content, &replacements))
+}
+
+/// Load configuration from file.
+///
+/// Vault placeholders (`{{vault:key}}`) are kept as raw strings in the
+/// resulting `Config`. They are resolved at the point of use (JIT) via
+/// `VaultStore::resolve_text()`.
+///
+/// **Important:** `{{vault:key}}` values in YAML must be quoted, e.g.
+/// `api_key: "{{vault:openai_key}}"`, otherwise YAML parsing will fail.
 pub async fn load_config() -> anyhow::Result<Config> {
     let config_path = config_path()?;
     if !config_path.exists() {
         return Ok(Config::default());
     }
     let content = tokio::fs::read_to_string(&config_path).await?;
-    let config: Config = serde_yaml::from_str(&content)?;
+    let config: Config = serde_yaml::from_str(&content).map_err(|e| {
+        // Provide a helpful hint when YAML parsing fails and the raw text
+        // contains unquoted vault placeholders.
+        if contains_placeholders(&content) {
+            anyhow::anyhow!(
+                "{e}\n\nHint: vault placeholders must be quoted in YAML.\n\
+                 Use  api_key: \"{{{{vault:key}}}}\"  instead of  api_key: {{{{vault:key}}}}"
+            )
+        } else {
+            anyhow::anyhow!(e)
+        }
+    })?;
     Ok(config)
 }
 
@@ -354,10 +463,21 @@ impl ModelRegistry {
 }
 
 /// Registry for managing LLM provider instances
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ProviderRegistry {
     configs: HashMap<String, ProviderConfig>,
     default_provider: Option<String>,
+    vault: Option<std::sync::Arc<VaultStore>>,
+}
+
+impl std::fmt::Debug for ProviderRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderRegistry")
+            .field("configs", &self.configs)
+            .field("default_provider", &self.default_provider)
+            .field("vault", &self.vault.as_ref().map(|_| "VaultStore(..)"))
+            .finish()
+    }
 }
 
 impl ProviderRegistry {
@@ -381,6 +501,32 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Attach an unlocked vault store for JIT secret resolution.
+    pub fn with_vault(&mut self, vault: std::sync::Arc<VaultStore>) {
+        self.vault = Some(vault);
+    }
+
+    /// Resolve a raw API key string through the vault (JIT).
+    ///
+    /// - No placeholders → returns the string as-is
+    /// - Has placeholders & vault available → resolves
+    /// - Has placeholders & no vault → error
+    fn resolve_api_key(&self, raw: &str) -> anyhow::Result<String> {
+        if !contains_placeholders(raw) {
+            return Ok(raw.to_string());
+        }
+
+        match self.vault.as_ref() {
+            Some(v) => v
+                .resolve_text(raw)
+                .map_err(|e| anyhow::anyhow!("Vault resolution failed: {}", e)),
+            None => anyhow::bail!(
+                "Config contains vault placeholder(s) but no vault is available. \
+                 Set GASKET_VAULT_PASSWORD or run 'gasket vault unlock'."
+            ),
+        }
+    }
+
     pub fn get_or_create(
         &self,
         name: &str,
@@ -394,11 +540,13 @@ impl ProviderRegistry {
             anyhow::bail!("Provider {} is not available (missing API key)", name);
         }
 
-        let api_key = config.api_key.as_deref().unwrap_or("");
+        let raw_api_key = config.api_key.as_deref().unwrap_or("");
+        let api_key = self.resolve_api_key(raw_api_key)?;
+
         let provider_config = gasket_providers::ProviderConfig {
             name: name.to_string(),
             api_base: config.api_base.clone(),
-            api_key: api_key.to_string(),
+            api_key,
             default_model: "default".to_string(),
             extra_headers: HashMap::new(),
             proxy_enabled: config.proxy_enabled(),
@@ -411,5 +559,52 @@ impl ProviderRegistry {
 
     pub fn get_default_provider(&self) -> Option<&str> {
         self.default_provider.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without placeholders, content is returned unchanged.
+    #[test]
+    fn test_resolve_config_no_placeholders() {
+        let yaml = "providers:\n  openai:\n    api_key: sk-123\n";
+        let result = resolve_config_placeholders(yaml).unwrap();
+        assert_eq!(result, yaml);
+    }
+
+    /// Placeholders that have a matching env var are resolved.
+    #[test]
+    fn test_resolve_config_from_env() {
+        env::set_var("GASKET_TEST_ZHIPU_KEY", "sk-from-env");
+        let yaml = "api_key: {{vault:gasket_test_zhipu_key}}";
+        let result = resolve_config_placeholders(yaml).unwrap();
+        env::remove_var("GASKET_TEST_ZHIPU_KEY");
+        assert_eq!(result, "api_key: sk-from-env");
+    }
+
+    /// Multiple placeholders are resolved in one pass.
+    #[test]
+    fn test_resolve_config_multiple_from_env() {
+        env::set_var("GASKET_TEST_KEY_A", "val-a");
+        env::set_var("GASKET_TEST_KEY_B", "val-b");
+        let yaml = "a: {{vault:gasket_test_key_a}}\nb: {{vault:gasket_test_key_b}}";
+        let result = resolve_config_placeholders(yaml).unwrap();
+        env::remove_var("GASKET_TEST_KEY_A");
+        env::remove_var("GASKET_TEST_KEY_B");
+        assert_eq!(result, "a: val-a\nb: val-b");
+    }
+
+    /// Unresolved placeholders produce an error with helpful message.
+    #[test]
+    fn test_resolve_config_unresolved_error() {
+        // Use a key that is very unlikely to have an env var
+        let yaml = "api_key: {{vault:nonexistent_gasket_test_key_xyz}}";
+        let result = resolve_config_placeholders(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("nonexistent_gasket_test_key_xyz"));
+        assert!(err.contains("Cannot resolve"));
     }
 }
