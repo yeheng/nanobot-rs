@@ -53,10 +53,12 @@ use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
 
 use crate::agent::compactor::ContextCompactor;
+use crate::agent::indexing::IndexingService;
 use crate::agent::memory::MemoryStore;
 use crate::agent::memory_manager::MemoryManager;
 use gasket_storage::{process_history, EventStore};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
+
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -260,6 +262,8 @@ pub struct AgentLoop {
     compactor: Option<Arc<ContextCompactor>>,
     /// Long-term memory manager (optional — only active if ~/.gasket/memory/ exists).
     memory_manager: Option<Arc<MemoryManager>>,
+    /// Semantic indexing service for embeddings.
+    indexing_service: Option<Arc<IndexingService>>,
 }
 
 impl AgentLoop {
@@ -283,6 +287,23 @@ impl AgentLoop {
     ) -> Result<Self, AgentError> {
         let sqlite_store = Arc::new(memory_store.sqlite_store().clone());
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
+
+        // Create and configure IndexingService
+        let mut indexing_service = IndexingService::new(sqlite_store.clone());
+
+        #[cfg(feature = "local-embedding")]
+        {
+            // Try to create embedder with default config
+            if let Ok(embedder) = gasket_storage::TextEmbedder::new() {
+                indexing_service.set_embedder(Arc::new(embedder));
+            }
+        }
+
+        // Enable async queue and start worker
+        indexing_service.enable_queue(10000);
+        indexing_service.start_worker();
+
+        let indexing_service = Arc::new(indexing_service);
 
         let history_config = HistoryConfig {
             max_events: config.memory_window,
@@ -322,6 +343,7 @@ impl AgentLoop {
             token_tracker: None,
             compactor: Some(compactor),
             memory_manager,
+            indexing_service: Some(indexing_service),
         })
     }
 
@@ -458,6 +480,7 @@ impl AgentLoop {
             token_tracker: None,
             compactor: None,
             memory_manager: None,
+            indexing_service: None,
         })
     }
 
@@ -499,6 +522,11 @@ impl AgentLoop {
     /// Get the workspace path
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace
+    }
+
+    /// Get a reference to the indexing service.
+    pub fn indexing_service(&self) -> Option<&Arc<IndexingService>> {
+        self.indexing_service.as_ref()
     }
 
     /// Clear the session for the given key (used by CLI for '/new' command).
