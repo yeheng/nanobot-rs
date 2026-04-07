@@ -1,86 +1,73 @@
 //! Cron service for scheduled tasks
 //!
-//! Jobs are persisted in SQLite for reliability — **Single Source of Truth**.
-//! No memory cache, no dual-state synchronization issues.
-//!
-//! YAML job definition files (cron/*.yaml) are loaded on startup and synced to SQLite.
-//! Legacy JSON files are also migrated if they exist.
+//! **File-Driven Architecture**: Jobs are defined in `~/.gasket/cron/*.md` files.
+//! No SQLite persistence — runtime state is in-memory only.
+//! Supports hot reload via file system watching.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use serde::{Deserialize, Serialize};
+use notify::{RecommendedWatcher, Watcher, RecursiveMode, Event};
+use parking_lot::{RwLock, Mutex};
+use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
 
-use gasket_storage::{CronJobRow, SqliteStore};
-
-/// A scheduled job
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A scheduled job (in-memory only)
+#[derive(Debug, Clone)]
 pub struct CronJob {
-    /// Unique job ID
+    /// Unique job ID (filename without .md)
     pub id: String,
-
     /// Job name
     pub name: String,
-
     /// Cron expression
     pub cron: String,
-
     /// Message to send
     pub message: String,
-
     /// Target channel
-    #[serde(default)]
     pub channel: Option<String>,
-
     /// Target chat ID
-    #[serde(default)]
     pub chat_id: Option<String>,
-
-    /// Last run time
-    #[serde(default)]
-    pub last_run: Option<DateTime<Utc>>,
-
-    /// Next run time
-    #[serde(default)]
+    /// Next run time (in-memory only)
     pub next_run: Option<DateTime<Utc>>,
-
     /// Enabled
-    #[serde(default = "default_true")]
     pub enabled: bool,
+    /// File path for hot reload
+    pub file_path: PathBuf,
+}
+
+/// Frontmatter structure for markdown job files
+#[derive(Debug, Deserialize)]
+struct CronJobFrontmatter {
+    name: Option<String>,
+    cron: String,
+    channel: Option<String>,
+    to: Option<String>,
+    #[serde(default = "default_true")]
+    enabled: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
-/// YAML file format for cron job definitions
-/// Used for user-defined cron jobs in cron/*.yaml files
-#[derive(Debug, Clone, Deserialize)]
-struct CronYamlFile {
-    /// Job name (also used as ID)
-    name: String,
-    /// Cron expression
-    cron: String,
-    /// Message to send when triggered
-    message: String,
-    /// Target channel (e.g., "telegram", "discord")
-    #[serde(default)]
-    channel: Option<String>,
-    /// Target chat/user ID
-    #[serde(default)]
-    to: Option<String>,
-    /// Whether the job is enabled
-    #[serde(default = "default_true")]
-    enabled: bool,
-    /// Delivery flag (same as enabled for compatibility)
-    #[serde(default)]
-    deliver: Option<bool>,
-    /// Creation timestamp (ignored, for file metadata)
-    #[serde(default)]
-    _created_at: Option<String>,
+/// Cron service for scheduled tasks.
+///
+/// **File-Driven**: All job data lives in `~/.gasket/cron/*.md` files.
+/// No memory cache synchronization issues — files are Single Source of Truth.
+pub struct CronService {
+    /// In-memory job storage
+    jobs: RwLock<HashMap<String, CronJob>>,
+    /// Workspace path
+    workspace: PathBuf,
+    /// File watcher
+    watcher: RwLock<Option<RecommendedWatcher>>,
+    /// Watcher event receiver (wrapped in Mutex for thread safety)
+    rx: Mutex<Receiver<Result<Event, notify::Error>>>,
 }
+
 impl CronJob {
     /// Create a new cron job
     pub fn new(
@@ -99,9 +86,9 @@ impl CronJob {
             message: message.into(),
             channel: None,
             chat_id: None,
-            last_run: None,
             next_run,
             enabled: true,
+            file_path: PathBuf::new(),
         }
     }
 
@@ -114,266 +101,246 @@ impl CronJob {
 
     /// Update next run time
     pub fn update_next_run(&mut self) {
-        self.last_run = Some(Utc::now());
         self.next_run = Self::calculate_next_run(&self.cron);
     }
 }
 
-impl From<CronJobRow> for CronJob {
-    fn from(row: CronJobRow) -> Self {
-        Self {
-            id: row.id,
-            name: row.name,
-            cron: row.cron,
-            message: row.message,
-            channel: row.channel,
-            chat_id: row.chat_id,
-            last_run: row.last_run,
-            next_run: row.next_run,
-            enabled: row.enabled,
-        }
+/// Parse markdown file with frontmatter
+fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
+    // Split frontmatter and body
+    // Format: ---\n<frontmatter>\n---\n<body>
+    let parts: Vec<&str> = content.splitn(3, "---\n").collect();
+    if parts.len() < 3 {
+        anyhow::bail!("Invalid markdown format: missing frontmatter delimiters");
     }
-}
 
-/// Cron service for scheduled tasks.
-///
-/// **Single Source of Truth**: All job data lives in SQLite.
-/// No memory cache, no synchronization issues.
-pub struct CronService {
-    store: SqliteStore,
+    // Parse frontmatter (parts[1])
+    let fm: CronJobFrontmatter = serde_yaml::from_str(parts[1])?;
+
+    // Body is parts[2]
+    let message = parts.get(2).unwrap_or(&"").trim().to_string();
+
+    // Calculate next_run
+    let next_run = CronJob::calculate_next_run(&fm.cron);
+
+    // Use filename as ID
+    let id = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    Ok(CronJob {
+        id: id.clone(),
+        name: fm.name.unwrap_or(id),
+        cron: fm.cron,
+        message,
+        channel: fm.channel,
+        chat_id: fm.to,
+        next_run,
+        enabled: fm.enabled,
+        file_path: file_path.to_path_buf(),
+    })
 }
 
 impl CronService {
-    /// Create a new cron service with SQLite persistence.
+    /// Create a new cron service with file-driven architecture.
     ///
-    /// Uses the default SqliteStore path (~/.gasket/gasket.db).
-    /// Automatically migrates legacy JSON files if they exist.
+    /// Jobs are loaded from `~/.gasket/cron/*.md` files.
+    /// File watcher is started for hot reload support.
     pub async fn new(workspace: PathBuf) -> Self {
-        let store = SqliteStore::new()
-            .await
-            .expect("Failed to create SqliteStore for cron service");
-        Self::with_store(store, workspace).await
-    }
+        let (tx, rx) = channel();
 
-    /// Create a new cron service with a provided SqliteStore.
-    ///
-    /// Loads cron jobs from YAML files (cron/*.yaml) and syncs to SQLite.
-    /// Also migrates legacy JSON files if they exist.
-    pub async fn with_store(store: SqliteStore, workspace: PathBuf) -> Self {
-        // Load YAML job definitions first
-        let yaml_count = Self::load_yaml_jobs(&store, &workspace).await;
-        if yaml_count > 0 {
-            info!("Loaded {} cron jobs from YAML files", yaml_count);
-        }
-
-        // Try to migrate from legacy JSON if no jobs exist in SQLite
-        let existing = store.load_cron_jobs().await.unwrap_or_default();
-        if existing.is_empty() {
-            let json_path = workspace.join("cron").join("jobs.json");
-            if json_path.exists() {
-                match Self::migrate_from_json(&store, &json_path).await {
-                    Ok(count) => {
-                        if count > 0 {
-                            info!("Migrated {} cron jobs from JSON", count);
-                            // Rename old file to prevent re-migration
-                            let backup_path = json_path.with_extension("json.migrated");
-                            if let Err(e) = tokio::fs::rename(&json_path, &backup_path).await {
-                                warn!("Failed to rename migrated JSON file: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => warn!("Failed to migrate cron jobs from JSON: {}", e),
-                }
-            }
-        } else {
-            debug!("SQLite has {} existing cron jobs", existing.len());
-        }
-
-        Self { store }
-    }
-
-    /// Load cron jobs from YAML files in cron/ directory.
-    /// Each .yaml file defines one job with the filename (sans .yaml) as the job ID.
-    async fn load_yaml_jobs(store: &SqliteStore, workspace: &std::path::Path) -> usize {
-        let cron_dir = workspace.join("cron");
-        if !cron_dir.exists() {
-            return 0;
-        }
-
-        let mut count = 0;
-        match tokio::fs::read_dir(&cron_dir).await {
-            Ok(mut entries) => {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let path = entry.path();
-                    if path
-                        .extension()
-                        .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                    {
-                        match Self::load_yaml_job(store, &path).await {
-                            Ok(job_id) => {
-                                debug!("Loaded cron job from YAML: {}", job_id);
-                                count += 1;
-                            }
-                            Err(e) => {
-                                warn!("Failed to load cron job from {:?}: {}", path, e);
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Failed to read cron directory {:?}: {}", cron_dir, e);
-            }
-        }
-        count
-    }
-
-    /// Load a single YAML job file and save to SQLite.
-    /// Returns the job ID on success.
-    async fn load_yaml_job(
-        store: &SqliteStore,
-        yaml_path: &std::path::Path,
-    ) -> anyhow::Result<String> {
-        let content = tokio::fs::read_to_string(yaml_path).await?;
-        let yaml_job: CronYamlFile = serde_yaml::from_str(&content)?;
-
-        // Use filename (without extension) as job ID
-        let job_id = yaml_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        // Determine enabled status (deliver field takes precedence if set)
-        let enabled = yaml_job.deliver.unwrap_or(yaml_job.enabled);
-
-        // Calculate next_run time
-        let next_run = CronJob::calculate_next_run(&yaml_job.cron);
-
-        let row = CronJobRow {
-            id: job_id.clone(),
-            name: yaml_job.name,
-            cron: yaml_job.cron,
-            message: yaml_job.message,
-            channel: yaml_job.channel,
-            chat_id: yaml_job.to,
-            last_run: None,
-            next_run,
-            enabled,
+        let service = Self {
+            jobs: RwLock::new(HashMap::new()),
+            workspace: workspace.clone(),
+            watcher: RwLock::new(None),
+            rx: Mutex::new(rx),
         };
 
-        store.save_cron_job(&row).await?;
-        Ok(job_id)
+        // Load existing jobs
+        service.load_all_jobs(&workspace);
+
+        // Start file watcher
+        service.start_watcher(tx);
+
+        service
     }
-    /// Migrate jobs from legacy JSON file to SQLite.
-    async fn migrate_from_json(
-        store: &SqliteStore,
-        json_path: &std::path::Path,
-    ) -> anyhow::Result<usize> {
-        let content = tokio::fs::read_to_string(json_path).await?;
-        let legacy_jobs: std::collections::HashMap<String, CronJob> =
-            serde_json::from_str(&content)?;
 
-        let mut count = 0;
-        for (_id, mut job) in legacy_jobs {
-            // Recalculate next_run in case it's stale
-            job.next_run = CronJob::calculate_next_run(&job.cron);
-
-            store
-                .save_cron_job(&CronJobRow {
-                    id: job.id.clone(),
-                    name: job.name.clone(),
-                    cron: job.cron.clone(),
-                    message: job.message.clone(),
-                    channel: job.channel.clone(),
-                    chat_id: job.chat_id.clone(),
-                    last_run: job.last_run,
-                    next_run: job.next_run,
-                    enabled: job.enabled,
-                })
-                .await?;
-            count += 1;
+    /// Load all cron jobs from markdown files
+    fn load_all_jobs(&self, workspace: &Path) {
+        let cron_dir = workspace.join("cron");
+        if !cron_dir.exists() {
+            let _ = std::fs::create_dir_all(&cron_dir);
+            return;
         }
 
-        Ok(count)
+        let mut count = 0;
+        for entry in std::fs::read_dir(&cron_dir).ok().into_iter().flatten() {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    match Self::parse_markdown_file(&path) {
+                        Ok(job) => {
+                            debug!("Loaded cron job from markdown: {}", job.id);
+                            self.jobs.write().insert(job.id.clone(), job);
+                            count += 1;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load cron job from {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if count > 0 {
+            info!("Loaded {} cron jobs from markdown files", count);
+        }
     }
 
-    /// Add a job (immediately persisted to SQLite)
+    /// Parse a single markdown cron job file
+    fn parse_markdown_file(path: &Path) -> anyhow::Result<CronJob> {
+        let content = std::fs::read_to_string(path)?;
+        parse_markdown(&content, path)
+    }
+
+    /// Start file watcher for hot reload
+    fn start_watcher(&self, tx: std::sync::mpsc::Sender<Result<Event, notify::Error>>) {
+        let cron_dir = self.workspace.join("cron");
+
+        match RecommendedWatcher::new(tx, notify::Config::default()) {
+            Ok(mut watcher) => {
+                if let Err(e) = watcher.watch(&cron_dir, RecursiveMode::NonRecursive) {
+                    warn!("Failed to watch cron directory: {}", e);
+                }
+                *self.watcher.write() = Some(watcher);
+                debug!("Started cron file watcher for {:?}", cron_dir);
+            }
+            Err(e) => {
+                warn!("Failed to create file watcher: {}", e);
+            }
+        }
+    }
+
+    /// Poll watcher and update jobs (called periodically)
+    fn poll_watcher(&self) {
+        let rx = self.rx.lock();
+        while let Ok(event_result) = rx.try_recv() {
+            if let Ok(event) = event_result {
+                for path in &event.paths {
+                    if path.extension().is_some_and(|ext| ext == "md") {
+                        match event.kind {
+                            notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {
+                                // Small delay to ensure file is fully written
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                if let Ok(job) = Self::parse_markdown_file(path) {
+                                    let job_id = job.id.clone();
+                                    self.jobs.write().insert(job_id.clone(), job);
+                                    debug!("Reloaded cron job: {}", job_id);
+                                }
+                            }
+                            notify::EventKind::Remove(_) => {
+                                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                                    self.jobs.write().remove(id);
+                                    debug!("Removed cron job: {}", id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Add a job (creates/updates markdown file)
     #[instrument(name = "cron.add_job", skip_all, fields(job_id = %job.id))]
     pub async fn add_job(&self, job: CronJob) -> anyhow::Result<()> {
-        self.store
-            .save_cron_job(&CronJobRow {
-                id: job.id.clone(),
-                name: job.name.clone(),
-                cron: job.cron.clone(),
-                message: job.message.clone(),
-                channel: job.channel.clone(),
-                chat_id: job.chat_id.clone(),
-                last_run: job.last_run,
-                next_run: job.next_run,
-                enabled: job.enabled,
-            })
-            .await?;
+        // Create cron directory if it doesn't exist
+        let cron_dir = self.workspace.join("cron");
+        if !cron_dir.exists() {
+            std::fs::create_dir_all(&cron_dir)?;
+        }
+
+        // Write markdown file
+        let file_path = cron_dir.join(format!("{}.md", job.id));
+        let content = format!(
+            "---
+name: {}
+cron: \"{}\"
+channel: {}
+to: {}
+enabled: {}
+---
+
+{}",
+            job.name,
+            job.cron,
+            job.channel.unwrap_or_default(),
+            job.chat_id.unwrap_or_default(),
+            job.enabled,
+            job.message
+        );
+
+        std::fs::write(&file_path, content)?;
         info!("Added cron job: {} ({})", job.name, job.id);
         Ok(())
     }
 
-    /// Remove a job (immediately persisted to SQLite)
+    /// Remove a job (deletes markdown file)
     #[instrument(name = "cron.remove_job", skip(self), fields(job_id = %id))]
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
-        let removed = self.store.delete_cron_job(id).await?;
-        if removed {
-            info!("Removed cron job: {}", id);
+        let cron_dir = self.workspace.join("cron");
+        let file_path = cron_dir.join(format!("{}.md", id));
+
+        if !file_path.exists() {
+            return Ok(false);
         }
-        Ok(removed)
+
+        std::fs::remove_file(&file_path)?;
+        // Remove from memory immediately
+        self.jobs.write().remove(id);
+        info!("Removed cron job: {}", id);
+        Ok(true)
     }
 
-    /// Get a job by ID (reads directly from SQLite)
+    /// Get a job by ID (reads from memory)
     pub async fn get_job(&self, id: &str) -> anyhow::Result<Option<CronJob>> {
-        let jobs = self.store.load_cron_jobs().await?;
-        Ok(jobs.into_iter().find(|j| j.id == id).map(CronJob::from))
+        self.poll_watcher();
+        Ok(self.jobs.read().get(id).cloned())
     }
 
-    /// List all jobs (reads directly from SQLite)
+    /// List all jobs (reads from memory)
     pub async fn list_jobs(&self) -> anyhow::Result<Vec<CronJob>> {
-        let jobs = self.store.load_cron_jobs().await?;
-        Ok(jobs.into_iter().map(CronJob::from).collect())
+        self.poll_watcher();
+        Ok(self.jobs.read().values().cloned().collect())
     }
 
-    /// Get jobs that are due to run (query directly from SQLite)
+    /// Get jobs that are due to run (query from memory)
     #[instrument(name = "cron.get_due_jobs", skip_all)]
     pub async fn get_due_jobs(&self) -> anyhow::Result<Vec<CronJob>> {
+        self.poll_watcher();
         let now = Utc::now();
-        let jobs = self.store.load_due_cron_jobs(now).await?;
-        Ok(jobs.into_iter().map(CronJob::from).collect())
+
+        Ok(self
+            .jobs
+            .read()
+            .values()
+            .filter(|job| job.enabled && job.next_run.is_some_and(|nr| nr <= now))
+            .cloned()
+            .collect())
     }
 
-    /// Mark a job as run (immediately persisted to SQLite)
-    #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
-    pub async fn mark_job_run(&self, id: &str) {
-        let now = Utc::now();
+    /// Check if any job should execute immediately on startup
+    pub fn should_execute_on_startup(&self, job: &CronJob) -> bool {
+        job.next_run.is_some_and(|nr| nr <= Utc::now())
+    }
 
-        // Load the job to calculate next_run
-        match self.get_job(id).await {
-            Ok(Some(mut job)) => {
-                job.update_next_run();
-
-                if let Err(e) = self
-                    .store
-                    .update_cron_job_run_times(id, now, job.next_run)
-                    .await
-                {
-                    warn!("Failed to persist cron job {}: {}", id, e);
-                }
-
-                debug!("Marked job {} as run", id);
-            }
-            Ok(None) => {
-                warn!("Job {} not found when marking as run", id);
-            }
-            Err(e) => {
-                warn!("Failed to load job {} for marking as run: {}", id, e);
-            }
+    /// Update job's next_run time (in-memory only, no persistence)
+    pub async fn update_job_next_run(&self, id: &str, next_run: Option<DateTime<Utc>>) {
+        if let Some(mut job) = self.jobs.write().get_mut(id) {
+            job.next_run = next_run;
         }
     }
 }

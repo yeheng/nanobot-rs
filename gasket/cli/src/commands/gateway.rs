@@ -80,13 +80,10 @@ pub async fn cmd_gateway() -> Result<()> {
     let bus = Arc::new(bus);
 
     // MemoryStore provides the underlying SqliteStore for session management
-    // Create this FIRST to ensure a single connection pool is shared across all services
     let memory_store = Arc::new(MemoryStore::new().await);
-    let sqlite_store = memory_store.sqlite_store().clone();
 
-    // Create cron service with the shared SqliteStore to avoid duplicate connection pools
-    let cron_service =
-        Arc::new(CronService::with_store(sqlite_store.clone(), workspace.clone()).await);
+    // Create cron service with file-driven architecture (no SQLite dependency)
+    let cron_service = Arc::new(CronService::new(workspace.clone()).await);
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config, vault.as_deref())?;
@@ -183,7 +180,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
             ext
         },
-        sqlite_store: Some(sqlite_store),
+        sqlite_store: None, // Cron service is now file-driven, no SQLite needed
         model_registry: Some(model_registry.clone()),
         provider_registry: Some(provider_registry.clone()),
     });
@@ -705,7 +702,13 @@ fn start_cron_checker(
                             trace_id: None,
                         };
                         bus_for_cron.publish_inbound(inbound).await;
-                        cron_svc.mark_job_run(&job.id).await;
+                        // Update next_run time in memory (no persistence needed)
+                        let next_run = {
+                            let mut job = job.clone();
+                            job.update_next_run();
+                            job.next_run
+                        };
+                        cron_svc.update_job_next_run(&job.id, next_run).await;
                     }
                 }
                 Err(e) => {

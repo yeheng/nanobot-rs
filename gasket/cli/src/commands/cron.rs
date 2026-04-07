@@ -35,10 +35,6 @@ pub async fn cmd_cron_list() -> Result<()> {
             .next_run
             .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| "N/A".to_string());
-        let last = job
-            .last_run
-            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-            .unwrap_or_else(|| "Never".to_string());
 
         println!("{}", job.name.cyan().bold());
         println!("  ID:       {}", job.id.dimmed());
@@ -46,7 +42,6 @@ pub async fn cmd_cron_list() -> Result<()> {
         println!("  Cron:     {}", job.cron);
         println!("  Message:  {}", job.message);
         println!("  Next:     {}", next);
-        println!("  Last:     {}", last);
         if let Some(ch) = &job.channel {
             println!("  Channel:  {}", ch);
         }
@@ -209,10 +204,6 @@ pub async fn cmd_cron_show(id: String) -> Result<()> {
         .next_run
         .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "N/A".to_string());
-    let last = job
-        .last_run
-        .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-        .unwrap_or_else(|| "Never".to_string());
 
     println!("{}", job.name.cyan().bold());
     println!();
@@ -221,7 +212,6 @@ pub async fn cmd_cron_show(id: String) -> Result<()> {
     println!("  Cron:     {}", job.cron);
     println!("  Message:  {}", job.message);
     println!("  Next:     {}", next);
-    println!("  Last:     {}", last);
 
     if let Some(ch) = &job.channel {
         println!("  Channel:  {}", ch);

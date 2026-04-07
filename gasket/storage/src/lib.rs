@@ -10,7 +10,6 @@
 //! exclusively in `~/.gasket/memory/*.md` files. SQLite only stores
 //! machine-state.
 
-mod cron;
 mod event_store;
 mod kv;
 pub mod memory;
@@ -30,7 +29,6 @@ use std::path::PathBuf;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
-pub use cron::CronJobRow;
 pub use event_store::{EventFilter, EventStore, EventStoreTrait, StoreError};
 
 // ── History re-exports ──
