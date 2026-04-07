@@ -56,15 +56,16 @@ pub async fn cmd_cron_list() -> Result<()> {
 
 /// Add a new cron job
 pub async fn cmd_cron_add(name: String, cron_expr: String, message: String) -> Result<()> {
-    // Validate cron expression
-    let schedule: cron::Schedule = cron_expr
+    // Validate cron expression (supports both 5-field and 6-field formats)
+    let normalized_cron = normalize_cron_expression(&cron_expr)?;
+    let schedule: cron::Schedule = normalized_cron
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e))?;
 
     let next_run = schedule.after(&Utc::now()).next();
 
     let id = Uuid::new_v4().to_string();
-    let mut job = CronJob::new(&id, &name, &cron_expr, &message);
+    let mut job = CronJob::new(&id, &name, &normalized_cron, &message);
     job.next_run = next_run;
 
     let workspace = config_dir();
@@ -86,6 +87,26 @@ pub async fn cmd_cron_add(name: String, cron_expr: String, message: String) -> R
     }
 
     Ok(())
+}
+
+/// Normalize cron expression to 6-field format (sec min hour day month weekday)
+/// Accepts both 5-field (traditional) and 6-field (with seconds) formats
+fn normalize_cron_expression(expr: &str) -> Result<String> {
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+
+    if parts.len() == 5 {
+        // 5-field format: min hour day month weekday -> prepend "0" for seconds
+        Ok(format!("0 {}", expr))
+    } else if parts.len() == 6 {
+        // Already 6-field format
+        Ok(expr.to_string())
+    } else {
+        anyhow::bail!(
+            "Invalid cron expression: expected 5 or 6 fields, got {}. Expression: '{}'",
+            parts.len(),
+            expr
+        )
+    }
 }
 
 /// Remove a cron job by ID

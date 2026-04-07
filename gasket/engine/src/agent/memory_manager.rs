@@ -160,6 +160,7 @@ impl MemoryManager {
             expires: None,
             tokens,
             superseded_by: None,
+            index: true,
         };
 
         let filename = format!("{}.md", meta.id);

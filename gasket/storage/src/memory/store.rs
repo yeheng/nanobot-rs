@@ -105,6 +105,7 @@ impl FileMemoryStore {
             expires: None,
             tokens: tokens as usize,
             superseded_by: None,
+            index: true,
         };
 
         let filename = format!("{}.md", meta.id);

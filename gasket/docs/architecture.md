@@ -12,7 +12,7 @@ gasket-rs/                    (Cargo workspace)
 │   └── src/
 │       ├── agent/             Agent 核心引擎 (loop, executor, prompt, history, stream, compactor, indexing, subagent, context)
 │       ├── config/            配置加载 (YAML → Struct)
-│       ├── cron/              定时任务服务
+│       ├── cron/              定时任务服务 (文件驱动：~/.gasket/cron/*.md)
 │       ├── heartbeat/         心跳服务
 │       ├── hooks/             Pipeline Hook 系统 (BeforeRequest, AfterResponse, etc.)
 │       ├── skills/            技能系统 (loader, registry, skill, metadata)
@@ -47,7 +47,7 @@ gasket-rs/                    (Cargo workspace)
 │  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘   │
 └────────────────────────────────┼───────────┼─────────────────────┘
                                  │           │
-─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┼───────────┼─────────────────────
                                  │           │
 ┌────────────────────────────────┼───────────┼─────────────────────┐
 │                        engine (Library)                          │
@@ -96,13 +96,13 @@ gasket-rs/                    (Cargo workspace)
 │  │  ┌──────┐ ┌───────┐ ┌────────┐  │                         │
 │  │  │Tele- │ │Discord│ │ Slack  │  │  ┌───────────────────┐  │
 │  │  │gram  │ │       │ │        │  │  │   Config Loader   │  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │  │   (YAML → Struct) │  │
-│  │  │飞书  │ │ 邮件  │ │ 钉钉  │  │  └───────────────────┘  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │                         │
-│  │  │企业  │ │WebSoc-│ │  CLI   │  │  ┌───────────────────┐  │
-│  │  │微信  │ │ket    │ │       │  │  │   Skills Loader   │  │
-│  │  └──────┘ └───────┘ └────────┘  │  │   (MD → Context)  │  │
-│  └─────────────────────────────────┘  └───────────────────┘  │
+│  │  ├──────┤ ├───────┤ ├────────┤  │  └───────────────────┘  │
+│  │  │飞书  │ │ 邮件  │ │ 钉钉  │  │                         │
+│  │  ├──────┤ ├───────┤ ├────────┤  │  ┌───────────────────┐  │
+│  │  │企业  │ │WebSoc-│ │  CLI   │  │  │   Skills Loader   │  │
+│  │  │微信  │ │ket    │ │       │  │  │   (MD → Context)  │  │
+│  │  └──────┘ └───────┘ └────────┘  │  └───────────────────┘  │
+│  └─────────────────────────────────┘                         │
 │                                                               │
 │  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐ │
 │  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      │ │
@@ -120,8 +120,8 @@ gasket-rs/                    (Cargo workspace)
 │  │  │ (JSON 存储) │  │ (运行时注入) │  │  (XChaCha20)  │  │  │
 │  │  └─────────────┘  └──────────────┘  └───────────────┘  │  │
 │  │                                                         │  │
-│  │  占位符语法: {{vault:key}}                              │  │
-│  │  日志脱敏: redact_secrets()                             │  │
+│  │  占位符语法：{{vault:key}}                              │  │
+│  │  日志脱敏：redact_secrets()                             │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
@@ -131,7 +131,7 @@ gasket-rs/                    (Cargo workspace)
 │  │  SearchQuery: BooleanQuery, FuzzyQuery, DateRange       │  │
 │  │  SearchResult: HighlightedText                          │  │
 │  │  TextEmbedder, cosine_similarity                        │  │
-│  │  注: 高级 Tantivy 全文搜索在独立的 tantivy crate         │  │
+│  │  注：高级 Tantivy 全文搜索在独立的 tantivy crate         │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 
@@ -154,8 +154,8 @@ gasket-rs/                    (Cargo workspace)
 | **无内存缓存** | SessionManager 直接读写 SQLite，利用 SQLite page cache 避免缓存一致性问题 |
 | **Vault 敏感数据隔离** | 敏感数据与 LLM 可访问存储完全隔离，仅运行时注入，支持加密存储 |
 | **模块化 Skills 系统** | 独立的 skills/ 模块，支持 Markdown + YAML frontmatter 格式，渐进式加载 |
-| **文件驱动 Cron** | Cron jobs 存储在 ~/.gasket/cron/*.md，notify 监听热重载，无需 SQLite 持久化 |
 | **Crate 分离** | 核心类型、提供商、存储、Vault、渠道等已拆分为独立 crate，通过 re-export 保持兼容性 |
+| **文件驱动 Cron** | Cron jobs 存储在 ~/.gasket/cron/*.md，notify 监听热重载，无需 SQLite 持久化 |
 
 ---
 
@@ -210,35 +210,6 @@ pub struct CronService {
 - 解析 Markdown + YAML frontmatter 格式
 - 通过 `notify` crate 监听文件变化，支持热重载
 - 内存中计算和更新 `next_run` 时间
-
-### AgentContext 枚举
-
-零成本枚举分发，编译期替代 `Option<T>` 模式：
-
-```rust
-pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless,
-}
-```
-
-```rust
-pub struct PersistentContext {
-    pub event_store: Arc<EventStore>,
-    pub sqlite_store: Arc<SqliteStore>,
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
-}
-```
-
-AgentContext 关键方法:
-- `persistent(event_store, sqlite_store) -> Self` — 创建持久化变体
-- `is_persistent(&self) -> bool` — 运行时检查变体类型
-- `load_session(&self, key) -> Session` — 从事件存储加载会话
-- `save_event(&self, event) -> Result` — 追加事件到事件存储
-- `get_history(&self, key, branch) -> Vec<SessionEvent>` — 获取分支历史
-- `recall_history(&self, key, embedding, top_k) -> Vec<String>` — 语义召回
-- `clear_session(&self, key) -> Result` — 清除会话数据
 
 | 变体 | 用途 |
 |------|------|

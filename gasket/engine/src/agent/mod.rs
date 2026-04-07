@@ -37,3 +37,6 @@ pub use stream::StreamEvent;
 pub use stream_buffer::BufferedEvents;
 pub use subagent::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};
 pub use subagent_tracker::{SubagentTracker, TrackerError};
+
+pub mod indexing_queue;
+pub use indexing_queue::{IndexingQueue, Priority, QueueError};

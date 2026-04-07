@@ -10,8 +10,8 @@ use std::sync::mpsc::{channel, Receiver};
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use notify::{RecommendedWatcher, Watcher, RecursiveMode, Event};
-use parking_lot::{RwLock, Mutex};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
 
@@ -176,19 +176,22 @@ impl CronService {
         }
 
         let mut count = 0;
-        for entry in std::fs::read_dir(&cron_dir).ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "md") {
-                    match Self::parse_markdown_file(&path) {
-                        Ok(job) => {
-                            debug!("Loaded cron job from markdown: {}", job.id);
-                            self.jobs.write().insert(job.id.clone(), job);
-                            count += 1;
-                        }
-                        Err(e) => {
-                            warn!("Failed to load cron job from {:?}: {}", path, e);
-                        }
+        for entry in std::fs::read_dir(&cron_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "md") {
+                match Self::parse_markdown_file(&path) {
+                    Ok(job) => {
+                        debug!("Loaded cron job from markdown: {}", job.id);
+                        self.jobs.write().insert(job.id.clone(), job);
+                        count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to load cron job from {:?}: {}", path, e);
                     }
                 }
             }
@@ -339,7 +342,7 @@ enabled: {}
 
     /// Update job's next_run time (in-memory only, no persistence)
     pub async fn update_job_next_run(&self, id: &str, next_run: Option<DateTime<Utc>>) {
-        if let Some(mut job) = self.jobs.write().get_mut(id) {
+        if let Some(job) = self.jobs.write().get_mut(id) {
             job.next_run = next_run;
         }
     }

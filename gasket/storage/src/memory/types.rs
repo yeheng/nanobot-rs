@@ -247,6 +247,10 @@ pub struct MemoryMeta {
     /// ID of superseding memory (if this has been replaced)
     #[serde(default)]
     pub superseded_by: Option<String>,
+
+    /// Whether this memory should be automatically indexed for search
+    #[serde(default = "default_true")]
+    pub index: bool,
 }
 
 impl Default for MemoryMeta {
@@ -267,6 +271,7 @@ impl Default for MemoryMeta {
             expires: None,
             tokens: 0,
             superseded_by: None,
+            index: true,
         }
     }
 }
@@ -429,6 +434,10 @@ fn default_on_demand() -> usize {
 
 fn default_total_cap() -> usize {
     4000
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for TokenBudget {

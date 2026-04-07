@@ -1,205 +1,93 @@
 ---
 name: cron
-description: Schedule and manage recurring tasks and reminders
+description: Schedule and manage recurring tasks using file-driven cron system
 always: false
 ---
 
-# Cron Task Management Skill
+# Cron Task Management
 
-This skill provides guidance on managing scheduled tasks using gasket's cron system.
+使用 Markdown + YAML frontmatter 管理定时任务，支持热重载。
 
-## Overview
+## 快速开始
 
-The cron system allows you to:
-- Schedule recurring tasks (e.g., daily reports)
-- Set up reminders (e.g., weekly meetings)
-- Run one-time tasks at a specific time
+### 创建任务
 
-## Cron Expression Format
-
-Standard 5-field cron format:
-
-```
-┌───────────── minute (0 - 59)
-│ ┌───────────── hour (0 - 23)
-│ │ ┌───────────── day of month (1 - 31)
-│ │ │ ┌───────────── month (1 - 12)
-│ │ │ │ ┌───────────── day of week (0 - 6) (Sunday = 0)
-│ │ │ │ │
-* * * * *
-```
-
-## Common Patterns
-
-| Expression | Description |
-|------------|-------------|
-| `0 9 * * *` | Every day at 9:00 AM |
-| `0 9 * * 1` | Every Monday at 9:00 AM |
-| `0 9 1 * *` | Every 1st of the month at 9:00 AM |
-| `*/15 * * * *` | Every 15 minutes |
-| `0 */2 * * *` | Every 2 hours |
-| `0 9-17 * * *` | Every hour from 9 AM to 5 PM |
-
-## Defining Cron Jobs
-
-Cron jobs are now defined using YAML instead of JSON.
-
-### Add a Scheduled Task
-
-Use the cron tool with action "add":
-
-```yaml
-action: add
+```markdown
+---
 name: daily-standup
-schedule: "0 9 * * 1-5"  # Weekdays at 9 AM
-message: "Time for daily standup meeting!"
+cron: "0 0 9 * * 1-5"
 channel: telegram
-chat_id: "123456"
+to: "group_chat_123"
+enabled: true
+---
+
+各位早上好！请提交今日站会更新。
 ```
 
-### List All Tasks
-
-Use the cron tool with action "list":
-
-```yaml
-action: list
-```
-
-Returns:
-- Task ID
-- Task name
-- Schedule
-- Next run time
-- Status (enabled/disabled)
-
-### Remove a Task
-
-Use the cron tool with action "remove":
-
-```yaml
-action: remove
-id: "task-uuid-here"
-```
-
-### Enable/Disable a Task
-
-Use the cron tool with action "enable" or "disable":
-
-```yaml
-action: enable
-id: "task-uuid-here"
-```
-
-### Run a Task Manually
-
-Use the cron tool with action "run":
-
-```yaml
-action: run
-id: "task-uuid-here"
-```
-
-## One-Time Tasks
-
-For tasks that run once at a specific time:
-
-```yaml
-action: add
-name: meeting-reminder
-at: "2024-01-20 14:30"  # Use "at" instead of "schedule"
-message: "Meeting in 30 minutes"
-channel: telegram
-chat_id: "123456"
-```
-
-## Task Persistence
-
-Cron jobs exist in two storage locations:
-1. **SQLite Database**: Managed by the system, typically where dynamically added jobs via tools or CLI are stored.
-2. **YAML Files**: Located in `USER_HOME/cron/*.yaml` (e.g. `~/.gasket/cron/*.yaml`), allowing users to statically define and manage jobs via YAML configuration files.
-
-These jobs will survive restarts.
-
-## Use Cases
-
-### 1. Daily Standup Reminder
-```yaml
-name: "daily-standup"
-schedule: "0 9 * * 1-5" # weekdays at 9 AM
-message: "Time for daily standup!"
-channel: telegram
-chat_id: "123456"
-```
-
-### 2. Weekly Report
-```yaml
-name: "weekly-report"
-schedule: "0 17 * * 5" # Friday at 5 PM
-message: "Don't forget to submit your weekly report!"
-channel: slack
-chat_id: "general"
-```
-
-### 3. Hourly Health Check
-```yaml
-name: "health-check"
-schedule: "0 * * * *" # every hour
-message: "check_system_health" # custom action
-```
-
-### 4. Monthly Backup Reminder
-```yaml
-name: "monthly-backup"
-schedule: "0 2 1 * *" # 1st of month at 2 AM
-message: "Time to perform monthly backup"
-```
-
-## Best Practices
-
-1. **Use Meaningful Names**: Give tasks descriptive names for easy identification
-2. **Test Schedules**: Verify cron expressions before deploying
-3. **Set Appropriate Channels**: Route reminders to the right chat
-4. **Review Regularly**: Periodically check and clean up old tasks
-5. **Handle Timezones**: Be aware of the server's timezone setting
-
-## Troubleshooting
-
-### Task Not Running
-- Check if task is enabled
-- Verify cron expression is correct
-- Ensure channel is configured and running
-- Check logs for errors
-
-### Wrong Time
-- Check server timezone
-- Verify cron expression
-- Consider using explicit time (e.g., "0 9 * * *" for 9 AM UTC)
-
-## CLI Commands
-
-Users can also manage tasks via CLI:
+### 管理命令
 
 ```bash
-# List all tasks
-gasket cron list
-
-# Add a task
-gasket cron add --name "daily-reminder" --schedule "0 9 * * *" --message "Good morning!"
-
-# Remove a task
-gasket cron remove --id <task-id>
-
-# Enable/disable
-gasket cron enable --id <task-id>
-gasket cron disable --id <task-id>
-
-# Run manually
-gasket cron run --id <task-id>
+gasket cron list          # 查看所有任务
+gasket cron show <id>     # 查看任务详情
+gasket cron remove <id>   # 删除任务
+gasket cron enable <id>   # 启用任务
+gasket cron disable <id>  # 禁用任务
 ```
 
-## Important Notes
+## Cron 表达式
 
-- Tasks require the gateway to be running
-- Task execution is best-effort (no guaranteed delivery)
-- Timezone is determined by the server's system clock
-- Maximum of 100 scheduled tasks (configurable)
+6 位格式：`秒 分 时 日 月 周`
+
+```
+┌───────────── 秒 (0-59)
+│ ┌───────────── 分 (0-59)
+│ │ ┌───────────── 时 (0-23)
+│ │ │ ┌───────────── 日 (1-31)
+│ │ │ │ ┌───────────── 月 (1-12)
+│ │ │ │ │ ┌───────────── 周 (0-6, 0=周日)
+* * * * * *
+```
+
+**常用模式：**
+- `0 0 9 * * *` - 每天 9:00
+- `0 0 9 * * 1-5` - 工作日 9:00
+- `0 0 */2 * * *` - 每 2 小时
+- `*/30 * * * * *` - 每 30 秒
+
+## 任务配置
+
+| 字段 | 必填 | 类型 | 默认 | 说明 |
+|------|------|------|------|------|
+| `name` | 否 | string | 文件名 | 任务名称 |
+| `cron` | 是 | string | - | Cron 表达式 |
+| `channel` | 否 | string | - | 渠道 (telegram/discord/slack) |
+| `to` | 否 | string | - | 目标聊天 ID |
+| `enabled` | 否 | boolean | `true` | 启用状态 |
+| Body | 是 | string | - | 触发时发送的消息 |
+
+## 热重载
+
+文件存储于 `~/.gasket/cron/*.md`，修改后 50-100ms 自动生效：
+- 新建/修改文件 → 立即加载
+- 删除文件 → 立即移除
+- 重启 gateway → 强制重载
+
+## 最佳实践
+
+1. 使用描述性名称
+2. 先测试 cron 表达式
+3. 路由到正确渠道
+4. 定期清理旧任务
+5. 注意服务器时区（默认 UTC）
+
+## 故障排查
+
+**任务未运行：** 检查 enabled 状态、cron 表达式、渠道配置、gateway 日志  
+**时间不对：** 确认服务器时区、验证 cron 表达式  
+**修改未生效：** 确认文件已保存、扩展名为.md、等待 60 秒或重启 gateway
+
+## 注意事项
+
+- 需要 gateway 运行
+- 启动时会立即执行到期任务
+- 建议不超过 100 个任务
