@@ -1,7 +1,7 @@
 ---
 name: memory
 description: Manage long-term memory using gasket's hybrid file + SQLite system
-always: false
+always: true
 ---
 
 # Memory Management Skill

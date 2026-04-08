@@ -1,16 +1,16 @@
 ---
 name: cron
 description: Schedule and manage recurring tasks using file-driven cron system
-always: false
+always: true
 ---
 
 # Cron Task Management
 
-使用 Markdown + YAML frontmatter 管理定时任务，支持热重载。
+Manage recurring tasks using Markdown + YAML frontmatter. Requires manual refresh after changes.
 
-## 快速开始
+## Quick Start
 
-### 创建任务
+### Create a Task
 
 ```markdown
 ---
@@ -21,73 +21,79 @@ to: "group_chat_123"
 enabled: true
 ---
 
-各位早上好！请提交今日站会更新。
+Good morning! Please submit your daily standup update.
 ```
 
-### 管理命令
+### Management Commands
 
 ```bash
-gasket cron list          # 查看所有任务
-gasket cron show <id>     # 查看任务详情
-gasket cron remove <id>   # 删除任务
-gasket cron enable <id>   # 启用任务
-gasket cron disable <id>  # 禁用任务
+gasket cron list          # List all tasks
+gasket cron show <id>     # Show task details
+gasket cron remove <id>   # Remove a task
+gasket cron enable <id>   # Enable a task
+gasket cron disable <id>  # Disable a task
+gasket cron refresh       # Manually refresh all cron tasks
 ```
 
-## Cron 表达式
+## Cron Expression
 
-6 位格式：`秒 分 时 日 月 周`
+6-field format: `Second Minute Hour Day Month Weekday`
 
 ```
-┌───────────── 秒 (0-59)
-│ ┌───────────── 分 (0-59)
-│ │ ┌───────────── 时 (0-23)
-│ │ │ ┌───────────── 日 (1-31)
-│ │ │ │ ┌───────────── 月 (1-12)
-│ │ │ │ │ ┌───────────── 周 (0-6, 0=周日)
+┌───────────── Second (0-59)
+│ ┌───────────── Minute (0-59)
+│ │ ┌───────────── Hour (0-23)
+│ │ │ ┌───────────── Day (1-31)
+│ │ │ │ ┌───────────── Month (1-12)
+│ │ │ │ │ ┌───────────── Weekday (0-6, 0=Sunday)
 * * * * * *
 ```
 
-**常用模式：**
-- `0 0 9 * * *` - 每天 9:00
-- `0 0 9 * * 1-5` - 工作日 9:00
-- `0 0 */2 * * *` - 每 2 小时
-- `*/30 * * * * *` - 每 30 秒
+**Common Patterns:**
+- `0 0 9 * * *` - Every day at 9:00
+- `0 0 9 * * 1-5` - Weekdays at 9:00
+- `0 0 */2 * * *` - Every 2 hours
+- `*/30 * * * * *` - Every 30 seconds
 
-## 任务配置
+## Task Configuration
 
-| 字段 | 必填 | 类型 | 默认 | 说明 |
-|------|------|------|------|------|
-| `name` | 否 | string | 文件名 | 任务名称 |
-| `cron` | 是 | string | - | Cron 表达式 |
-| `channel` | 否 | string | - | 渠道 (telegram/discord/slack) |
-| `to` | 否 | string | - | 目标聊天 ID |
-| `enabled` | 否 | boolean | `true` | 启用状态 |
-| Body | 是 | string | - | 触发时发送的消息 |
+| Field | Required | Type | Default | Description |
+|-------|----------|------|---------|-------------|
+| `name` | No | string | filename | Task name |
+| `cron` | Yes | string | - | Cron expression |
+| `channel` | No | string | `websocket` | Channel (telegram/discord/slack/websocket). If not specified, broadcasts to all WebSocket clients |
+| `to` | No | string | - | Target chat ID |
+| `enabled` | No | boolean | `true` | Enable status |
 
-## 热重载
+**Important:** The message content goes in the **markdown body** (after `---`), NOT in the YAML frontmatter header. Do NOT add `message` field to the YAML frontmatter.
 
-文件存储于 `~/.gasket/cron/*.md`，修改后 50-100ms 自动生效：
-- 新建/修改文件 → 立即加载
-- 删除文件 → 立即移除
-- 重启 gateway → 强制重载
+| Body | Yes | string | - | Message to send when triggered |
 
-## 最佳实践
+## Manual Refresh Required
 
-1. 使用描述性名称
-2. 先测试 cron 表达式
-3. 路由到正确渠道
-4. 定期清理旧任务
-5. 注意服务器时区（默认 UTC）
+Cron tasks are stored in `~/.gasket/cron/*.md`. **Changes do NOT auto-refresh** - you must manually reload:
 
-## 故障排查
+- After adding/modifying/removing task files → run `gasket cron refresh` or restart gateway
+- The gateway loads tasks on startup
+- **DO NOT write markdown files directly to the cron directory** - always use the CLI tool or MCP tool to add/remove cron tasks
 
-**任务未运行：** 检查 enabled 状态、cron 表达式、渠道配置、gateway 日志  
-**时间不对：** 确认服务器时区、验证 cron 表达式  
-**修改未生效：** 确认文件已保存、扩展名为.md、等待 60 秒或重启 gateway
+## Best Practices
 
-## 注意事项
+1. Use descriptive names
+2. Test cron expressions first
+3. Route to the correct channel
+4. Clean up old tasks regularly
+5. Be aware of server timezone (default UTC)
 
-- 需要 gateway 运行
-- 启动时会立即执行到期任务
-- 建议不超过 100 个任务
+## Troubleshooting
+
+**Task not running:** Check enabled status, cron expression, channel configuration, gateway logs  
+**Wrong time:** Confirm server timezone, verify cron expression  
+**Changes not applied:** Run `gasket cron refresh` to reload all tasks, or restart the gateway
+
+## Important Notes
+
+- Requires gateway to be running
+- Executes due tasks on startup
+- Recommended limit: 100 tasks maximum
+- **Always use CLI commands or tools to manage cron tasks, not direct file manipulation**

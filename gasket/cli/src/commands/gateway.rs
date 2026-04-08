@@ -83,6 +83,7 @@ pub async fn cmd_gateway() -> Result<()> {
     let memory_store = Arc::new(MemoryStore::new().await);
 
     // Create cron service with file-driven architecture (no SQLite dependency)
+    // Manual refresh via 'gasket cron refresh' command
     let cron_service = Arc::new(CronService::new(workspace.clone()).await);
 
     // Create agent with all dependencies

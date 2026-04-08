@@ -42,8 +42,8 @@ impl Tool for CronTool {
     fn description(&self) -> &str {
         "Schedule tasks to run at specific times. \
          Actions: 'add' creates a scheduled job with a name, cron expression (e.g., '0 9 * * *' for 9 AM daily), \
-         and message; 'list' shows all jobs; 'remove' deletes a job by its ID. \
-         The job_id returned from 'add' is required for 'remove'."
+         and message; 'list' shows all jobs; 'remove' deletes a job by its ID; 'refresh' manually reloads all \
+         cron files from disk, comparing mtime and size to detect external changes."
     }
 
     fn parameters(&self) -> Value {
@@ -52,8 +52,8 @@ impl Tool for CronTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["add", "list", "remove"],
-                    "description": "Action to perform: 'add' creates a job, 'list' shows all jobs, 'remove' deletes a job"
+                    "enum": ["add", "list", "remove", "refresh"],
+                    "description": "Action to perform: 'add' creates a job, 'list' shows all jobs, 'remove' deletes a job, 'refresh' manually reloads all cron files from disk"
                 },
                 "name": {
                     "type": "string",
@@ -183,8 +183,18 @@ impl Tool for CronTool {
                     ))
                 }
             }
+            "refresh" => {
+                let report = self.service.refresh_all_jobs().await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to refresh cron jobs: {}", e))
+                })?;
+
+                Ok(format!(
+                    "✓ Refreshed cron jobs\n\nLoaded: {}\nUpdated: {}\nRemoved: {}\nErrors: {}",
+                    report.loaded, report.updated, report.removed, report.errors
+                ))
+            }
             _ => Err(ToolError::InvalidArguments(format!(
-                "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove'",
+                "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove', 'refresh'",
                 args.action
             ))),
         }
@@ -195,13 +205,14 @@ impl Tool for CronTool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_cron_tool_add_missing_name() {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = Arc::new(CronService::new(temp_dir.clone()).await);
         let tool = CronTool::new(service);
 
         let args = json!({
@@ -224,7 +235,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = Arc::new(CronService::new(temp_dir.clone()).await);
         let tool = CronTool::new(service);
 
         let args = json!({
@@ -248,7 +259,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = Arc::new(CronService::new(temp_dir.clone()).await);
         let tool = CronTool::new(service.clone());
 
         // Add a job
@@ -281,7 +292,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = std::sync::Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = Arc::new(CronService::new(temp_dir.clone()).await);
         let tool = CronTool::new(service.clone());
 
         // Add a job

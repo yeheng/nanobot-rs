@@ -253,3 +253,23 @@ pub async fn cmd_cron_show(id: String) -> Result<()> {
 
     Ok(())
 }
+
+/// Refresh all cron jobs from disk
+pub async fn cmd_cron_refresh() -> Result<()> {
+    let workspace = config_dir();
+    let service = CronService::new(workspace).await;
+
+    let report = service
+        .refresh_all_jobs()
+        .await
+        .context("Failed to refresh cron jobs")?;
+
+    println!("{}", "Cron Jobs Refreshed".bold().cyan());
+    println!();
+    println!("  Loaded:   {}", report.loaded.to_string().green());
+    println!("  Updated:  {}", report.updated.to_string().yellow());
+    println!("  Removed:  {}", report.removed.to_string().red());
+    println!("  Errors:   {}", report.errors.to_string().red());
+
+    Ok(())
+}

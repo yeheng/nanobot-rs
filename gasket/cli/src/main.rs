@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
             CronCommands::Show { id } => commands::cmd_cron_show(id).await,
             CronCommands::Enable { id } => commands::cmd_cron_enable(id).await,
             CronCommands::Disable { id } => commands::cmd_cron_disable(id).await,
+            CronCommands::Refresh => commands::cmd_cron_refresh().await,
         },
         Some(Commands::Stats) => commands::cmd_stats().await,
         Some(Commands::Vault { command }) => match command {
@@ -93,7 +94,7 @@ async fn main() -> Result<()> {
             VaultCommands::Export { file } => commands::cmd_vault_export(file).await,
         },
         Some(Commands::Memory { command }) => match command {
-            MemoryCommands::Reindex => commands::cmd_memory_reindex().await,
+            MemoryCommands::Refresh => commands::cmd_memory_refresh().await,
         },
         None => {
             // No command - show help

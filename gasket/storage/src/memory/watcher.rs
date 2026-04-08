@@ -1,21 +1,11 @@
-//! File watcher for memory directory changes.
+//! File watcher for memory directory changes - Manual refresh version.
 //!
-//! Monitors `~/.gasket/memory/` for file system changes with debouncing.
-//! Detects human edits to memory files and triggers SQLite metadata sync.
-//!
-//! # Feature Flags
-//!
-//! - `memory-watcher`: Enables actual file watching via the `notify` crate
-//! - Without the feature: `MemoryWatcher::start()` returns an empty channel (no-op)
-//!
-//! # Debouncing
-//!
-//! File system events are debounced by 2 seconds (default) to avoid processing
-//! intermediate states during multi-step writes (e.g., editor save operations).
+//! Provides utilities for manual refresh of memory files.
+//! Call `refresh_all_files()` to detect external file changes by comparing mtime and size.
 //!
 //! # Filtering
 //!
-//! The watcher ignores:
+//! The following are ignored:
 //! - `.history/` directory (version-controlled backups)
 //! - `.tmp` files (temporary editor files)
 //! - `README.md` files (human-written notes, not memory entries)
@@ -24,65 +14,21 @@
 //!
 //! # Auto-Indexing
 //!
-//! The `AutoIndexHandler` connects file watcher events to O(1) SQLite upserts.
-//! When enabled, modifying a `.md` memory file triggers:
-//! 1. UPSERT of the file's metadata into the `memory_metadata` SQLite table
-//! 2. UPSERT/delete of the file's embedding in SQLite
+//! The `AutoIndexHandler` provides manual refresh functionality.
+//! Call `process_file()` to manually sync a file's metadata and embedding to SQLite.
 
 use super::types::Scenario;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
-#[cfg(feature = "memory-watcher")]
-use std::time::{Duration, Instant};
-
-// ============================================================================
-// Watch event types
-// ============================================================================
-
-/// Events emitted by the memory watcher after debouncing.
+/// Refresh report from manual refresh operations
 #[derive(Debug, Clone)]
-pub enum WatchEvent {
-    /// A new file was created.
-    Created(PathBuf),
-
-    /// An existing file was modified.
-    Modified(PathBuf),
-
-    /// A file was deleted.
-    Deleted(PathBuf),
-}
-
-impl WatchEvent {
-    /// Get the file path associated with this event.
-    pub fn path(&self) -> &Path {
-        match self {
-            WatchEvent::Created(p) => p,
-            WatchEvent::Modified(p) => p,
-            WatchEvent::Deleted(p) => p,
-        }
-    }
-}
-
-/// Configuration for the memory file watcher.
-#[derive(Debug, Clone)]
-pub struct WatcherConfig {
-    /// Base directory to watch (e.g., ~/.gasket/memory/)
-    pub base_dir: PathBuf,
-
-    /// Debounce duration in milliseconds (default: 2000)
-    pub debounce_ms: u64,
-}
-
-impl Default for WatcherConfig {
-    fn default() -> Self {
-        Self {
-            base_dir: super::path::memory_base_dir(),
-            debounce_ms: 2000,
-        }
-    }
+pub struct RefreshReport {
+    pub processed: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    pub errors: usize,
 }
 
 /// Check if a file path should be ignored by the watcher.
@@ -134,191 +80,16 @@ pub fn scenario_from_path(path: &Path) -> Option<Scenario> {
         .and_then(Scenario::from_dir_name)
 }
 
-/// Extract the relative path from a full path by stripping the base_dir prefix.
-fn relative_path(full_path: &Path, base_dir: &Path) -> Option<PathBuf> {
-    full_path
-        .strip_prefix(base_dir)
-        .ok()
-        .map(|p| p.to_path_buf())
-}
-
 // ============================================================================
-// Feature-gated implementation
+// Auto-index handler - Manual refresh version
 // ============================================================================
 
-/// File watcher for memory directory changes.
+/// Handler that provides manual refresh functionality for memory files.
 ///
-/// When the `memory-watcher` feature is enabled, uses the `notify` crate to
-/// detect file system changes with debouncing.
-///
-/// When the feature is disabled, `start()` returns an empty channel (no-op).
-pub struct MemoryWatcher {
-    config: WatcherConfig,
-}
-
-impl MemoryWatcher {
-    /// Create a new memory watcher with the given configuration.
-    pub fn new(config: WatcherConfig) -> Self {
-        Self { config }
-    }
-
-    /// Create a new memory watcher with default configuration.
-    pub fn with_defaults() -> Self {
-        Self::default()
-    }
-}
-
-impl Default for MemoryWatcher {
-    fn default() -> Self {
-        Self::new(WatcherConfig::default())
-    }
-}
-
-// Actual implementation with notify crate
-#[cfg(feature = "memory-watcher")]
-impl MemoryWatcher {
-    /// Start watching the memory directory.
-    ///
-    /// Returns a receiver for debounced events. This spawns a background task
-    /// that watches the filesystem and debounces events.
-    pub async fn start(&self) -> Result<mpsc::Receiver<WatchEvent>> {
-        use notify::{RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
-        use std::sync::mpsc as sync_mpsc;
-
-        let (tx, rx) = mpsc::channel(100);
-        let base_dir = self.config.base_dir.clone();
-        let debounce = Duration::from_millis(self.config.debounce_ms);
-
-        if !base_dir.exists() {
-            tokio::fs::create_dir_all(&base_dir).await?;
-        }
-
-        let (raw_tx, raw_rx) = sync_mpsc::channel();
-
-        let mut watcher = RecommendedWatcher::new(
-            move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    let _ = raw_tx.send(event);
-                }
-            },
-            notify::Config::default(),
-        )?;
-
-        watcher.watch(&base_dir, RecursiveMode::Recursive)?;
-
-        // Hold the watcher so it's dropped when the task ends
-        let _watcher = watcher;
-
-        tokio::spawn(async move {
-            if let Err(e) = debounce_loop(raw_rx, tx, debounce).await {
-                tracing::error!("Watcher debounce loop error: {:?}", e);
-            }
-            drop(_watcher);
-        });
-
-        Ok(rx)
-    }
-
-    /// Stop watching (no-op for the current implementation).
-    pub async fn stop(&self) {
-        // Dropping the watcher handles cleanup automatically
-    }
-}
-
-/// Debounce loop that receives raw events and emits settled events.
-#[cfg(feature = "memory-watcher")]
-async fn debounce_loop(
-    raw_rx: std::sync::mpsc::Receiver<notify::Event>,
-    tx: mpsc::Sender<WatchEvent>,
-    debounce: Duration,
-) -> Result<()> {
-    use std::collections::HashMap;
-    use tokio::sync::mpsc as tokio_mpsc;
-
-    let (bridge_tx, mut bridge_rx) = tokio_mpsc::channel(100);
-
-    std::thread::spawn(move || {
-        while let Ok(event) = raw_rx.recv() {
-            if bridge_tx.blocking_send(event).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
-    let check_interval = Duration::from_millis(500);
-
-    loop {
-        let mut events_received = false;
-        while let Ok(event) = bridge_rx.try_recv() {
-            events_received = true;
-            for path in &event.paths {
-                if should_ignore(path) {
-                    continue;
-                }
-                pending.insert(path.to_path_buf(), Instant::now());
-            }
-        }
-
-        if events_received {
-            tokio::time::sleep(check_interval).await;
-        } else {
-            tokio::time::sleep(check_interval).await;
-            continue;
-        }
-
-        let now = Instant::now();
-        let settled_paths: Vec<_> = pending
-            .iter()
-            .filter(|(_, &timestamp)| now.saturating_duration_since(timestamp) >= debounce)
-            .map(|(path, _)| path.clone())
-            .collect();
-
-        for path in settled_paths {
-            pending.remove(&path);
-
-            let event = if path.exists() {
-                WatchEvent::Modified(path)
-            } else {
-                WatchEvent::Deleted(path)
-            };
-
-            if tx.send(event).await.is_err() {
-                return Ok(());
-            }
-        }
-    }
-}
-
-// No-op fallback implementation when feature is disabled
-#[cfg(not(feature = "memory-watcher"))]
-impl MemoryWatcher {
-    /// Start watching (no-op when feature is disabled).
-    pub async fn start(&self) -> Result<mpsc::Receiver<WatchEvent>> {
-        let (_tx, rx) = mpsc::channel(1);
-        Ok(rx)
-    }
-
-    /// Stop watching (no-op when feature is disabled).
-    pub async fn stop(&self) {
-        // No-op
-    }
-}
-
-// ============================================================================
-// Auto-index handler
-// ============================================================================
-
-/// Handler that processes file watcher events with O(1) SQLite upserts.
-///
-/// Connects `MemoryWatcher` events to metadata + embedding sync.
-/// When a `.md` file is created or modified:
+/// When a `.md` file is refreshed manually:
 /// - Parses its YAML frontmatter
 /// - UPSERTs metadata into the `memory_metadata` SQLite table
 /// - UPSERTs embedding into the `memory_embeddings` SQLite table
-///
-/// When a `.md` file is deleted:
-/// - Deletes the corresponding rows from both SQLite tables
 pub struct AutoIndexHandler {
     metadata_store: super::metadata_store::MetadataStore,
     embedding_store: super::embedding_store::EmbeddingStore,
@@ -342,176 +113,178 @@ impl AutoIndexHandler {
         }
     }
 
-    /// Process a single watch event (O(1) — only touches the changed file).
+    /// Refresh all memory files from disk, comparing mtime and size to detect changes.
     ///
-    /// For Created/Modified events:
-    /// 1. Extract the scenario from the file path
-    /// 2. Read disk mtime and compare with SQLite mtime
-    /// 3. If disk_mtime <= sqlite_mtime, skip (SQLite already up-to-date)
-    /// 4. Otherwise, parse YAML frontmatter and UPSERT metadata + embedding
-    ///
-    /// For Deleted events:
-    /// 1. Delete the file's row from `memory_metadata`
-    /// 2. Delete the file's embedding
-    pub async fn process_event(&self, event: &WatchEvent) {
-        let path = event.path();
-
-        // Extract relative path for scenario detection
-        let rel_path = match relative_path(path, &self.base_dir) {
-            Some(p) => p,
-            None => {
-                tracing::debug!("AutoIndex: path outside base dir: {:?}", path.display());
-                return;
-            }
+    /// This is the manual replacement for the file watcher - call this method
+    /// when you suspect external file changes may have occurred.
+    pub async fn refresh_all_files(&self) -> Result<RefreshReport> {
+        let mut report = RefreshReport {
+            processed: 0,
+            updated: 0,
+            skipped: 0,
+            errors: 0,
         };
 
-        let scenario = match scenario_from_path(&rel_path) {
-            Some(s) => s,
-            None => {
-                tracing::debug!("AutoIndex: unknown scenario for {:?}", rel_path.display());
-                return;
+        for scenario in Scenario::all() {
+            let scenario_dir = self.base_dir.join(scenario.dir_name());
+            if !scenario_dir.exists() {
+                continue;
             }
-        };
 
-        match event {
-            WatchEvent::Created(_) | WatchEvent::Modified(_) => {
+            for entry in std::fs::read_dir(&scenario_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let path = entry.path();
+                let ext = path.extension().and_then(|s| s.to_str());
+
+                if ext != Some("md") {
+                    continue;
+                }
+
+                if should_ignore(&path) {
+                    continue;
+                }
+
+                report.processed += 1;
+
+                // Read file metadata
+                let Ok(metadata) = std::fs::metadata(&path) else {
+                    report.errors += 1;
+                    continue;
+                };
+
+                let disk_mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                let disk_size = metadata.len();
+
                 let filename = path
                     .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                // Read disk metadata (mtime + size)
-                let (disk_mtime, disk_size) = match tokio::fs::metadata(path).await {
-                    Ok(m) => {
-                        let mtime = m
-                            .modified()
-                            .ok()
-                            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_nanos() as u64)
-                            .unwrap_or(0);
-                        let size = m.len();
-                        (mtime, size)
-                    }
-                    Err(_) => {
-                        tracing::debug!("AutoIndex: cannot read metadata for {:?}", path);
-                        return;
-                    }
-                };
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 // Query SQLite for stored mtime and size
                 let (sqlite_mtime, sqlite_size) = self
                     .metadata_store
-                    .get_file_mtime_and_size(scenario, &filename)
+                    .get_file_mtime_and_size(*scenario, &filename)
                     .await
                     .unwrap_or((0, 0));
 
-                // Cache invalidation check: skip only if mtime hasn't changed AND size matches
-                // Using size as a secondary check handles low-precision filesystems (e.g., 1-second mtime in Docker)
-                // where files modified within the same second would be missed
+                // Skip if mtime and size match (no changes)
                 if disk_mtime <= sqlite_mtime && disk_size == sqlite_size {
-                    tracing::debug!(
-                        "AutoIndex: skipping, SQLite up-to-date (disk_mtime={} <= sqlite_mtime={}, disk_size={} == sqlite_size={})",
-                        disk_mtime,
-                        sqlite_mtime,
-                        disk_size,
-                        sqlite_size
-                    );
-                    return;
+                    report.skipped += 1;
+                    continue;
                 }
 
-                if let Ok(content) = tokio::fs::read_to_string(path).await {
-                    match super::frontmatter::parse_memory_file(&content) {
-                        Ok((meta, _)) => {
-                            // O(1) SQLite upsert — only this file, not the whole directory
-                            let entry = super::index::MemoryIndexEntry {
-                                id: meta.id,
-                                title: meta.title,
-                                memory_type: meta.r#type,
-                                tags: meta.tags.clone(),
-                                frequency: meta.frequency,
-                                tokens: meta.tokens as u32,
-                                filename: filename.clone(),
-                                updated: meta.updated,
-                                scenario,
-                                last_accessed: meta.last_accessed.clone(),
-                                file_mtime: disk_mtime,
-                                file_size: disk_size,
-                            };
-
-                            if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
-                                tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
-                            }
-
-                            let embedding = match self.embedder.embed(&content).await {
-                                Ok(e) => e,
-                                Err(err) => {
-                                    tracing::warn!(
-                                        "AutoIndex: embed failed for {}: {}",
-                                        filename,
-                                        err
-                                    );
-                                    return;
-                                }
-                            };
-                            match self
-                                .embedding_store
-                                .upsert(
-                                    &filename,
-                                    scenario.dir_name(),
-                                    &meta.tags,
-                                    meta.frequency,
-                                    &embedding,
-                                    meta.tokens as u32,
-                                )
-                                .await
-                            {
-                                Ok(()) => {
-                                    tracing::debug!(
-                                        "AutoIndex: upserted embedding for {}",
-                                        filename
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Broken frontmatter — log warning and skip.
-                            // Don't insert fake data into the database.
-                            tracing::warn!(
-                                "AutoIndex: broken frontmatter in {}/{}: {} — skipping",
-                                scenario.dir_name(),
-                                filename,
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            WatchEvent::Deleted(_) => {
-                let path_str = path.to_string_lossy();
-                match self.embedding_store.delete(&path_str).await {
-                    Ok(()) => {
-                        tracing::debug!("AutoIndex: deleted embedding for {}", path_str);
-                    }
-                    Err(e) => {
-                        tracing::error!("AutoIndex: failed to delete embedding: {}", e);
-                    }
+                // Process file
+                report.updated += 1;
+                if (self.process_file(&path, *scenario).await).is_err() {
+                    report.errors += 1;
                 }
             }
         }
+
+        Ok(report)
     }
 
-    /// Start listening in a loop, processing events from a watcher.
+    /// Process a single file (O(1) — only touches the specified file).
     ///
-    /// This method runs in a background task, draining events from the watcher
-    /// channel and processing each one via `process_event`.
-    pub async fn run(&self, mut rx: mpsc::Receiver<WatchEvent>) {
-        while let Some(event) = rx.recv().await {
-            self.process_event(&event).await;
+    /// 1. Parse YAML frontmatter
+    /// 2. UPSERT metadata into the `memory_metadata` SQLite table
+    /// 3. UPSERT embedding into the `memory_embeddings` SQLite table
+    pub async fn process_file(&self, path: &Path, scenario: Scenario) -> Result<()> {
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Read disk metadata (mtime + size)
+        let (disk_mtime, disk_size) = match tokio::fs::metadata(path).await {
+            Ok(m) => {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                let size = m.len();
+                (mtime, size)
+            }
+            Err(_) => {
+                tracing::debug!("AutoIndex: cannot read metadata for {:?}", path);
+                return Ok(());
+            }
+        };
+
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+
+        match super::frontmatter::parse_memory_file(&content) {
+            Ok((meta, _)) => {
+                // O(1) SQLite upsert
+                let entry = super::index::MemoryIndexEntry {
+                    id: meta.id,
+                    title: meta.title,
+                    memory_type: meta.r#type,
+                    tags: meta.tags.clone(),
+                    frequency: meta.frequency,
+                    tokens: meta.tokens as u32,
+                    filename: filename.clone(),
+                    updated: meta.updated,
+                    scenario,
+                    last_accessed: meta.last_accessed.clone(),
+                    file_mtime: disk_mtime,
+                    file_size: disk_size,
+                };
+
+                if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
+                    tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
+                }
+
+                let embedding = match self.embedder.embed(&content).await {
+                    Ok(e) => e,
+                    Err(err) => {
+                        tracing::warn!("AutoIndex: embed failed for {}: {}", filename, err);
+                        return Ok(());
+                    }
+                };
+                if let Err(e) = self
+                    .embedding_store
+                    .upsert(
+                        &filename,
+                        scenario.dir_name(),
+                        &meta.tags,
+                        meta.frequency,
+                        &embedding,
+                        meta.tokens as u32,
+                    )
+                    .await
+                {
+                    tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
+                }
+
+                tracing::debug!("AutoIndex: processed {}", filename);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "AutoIndex: broken frontmatter in {}/{}: {} — skipping",
+                    scenario.dir_name(),
+                    filename,
+                    e
+                );
+            }
         }
-        tracing::info!("AutoIndex handler stopped");
+
+        Ok(())
     }
 }
 
@@ -586,138 +359,5 @@ mod tests {
 
         let path = PathBuf::from("file.md");
         assert_eq!(None, scenario_from_path(&path));
-    }
-
-    #[test]
-    fn test_relative_path_extraction() {
-        let base = Path::new("/home/user/.gasket/memory");
-        let full = Path::new("/home/user/.gasket/memory/knowledge/rust.md");
-        let rel = relative_path(full, base);
-        assert_eq!(Some(PathBuf::from("knowledge/rust.md")), rel);
-
-        // Path outside base_dir
-        let outside = Path::new("/tmp/other.md");
-        assert_eq!(None, relative_path(outside, base));
-    }
-
-    #[test]
-    fn test_watcher_config_default() {
-        let config = WatcherConfig::default();
-        assert_eq!(2000, config.debounce_ms);
-        let path_str = config.base_dir.to_string_lossy();
-        assert!(
-            path_str.contains(".gasket") && path_str.contains("memory"),
-            "base_dir should contain .gasket and memory: {}",
-            path_str
-        );
-    }
-
-    #[test]
-    fn test_memory_watcher_default() {
-        let watcher = MemoryWatcher::with_defaults();
-        assert_eq!(2000, watcher.config.debounce_ms);
-    }
-
-    #[test]
-    fn test_watch_event_path() {
-        let path = PathBuf::from("knowledge/test.md");
-
-        let created = WatchEvent::Created(path.clone());
-        assert_eq!(Path::new("knowledge/test.md"), created.path());
-
-        let modified = WatchEvent::Modified(path.clone());
-        assert_eq!(Path::new("knowledge/test.md"), modified.path());
-
-        let deleted = WatchEvent::Deleted(path);
-        assert_eq!(Path::new("knowledge/test.md"), deleted.path());
-    }
-
-    #[cfg(feature = "memory-watcher")]
-    #[tokio::test]
-    async fn test_watcher_creates_base_dir() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path().join("memory");
-
-        let config = WatcherConfig {
-            base_dir: base_dir.clone(),
-            debounce_ms: 100,
-        };
-        let watcher = MemoryWatcher::new(config);
-        let _rx = watcher.start().await.unwrap();
-        assert!(base_dir.exists());
-    }
-
-    #[cfg(feature = "memory-watcher")]
-    #[tokio::test]
-    async fn test_watcher_detects_new_file() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path().join("memory");
-
-        tokio::fs::create_dir_all(base_dir.join("knowledge"))
-            .await
-            .unwrap();
-
-        let config = WatcherConfig {
-            base_dir: base_dir.clone(),
-            debounce_ms: 100,
-        };
-        let watcher = MemoryWatcher::new(config);
-        let mut rx = watcher.start().await.unwrap();
-
-        let test_file = base_dir.join("knowledge/test.md");
-        tokio::fs::write(&test_file, "# Test\n\nContent")
-            .await
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let timeout = Duration::from_secs(2);
-        let event = tokio::time::timeout(timeout, rx.recv()).await;
-
-        if let Ok(Some(event)) = event {
-            assert!(event.path().ends_with("knowledge/test.md"));
-        }
-    }
-
-    #[cfg(feature = "memory-watcher")]
-    #[tokio::test]
-    async fn test_watcher_ignores_readme() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path().join("memory");
-
-        tokio::fs::create_dir_all(base_dir.join("knowledge"))
-            .await
-            .unwrap();
-
-        let config = WatcherConfig {
-            base_dir: base_dir.clone(),
-            debounce_ms: 100,
-        };
-        let watcher = MemoryWatcher::new(config);
-        let mut rx = watcher.start().await.unwrap();
-
-        let readme_file = base_dir.join("knowledge/README.md");
-        tokio::fs::write(&readme_file, "# My notes").await.unwrap();
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let timeout = Duration::from_millis(100);
-        let result = tokio::time::timeout(timeout, rx.recv()).await;
-        assert!(
-            result.is_err(),
-            "Should not receive events for README.md files"
-        );
-    }
-
-    #[cfg(not(feature = "memory-watcher"))]
-    #[tokio::test]
-    async fn test_watcher_noop_without_feature() {
-        let watcher = MemoryWatcher::with_defaults();
-        let mut rx = watcher.start().await.unwrap();
-        let result = rx.recv().await;
-        assert!(
-            result.is_none(),
-            "Channel should return None when closed without feature"
-        );
     }
 }

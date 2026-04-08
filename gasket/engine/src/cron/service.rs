@@ -2,25 +2,19 @@
 //!
 //! **File-Driven Architecture**: Jobs are defined in `~/.gasket/cron/*.md` files.
 //! No SQLite persistence — runtime state is in-memory only.
-//! Supports hot reload via file system watching with debouncing.
+//! Manual refresh via `refresh_all_jobs()` — compares file mtime and size to detect changes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use gasket_storage::fs::atomic_write;
 use gasket_storage::memory::extract_frontmatter_raw;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::Deserialize;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{debug, info, instrument, warn};
-
-/// Debounce duration for file watcher events (milliseconds).
-const DEBOUNCE_MS: u64 = 500;
 
 /// A scheduled job (in-memory only)
 #[derive(Debug, Clone)]
@@ -62,19 +56,33 @@ fn default_true() -> bool {
     true
 }
 
+/// Cached file metadata for change detection
+#[derive(Debug, Clone)]
+struct FileMetadata {
+    mtime: u64,
+    size: u64,
+}
+
+/// Report from refresh_all_jobs operation
+#[derive(Debug, Clone)]
+pub struct RefreshReport {
+    pub loaded: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub errors: usize,
+}
+
 /// Cron service for scheduled tasks.
 ///
 /// **File-Driven**: All job data lives in `~/.gasket/cron/*.md` files.
 /// No memory cache synchronization issues — files are Single Source of Truth.
 pub struct CronService {
-    /// In-memory job storage (Arc for sharing with background task)
+    /// In-memory job storage (Arc for sharing)
     jobs: Arc<RwLock<HashMap<String, CronJob>>>,
     /// Workspace path
     workspace: PathBuf,
-    /// _watcher needs to be kept alive to continue watching
-    _watcher: RwLock<Option<RecommendedWatcher>>,
-    /// Sender for watcher events (kept to prevent channel closing)
-    _tx: UnboundedSender<Result<Event, notify::Error>>,
+    /// Cached file metadata for change detection
+    file_metadata: Arc<RwLock<HashMap<String, FileMetadata>>>,
 }
 
 impl CronJob {
@@ -164,134 +172,21 @@ impl CronService {
     /// Create a new cron service with file-driven architecture.
     ///
     /// Jobs are loaded from `~/.gasket/cron/*.md` files.
-    /// File watcher is started for hot reload support.
+    /// Manual refresh via `refresh_all_jobs()` for detecting external file changes.
     pub async fn new(workspace: PathBuf) -> Self {
-        let (tx, rx) = unbounded_channel::<Result<Event, notify::Error>>();
-
         let jobs = Arc::new(RwLock::new(HashMap::new()));
+        let file_metadata = Arc::new(RwLock::new(HashMap::new()));
 
         let service = Self {
             jobs: jobs.clone(),
             workspace: workspace.clone(),
-            _watcher: RwLock::new(None),
-            _tx: tx.clone(),
+            file_metadata: file_metadata.clone(),
         };
 
         // Load existing jobs from cron directory
         service.load_all_jobs(&workspace);
 
-        // Start file watcher - convert std::sync::mpsc to tokio::sync::mpsc
-        let watcher_tx = tx.clone();
-        let (std_tx, std_rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
-        service.start_watcher(std_tx);
-
-        // Spawn bridge task: std::sync::mpsc -> tokio::sync::mpsc
-        tokio::spawn(async move {
-            loop {
-                while let Ok(event) = std_rx.recv() {
-                    if watcher_tx.send(event).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Spawn background task to process watcher events with debouncing
-        tokio::spawn(Self::debounce_loop(rx, jobs));
-
         service
-    }
-
-    /// Debounce loop that receives raw events and emits settled events.
-    ///
-    /// Events are collected and only processed after DEBOUNCE_MS has passed
-    /// since the last event for a given file. This avoids processing
-    /// intermediate states during multi-step writes.
-    async fn debounce_loop(
-        mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<Event, notify::Error>>,
-        jobs: Arc<RwLock<HashMap<String, CronJob>>>,
-    ) {
-        use std::collections::HashMap;
-
-        let mut pending: HashMap<PathBuf, (notify::EventKind, Instant)> = HashMap::new();
-        let debounce = Duration::from_millis(DEBOUNCE_MS);
-        let check_interval = Duration::from_millis(100);
-
-        loop {
-            // Process incoming events
-            while let Ok(event_result) = rx.try_recv() {
-                match event_result {
-                    Ok(event) => {
-                        for path in &event.paths {
-                            let ext = path.extension().and_then(|s| s.to_str());
-                            if ext == Some("md") || ext == Some("yaml") || ext == Some("yml") {
-                                pending.insert(path.clone(), (event.kind, Instant::now()));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("File watcher error: {}", e);
-                    }
-                }
-            }
-
-            // Process settled events
-            let now = Instant::now();
-            let settled: Vec<(PathBuf, notify::EventKind)> = pending
-                .iter()
-                .filter(|(_, (_, timestamp))| now.saturating_duration_since(*timestamp) >= debounce)
-                .map(|(path, (kind, _))| (path.clone(), *kind))
-                .collect();
-
-            for (path, kind) in settled {
-                pending.remove(&path);
-                Self::process_watcher_event(&jobs, &path, kind).await;
-            }
-
-            tokio::time::sleep(check_interval).await;
-        }
-    }
-
-    /// Process a single settled watcher event.
-    async fn process_watcher_event(
-        jobs: &Arc<RwLock<HashMap<String, CronJob>>>,
-        path: &Path,
-        kind: notify::EventKind,
-    ) {
-        let ext = path.extension().and_then(|s| s.to_str());
-        let is_cron_file = ext == Some("md") || ext == Some("yaml") || ext == Some("yml");
-
-        match kind {
-            notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {
-                if is_cron_file && path.exists() {
-                    let result = if ext == Some("md") {
-                        Self::parse_markdown_file(path)
-                    } else {
-                        Self::parse_yaml_file(path)
-                    };
-
-                    match result {
-                        Ok(job) => {
-                            let job_id = job.id.clone();
-                            jobs.write().insert(job_id.clone(), job);
-                            debug!("Reloaded cron job: {}", job_id);
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse cron job file {:?}: {}", path, e);
-                        }
-                    }
-                }
-            }
-            notify::EventKind::Remove(_) => {
-                if is_cron_file {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                        jobs.write().remove(id);
-                        debug!("Removed cron job: {}", id);
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 
     /// Load all cron jobs from markdown or yaml files
@@ -342,6 +237,124 @@ impl CronService {
         }
     }
 
+    /// Refresh all cron jobs from disk, comparing mtime and size to detect changes.
+    ///
+    /// This is the manual replacement for the file watcher - call this method
+    /// when you suspect external file changes may have occurred.
+    pub async fn refresh_all_jobs(&self) -> anyhow::Result<RefreshReport> {
+        let cron_dir = self.workspace.join("cron");
+        if !cron_dir.exists() {
+            return Ok(RefreshReport {
+                loaded: 0,
+                updated: 0,
+                removed: 0,
+                errors: 0,
+            });
+        }
+
+        let mut report = RefreshReport {
+            loaded: 0,
+            updated: 0,
+            removed: 0,
+            errors: 0,
+        };
+
+        // Collect current file IDs from disk
+        let mut current_ids = std::collections::HashSet::new();
+
+        for entry in std::fs::read_dir(&cron_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str());
+
+            if ext != Some("md") && ext != Some("yaml") && ext != Some("yml") {
+                continue;
+            }
+
+            // Read file metadata
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                report.errors += 1;
+                continue;
+            };
+
+            let disk_mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let disk_size = metadata.len();
+
+            // Get cached metadata
+            let job_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            current_ids.insert(job_id.clone());
+
+            let cached = self.file_metadata.read().get(&job_id).cloned();
+
+            // Skip if mtime and size match (no changes)
+            if let Some(cached_meta) = cached {
+                if cached_meta.mtime == disk_mtime && cached_meta.size == disk_size {
+                    debug!("File unchanged: {}", job_id);
+                    continue;
+                }
+            }
+
+            // Parse and update job
+            let result = if ext == Some("md") {
+                Self::parse_markdown_file(&path)
+            } else {
+                Self::parse_yaml_file(&path)
+            };
+
+            match result {
+                Ok(job) => {
+                    if self.jobs.read().contains_key(&job_id) {
+                        report.updated += 1;
+                        debug!("Updated cron job: {}", job_id);
+                    } else {
+                        report.loaded += 1;
+                        debug!("Loaded cron job: {}", job_id);
+                    }
+                    self.jobs.write().insert(job_id.clone(), job);
+
+                    // Cache file metadata
+                    self.file_metadata.write().insert(
+                        job_id,
+                        FileMetadata {
+                            mtime: disk_mtime,
+                            size: disk_size,
+                        },
+                    );
+                }
+                Err(e) => {
+                    report.errors += 1;
+                    warn!("Failed to parse cron job file {:?}: {}", path, e);
+                }
+            }
+        }
+
+        // Remove jobs for files that no longer exist
+        let existing_ids: Vec<String> = self.jobs.read().keys().cloned().collect();
+        for id in existing_ids {
+            if !current_ids.contains(&id) {
+                self.jobs.write().remove(&id);
+                self.file_metadata.write().remove(&id);
+                report.removed += 1;
+                debug!("Removed stale cron job: {}", id);
+            }
+        }
+
+        Ok(report)
+    }
+
     /// Parse a single markdown cron job file
     fn parse_markdown_file(path: &Path) -> anyhow::Result<CronJob> {
         let content = std::fs::read_to_string(path)?;
@@ -386,24 +399,6 @@ impl CronService {
             file_path: path.to_path_buf(),
             schedule,
         })
-    }
-
-    /// Start file watcher for hot reload
-    fn start_watcher(&self, tx: std::sync::mpsc::Sender<Result<Event, notify::Error>>) {
-        let cron_dir = self.workspace.join("cron");
-
-        match RecommendedWatcher::new(tx, notify::Config::default()) {
-            Ok(mut watcher) => {
-                if let Err(e) = watcher.watch(&cron_dir, RecursiveMode::NonRecursive) {
-                    warn!("Failed to watch cron directory: {}", e);
-                }
-                *self._watcher.write() = Some(watcher);
-                debug!("Started cron file watcher for {:?}", cron_dir);
-            }
-            Err(e) => {
-                warn!("Failed to create file watcher: {}", e);
-            }
-        }
     }
 
     /// Add a job (creates/updates markdown file)

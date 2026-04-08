@@ -150,6 +150,9 @@ pub enum CronCommands {
         /// Job ID to disable
         id: String,
     },
+
+    /// Manually refresh all cron jobs from disk (detects external file changes)
+    Refresh,
 }
 
 #[derive(Subcommand)]
@@ -216,6 +219,6 @@ pub enum VaultCommands {
 
 #[derive(Subcommand)]
 pub enum MemoryCommands {
-    /// Rebuild the SQLite metadata index from Markdown files
-    Reindex,
+    /// Manually refresh memory files from disk (detects external file changes by comparing mtime and size)
+    Refresh,
 }

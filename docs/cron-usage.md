@@ -32,9 +32,11 @@ enabled: true
 |-------|------|----------|---------|-------------|
 | `name` | string | No | (filename) | Human-readable job name |
 | `cron` | string | **Yes** | - | Cron expression (5 or 6 fields) |
-| `channel` | string | No | - | Target channel (e.g., `telegram`) |
+| `channel` | string | No | `websocket` | Target channel (e.g., `telegram`). If not specified, broadcasts to all WebSocket clients |
 | `to` | string | No | - | Target chat/user ID |
 | `enabled` | boolean | No | `true` | Whether the job is active |
+
+**Important:** The message content goes in the **markdown body** (after `---`), NOT in the YAML frontmatter header. Do NOT add `message` field to the YAML frontmatter.
 
 ### Body
 

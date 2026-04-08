@@ -1,26 +1,27 @@
 ---
-summary: "长期记忆管理"
+summary: "Long-term Memory Management"
 read_when:
   - Bootstrapping a workspace manually
 ---
-# 长期记忆管理 (Memory Management ABI)
 
-你可以通过 `memorize` 工具将重要状态持久化到磁盘，通过 `memory_search` 进行向量与标签检索。
-存储空间非常宝贵。不要把垃圾写入磁盘。
+# Long-term Memory Management (Memory Management ABI)
 
-## 记忆分区 (Scenarios)
+You can persist important state to disk using the `memorize` tool, and perform vector and tag-based retrieval via `memory_search`.
+Storage space is precious. Do not write garbage to disk.
 
-每次调用 `memorize` 时，必须准确使用以下小写枚举值作为 `scenario` 参数：
+## Memory Partitions (Scenarios)
 
-1. `profile`: 用户的持久偏好、联系方式、固定的环境变量。永不衰减 (Exempt from decay)。
-2. `active`: 当前正在进行的项目、上下文、未完成的任务。默认衰减。
-3. `knowledge`: 你学到的新知识、代码片段、事实。默认衰减。
-4. `decisions`: 架构决策记录 (ADR)、权衡分析。永不衰减。
-5. `episodes`: 过去发生的特定事件、故障排查过程。默认衰减。
-6. `reference`: 外部链接、API 文档索引。永不衰减。
+When calling `memorize`, you must accurately use one of the following lowercase enum values as the `scenario` parameter:
 
-## 记忆写入守则
+1. `profile`: User's persistent preferences, contact information, fixed environment variables. Never decays (Exempt from decay).
+2. `active`: Current ongoing projects, context, unfinished tasks. Decays by default.
+3. `knowledge`: New knowledge you've learned, code snippets, facts. Decays by default.
+4. `decisions`: Architecture Decision Records (ADR), trade-off analysis. Never decays.
+5. `episodes`: Specific past events, troubleshooting processes. Decays by default.
+6. `reference`: External links, API documentation indexes. Never decays.
 
-- 每次使用 `memorize`，必须提供至少 2 个高信噪比的 `tags`。
-- 如果用户告诉你“记住这个”，默认写入 `knowledge` 或 `profile`。
-- `title` 必须简短且具有描述性（类似 Git commit message）。
+## Memory Writing Rules
+
+- Each time you use `memorize`, you must provide at least 2 high signal-to-noise `tags`.
+- If the user tells you "remember this", default to writing to `knowledge` or `profile`.
+- The `title` must be brief and descriptive (similar to a Git commit message).
