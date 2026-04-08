@@ -133,37 +133,53 @@ impl Tool for MemorySearchTool {
         let parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
+        // Wildcard query: list all memories (bypass tag filtering)
+        let is_wildcard = parsed.query.as_deref() == Some("*");
+
         // Collect search tags: explicit tags + query words
         let mut search_tags = parsed.tags.clone();
         if let Some(ref q) = parsed.query {
-            // Split query into lowercase keywords (skip short words)
-            for word in q.split_whitespace() {
-                let w = word.to_lowercase();
-                if w.len() >= 2 {
-                    search_tags.push(w);
+            if !is_wildcard {
+                // Split query into lowercase keywords (skip short words)
+                for word in q.split_whitespace() {
+                    let w = word.to_lowercase();
+                    if w.len() >= 2 {
+                        search_tags.push(w);
+                    }
                 }
             }
         }
 
-        if search_tags.is_empty() {
+        if search_tags.is_empty() && !is_wildcard {
+            if parsed.query.is_some() {
+                return Err(ToolError::InvalidArguments(
+                    "All query terms were too short (minimum 2 characters each). \
+                     Use longer keywords, explicit 'tags', or query '*' to list all."
+                        .to_string(),
+                ));
+            }
             return Err(ToolError::InvalidArguments(
                 "Provide at least 'query' or 'tags'".to_string(),
             ));
         }
 
         debug!(
-            "memory_search: searching with {} tag(s) (limit {})",
+            "memory_search: searching with {} tag(s), wildcard={} (limit {})",
             search_tags.len(),
+            is_wildcard,
             parsed.limit
         );
 
         // Try SQLite-backed search first
         if let Some(ref store) = self.metadata_store {
-            return self.search_with_store(store, &search_tags, &parsed).await;
+            return self
+                .search_with_store(store, &search_tags, &parsed, is_wildcard)
+                .await;
         }
 
         // Fallback: filesystem keyword scan
-        self.search_with_filesystem(&search_tags, &parsed).await
+        self.search_with_filesystem(&search_tags, &parsed, is_wildcard)
+            .await
     }
 }
 
@@ -174,11 +190,30 @@ impl MemorySearchTool {
         store: &MetadataStore,
         search_tags: &[String],
         parsed: &SearchArgs,
+        is_wildcard: bool,
     ) -> ToolResult {
-        let entries = store
-            .query_by_tags(search_tags, None, parsed.limit)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("MetadataStore query failed: {}", e)))?;
+        let entries = if is_wildcard {
+            // Wildcard: list all entries across scenarios
+            let mut all = Vec::new();
+            for scenario in Scenario::all() {
+                match store.query_entries(*scenario).await {
+                    Ok(mut e) => all.append(&mut e),
+                    Err(_) => continue,
+                }
+                if all.len() >= parsed.limit {
+                    break;
+                }
+            }
+            all.truncate(parsed.limit);
+            all
+        } else {
+            store
+                .query_by_tags(search_tags, None, parsed.limit)
+                .await
+                .map_err(|e| {
+                    ToolError::ExecutionError(format!("MetadataStore query failed: {}", e))
+                })?
+        };
 
         if entries.is_empty() {
             return Ok(format!(
@@ -249,6 +284,7 @@ impl MemorySearchTool {
         &self,
         search_tags: &[String],
         parsed: &SearchArgs,
+        is_wildcard: bool,
     ) -> ToolResult {
         if !self.memory_dir.exists() {
             return Ok(format!(
@@ -285,14 +321,16 @@ impl MemorySearchTool {
                     Err(_) => continue,
                 };
 
-                // Quick tag match in content
-                let lower = content.to_lowercase();
-                let matched = search_tags
-                    .iter()
-                    .any(|tag| lower.contains(&tag.to_lowercase()));
+                // Quick tag match in content (skip for wildcard)
+                if !is_wildcard {
+                    let lower = content.to_lowercase();
+                    let matched = search_tags
+                        .iter()
+                        .any(|tag| lower.contains(&tag.to_lowercase()));
 
-                if !matched {
-                    continue;
+                    if !matched {
+                        continue;
+                    }
                 }
 
                 let filename = path
@@ -336,17 +374,26 @@ impl MemorySearchTool {
         }
 
         if results.is_empty() {
-            return Ok(format!(
-                "No memories found matching keywords: {}",
-                search_tags.join(", ")
-            ));
+            return if is_wildcard {
+                Ok("No memories found.".to_string())
+            } else {
+                Ok(format!(
+                    "No memories found matching keywords: {}",
+                    search_tags.join(", ")
+                ))
+            };
         }
 
+        let tag_display = if is_wildcard {
+            "*".to_string()
+        } else {
+            search_tags.join(", ")
+        };
         let mut output = format!(
             "Found {} memor{} matching [{}]:\n\n",
             results.len(),
             if results.len() == 1 { "y" } else { "ies" },
-            search_tags.join(", ")
+            tag_display
         );
 
         for (title, scenario, _tags, filename, snippet) in &results {
@@ -460,6 +507,29 @@ mod tests {
         let result = tool.execute(args, &ToolContext::default()).await;
         // All words are < 2 chars, so search_tags will be empty
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Provide at least"));
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[tokio::test]
+    async fn test_search_wildcard_lists_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let knowledge_dir = tmp.path().join("knowledge");
+        std::fs::create_dir_all(&knowledge_dir).unwrap();
+        std::fs::write(
+            knowledge_dir.join("note_a.md"),
+            "# Note A\n\nContent about apples.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            knowledge_dir.join("note_b.md"),
+            "# Note B\n\nContent about bananas.\n",
+        )
+        .unwrap();
+
+        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
+        let args = serde_json::json!({"query": "*"});
+        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
+        assert!(result.contains("note_a.md"));
+        assert!(result.contains("note_b.md"));
     }
 }
