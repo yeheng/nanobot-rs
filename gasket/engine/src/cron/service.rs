@@ -177,7 +177,7 @@ impl CronService {
             _tx: tx.clone(),
         };
 
-        // Load existing jobs
+        // Load existing jobs from cron directory
         service.load_all_jobs(&workspace);
 
         // Start file watcher - convert std::sync::mpsc to tokio::sync::mpsc
@@ -223,7 +223,8 @@ impl CronService {
                 match event_result {
                     Ok(event) => {
                         for path in &event.paths {
-                            if path.extension().is_some_and(|ext| ext == "md") {
+                            let ext = path.extension().and_then(|s| s.to_str());
+                            if ext == Some("md") || ext == Some("yaml") || ext == Some("yml") {
                                 pending.insert(path.clone(), (event.kind, Instant::now()));
                             }
                         }
@@ -257,10 +258,19 @@ impl CronService {
         path: &Path,
         kind: notify::EventKind,
     ) {
+        let ext = path.extension().and_then(|s| s.to_str());
+        let is_cron_file = ext == Some("md") || ext == Some("yaml") || ext == Some("yml");
+
         match kind {
             notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {
-                if path.exists() {
-                    match Self::parse_markdown_file(path) {
+                if is_cron_file && path.exists() {
+                    let result = if ext == Some("md") {
+                        Self::parse_markdown_file(path)
+                    } else {
+                        Self::parse_yaml_file(path)
+                    };
+
+                    match result {
                         Ok(job) => {
                             let job_id = job.id.clone();
                             jobs.write().insert(job_id.clone(), job);
@@ -273,16 +283,18 @@ impl CronService {
                 }
             }
             notify::EventKind::Remove(_) => {
-                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                    jobs.write().remove(id);
-                    debug!("Removed cron job: {}", id);
+                if is_cron_file {
+                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                        jobs.write().remove(id);
+                        debug!("Removed cron job: {}", id);
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    /// Load all cron jobs from markdown files
+    /// Load all cron jobs from markdown or yaml files
     fn load_all_jobs(&self, workspace: &Path) {
         let cron_dir = workspace.join("cron");
         if !cron_dir.exists() {
@@ -298,10 +310,23 @@ impl CronService {
             .flatten()
         {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md") {
+            let ext = path.extension().and_then(|s| s.to_str());
+
+            if ext == Some("md") {
                 match Self::parse_markdown_file(&path) {
                     Ok(job) => {
                         info!("Loaded cron job from markdown: {}", job.id);
+                        self.jobs.write().insert(job.id.clone(), job);
+                        count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to load cron job from {:?}: {}", path, e);
+                    }
+                }
+            } else if ext == Some("yaml") || ext == Some("yml") {
+                match Self::parse_yaml_file(&path) {
+                    Ok(job) => {
+                        info!("Loaded cron job from yaml: {}", job.id);
                         self.jobs.write().insert(job.id.clone(), job);
                         count += 1;
                     }
@@ -313,7 +338,7 @@ impl CronService {
         }
 
         if count > 0 {
-            info!("Loaded {} cron jobs from markdown files", count);
+            info!("Loaded {} cron jobs from files", count);
         }
     }
 
@@ -321,6 +346,46 @@ impl CronService {
     fn parse_markdown_file(path: &Path) -> anyhow::Result<CronJob> {
         let content = std::fs::read_to_string(path)?;
         parse_markdown(&content, path)
+    }
+
+    /// Parse a single yaml cron job file
+    fn parse_yaml_file(path: &Path) -> anyhow::Result<CronJob> {
+        let content = std::fs::read_to_string(path)?;
+
+        #[derive(Debug, Deserialize)]
+        struct YamlCronJob {
+            name: Option<String>,
+            message: String,
+            cron: String,
+            channel: Option<String>,
+            to: Option<String>,
+            #[serde(default = "default_true")]
+            enabled: bool,
+        }
+
+        let yaml_job: YamlCronJob = serde_yaml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse YAML: {}", e))?;
+
+        let id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let (schedule, next_run) = CronJob::parse_schedule(&yaml_job.cron);
+
+        Ok(CronJob {
+            id: id.clone(),
+            name: yaml_job.name.unwrap_or(id),
+            cron: yaml_job.cron,
+            message: yaml_job.message,
+            channel: yaml_job.channel,
+            chat_id: yaml_job.to,
+            next_run,
+            enabled: yaml_job.enabled,
+            file_path: path.to_path_buf(),
+            schedule,
+        })
     }
 
     /// Start file watcher for hot reload

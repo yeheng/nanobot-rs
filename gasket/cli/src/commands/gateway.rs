@@ -303,9 +303,15 @@ pub async fn cmd_gateway() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     println!("\n🐈 Shutting down gracefully...");
 
-    // Abort all tasks
-    for task in tasks {
+    // Abort all background tasks
+    for task in &tasks {
         task.abort();
+    }
+
+    // Wait for tasks to finish with timeout
+    use tokio::time::{timeout, Duration};
+    for task in tasks {
+        let _ = timeout(Duration::from_millis(500), task).await;
     }
 
     Ok(())
