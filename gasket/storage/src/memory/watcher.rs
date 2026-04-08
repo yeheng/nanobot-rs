@@ -380,121 +380,111 @@ impl AutoIndexHandler {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
-                // Read disk mtime
-                let disk_mtime = match tokio::fs::metadata(path).await {
-                    Ok(m) => m
-                        .modified()
-                        .ok()
-                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0),
+                // Read disk metadata (mtime + size)
+                let (disk_mtime, disk_size) = match tokio::fs::metadata(path).await {
+                    Ok(m) => {
+                        let mtime = m
+                            .modified()
+                            .ok()
+                            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos() as u64)
+                            .unwrap_or(0);
+                        let size = m.len();
+                        (mtime, size)
+                    }
                     Err(_) => {
                         tracing::debug!("AutoIndex: cannot read metadata for {:?}", path);
                         return;
                     }
                 };
 
-                // Query SQLite for stored mtime
-                let sqlite_mtime = self
+                // Query SQLite for stored mtime and size
+                let (sqlite_mtime, sqlite_size) = self
                     .metadata_store
-                    .get_file_mtime(scenario, &filename)
+                    .get_file_mtime_and_size(scenario, &filename)
                     .await
-                    .unwrap_or(0);
+                    .unwrap_or((0, 0));
 
-                // Cache invalidation check: if disk_mtime <= sqlite_mtime, skip
-                if disk_mtime <= sqlite_mtime {
+                // Cache invalidation check: skip only if mtime hasn't changed AND size matches
+                // Using size as a secondary check handles low-precision filesystems (e.g., 1-second mtime in Docker)
+                // where files modified within the same second would be missed
+                if disk_mtime <= sqlite_mtime && disk_size == sqlite_size {
                     tracing::debug!(
-                        "AutoIndex: skipping, SQLite up-to-date (disk={} <= sqlite={})",
+                        "AutoIndex: skipping, SQLite up-to-date (disk_mtime={} <= sqlite_mtime={}, disk_size={} == sqlite_size={})",
                         disk_mtime,
-                        sqlite_mtime
+                        sqlite_mtime,
+                        disk_size,
+                        sqlite_size
                     );
                     return;
                 }
 
                 if let Ok(content) = tokio::fs::read_to_string(path).await {
-                    let entry = match super::frontmatter::parse_memory_file(&content) {
+                    match super::frontmatter::parse_memory_file(&content) {
                         Ok((meta, _)) => {
                             // O(1) SQLite upsert — only this file, not the whole directory
-                            Some((
-                                super::index::MemoryIndexEntry {
-                                    id: meta.id,
-                                    title: meta.title,
-                                    memory_type: meta.r#type,
-                                    tags: meta.tags.clone(),
-                                    frequency: meta.frequency,
-                                    tokens: meta.tokens as u32,
-                                    filename: filename.clone(),
-                                    updated: meta.updated,
-                                    scenario,
-                                    last_accessed: meta.last_accessed.clone(),
-                                    file_mtime: disk_mtime,
-                                },
-                                meta.tags.clone(),
-                                meta.frequency,
-                                meta.tokens as u32,
-                            ))
+                            let entry = super::index::MemoryIndexEntry {
+                                id: meta.id,
+                                title: meta.title,
+                                memory_type: meta.r#type,
+                                tags: meta.tags.clone(),
+                                frequency: meta.frequency,
+                                tokens: meta.tokens as u32,
+                                filename: filename.clone(),
+                                updated: meta.updated,
+                                scenario,
+                                last_accessed: meta.last_accessed.clone(),
+                                file_mtime: disk_mtime,
+                                file_size: disk_size,
+                            };
+
+                            if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
+                                tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
+                            }
+
+                            let embedding = match self.embedder.embed(&content).await {
+                                Ok(e) => e,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "AutoIndex: embed failed for {}: {}",
+                                        filename,
+                                        err
+                                    );
+                                    return;
+                                }
+                            };
+                            match self
+                                .embedding_store
+                                .upsert(
+                                    &filename,
+                                    scenario.dir_name(),
+                                    &meta.tags,
+                                    meta.frequency,
+                                    &embedding,
+                                    meta.tokens as u32,
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    tracing::debug!(
+                                        "AutoIndex: upserted embedding for {}",
+                                        filename
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
+                                }
+                            }
                         }
                         Err(e) => {
-                            // Broken frontmatter — track as archived so user can fix it
+                            // Broken frontmatter — log warning and skip.
+                            // Don't insert fake data into the database.
                             tracing::warn!(
-                                "AutoIndex: broken frontmatter in {}/{}: {} — indexing as archived",
+                                "AutoIndex: broken frontmatter in {}/{}: {} — skipping",
                                 scenario.dir_name(),
                                 filename,
                                 e
                             );
-                            let stem = filename.trim_end_matches(".md");
-                            let now = chrono::Utc::now().to_rfc3339();
-                            Some((
-                                super::index::MemoryIndexEntry {
-                                    id: stem.to_string(),
-                                    title: format!("[broken] {}", stem),
-                                    memory_type: "error".to_string(),
-                                    tags: vec!["broken-frontmatter".to_string()],
-                                    frequency: super::types::Frequency::Archived,
-                                    tokens: content.len() as u32 / 4,
-                                    filename: filename.clone(),
-                                    updated: now.clone(),
-                                    scenario,
-                                    last_accessed: now,
-                                    file_mtime: disk_mtime,
-                                },
-                                vec!["broken-frontmatter".to_string()],
-                                super::types::Frequency::Archived,
-                                content.len() as u32 / 4,
-                            ))
-                        }
-                    };
-
-                    if let Some((entry, tags, frequency, tokens)) = entry {
-                        if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
-                            tracing::error!("AutoIndex: failed to upsert metadata: {}", e);
-                        }
-
-                        let embedding = match self.embedder.embed(&content).await {
-                            Ok(e) => e,
-                            Err(err) => {
-                                tracing::warn!("AutoIndex: embed failed for {}: {}", filename, err);
-                                return;
-                            }
-                        };
-                        match self
-                            .embedding_store
-                            .upsert(
-                                &filename,
-                                scenario.dir_name(),
-                                &tags,
-                                frequency,
-                                &embedding,
-                                tokens,
-                            )
-                            .await
-                        {
-                            Ok(()) => {
-                                tracing::debug!("AutoIndex: upserted embedding for {}", filename);
-                            }
-                            Err(e) => {
-                                tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
-                            }
                         }
                     }
                 }

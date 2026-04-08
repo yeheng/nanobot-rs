@@ -3,6 +3,7 @@
 use anyhow::Result;
 use gasket_engine::agent::memory_manager::MemoryManager;
 use gasket_engine::memory::{memory_base_dir, SqliteStore};
+use gasket_engine::{Embedder, NoopEmbedder};
 
 /// Rebuild the SQLite metadata index from Markdown files on disk.
 ///
@@ -22,7 +23,9 @@ pub async fn cmd_memory_reindex() -> Result<()> {
     let store = SqliteStore::new().await?;
     let pool = store.pool();
 
-    let manager = MemoryManager::new(base_dir, &pool).await?;
+    // Use NoopEmbedder for CLI operations (zero vectors, no model loading required)
+    let embedder: Box<dyn Embedder> = Box::new(NoopEmbedder::new(384));
+    let manager = MemoryManager::new(base_dir, &pool, embedder).await?;
     manager.init().await?;
 
     let report = manager.reindex().await?;

@@ -51,9 +51,6 @@ impl ProcessManager {
             .working_dir(working_dir)
             .limits(ResourceLimits::from(&self.config.limits));
 
-        // Validate dangerous patterns
-        builder.check_dangerous_patterns()?;
-
         // Check policy
         builder.validate_policy(&self.policy)?;
 
@@ -94,8 +91,7 @@ impl ProcessManager {
 
     /// Execute a command builder
     pub async fn execute_builder(&self, builder: &CommandBuilder) -> Result<ExecutionResult> {
-        // Validate
-        builder.check_dangerous_patterns()?;
+        // Validate policy
         builder.validate_policy(&self.policy)?;
 
         let start = Instant::now();

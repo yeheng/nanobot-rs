@@ -439,12 +439,13 @@ fn start_telegram_channel(
         allow_from: telegram_config.allow_from.clone(),
     };
 
-    let telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
+    let mut telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
         telegram_cfg,
         inbound_processor.raw_sender(),
     );
 
     tasks.push(tokio::spawn(async move {
+        use gasket_engine::channels::Channel;
         if let Err(e) = telegram_channel.start().await {
             tracing::error!("Telegram channel error: {}", e);
         }
@@ -469,13 +470,14 @@ fn start_discord_channel(
         allow_from: discord_config.allow_from.clone(),
     };
 
-    let discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
+    let mut discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
         discord_cfg,
         inbound_processor.raw_sender(),
     );
 
     tasks.push(tokio::spawn(async move {
-        if let Err(e) = discord_channel.start_bot().await {
+        use gasket_engine::channels::Channel;
+        if let Err(e) = discord_channel.start().await {
             tracing::error!("Discord channel error: {}", e);
         }
     }));
@@ -502,13 +504,14 @@ fn start_slack_channel(
         allow_from: slack_config.allow_from.clone(),
     };
 
-    let slack_channel = gasket_engine::channels::slack::SlackChannel::new(
+    let mut slack_channel = gasket_engine::channels::slack::SlackChannel::new(
         slack_cfg,
         inbound_processor.raw_sender(),
     );
 
     tasks.push(tokio::spawn(async move {
-        if let Err(e) = slack_channel.start_bot().await {
+        use gasket_engine::channels::Channel;
+        if let Err(e) = slack_channel.start().await {
             tracing::error!("Slack channel error: {}", e);
         }
     }));

@@ -84,3 +84,67 @@ impl<T> IndexingQueue<T> {
         self.max_depth
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn priority_ordering_p0_before_p1_and_p2() {
+        let mut queue = IndexingQueue::<&str>::new(300);
+
+        // Push in reverse priority order
+        queue.push("low", Priority::P2).await.unwrap();
+        queue.push("mid", Priority::P1).await.unwrap();
+        queue.push("high", Priority::P0).await.unwrap();
+
+        // P0 should come out first
+        assert_eq!(Some("high"), queue.pop().await);
+        assert_eq!(Some("mid"), queue.pop().await);
+        assert_eq!(Some("low"), queue.pop().await);
+    }
+
+    #[tokio::test]
+    async fn depth_tracking() {
+        let mut queue = IndexingQueue::<i32>::new(300);
+
+        assert_eq!(0, queue.depth());
+
+        queue.push(1, Priority::P0).await.unwrap();
+        queue.push(2, Priority::P1).await.unwrap();
+        queue.push(3, Priority::P2).await.unwrap();
+
+        assert_eq!(3, queue.depth());
+
+        queue.pop().await;
+        assert_eq!(2, queue.depth());
+
+        queue.pop().await;
+        queue.pop().await;
+        assert_eq!(0, queue.depth());
+    }
+
+    #[tokio::test]
+    async fn queue_full_returns_error() {
+        // max_depth=3 → per_queue=1 (each priority channel holds 1 item)
+        let mut queue = IndexingQueue::<i32>::new(3);
+
+        assert!(queue.push(1, Priority::P0).await.is_ok());
+        // Second push to P0 should fail (channel capacity = 1)
+        assert!(matches!(
+            queue.push(2, Priority::P0).await,
+            Err(QueueError::Full)
+        ));
+    }
+
+    #[tokio::test]
+    async fn fifo_ordering_within_same_priority() {
+        let mut queue = IndexingQueue::<&str>::new(300);
+
+        queue.push("first", Priority::P1).await.unwrap();
+        queue.push("second", Priority::P1).await.unwrap();
+
+        assert_eq!(Some("first"), queue.pop().await);
+        assert_eq!(Some("second"), queue.pop().await);
+    }
+}

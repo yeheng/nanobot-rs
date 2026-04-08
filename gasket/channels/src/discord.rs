@@ -68,8 +68,10 @@ impl Channel for DiscordChannel {
         "discord"
     }
 
+    /// Start the Discord channel.
+    /// Delegates to the inherent `start_bot` method.
     async fn start(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        self.start_bot().await
     }
 
     async fn stop(&mut self) -> anyhow::Result<()> {

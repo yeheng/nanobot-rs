@@ -238,13 +238,18 @@ impl FrequencyManager {
 
                     // Read file mtime after write
                     let file_path = store.base_dir().join(scenario.dir_name()).join(filename);
-                    let file_mtime = tokio::fs::metadata(&file_path)
+                    let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
                         .await
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0);
+                        .map(|m| {
+                            let mtime = m
+                                .modified()
+                                .ok()
+                                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_nanos() as u64)
+                                .unwrap_or(0);
+                            (mtime, m.len())
+                        })
+                        .unwrap_or((0, 0));
 
                     // O(1) SQLite upsert for this single entry
                     let entry = super::index::MemoryIndexEntry {
@@ -259,6 +264,7 @@ impl FrequencyManager {
                         scenario,
                         last_accessed: updated_meta.last_accessed.clone(),
                         file_mtime,
+                        file_size,
                     };
                     if let Err(e) = metadata_store.upsert_entry(&entry).await {
                         tracing::warn!(
@@ -377,10 +383,16 @@ impl FrequencyManager {
             let file_mtime = tokio::fs::metadata(&file_path)
                 .await
                 .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
+                .map(|m| {
+                    let mtime = m
+                        .modified()
+                        .ok()
+                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    (mtime, m.len())
+                })
+                .unwrap_or((0, 0));
 
             // O(1) SQLite upsert for this single entry
             let entry = super::index::MemoryIndexEntry {
@@ -394,7 +406,8 @@ impl FrequencyManager {
                 updated: updated_meta.updated,
                 scenario,
                 last_accessed: updated_meta.last_accessed.clone(),
-                file_mtime,
+                file_mtime: file_mtime.0,
+                file_size: file_mtime.1,
             };
             if let Err(e) = metadata_store.upsert_entry(&entry).await {
                 tracing::warn!(
@@ -710,6 +723,7 @@ mod tests {
                 scenario: meta.scenario,
                 last_accessed: meta.last_accessed.clone(),
                 file_mtime: 0, // Test doesn't need real mtime
+                file_size: 0,  // Test doesn't need real size
             };
             metadata_store.upsert_entry(&entry).await.unwrap();
         }

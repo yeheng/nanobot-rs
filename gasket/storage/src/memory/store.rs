@@ -1,6 +1,7 @@
 use super::frontmatter::*;
 use super::path::*;
 use super::types::*;
+use crate::fs::atomic_write;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -14,38 +15,6 @@ pub struct FileMemoryStore {
 const MAX_HISTORY_VERSIONS: usize = 10;
 
 impl FileMemoryStore {
-    /// Write data to a file atomically using temp-file + rename.
-    ///
-    /// Writes to a `.tmp` file first, syncs to disk, then renames to the
-    /// final path. On POSIX systems (Linux, macOS), `rename` is atomic,
-    /// so a crash will never leave a partially-written (corrupted) file.
-    async fn atomic_write(path: &std::path::Path, data: impl AsRef<[u8]>) -> Result<()> {
-        let tmp_path = path.with_extension("md.tmp");
-
-        // Write to temp file
-        tokio::fs::write(&tmp_path, &data)
-            .await
-            .with_context(|| format!("Failed to write temp file: {}", tmp_path.display()))?;
-
-        // Sync temp file to disk for durability
-        #[cfg(unix)]
-        {
-            let file = tokio::fs::File::open(&tmp_path).await?;
-
-            file.sync_all().await?;
-        }
-
-        // Atomic rename: on POSIX, this is an atomic operation
-        tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-            format!(
-                "Failed to rename {} -> {}",
-                tmp_path.display(),
-                path.display()
-            )
-        })?;
-
-        Ok(())
-    }
     /// Create a store pointing at a base directory (usually ~/.gasket/memory/).
     pub fn new(base_dir: PathBuf) -> Self {
         Self { base_dir }
@@ -114,9 +83,7 @@ impl FileMemoryStore {
         let dir = self.base_dir.join(scenario.dir_name());
         tokio::fs::create_dir_all(&dir).await?;
         let path = dir.join(&filename);
-        Self::atomic_write(&path, file_content)
-            .await
-            .context("Failed to write memory file")?;
+        atomic_write(&path, file_content).await?;
 
         Ok(filename)
     }
@@ -164,7 +131,7 @@ impl FileMemoryStore {
         }
 
         // Write new content atomically
-        Self::atomic_write(&path, &new_content).await?;
+        atomic_write(&path, &new_content).await?;
         Ok(())
     }
 

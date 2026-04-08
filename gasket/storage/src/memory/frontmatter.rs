@@ -20,6 +20,67 @@
 use super::types::MemoryMeta;
 use anyhow::{Context, Result};
 
+/// Extract raw frontmatter YAML and body from markdown content.
+///
+/// This is a generic parser that handles:
+/// - Leading/trailing whitespace
+/// - Windows line endings (\r\n)
+/// - Content containing `---` after frontmatter
+///
+/// Returns (frontmatter_yaml, body) or error if format is invalid.
+/// Unlike `parse_frontmatter`, this does not deserialize the YAML.
+///
+/// # Errors
+///
+/// - Returns error if content doesn't start with `---`
+/// - Returns error if no closing `---` delimiter is found
+///
+/// # Example
+///
+/// ```ignore
+/// let content = r#"---
+/// name: Test
+/// cron: "0 9 * * *"
+/// ---
+///
+/// Body content
+/// "#;
+/// let (yaml, body) = extract_frontmatter_raw(content).unwrap();
+/// ```
+pub fn extract_frontmatter_raw(content: &str) -> Result<(String, String)> {
+    let content = content.trim_start();
+
+    if !content.starts_with("---") {
+        anyhow::bail!("Invalid markdown format: missing frontmatter start delimiter '---'");
+    }
+
+    // Find the end of frontmatter (\n--- or \r\n---)
+    // Skip the first "---"
+    let after_start = &content[3..];
+
+    // Find the next "\n---" which closes frontmatter
+    // We need to handle both \n and \r\n
+    let end_pos = after_start.find("\n---").ok_or_else(|| {
+        anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'")
+    })?;
+
+    // Extract YAML (skip initial ---, take content until closing ---)
+    let yaml_str = &after_start[..end_pos];
+    // Normalize line endings for YAML parsing
+    let yaml_str = yaml_str.replace("\r\n", "\n").replace('\r', "\n");
+
+    // Extract body (skip past the closing ---)
+    // Position after "\n---" is end_pos + 4 (for "\n---")
+    let body_start = 3 + end_pos + 4;
+    let body = if body_start < content.len() {
+        content[body_start..].trim().to_string()
+    } else {
+        String::new()
+    };
+
+    Ok((yaml_str, body))
+}
+
 /// Parse YAML frontmatter from a .md file content.
 ///
 /// Expects content to start with `---\n`. Returns error if delimiters are missing
@@ -43,16 +104,9 @@ use anyhow::{Context, Result};
 /// let meta = parse_frontmatter(content)?;
 /// ```
 pub fn parse_frontmatter(content: &str) -> Result<MemoryMeta> {
-    let content = content.trim_start();
-    if !content.starts_with("---") {
-        anyhow::bail!("Memory file does not start with YAML frontmatter delimiter");
-    }
-    let end = content[3..]
-        .find("\n---")
-        .context("No closing frontmatter delimiter found")?;
-    let yaml_str = &content[3..end + 3];
+    let (yaml_str, _) = extract_frontmatter_raw(content)?;
     let meta: MemoryMeta =
-        serde_yaml::from_str(yaml_str).context("Failed to parse YAML frontmatter")?;
+        serde_yaml::from_str(&yaml_str).context("Failed to parse YAML frontmatter")?;
     Ok(meta)
 }
 
@@ -110,11 +164,11 @@ pub fn serialize_memory_file(meta: &MemoryMeta, body: &str) -> String {
 /// Parse a complete memory file (frontmatter + body).
 ///
 /// Returns both the parsed metadata and the extracted body content.
-/// This is a convenience wrapper around `parse_frontmatter` and `extract_body`.
+/// This is a convenience wrapper around `extract_frontmatter_raw`.
 ///
 /// # Errors
 ///
-/// Returns error if frontmatter parsing fails (see `parse_frontmatter`).
+/// Returns error if frontmatter parsing fails (see `extract_frontmatter_raw`).
 ///
 /// # Example
 ///
@@ -131,8 +185,9 @@ pub fn serialize_memory_file(meta: &MemoryMeta, body: &str) -> String {
 /// assert_eq!(body, "# Body");
 /// ```
 pub fn parse_memory_file(content: &str) -> Result<(MemoryMeta, String)> {
-    let meta = parse_frontmatter(content)?;
-    let body = extract_body(content).to_string();
+    let (yaml_str, body) = extract_frontmatter_raw(content)?;
+    let meta: MemoryMeta =
+        serde_yaml::from_str(&yaml_str).context("Failed to parse YAML frontmatter")?;
     Ok((meta, body))
 }
 
@@ -305,7 +360,7 @@ This is the body.
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("does not start with YAML frontmatter"));
+            .contains("missing frontmatter start delimiter"));
     }
 
     #[test]
@@ -316,7 +371,7 @@ This is the body.
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("No closing frontmatter delimiter"));
+            .contains("missing frontmatter end delimiter"));
     }
 
     #[test]

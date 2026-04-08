@@ -34,7 +34,8 @@ pub use path::{history_dir, list_memory_files, memory_base_dir, memory_file_path
 
 // Re-export frontmatter parsing functions
 pub use frontmatter::{
-    estimate_tokens, extract_body, parse_frontmatter, parse_memory_file, serialize_memory_file,
+    estimate_tokens, extract_body, extract_frontmatter_raw, parse_frontmatter, parse_memory_file,
+    serialize_memory_file,
 };
 
 // Re-export FileMemoryStore

@@ -390,3 +390,66 @@ impl IndexingWorker {
         // No-op when local-embedding feature is disabled
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_body_strips_frontmatter() {
+        let content = "---\ntitle: Test\n---\n\n# Body content\n\nSome text.";
+        assert_eq!("# Body content\n\nSome text.", extract_body(content));
+    }
+
+    #[test]
+    fn extract_body_no_frontmatter_returns_full() {
+        let content = "# Just body\n\nNo frontmatter.";
+        assert_eq!("# Just body\n\nNo frontmatter.", extract_body(content));
+    }
+
+    #[test]
+    fn extract_body_empty_after_frontmatter() {
+        let content = "---\ntitle: Test\n---\n";
+        assert_eq!("", extract_body(content));
+    }
+
+    #[test]
+    fn async_index_task_clone() {
+        let task = AsyncIndexTask::Memory {
+            path: std::path::PathBuf::from("knowledge/test.md"),
+            content: "some content".to_string(),
+        };
+        let cloned = task.clone();
+
+        match cloned {
+            AsyncIndexTask::Memory { path, content } => {
+                assert_eq!(std::path::PathBuf::from("knowledge/test.md"), path);
+                assert_eq!("some content", content);
+            }
+            _ => panic!("Expected Memory variant"),
+        }
+    }
+
+    #[test]
+    fn async_index_task_history_variant() {
+        let id = uuid::Uuid::new_v4();
+        let task = AsyncIndexTask::History {
+            session_key: "test-session".to_string(),
+            event_id: id,
+            content: "hello world".to_string(),
+        };
+
+        match task {
+            AsyncIndexTask::History {
+                session_key,
+                event_id,
+                content,
+            } => {
+                assert_eq!("test-session", session_key);
+                assert_eq!(id, event_id);
+                assert_eq!("hello world", content);
+            }
+            _ => panic!("Expected History variant"),
+        }
+    }
+}

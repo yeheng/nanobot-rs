@@ -6,6 +6,11 @@
 //!
 //! The vault uses encrypted storage with XChaCha20-Poly1305.
 //! Set the `GASKET_VAULT_PASSWORD` environment variable to unlock.
+//!
+//! # Non-Interactive Mode
+//!
+//! For automated scenarios (e.g., gateway startup), use `ensure_unlocked_non_interactive()`
+//! which only reads from environment variables and never prompts for user input.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -15,7 +20,7 @@ use gasket_engine::vault::VaultStore;
 use tracing::debug;
 
 /// Environment variable for vault password
-const VAULT_PASSWORD_ENV: &str = "GASKET_VAULT_PASSWORD";
+const VAULT_PASSWORD_ENV: &str = "GASKET_MASTER_PASSWORD";
 
 /// Get vault password from environment or prompt
 pub fn get_vault_password(prompt: bool) -> Option<String> {
@@ -35,10 +40,35 @@ pub fn get_vault_password(prompt: bool) -> Option<String> {
     }
 }
 
+/// Get vault password from environment only (non-interactive).
+/// Returns None if the environment variable is not set or empty.
+pub fn get_vault_password_from_env() -> Option<String> {
+    std::env::var(VAULT_PASSWORD_ENV)
+        .ok()
+        .filter(|p| !p.is_empty())
+}
+
 /// Check if vault is unlocked or needs password
 pub fn ensure_unlocked(store: &mut VaultStore) -> Result<()> {
     if store.is_locked() {
         if let Some(password) = get_vault_password(true) {
+            store.unlock(&password).context("Failed to unlock vault")?;
+            debug!("{} Vault unlocked", "✓".green());
+        } else {
+            anyhow::bail!(
+                "Vault is locked. Set {} environment variable.",
+                VAULT_PASSWORD_ENV
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Check if vault is unlocked or needs password (non-interactive mode).
+/// Only checks environment variable, does not prompt for input.
+pub fn ensure_unlocked_non_interactive(store: &mut VaultStore) -> Result<()> {
+    if store.is_locked() {
+        if let Some(password) = get_vault_password_from_env() {
             store.unlock(&password).context("Failed to unlock vault")?;
             debug!("{} Vault unlocked", "✓".green());
         } else {

@@ -367,6 +367,22 @@ impl TextEmbedder {
     }
 }
 
+// ── Embedder Trait Implementation ─────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl crate::memory::Embedder for TextEmbedder {
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        // TextEmbedder uses parking_lot::Mutex internally; the lock is held
+        // only for the duration of the ONNX inference which is fast enough
+        // to call directly without spawn_blocking.
+        self.embed(text)
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

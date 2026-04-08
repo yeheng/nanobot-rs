@@ -27,6 +27,8 @@ pub struct MemoryIndexEntry {
     pub scenario: Scenario,
     pub last_accessed: String,
     pub file_mtime: u64,
+    /// File size in bytes, used for cache invalidation alongside mtime
+    pub file_size: u64,
 }
 
 /// Scanner for memory file metadata within a scenario directory.
@@ -77,6 +79,12 @@ impl FileIndexManager {
                 Ok(content) => {
                     match parse_memory_file(&content) {
                         Ok((meta, _)) => {
+                            // Get file size for cache invalidation
+                            let file_size = tokio::fs::metadata(&path)
+                                .await
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+
                             entries.push(MemoryIndexEntry {
                                 id: meta.id,
                                 title: meta.title,
@@ -89,32 +97,18 @@ impl FileIndexManager {
                                 scenario,
                                 last_accessed: meta.last_accessed,
                                 file_mtime,
+                                file_size,
                             });
                         }
                         Err(e) => {
-                            // Broken frontmatter — create Archived fallback so the file
-                            // is tracked but won't pollute search results.
+                            // Broken frontmatter — log warning and skip.
+                            // Don't insert fake data into the database.
                             tracing::warn!(
-                                "Broken frontmatter in {}/{}: {} — indexing as archived",
+                                "Broken frontmatter in {}/{}: {} — skipping",
                                 scenario.dir_name(),
                                 name,
                                 e
                             );
-                            let stem = name.trim_end_matches(".md");
-                            let now = chrono::Utc::now().to_rfc3339();
-                            entries.push(MemoryIndexEntry {
-                                id: stem.to_string(),
-                                title: format!("[broken] {}", stem),
-                                memory_type: "error".to_string(),
-                                tags: vec!["broken-frontmatter".to_string()],
-                                frequency: Frequency::Archived,
-                                tokens: content.len() as u32 / 4,
-                                filename: name,
-                                updated: now.clone(),
-                                scenario,
-                                last_accessed: now,
-                                file_mtime,
-                            });
                         }
                     }
                 }

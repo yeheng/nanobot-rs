@@ -22,7 +22,7 @@ pub struct MetadataStore {
 /// Columns selected from memory_metadata — kept as a constant to avoid
 /// drift between SELECT and INSERT statements.
 const META_COLUMNS: &str =
-    "id, path, scenario, title, memory_type, frequency, tags, tokens, updated, last_accessed, file_mtime";
+    "id, path, scenario, title, memory_type, frequency, tags, tokens, updated, last_accessed, file_mtime, file_size";
 
 /// A decay candidate returned by `get_decay_candidates`.
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl MetadataStore {
             sqlx::query(&format!(
                 "INSERT INTO memory_metadata
                  ({META_COLUMNS})
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ))
             .bind(&entry.id)
             .bind(&entry.filename)
@@ -70,6 +70,7 @@ impl MetadataStore {
             .bind(&entry.updated)
             .bind(&entry.last_accessed)
             .bind(entry.file_mtime as i64)
+            .bind(entry.file_size as i64)
             .execute(&self.pool)
             .await?;
         }
@@ -83,7 +84,7 @@ impl MetadataStore {
         sqlx::query(&format!(
             "INSERT OR REPLACE INTO memory_metadata
              ({META_COLUMNS})
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&entry.id)
         .bind(&entry.filename)
@@ -96,23 +97,31 @@ impl MetadataStore {
         .bind(&entry.updated)
         .bind(&entry.last_accessed)
         .bind(entry.file_mtime as i64)
+        .bind(entry.file_size as i64)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    /// Get file_mtime for a specific entry by scenario and filename.
-    pub async fn get_file_mtime(&self, scenario: Scenario, filename: &str) -> Result<u64> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT file_mtime FROM memory_metadata WHERE scenario = ? AND path = ?",
+    /// Get file_mtime and file_size for a specific entry by scenario and filename.
+    /// Returns (mtime, size) tuple for cache invalidation checks.
+    pub async fn get_file_mtime_and_size(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+    ) -> Result<(u64, u64)> {
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT file_mtime, file_size FROM memory_metadata WHERE scenario = ? AND path = ?",
         )
         .bind(scenario.dir_name())
         .bind(filename)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(r,)| r as u64).unwrap_or(0))
+        Ok(row
+            .map(|(mtime, size)| (mtime as u64, size as u64))
+            .unwrap_or((0, 0)))
     }
 
     /// Delete entries for a scenario.
@@ -333,6 +342,7 @@ impl MetadataStore {
                 let scen_str: String = row.get("scenario");
                 let last_accessed: String = row.try_get("last_accessed").unwrap_or_default();
                 let file_mtime: i64 = row.try_get("file_mtime").unwrap_or(0);
+                let file_size: i64 = row.try_get("file_size").unwrap_or(0);
 
                 MemoryIndexEntry {
                     id: row.get("id"),
@@ -346,6 +356,7 @@ impl MetadataStore {
                     scenario: Scenario::from_dir_name(&scen_str).unwrap_or(Scenario::Knowledge),
                     last_accessed,
                     file_mtime: file_mtime as u64,
+                    file_size: file_size as u64,
                 }
             })
             .collect()
@@ -385,6 +396,7 @@ mod tests {
             scenario,
             last_accessed: last_accessed.into(),
             file_mtime: 0, // Test doesn't need real mtime
+            file_size: 0,  // Test doesn't need real size
         }
     }
 

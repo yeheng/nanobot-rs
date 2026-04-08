@@ -2,19 +2,25 @@
 //!
 //! **File-Driven Architecture**: Jobs are defined in `~/.gasket/cron/*.md` files.
 //! No SQLite persistence — runtime state is in-memory only.
-//! Supports hot reload via file system watching.
+//! Supports hot reload via file system watching with debouncing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
+use gasket_storage::fs::atomic_write;
+use gasket_storage::memory::extract_frontmatter_raw;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{debug, info, instrument, warn};
+
+/// Debounce duration for file watcher events (milliseconds).
+const DEBOUNCE_MS: u64 = 500;
 
 /// A scheduled job (in-memory only)
 #[derive(Debug, Clone)]
@@ -37,6 +43,8 @@ pub struct CronJob {
     pub enabled: bool,
     /// File path for hot reload
     pub file_path: PathBuf,
+    /// Parsed cron schedule (cached to avoid parsing on every check)
+    schedule: Option<Schedule>,
 }
 
 /// Frontmatter structure for markdown job files
@@ -78,7 +86,7 @@ impl CronJob {
         message: impl Into<String>,
     ) -> Self {
         let cron_str = cron.into();
-        let next_run = Self::calculate_next_run(&cron_str);
+        let (schedule, next_run) = Self::parse_schedule(&cron_str);
 
         Self {
             id: id.into(),
@@ -90,74 +98,46 @@ impl CronJob {
             next_run,
             enabled: true,
             file_path: PathBuf::new(),
+            schedule,
         }
     }
 
-    /// Calculate next run time from cron expression
-    fn calculate_next_run(cron_expr: &str) -> Option<DateTime<Utc>> {
-        let schedule: Schedule = cron_expr.parse().ok()?;
+    /// Parse cron expression and calculate next run time.
+    /// Returns (parsed_schedule, next_run_time).
+    fn parse_schedule(cron_expr: &str) -> (Option<Schedule>, Option<DateTime<Utc>>) {
+        let schedule: Schedule = match cron_expr.parse() {
+            Ok(s) => s,
+            Err(_) => return (None, None),
+        };
+        let now = chrono::Utc::now();
+        let next_run = schedule.after(&now).next();
+        (Some(schedule), next_run)
+    }
+
+    /// Calculate next run time using the cached schedule.
+    /// This avoids re-parsing the cron expression on every check.
+    fn calculate_next_run(&self) -> Option<DateTime<Utc>> {
+        let schedule = self.schedule.as_ref()?;
         let now = chrono::Utc::now();
         schedule.after(&now).next()
     }
 
-    /// Update next run time
+    /// Update next run time using the cached schedule
     pub fn update_next_run(&mut self) {
-        self.next_run = Self::calculate_next_run(&self.cron);
+        self.next_run = self.calculate_next_run();
     }
-}
-
-/// Parse frontmatter and body from markdown content.
-///
-/// This is a generic parser that handles:
-/// - Leading/trailing whitespace
-/// - Windows line endings (\r\n)
-/// - Content containing `---` after frontmatter
-///
-/// Returns (frontmatter_yaml, body) or error if format is invalid.
-fn parse_frontmatter_generic(content: &str) -> anyhow::Result<(String, String)> {
-    let content = content.trim_start();
-
-    if !content.starts_with("---") {
-        anyhow::bail!("Invalid markdown format: missing frontmatter start delimiter '---'");
-    }
-
-    // Find the end of frontmatter (\n--- or \r\n---)
-    // Skip the first "---"
-    let after_start = &content[3..];
-
-    // Find the next "\n---" which closes frontmatter
-    // We need to handle both \n and \r\n
-    let end_pos = after_start.find("\n---").ok_or_else(|| {
-        anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'")
-    })?;
-
-    // Extract YAML (skip initial ---, take content until closing ---)
-    let yaml_str = &after_start[..end_pos];
-    // Normalize line endings for YAML parsing
-    let yaml_str = yaml_str.replace("\r\n", "\n").replace('\r', "\n");
-
-    // Extract body (skip past the closing ---)
-    // Position after "\n---" is end_pos + 4 (for "\n---")
-    let body_start = 3 + end_pos + 4;
-    let body = if body_start < content.len() {
-        content[body_start..].trim().to_string()
-    } else {
-        String::new()
-    };
-
-    Ok((yaml_str, body))
 }
 
 /// Parse markdown file with frontmatter
 fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
-    let (yaml_str, body) = parse_frontmatter_generic(content)?;
+    let (yaml_str, body) = extract_frontmatter_raw(content)?;
 
     // Parse frontmatter
     let fm: CronJobFrontmatter = serde_yaml::from_str(&yaml_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse YAML frontmatter: {}", e))?;
 
-    // Calculate next_run
-    let next_run = CronJob::calculate_next_run(&fm.cron);
+    // Parse schedule and calculate next_run
+    let (schedule, next_run) = CronJob::parse_schedule(&fm.cron);
 
     // Use filename as ID
     let id = file_path
@@ -176,6 +156,7 @@ fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
         next_run,
         enabled: fm.enabled,
         file_path: file_path.to_path_buf(),
+        schedule,
     })
 }
 
@@ -185,7 +166,7 @@ impl CronService {
     /// Jobs are loaded from `~/.gasket/cron/*.md` files.
     /// File watcher is started for hot reload support.
     pub async fn new(workspace: PathBuf) -> Self {
-        let (tx, mut rx) = unbounded_channel::<Result<Event, notify::Error>>();
+        let (tx, rx) = unbounded_channel::<Result<Event, notify::Error>>();
 
         let jobs = Arc::new(RwLock::new(HashMap::new()));
 
@@ -207,67 +188,97 @@ impl CronService {
         // Spawn bridge task: std::sync::mpsc -> tokio::sync::mpsc
         tokio::spawn(async move {
             loop {
-                match std_rx.recv() {
-                    Ok(event) => {
-                        if watcher_tx.send(event).is_err() {
-                            break;
-                        }
+                while let Ok(event) = std_rx.recv() {
+                    if watcher_tx.send(event).is_err() {
+                        break;
                     }
-                    Err(_) => break,
                 }
             }
         });
 
-        // Spawn background task to process watcher events
-        let workspace_for_watcher = workspace.clone();
-        tokio::spawn(async move {
-            while let Some(event_result) = rx.recv().await {
+        // Spawn background task to process watcher events with debouncing
+        tokio::spawn(Self::debounce_loop(rx, jobs));
+
+        service
+    }
+
+    /// Debounce loop that receives raw events and emits settled events.
+    ///
+    /// Events are collected and only processed after DEBOUNCE_MS has passed
+    /// since the last event for a given file. This avoids processing
+    /// intermediate states during multi-step writes.
+    async fn debounce_loop(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<Event, notify::Error>>,
+        jobs: Arc<RwLock<HashMap<String, CronJob>>>,
+    ) {
+        use std::collections::HashMap;
+
+        let mut pending: HashMap<PathBuf, (notify::EventKind, Instant)> = HashMap::new();
+        let debounce = Duration::from_millis(DEBOUNCE_MS);
+        let check_interval = Duration::from_millis(100);
+
+        loop {
+            // Process incoming events
+            while let Ok(event_result) = rx.try_recv() {
                 match event_result {
                     Ok(event) => {
-                        Self::handle_watcher_event(&jobs, &workspace_for_watcher, event).await;
+                        for path in &event.paths {
+                            if path.extension().is_some_and(|ext| ext == "md") {
+                                pending.insert(path.clone(), (event.kind, Instant::now()));
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!("File watcher error: {}", e);
                     }
                 }
             }
-        });
 
-        service
+            // Process settled events
+            let now = Instant::now();
+            let settled: Vec<(PathBuf, notify::EventKind)> = pending
+                .iter()
+                .filter(|(_, (_, timestamp))| now.saturating_duration_since(*timestamp) >= debounce)
+                .map(|(path, (kind, _))| (path.clone(), *kind))
+                .collect();
+
+            for (path, kind) in settled {
+                pending.remove(&path);
+                Self::process_watcher_event(&jobs, &path, kind).await;
+            }
+
+            tokio::time::sleep(check_interval).await;
+        }
     }
 
-    /// Handle a single watcher event
-    async fn handle_watcher_event(
+    /// Process a single settled watcher event.
+    async fn process_watcher_event(
         jobs: &Arc<RwLock<HashMap<String, CronJob>>>,
-        _workspace: &Path,
-        event: Event,
+        path: &Path,
+        kind: notify::EventKind,
     ) {
-        for path in &event.paths {
-            if path.extension().is_some_and(|ext| ext == "md") {
-                match event.kind {
-                    notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {
-                        // Small delay to ensure file is fully written
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                        match Self::parse_markdown_file(path) {
-                            Ok(job) => {
-                                let job_id = job.id.clone();
-                                jobs.write().insert(job_id.clone(), job);
-                                debug!("Reloaded cron job: {}", job_id);
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse cron job file {:?}: {}", path, e);
-                            }
+        match kind {
+            notify::EventKind::Modify(_) | notify::EventKind::Create(_) => {
+                if path.exists() {
+                    match Self::parse_markdown_file(path) {
+                        Ok(job) => {
+                            let job_id = job.id.clone();
+                            jobs.write().insert(job_id.clone(), job);
+                            debug!("Reloaded cron job: {}", job_id);
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse cron job file {:?}: {}", path, e);
                         }
                     }
-                    notify::EventKind::Remove(_) => {
-                        if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                            jobs.write().remove(id);
-                            debug!("Removed cron job: {}", id);
-                        }
-                    }
-                    _ => {}
                 }
             }
+            notify::EventKind::Remove(_) => {
+                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                    jobs.write().remove(id);
+                    debug!("Removed cron job: {}", id);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -290,7 +301,7 @@ impl CronService {
             if path.extension().is_some_and(|ext| ext == "md") {
                 match Self::parse_markdown_file(&path) {
                     Ok(job) => {
-                        debug!("Loaded cron job from markdown: {}", job.id);
+                        info!("Loaded cron job from markdown: {}", job.id);
                         self.jobs.write().insert(job.id.clone(), job);
                         count += 1;
                     }
@@ -359,7 +370,7 @@ enabled: {}
             job.message
         );
 
-        tokio::fs::write(&file_path, content).await?;
+        atomic_write(&file_path, content).await?;
 
         // IMMEDIATELY update in-memory state for read-after-write consistency
         let job_id = job.id.clone();
@@ -434,7 +445,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_frontmatter_generic_basic() {
+    fn test_extract_frontmatter_raw_basic() {
         let content = r#"---
 name: Test Job
 cron: "0 9 * * *"
@@ -442,23 +453,23 @@ cron: "0 9 * * *"
 
 Hello World"#;
 
-        let (yaml, body) = parse_frontmatter_generic(content).unwrap();
+        let (yaml, body) = extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Test Job"));
         assert!(yaml.contains("cron:"));
         assert_eq!(body, "Hello World");
     }
 
     #[test]
-    fn test_parse_frontmatter_generic_with_crlf() {
+    fn test_extract_frontmatter_raw_with_crlf() {
         let content = "---\r\nname: Test\r\ncron: \"0 9 * * *\"\r\n---\r\n\r\nBody content";
 
-        let (yaml, body) = parse_frontmatter_generic(content).unwrap();
+        let (yaml, body) = extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Test"));
         assert_eq!(body, "Body content");
     }
 
     #[test]
-    fn test_parse_frontmatter_generic_with_code_block() {
+    fn test_extract_frontmatter_raw_with_code_block() {
         // Body contains --- which should not confuse the parser
         let content = r#"---
 name: Code Job
@@ -472,21 +483,21 @@ Some code:
 
 More content"#;
 
-        let (yaml, body) = parse_frontmatter_generic(content).unwrap();
+        let (yaml, body) = extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Code Job"));
         assert!(body.contains("---")); // Body should contain the code block
     }
 
     #[test]
-    fn test_parse_frontmatter_generic_missing_start() {
+    fn test_extract_frontmatter_raw_missing_start() {
         let content = "No frontmatter here";
-        assert!(parse_frontmatter_generic(content).is_err());
+        assert!(extract_frontmatter_raw(content).is_err());
     }
 
     #[test]
-    fn test_parse_frontmatter_generic_missing_end() {
+    fn test_extract_frontmatter_raw_missing_end() {
         let content = "---\nname: Test\nNo end delimiter";
-        assert!(parse_frontmatter_generic(content).is_err());
+        assert!(extract_frontmatter_raw(content).is_err());
     }
 
     #[test]
@@ -513,10 +524,14 @@ Send daily report"#;
     }
 
     #[test]
-    fn test_cron_job_calculate_next_run() {
+    fn test_cron_job_parse_schedule() {
         // Test valid cron expression (every minute)
-        let next_run = CronJob::calculate_next_run("0 * * * * *");
-        // Should have a next_run calculated
+        let (schedule, next_run) = CronJob::parse_schedule("0 * * * * *");
+        // Should have a parsed schedule and next_run calculated
+        assert!(
+            schedule.is_some(),
+            "Valid cron '0 * * * * *' should parse into a Schedule"
+        );
         assert!(
             next_run.is_some(),
             "Valid cron '0 * * * * *' should calculate next_run"
@@ -538,5 +553,6 @@ Send daily report"#;
         let job = CronJob::new("test", "Test", "invalid cron", "Message");
         // Should handle invalid cron gracefully
         assert!(job.next_run.is_none());
+        assert!(job.schedule.is_none());
     }
 }

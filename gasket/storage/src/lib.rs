@@ -11,6 +11,7 @@
 //! machine-state.
 
 mod event_store;
+pub mod fs;
 mod kv;
 pub mod memory;
 
@@ -449,6 +450,7 @@ impl SqliteStore {
                 updated     TEXT NOT NULL DEFAULT '',
                 last_accessed TEXT NOT NULL DEFAULT '',
                 file_mtime  BIGINT NOT NULL DEFAULT 0,
+                file_size   BIGINT NOT NULL DEFAULT 0,
                 PRIMARY KEY (scenario, path)
             )",
         )

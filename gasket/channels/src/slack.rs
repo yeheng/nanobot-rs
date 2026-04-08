@@ -249,8 +249,10 @@ impl Channel for SlackChannel {
         "slack"
     }
 
+    /// Start the Slack channel.
+    /// Delegates to the inherent `start_bot` method.
     async fn start(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        self.start_bot().await
     }
 
     async fn stop(&mut self) -> anyhow::Result<()> {

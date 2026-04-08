@@ -100,6 +100,9 @@ pub use hooks::{
 pub use search::{bytes_to_embedding, embedding_to_bytes, TextEmbedder};
 pub use search::{cosine_similarity, top_k_similar};
 
+// ── Memory (re-export from storage) ────────────────────────
+pub use gasket_storage::memory::{Embedder, NoopEmbedder};
+
 // ── Skills ─────────────────────────────────────────────────
 pub use skills::{parse_skill_file, Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 

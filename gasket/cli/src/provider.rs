@@ -7,13 +7,16 @@ use gasket_engine::config::{Config, ProviderType};
 use gasket_engine::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 use gasket_engine::vault::{contains_placeholders, VaultStore};
 
-use crate::commands::vault::ensure_unlocked;
+use crate::commands::vault::ensure_unlocked_non_interactive;
 
 /// Check config for vault placeholders and unlock the vault if needed.
 ///
 /// Returns `Some(Arc<VaultStore>)` if the config contains vault placeholders
 /// and the vault was successfully unlocked, or `None` if no placeholders
 /// were found (no vault needed).
+///
+/// This function uses non-interactive mode - it only reads from environment
+/// variables and does not prompt for password input.
 pub fn setup_vault(config: &Config) -> anyhow::Result<Option<std::sync::Arc<VaultStore>>> {
     // Serialize config to JSON and scan for placeholders
     let config_str = serde_json::to_string(config).unwrap_or_default();
@@ -23,7 +26,7 @@ pub fn setup_vault(config: &Config) -> anyhow::Result<Option<std::sync::Arc<Vaul
 
     tracing::info!("[Vault] Detected vault placeholders in config — unlocking vault");
     let mut store = VaultStore::new()?;
-    ensure_unlocked(&mut store)?;
+    ensure_unlocked_non_interactive(&mut store)?;
     Ok(Some(std::sync::Arc::new(store)))
 }
 

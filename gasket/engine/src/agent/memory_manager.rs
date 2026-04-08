@@ -23,13 +23,17 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-/// Facade managing three-phase memory loading for agent loop.
+/// Boxed embedder trait object for dependency injection.
+type BoxedEmbedder = Box<dyn Embedder>;
+
+/// Facade orchestrating three-phase memory loading for agent loop.
 pub struct MemoryManager {
     store: FileMemoryStore,
     index_manager: FileIndexManager,
     metadata_store: MetadataStore,
     embedding_store: EmbeddingStore,
     retrieval: RetrievalEngine,
+    embedder: BoxedEmbedder,
     budget: TokenBudget,
 }
 
@@ -39,7 +43,12 @@ impl MemoryManager {
     /// # Arguments
     /// * `base_dir` - Memory base directory (e.g., ~/.gasket/memory/)
     /// * `pool` - SQLite connection pool for metadata and embedding stores
-    pub async fn new(base_dir: PathBuf, pool: &SqlitePool) -> Result<Self> {
+    /// * `embedder` - Embedder for computing memory embeddings
+    pub async fn new(
+        base_dir: PathBuf,
+        pool: &SqlitePool,
+        embedder: BoxedEmbedder,
+    ) -> Result<Self> {
         let store = FileMemoryStore::new(base_dir.clone());
         let index_manager = FileIndexManager::new(base_dir.clone());
         let embedding_store = EmbeddingStore::new(pool.clone());
@@ -56,6 +65,7 @@ impl MemoryManager {
             metadata_store,
             embedding_store,
             retrieval,
+            embedder,
             budget,
         })
     }
@@ -65,6 +75,7 @@ impl MemoryManager {
         base_dir: PathBuf,
         pool: &SqlitePool,
         budget: TokenBudget,
+        embedder: BoxedEmbedder,
     ) -> Result<Self> {
         let store = FileMemoryStore::new(base_dir.clone());
         let index_manager = FileIndexManager::new(base_dir.clone());
@@ -81,6 +92,7 @@ impl MemoryManager {
             metadata_store,
             embedding_store,
             retrieval,
+            embedder,
             budget,
         })
     }
@@ -92,6 +104,7 @@ impl MemoryManager {
         metadata_store: MetadataStore,
         embedding_store: EmbeddingStore,
         retrieval: RetrievalEngine,
+        embedder: BoxedEmbedder,
         budget: TokenBudget,
     ) -> Self {
         Self {
@@ -100,6 +113,7 @@ impl MemoryManager {
             metadata_store,
             embedding_store,
             retrieval,
+            embedder,
             budget,
         }
     }
@@ -177,13 +191,18 @@ impl MemoryManager {
             .base_dir()
             .join(scenario.dir_name())
             .join(&filename);
-        let file_mtime = tokio::fs::metadata(&file_path)
+        let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
             .await
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .map(|m| {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                (mtime, m.len())
+            })
+            .unwrap_or((0, 0));
 
         // 3. Upsert metadata into SQLite
         let entry = MemoryIndexEntry {
@@ -198,21 +217,35 @@ impl MemoryManager {
             scenario,
             last_accessed: meta.last_accessed,
             file_mtime,
+            file_size,
         };
         self.metadata_store.upsert_entry(&entry).await?;
 
-        // 4. Upsert embedding (placeholder vector until real embedder)
-        let embedding = vec![0.0f32; 384];
-        self.embedding_store
-            .upsert(
-                &filename,
-                scenario.dir_name(),
-                tags,
-                frequency,
-                &embedding,
-                tokens as u32,
-            )
-            .await?;
+        // 4. Compute embedding using embedder
+        // Note: We compute the real embedding here to avoid the race condition
+        // where the watcher would overwrite a placeholder with the real embedding.
+        // If embedding fails, we skip it (no placeholder) and let the watcher
+        // handle it when it processes the file change event.
+        match self.embedder.embed(content).await {
+            Ok(embedding) => {
+                // 5. Upsert embedding into SQLite
+                self.embedding_store
+                    .upsert(
+                        &filename,
+                        scenario.dir_name(),
+                        tags,
+                        frequency,
+                        &embedding,
+                        tokens as u32,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                warn!("Embedding computation failed for new memory: {}. Skipping embedding - the watcher will retry.", e);
+                // Don't insert a placeholder - the watcher will catch the file change
+                // and compute the real embedding later.
+            }
+        }
 
         info!(
             "Created memory: {}/{} ({} tokens)",
@@ -254,13 +287,18 @@ impl MemoryManager {
             .base_dir()
             .join(scenario.dir_name())
             .join(filename);
-        let file_mtime = tokio::fs::metadata(&file_path)
+        let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
             .await
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .map(|m| {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                (mtime, m.len())
+            })
+            .unwrap_or((0, 0));
 
         // 5. Upsert metadata into SQLite
         let entry = MemoryIndexEntry {
@@ -275,21 +313,35 @@ impl MemoryManager {
             scenario,
             last_accessed: meta.last_accessed,
             file_mtime,
+            file_size,
         };
         self.metadata_store.upsert_entry(&entry).await?;
 
-        // 6. Upsert embedding
-        let embedding = vec![0.0f32; 384];
-        self.embedding_store
-            .upsert(
-                filename,
-                scenario.dir_name(),
-                &meta.tags,
-                meta.frequency,
-                &embedding,
-                meta.tokens as u32,
-            )
-            .await?;
+        // 6. Compute embedding using embedder
+        // Note: We compute the real embedding here to avoid the race condition
+        // where the watcher would overwrite a placeholder with the real embedding.
+        // If embedding fails, we skip it (no placeholder) and let the watcher
+        // handle it when it processes the file change event.
+        match self.embedder.embed(content).await {
+            Ok(embedding) => {
+                // 7. Upsert embedding into SQLite
+                self.embedding_store
+                    .upsert(
+                        filename,
+                        scenario.dir_name(),
+                        &meta.tags,
+                        meta.frequency,
+                        &embedding,
+                        meta.tokens as u32,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                warn!("Embedding computation failed for updated memory: {}. Skipping embedding - the watcher will retry.", e);
+                // Don't insert a placeholder - the watcher will catch the file change
+                // and compute the real embedding later.
+            }
+        }
 
         info!("Updated memory: {}/{}", scenario.dir_name(), filename);
         Ok(())
@@ -319,37 +371,23 @@ impl MemoryManager {
     pub async fn reindex(&self) -> Result<ReindexReport> {
         info!("Starting full memory reindex");
         let mut total_files = 0usize;
-        let mut total_errors = 0usize;
 
         for scenario in Scenario::all() {
             let entries = self.index_manager.scan_entries(*scenario).await?;
             let file_count = entries.len();
-            let error_count = entries
-                .iter()
-                .filter(|e| e.frequency == Frequency::Archived && e.title.starts_with("[broken]"))
-                .count();
 
             self.metadata_store
                 .sync_entries(*scenario, &entries)
                 .await?;
 
             total_files += file_count;
-            total_errors += error_count;
-            info!(
-                "Reindexed {}: {} files, {} errors",
-                scenario.dir_name(),
-                file_count,
-                error_count
-            );
+            info!("Reindexed {}: {} files", scenario.dir_name(), file_count,);
         }
 
-        info!(
-            "Reindex complete: {} files, {} errors",
-            total_files, total_errors
-        );
+        info!("Reindex complete: {} files", total_files);
         Ok(ReindexReport {
             total_files,
-            total_errors,
+            total_errors: 0,
         })
     }
 
@@ -838,7 +876,9 @@ mod tests {
             .pool()
             .clone();
 
-        let manager = MemoryManager::new(base_dir, &pool).await.unwrap();
+        // Use NoopEmbedder for tests (zero vectors, no model loading)
+        let embedder: BoxedEmbedder = Box::new(NoopEmbedder::new(384));
+        let manager = MemoryManager::new(base_dir, &pool, embedder).await.unwrap();
         manager.init().await.unwrap();
 
         (manager, temp_dir)
@@ -1162,12 +1202,14 @@ mod tests {
                     .clone(),
             ),
         );
+        let embedder: BoxedEmbedder = Box::new(NoopEmbedder::new(384));
         let custom_manager = MemoryManager::with_components(
             store,
             index_manager,
             metadata_store,
             embedding_store,
             retrieval,
+            embedder,
             budget,
         );
 

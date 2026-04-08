@@ -36,7 +36,7 @@ impl TelegramChannel {
 
     /// Start the Telegram bot (blocking)
     #[instrument(name = "channel.telegram.start", skip_all)]
-    pub async fn start(self) -> anyhow::Result<()> {
+    pub async fn start_bot(&self) -> anyhow::Result<()> {
         info!("Starting Telegram bot");
 
         let bot = Bot::new(&self.config.token);
@@ -99,12 +99,10 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
-    /// **KNOWN INCONSISTENCY**: This trait `start()` method is a no-op that returns `Ok(())`.
-    /// Actual startup logic is in the inherent `pub async fn start(self)` method.
-    /// This affects: Telegram, Discord, Slack channels.
-    /// See: opencode.md for details.
+    /// Start the Telegram channel.
+    /// Delegates to the inherent `start_bot` method.
     async fn start(&mut self) -> anyhow::Result<()> {
-        Ok(())
+        self.start_bot().await
     }
 
     async fn stop(&mut self) -> anyhow::Result<()> {

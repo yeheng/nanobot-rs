@@ -4,30 +4,23 @@
 //!
 //! This module implements a **defense-in-depth** approach to command execution:
 //!
-//! 1. **Advisory Pattern Check** (`check_dangerous_patterns`): A best-effort filter
-//!    that catches common injection patterns. This is **NOT a security boundary**.
+//! 1. **Command Policy** (`validate_policy`): Allowlist/denylist for command filtering.
+//!    This is advisory - can be bypassed with creative command construction.
 //!
-//! 2. **Command Policy** (`validate_policy`): Allowlist/denylist for command filtering.
-//!    Also advisory - can be bypassed with creative command construction.
-//!
-//! 3. **Sandbox Isolation**: The **real security boundary**. Commands run in an
+//! 2. **Sandbox Isolation**: The **real security boundary**. Commands run in an
 //!    isolated environment (bwrap/sandbox-exec) with:
 //!    - Filesystem isolation (read-only root, restricted write paths)
 //!    - Resource limits (memory, CPU, processes)
 //!    - Network isolation (optional)
 //!
-//! ## Why Pattern Checking is Insufficient
+//! ## No Application-Level Command Filtering
 //!
-//! Shell commands are Turing-complete. String-based filtering can be bypassed by:
-//! - `$((arithmetic))` - arithmetic expansion
-//! - `$(<file)` - file reading
-//! - `{cmd,args}` - brace expansion
-//! - Base64-encoded commands
-//! - Unicode homoglyphs
-//! - Environment variable injection
+//! This module does NOT perform application-level pattern checking for "dangerous"
+//! shell constructs. String-based filtering is fundamentally flawed because:
+//! - Shell commands are Turing-complete
+//! - Bypasses exist: `$((arithmetic))`, `$(<file)`, `{cmd,args}`, base64 encoding, etc.
 //!
-//! Therefore, the pattern check is only meant to catch **accidental** misuse,
-//! not malicious actors. Malicious commands should be contained by the sandbox.
+//! All security enforcement is delegated to the sandbox backend.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -125,50 +118,6 @@ impl CommandBuilder {
             PolicyVerdict::Deny(reason) => Err(SandboxError::PolicyDenied(reason)),
         }
     }
-
-    /// Check for common dangerous patterns in the command.
-    ///
-    /// # Security Warning
-    ///
-    /// **This is NOT a security boundary.** This check only catches obvious
-    /// injection patterns like `;`, `&&`, `||`, `$()`, etc. It can be trivially
-    /// bypassed by sophisticated attackers.
-    ///
-    /// The actual security is provided by:
-    /// 1. Sandbox isolation (bwrap/sandbox-exec)
-    /// 2. Resource limits
-    /// 3. Filesystem restrictions
-    ///
-    /// This check exists solely to catch accidental misuse and provide
-    /// defense-in-depth, not to prevent malicious command injection.
-    ///
-    /// # Known Bypasses
-    ///
-    /// - `$((1+1))` - arithmetic expansion
-    /// - `$(<file)` - file reading
-    /// - `{echo,hello}` - brace expansion
-    /// - Encoded payloads (base64, hex, etc.)
-    /// - Environment variable manipulation
-    /// - Unicode homoglyph attacks
-    pub fn check_dangerous_patterns(&self) -> Result<()> {
-        // Common shell metacharacters that enable command chaining/injection
-        // This list is intentionally simple - see security warning above
-        const DANGEROUS_PATTERNS: &[&str] =
-            &[";", "&&", "||", "`", "$(", "${", ">", ">>", "|", "\n", "\r"];
-
-        for pattern in DANGEROUS_PATTERNS {
-            if self.command.contains(pattern) {
-                return Err(SandboxError::InvalidCommand(format!(
-                    "Potentially unsafe pattern detected: '{}'. \
-                     Command chaining is not allowed. \
-                     Note: This check is advisory only and can be bypassed. \
-                     The sandbox provides the actual security boundary.",
-                    pattern
-                )));
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -192,16 +141,5 @@ mod tests {
         let cmd = builder.build_fallback();
 
         assert_eq!(cmd.get_program(), "bash");
-    }
-
-    #[test]
-    fn test_dangerous_patterns() {
-        let builder = CommandBuilder::new("echo hello; rm -rf /");
-        let result = builder.check_dangerous_patterns();
-        assert!(result.is_err());
-
-        let builder = CommandBuilder::new("echo hello");
-        let result = builder.check_dangerous_patterns();
-        assert!(result.is_ok());
     }
 }

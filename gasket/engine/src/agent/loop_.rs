@@ -43,21 +43,17 @@ use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::agent::HistoryConfig;
 use crate::error::AgentError;
-use crate::hooks::{
-    ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
-    MutableContext, VaultHook,
-};
+use crate::hooks::{HookPoint, HookRegistry, MutableContext};
 use crate::tools::{SubagentSpawner, ToolRegistry};
-use crate::vault::{redact_secrets, VaultInjector, VaultStore};
+use crate::vault::redact_secrets;
 use gasket_providers::{ChatMessage, LlmProvider};
-use gasket_types::SessionKey;
+use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
 
 use crate::agent::compactor::ContextCompactor;
 use crate::agent::indexing::IndexingService;
 use crate::agent::memory::MemoryStore;
 use crate::agent::memory_manager::MemoryManager;
-use gasket_storage::{process_history, EventStore};
-use gasket_types::{EventMetadata, EventType, SessionEvent};
+use gasket_storage::EventStore;
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -136,23 +132,10 @@ pub struct AgentResponse {
     pub cost: f64,
 }
 
-/// State produced by the common pipeline preparation.
+/// Owned snapshot of fields needed for post-response finalization.
 ///
-/// Contains all data needed for execution and post-processing,
-/// extracted from the shared pre-processing steps (hooks, history, prompt assembly).
-struct PipelineState {
-    session_key_str: String,
-    content: String,
-    messages: Vec<ChatMessage>,
-    local_vault_values: Vec<String>,
-    /// Estimated token count of the current context (for compaction threshold check).
-    estimated_tokens: usize,
-}
-
-/// Owned snapshot of `PipelineState` fields needed for post-response finalization.
-///
-/// Extracted *before* `state.messages` is moved into the executor.
-/// Owns its data so the borrow checker doesn't tie it to `state`'s lifetime.
+/// Extracted *before* `messages` is moved into the executor.
+/// Owns its data so the borrow checker doesn't tie it to the request's lifetime.
 struct FinalizeContext {
     session_key_str: String,
     content: String,
@@ -161,27 +144,15 @@ struct FinalizeContext {
     estimated_tokens: usize,
 }
 
-impl PipelineState {
-    fn into_finalize_context(self) -> (Vec<ChatMessage>, FinalizeContext) {
-        let ctx = FinalizeContext {
-            session_key_str: self.session_key_str,
-            content: self.content,
-            local_vault_values: self.local_vault_values,
-            estimated_tokens: self.estimated_tokens,
-        };
-        (self.messages, ctx)
+impl FinalizeContext {
+    fn from_request(req: &super::context_builder::ChatRequest) -> Self {
+        Self {
+            session_key_str: req.session_key.clone(),
+            content: req.user_content.clone(),
+            local_vault_values: req.vault_values.clone(),
+            estimated_tokens: req.estimated_tokens,
+        }
     }
-}
-
-/// Outcome of the pipeline preparation.
-///
-/// Uses a proper enum instead of `Option<String>` to make the two
-/// mutually-exclusive paths explicit at the type level.
-enum PipelineOutcome {
-    /// Pipeline completed normally — ready for execution.
-    Ready(PipelineState),
-    /// BeforeRequest hook aborted the pipeline with a message.
-    Aborted(String),
 }
 
 /// Initialization state returned by `build_internal()`.
@@ -374,40 +345,10 @@ impl AgentLoop {
 
     /// Build hooks registry for main agents.
     ///
-    /// Creates:
-    /// - ExternalShellHook at BeforeRequest and AfterResponse
-    /// - VaultHook at BeforeLLM (if vault is available)
+    /// Delegates to `context_builder::build_default_hooks()` to keep
+    /// hook construction logic in one place.
     fn build_hooks() -> Arc<HookRegistry> {
-        let hooks_dir = dirs::home_dir()
-            .map(|p| p.join(".gasket").join("hooks"))
-            .unwrap_or_else(|| {
-                tracing::warn!("Could not resolve home directory, disabling external hooks.");
-                PathBuf::from("/dev/null")
-            });
-
-        let external_runner = ExternalHookRunner::new(hooks_dir);
-
-        let mut builder = HookBuilder::new()
-            // External shell hooks at BeforeRequest and AfterResponse
-            .with_hook(Arc::new(ExternalShellHook::new(
-                external_runner.clone(),
-                HookPoint::BeforeRequest,
-            )))
-            .with_hook(Arc::new(ExternalShellHook::new(
-                external_runner,
-                HookPoint::AfterResponse,
-            )));
-
-        // Add vault hook if available
-        if let Ok(store) = VaultStore::new() {
-            debug!("[Agent] Vault initialized successfully, adding vault injector");
-            let vault_hook = VaultHook::new(VaultInjector::new(Arc::new(store)));
-            builder = builder.with_hook(Arc::new(vault_hook));
-        } else {
-            debug!("[Agent] Vault not available, skipping vault injector");
-        }
-
-        builder.build_shared()
+        super::context_builder::build_default_hooks()
     }
 
     /// Internal builder: common initialization for all constructors.
@@ -546,7 +487,7 @@ impl AgentLoop {
     async fn try_init_memory_manager(
         sqlite_store: &gasket_storage::SqliteStore,
     ) -> Option<Arc<MemoryManager>> {
-        use gasket_storage::memory::memory_base_dir;
+        use gasket_storage::memory::{memory_base_dir, Embedder, NoopEmbedder};
 
         let base_dir = memory_base_dir();
         if !base_dir.exists() {
@@ -557,7 +498,32 @@ impl AgentLoop {
             return None;
         }
 
-        match MemoryManager::new(base_dir, &sqlite_store.pool()).await {
+        // Use TextEmbedder if local-embedding feature is enabled, otherwise use NoopEmbedder
+        let embedder: Box<dyn Embedder> = {
+            #[cfg(feature = "local-embedding")]
+            {
+                match gasket_storage::TextEmbedder::new() {
+                    Ok(embedder) => {
+                        info!("Memory manager using TextEmbedder (local-embedding enabled)");
+                        Box::new(embedder) as Box<dyn Embedder>
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize TextEmbedder, falling back to NoopEmbedder: {}",
+                            e
+                        );
+                        Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
+                    }
+                }
+            }
+            #[cfg(not(feature = "local-embedding"))]
+            {
+                info!("Memory manager using NoopEmbedder (local-embedding disabled)");
+                Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
+            }
+        };
+
+        match MemoryManager::new(base_dir, &sqlite_store.pool(), embedder).await {
             Ok(mgr) => {
                 if let Err(e) = mgr.init().await {
                     warn!("Failed to initialize memory manager: {}", e);
@@ -572,52 +538,6 @@ impl AgentLoop {
             }
         }
     }
-
-    /// Load long-term memories relevant to the current user message.
-    /// Returns a formatted system section string, or None if no memories loaded.
-    async fn load_memory_context(&self, user_message: &str) -> Option<String> {
-        let mgr = self.memory_manager.as_ref()?;
-
-        use gasket_storage::memory::MemoryQuery;
-
-        let query = MemoryQuery::new().with_text(user_message);
-
-        match mgr.load_for_context(&query).await {
-            Ok(context) if !context.memories.is_empty() => {
-                let mut sections = Vec::new();
-                sections.push("## Long-Term Memory".to_string());
-                sections.push(format!(
-                    "The following memories were loaded ({} tokens):",
-                    context.tokens_used
-                ));
-                sections.push(String::new());
-
-                for mem in &context.memories {
-                    sections.push(format!(
-                        "### {} [{}]",
-                        mem.metadata.title, mem.metadata.scenario
-                    ));
-                    sections.push(mem.content.clone());
-                    sections.push(String::new());
-                }
-
-                debug!(
-                    "Injected {} memories ({} tokens) into context",
-                    context.memories.len(),
-                    context.tokens_used
-                );
-                Some(sections.join("\n"))
-            }
-            Ok(_) => {
-                debug!("No relevant memories found");
-                None
-            }
-            Err(e) => {
-                warn!("Failed to load memories: {}", e);
-                None
-            }
-        }
-    }
 }
 
 // ── Common Pipeline ──────────────────────────────────────────
@@ -625,145 +545,67 @@ impl AgentLoop {
 impl AgentLoop {
     /// Common pre-processing pipeline for both direct and streaming execution.
     ///
-    /// Executes the shared steps: BeforeRequest hook, history load/save,
-    /// prompt assembly, AfterHistory/BeforeLLM hooks, vault value extraction.
-    /// Returns `PipelineOutcome::Aborted` if the BeforeRequest hook aborts.
+    /// Delegates to `ContextBuilder` to decouple pipeline construction from execution.
+    /// Returns `BuildOutcome::Aborted` if the BeforeRequest hook aborts.
     async fn prepare_pipeline(
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<PipelineOutcome, AgentError> {
-        let session_key_str = session_key.to_string();
+    ) -> Result<super::context_builder::BuildOutcome, AgentError> {
+        use super::context_builder::ContextBuilder;
 
-        // ── 1. BeforeRequest hooks (can modify input or abort) ─────
-        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(content),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-            vault_values: Vec::new(),
+        // Create memory loader closure if memory manager is available
+        let memory_loader = if let Some(ref mgr) = self.memory_manager {
+            let mgr = mgr.clone();
+            Some(
+                move |content: &str| -> super::context_builder::MemoryLoaderFuture {
+                    let mgr = mgr.clone();
+                    let content = content.to_string();
+                    Box::pin(async move {
+                        use gasket_storage::memory::MemoryQuery;
+                        let query = MemoryQuery::new().with_text(&content);
+                        match mgr.load_for_context(&query).await {
+                            Ok(ctx) if !ctx.memories.is_empty() => {
+                                let mut sections = Vec::new();
+                                sections.push("## Long-Term Memory".to_string());
+                                sections.push(format!(
+                                    "The following memories were loaded ({} tokens):",
+                                    ctx.tokens_used
+                                ));
+                                sections.push(String::new());
+                                for mem in &ctx.memories {
+                                    sections.push(format!(
+                                        "### {} [{}]",
+                                        mem.metadata.title, mem.metadata.scenario
+                                    ));
+                                    sections.push(mem.content.clone());
+                                    sections.push(String::new());
+                                }
+                                Some(sections.join("\n"))
+                            }
+                            _ => None,
+                        }
+                    })
+                },
+            )
+        } else {
+            None
         };
 
-        match self
-            .hooks
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await?
-        {
-            HookAction::Abort(msg) => {
-                return Ok(PipelineOutcome::Aborted(msg));
-            }
-            HookAction::Continue => {}
-        }
-
-        // Get the (possibly modified) user content
-        let content: String = ctx
-            .messages
-            .iter()
-            .find(|m| m.role == gasket_providers::MessageRole::User)
-            .and_then(|m| m.content.clone())
-            .unwrap_or_else(|| content.to_string());
-
-        // ── 2. Load summary with watermark (read path optimization) ─────
-        // Instead of loading ALL history and trimming, we first load the
-        // summary's watermark and then only query events after that point.
-        // This dramatically reduces SQLite I/O for long conversations.
-        let (existing_summary, watermark) = self
-            .context
-            .load_summary_with_watermark(&session_key_str)
-            .await;
-
-        // ── 3. Save user event ────────────────
-        let user_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: session_key_str.clone(),
-            event_type: EventType::UserMessage,
-            content: content.clone(),
-            embedding: None,
-            metadata: EventMetadata::default(),
-            created_at: chrono::Utc::now(),
-            sequence: 0,
-        };
-        self.context.save_event(user_event).await?;
-
-        // ── 4. Load only events after the watermark ──────────────────
-        // The watermark tells us which events are already covered by the
-        // summary. We only need events with sequence > watermark.
-        let history_events = self
-            .context
-            .get_events_after_watermark(&session_key_str, watermark)
-            .await;
-
-        // ── 4.5. Token-budget trimming (safety net) ──────────────────
-        // Even with the watermark, we still apply token budget trimming
-        // as a safety net for very active sessions where recent events
-        // alone exceed the budget.
-        let processed = process_history(history_events, &self.history_config);
-        let history_snapshot = processed.events;
-        if processed.filtered_count > 0 {
-            debug!(
-                "History trimmed: {} kept, {} evicted, ~{} tokens (watermark={})",
-                history_snapshot.len(),
-                processed.evicted.len(),
-                processed.estimated_tokens,
-                watermark,
-            );
-        }
-
-        // ── 5. Prompt assembly ─────────────────
-        let mut system_prompts = Vec::new();
-        if !self.system_prompt.is_empty() {
-            system_prompts.push(self.system_prompt.clone());
-        }
-        if let Some(ref skills) = self.skills_context {
-            system_prompts.push(skills.clone());
-        }
-
-        // ── 5.5. Long-term memory injection ─────────────────
-        let memory_section = self.load_memory_context(&content).await;
-        if let Some(ref mem_text) = memory_section {
-            system_prompts.push(mem_text.clone());
-        }
-
-        let mut messages = Self::assemble_prompt(
-            history_snapshot,
-            &content,
-            &system_prompts,
-            if existing_summary.is_empty() {
-                None
-            } else {
-                Some(existing_summary.as_str())
-            },
-            None, // History recall handled by hooks
+        // Build context builder
+        let mut builder = ContextBuilder::new(
+            self.context.clone(),
+            self.system_prompt.clone(),
+            self.skills_context.clone(),
+            self.hooks.clone(),
+            self.history_config.clone(),
         );
 
-        // ── 6. AfterHistory + BeforeLLM hooks ─────────────────────
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(&content),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-            vault_values: Vec::new(),
-        };
-        self.hooks
-            .execute(HookPoint::AfterHistory, &mut ctx)
-            .await?;
-        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
+        if let Some(loader) = memory_loader {
+            builder = builder.with_memory_loader(loader);
+        }
 
-        // Vault values are now owned by this request's context — no shared state.
-        let local_vault_values = ctx.vault_values;
-
-        Ok(PipelineOutcome::Ready(PipelineState {
-            session_key_str,
-            content,
-            messages,
-            local_vault_values,
-            estimated_tokens: processed.estimated_tokens,
-        }))
+        builder.build(content, session_key).await
     }
 
     /// Process a message and return response.
@@ -772,10 +614,12 @@ impl AgentLoop {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
-        let state = self.prepare_pipeline(content, session_key).await?;
+        use super::context_builder::BuildOutcome;
 
-        let state = match state {
-            PipelineOutcome::Aborted(msg) => {
+        let outcome = self.prepare_pipeline(content, session_key).await?;
+
+        let request = match outcome {
+            BuildOutcome::Aborted(msg) => {
                 return Ok(AgentResponse {
                     content: msg,
                     reasoning_content: None,
@@ -785,14 +629,13 @@ impl AgentLoop {
                     cost: 0.0,
                 });
             }
-            PipelineOutcome::Ready(s) => s,
+            BuildOutcome::Ready(req) => req,
         };
 
         let model = self.config.model.clone();
-        let (messages, fctx) = state.into_finalize_context();
-        let result = self
-            .run_agent_loop(messages, &fctx.local_vault_values)
-            .await?;
+        let fctx = FinalizeContext::from_request(&request);
+        let vault_values = request.vault_values.clone();
+        let result = self.run_agent_loop(request.messages, &vault_values).await?;
 
         Ok(finalize_response(
             result,
@@ -823,11 +666,13 @@ impl AgentLoop {
         ),
         AgentError,
     > {
+        use super::context_builder::BuildOutcome;
+
         let outcome = self.prepare_pipeline(content, session_key).await?;
 
         // Handle abort — return closed channel + immediate response
-        let state = match outcome {
-            PipelineOutcome::Aborted(msg) => {
+        let request = match outcome {
+            BuildOutcome::Aborted(msg) => {
                 let (_tx, rx) = tokio::sync::mpsc::channel(1);
                 let model = self.config.model.clone();
                 let handle = tokio::spawn(async move {
@@ -842,7 +687,7 @@ impl AgentLoop {
                 });
                 return Ok((rx, handle));
             }
-            PipelineOutcome::Ready(s) => s,
+            BuildOutcome::Ready(req) => req,
         };
 
         // Clone Arc fields for the spawned task
@@ -858,13 +703,17 @@ impl AgentLoop {
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
 
+        // Extract finalize context before moving request into the task
+        let fctx = FinalizeContext::from_request(&request);
+        let vault_values = request.vault_values.clone();
+        let messages = request.messages;
+
         let result_handle = tokio::spawn(async move {
             use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
             let executor = AgentExecutor::with_spawner(provider, tools, &config, spawner);
 
-            let (messages, fctx) = state.into_finalize_context();
-            let mut options = ExecutorOptions::new().with_vault_values(&fctx.local_vault_values);
+            let mut options = ExecutorOptions::new().with_vault_values(&vault_values);
             if let Some(ref p) = pricing {
                 options = options.with_pricing(crate::token_tracker::ModelPricing {
                     price_input_per_million: p.price_input_per_million,
@@ -1038,78 +887,6 @@ async fn finalize_response(
         model: Some(model.to_string()),
         token_usage: result.token_usage,
         cost: result.cost,
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────
-
-impl AgentLoop {
-    /// Pure, synchronous assembly of the LLM prompt sequence.
-    fn assemble_prompt(
-        processed_history: Vec<SessionEvent>,
-        current_message: &str,
-        system_prompts: &[String],
-        summary: Option<&str>,
-        recalled_history: Option<&[String]>,
-    ) -> Vec<ChatMessage> {
-        let mut messages = Vec::new();
-
-        // 1. Build the system prompt (only if non-empty)
-        if !system_prompts.is_empty() {
-            let system_content = system_prompts.join("\n\n");
-            if !system_content.is_empty() {
-                messages.push(ChatMessage::system(system_content));
-            }
-        }
-
-        // 2. Inject summary as assistant message (if exists)
-        if let Some(summary_text) = summary {
-            if !summary_text.is_empty() {
-                messages.push(ChatMessage::assistant(format!(
-                    "{}{}",
-                    crate::agent::compactor::SUMMARY_PREFIX,
-                    summary_text
-                )));
-            }
-        }
-
-        // 2.5. Inject recalled history (semantic recall of old conversations)
-        if let Some(recalled) = recalled_history {
-            if !recalled.is_empty() {
-                let recall_content = format!(
-                    "{}\n{}",
-                    crate::agent::compactor::RECALL_PREFIX,
-                    recalled.join("\n")
-                );
-                messages.push(ChatMessage::assistant(recall_content));
-                debug!("Injected {} recalled history messages", recalled.len());
-            }
-        }
-
-        // 3. Add processed history events (convert SessionEvent to ChatMessage)
-        let history_count = processed_history.len();
-        for event in processed_history {
-            // Only include User and Assistant messages
-            match event.event_type {
-                EventType::UserMessage => messages.push(ChatMessage::user(event.content)),
-                EventType::AssistantMessage => messages.push(ChatMessage::assistant(event.content)),
-                _ => {
-                    // Skip other event types (tool calls, summaries, etc.)
-                }
-            }
-        }
-
-        // 4. Current message
-        messages.push(ChatMessage::user(current_message));
-
-        debug!(
-            "Built messages: {} history events, summary: {}, recalled: {}",
-            history_count,
-            summary.is_some(),
-            recalled_history.map(|r| r.len()).unwrap_or(0)
-        );
-
-        messages
     }
 }
 
