@@ -127,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn queue_full_returns_error() {
         // max_depth=3 → per_queue=1 (each priority channel holds 1 item)
-        let mut queue = IndexingQueue::<i32>::new(3);
+        let queue = IndexingQueue::<i32>::new(3);
 
         assert!(queue.push(1, Priority::P0).await.is_ok());
         // Second push to P0 should fail (channel capacity = 1)

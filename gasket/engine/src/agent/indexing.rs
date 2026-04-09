@@ -305,6 +305,7 @@ impl IndexingService {
 }
 
 /// Extract body content from a memory file, stripping frontmatter.
+#[allow(dead_code)]
 fn extract_body(content: &str) -> &str {
     if let Some(stripped) = content.strip_prefix("---") {
         if let Some(end) = stripped.find("---") {
@@ -317,6 +318,7 @@ fn extract_body(content: &str) -> &str {
 /// Background worker for processing indexing tasks.
 struct IndexingWorker {
     queue: IndexingQueue<AsyncIndexTask>,
+    #[allow(dead_code)]
     store: Arc<SqliteStore>,
     #[cfg(feature = "local-embedding")]
     embedder: Option<Arc<TextEmbedder>>,

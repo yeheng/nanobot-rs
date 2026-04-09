@@ -417,6 +417,7 @@ fn start_channels(
 
 /// Resolve a secret string through vault (JIT).
 /// Returns the original string if no vault is available or no placeholders found.
+#[allow(dead_code)]
 fn resolve_channel_secret(raw: &str, vault: Option<&gasket_engine::vault::VaultStore>) -> String {
     match vault {
         Some(v) => v.resolve_text(raw).unwrap_or_else(|e| {
