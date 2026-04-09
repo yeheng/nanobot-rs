@@ -8,11 +8,15 @@ description = "Core execution engine for gasket"
 
 [dependencies]
 gasket-types = { path = "../types" }
-gasket-bus = { path = "../bus" }
+
 gasket-storage = { path = "../storage" }
 gasket-providers = { path = "../providers" }
 gasket-sandbox = { path = "../sandbox" }
-gasket-vault = { path = "../vault" }
+# Vault crypto dependencies (migrated from gasket-vault crate)
+chacha20poly1305 = "0.10"
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
 gasket-channels = { path = "../channels" }
 tokio.workspace = true
 tokio-util.workspace = true

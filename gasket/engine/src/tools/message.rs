@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_bus::events::ChannelType;
-use gasket_bus::events::OutboundMessage;
+use crate::bus::events::ChannelType;
+use crate::bus::events::OutboundMessage;
 
 /// Message tool for sending messages to specific channels.
 ///

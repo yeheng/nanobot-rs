@@ -1,0 +1,36 @@
+//! Subagent runner - extracted pure function + trait for model resolution
+
+use std::sync::Arc;
+
+use crate::agent::core::AgentConfig;
+use crate::agent::execution::{AgentExecutor, ExecutionResult};
+use crate::tools::ToolRegistry;
+use anyhow::Result;
+use gasket_providers::{ChatMessage, LlmProvider};
+
+/// Trait for resolving model IDs to providers and configs.
+///
+/// Implemented by the CLI layer using `ProviderRegistry` + `ModelRegistry`.
+/// This decouples the engine from configuration details.
+pub trait ModelResolver: Send + Sync {
+    /// Resolve a model ID to a provider and agent config.
+    ///
+    /// Returns `None` if the model ID is not recognized.
+    fn resolve_model(&self, model_id: &str) -> Option<(Arc<dyn LlmProvider>, AgentConfig)>;
+}
+
+/// Run a subagent with minimal overhead - pure function
+pub async fn run_subagent(
+    task: &str,
+    system_prompt: &str,
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    config: &AgentConfig,
+) -> Result<ExecutionResult, anyhow::Error> {
+    let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
+    let executor = AgentExecutor::new(provider, tools, config);
+    executor
+        .execute(messages)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))
+}

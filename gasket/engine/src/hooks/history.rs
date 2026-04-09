@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::{HookAction, HookPoint, MutableContext, PipelineHook, ReadonlyContext};
-use crate::agent::context::AgentContext;
+use crate::agent::core::context::AgentContext;
 use crate::error::AgentError;
 use gasket_providers::ChatMessage;
 use gasket_storage::TextEmbedder;

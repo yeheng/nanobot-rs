@@ -1,8 +1,8 @@
 //! Adapter for integrating with gasket-bus
 
 use crate::agent::AgentLoop;
+use crate::bus::MessageHandler;
 use async_trait::async_trait;
-use gasket_bus::MessageHandler;
 use gasket_types::SessionKey;
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ impl MessageHandler for EngineHandler {
         session_key: &SessionKey,
     ) -> Result<
         (
-            tokio::sync::mpsc::Receiver<gasket_bus::StreamEvent>,
+            tokio::sync::mpsc::Receiver<crate::bus::StreamEvent>,
             tokio::sync::oneshot::Receiver<
                 Result<gasket_types::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
             >,
@@ -68,8 +68,8 @@ impl MessageHandler for EngineHandler {
 
         // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
-            use crate::agent::stream::StreamEvent as AgentStreamEvent;
-            use gasket_bus::StreamEvent as BusStreamEvent;
+            use crate::agent::streaming::stream::StreamEvent as AgentStreamEvent;
+            use crate::bus::StreamEvent as BusStreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
                 let bus_event = match event {

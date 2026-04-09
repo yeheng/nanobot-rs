@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use gasket_engine::agent::subagent::SubagentManager;
 use gasket_engine::agent::AgentConfig;
+use gasket_engine::agent::SubagentManager;
 use gasket_engine::config::{Config, ModelRegistry};
 use gasket_engine::memory::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;

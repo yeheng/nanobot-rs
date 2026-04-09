@@ -130,9 +130,7 @@ pub use vault::{
 // ── Facade re-exports (merged from gasket-core) ─────────────
 
 // Bus
-pub mod bus {
-    pub use gasket_bus::*;
-}
+pub mod bus;
 
 // Channels
 pub mod channels {

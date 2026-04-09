@@ -2,8 +2,8 @@
 //!
 //! Provides secure storage and runtime injection for sensitive data.
 //!
-//! This module re-exports core types from `gasket_vault` crate and provides
-//! the `VaultInjector` for injecting secrets into `ChatMessage` objects.
+//! This module provides the `VaultInjector` for injecting secrets into `ChatMessage` objects
+//! and re-exports core types from the `core` submodule.
 //!
 //! # Design Principles
 //!
@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use gasket_core::vault::{VaultStore, VaultInjector};
+//! use gasket_engine::vault::{VaultStore, VaultInjector};
 //! use std::sync::Arc;
 //!
 //! // Create store
@@ -40,14 +40,15 @@
 //! "AWS credentials: {{vault:aws_access_key}} {{vault:aws_secret_key}}"
 //! ```
 
-// Re-export from gasket_vault crate
-pub use gasket_vault::{
+pub mod core;
+pub mod injector;
+
+// Re-export from core for convenient access
+pub use core::{
     contains_placeholders, contains_secrets, extract_keys, redact_message_secrets, redact_secrets,
     replace_placeholders, scan_placeholders, AtomicTimestamp, EncryptedData, KdfParams,
     Placeholder, VaultCrypto, VaultEntryV2, VaultError, VaultFileV2, VaultMetadata, VaultStore,
 };
 
-// Local module for ChatMessage-specific injection
-mod injector;
-
+// Re-export injector types
 pub use injector::{InjectionReport, VaultInjector};

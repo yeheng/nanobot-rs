@@ -1,44 +1,51 @@
 //! Agent module: core processing engine
+//!
+//! Organized into subsystems:
+//! - core: Main loop, context, config
+//! - execution: LLM request execution, tool handling
+//! - memory: Memory loading, context compression
+//! - history: History retrieval, indexing, context building
+//! - streaming: Stream events, buffering
+//! - subagents: Subagent orchestration and tracking
 
-pub mod compactor;
-pub mod context;
-pub mod context_builder;
-pub mod executor;
-pub mod executor_core;
-pub mod history_coordinator;
-pub mod indexing;
-pub mod loop_;
+pub mod core;
+pub mod execution;
+pub mod history;
 pub mod memory;
-pub mod memory_manager;
-pub mod memory_provider;
-pub mod prompt;
-pub mod request;
-pub mod skill_loader;
-pub mod stream;
-pub mod stream_buffer;
-pub mod subagent;
-pub mod subagent_tracker;
+pub mod streaming;
+pub mod subagents;
 
-// New enum-based AgentContext (replaces trait-based version)
-pub use compactor::ContextCompactor;
-pub use context::AgentContext;
-pub use context::PersistentContext;
-pub use context_builder::{build_default_hooks, BuildOutcome, ChatRequest, ContextBuilder};
-pub use executor::ToolExecutor;
-pub use executor_core::{AgentExecutor, ExecutionResult, ExecutorOptions};
+// ── Re-exports for backward compatibility ──
+
+// Core
+pub use core::{AgentConfig, AgentContext, AgentLoop, AgentResponse, PersistentContext};
+
+// Execution
+pub use execution::{
+    AgentExecutor, ExecutionResult, ExecutorOptions, RequestHandler, ToolExecutor,
+};
+
+// Memory
+pub use memory::{
+    ContextCompactor, MemoryContext, MemoryManager, MemoryProvider, MemoryStore, PhaseBreakdown,
+};
+
+// History
+pub use history::{
+    build_default_hooks, BuildOutcome, ChatRequest, ContextBuilder, ContextMessage, IndexingQueue,
+    IndexingService, Priority, QueueError,
+};
+
+// Streaming
+pub use streaming::{BufferedEvents, StreamEvent};
+
+// Subagents
+pub use subagents::{
+    run_subagent, ModelResolver, SessionKeyGuard, SubagentManager, SubagentTracker, TrackerError,
+};
+
+// Re-export from storage for convenience
 pub use gasket_storage::{
     count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
     HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
-pub use history_coordinator::ContextMessage;
-pub use indexing::IndexingService;
-pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
-pub use memory::MemoryStore;
-pub use memory_manager::{MemoryContext, MemoryManager, PhaseBreakdown};
-pub use stream::StreamEvent;
-pub use stream_buffer::BufferedEvents;
-pub use subagent::{run_subagent, ModelResolver, SessionKeyGuard, SubagentManager};
-pub use subagent_tracker::{SubagentTracker, TrackerError};
-
-pub mod indexing_queue;
-pub use indexing_queue::{IndexingQueue, Priority, QueueError};

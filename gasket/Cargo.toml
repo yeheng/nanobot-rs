@@ -12,9 +12,7 @@ description = "A lightweight personal AI assistant framework"
 resolver = "2"
 members = [
     "types",
-    "vault",
     "storage",
-    "bus",
     "engine",
     "cli",
     "providers",
