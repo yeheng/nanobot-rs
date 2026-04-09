@@ -265,6 +265,7 @@ impl FrequencyManager {
                         last_accessed: updated_meta.last_accessed.clone(),
                         file_mtime,
                         file_size,
+                        needs_embedding: false,
                     };
                     if let Err(e) = metadata_store.upsert_entry(&entry).await {
                         tracing::warn!(
@@ -408,6 +409,7 @@ impl FrequencyManager {
                 last_accessed: updated_meta.last_accessed.clone(),
                 file_mtime: file_mtime.0,
                 file_size: file_mtime.1,
+                needs_embedding: false,
             };
             if let Err(e) = metadata_store.upsert_entry(&entry).await {
                 tracing::warn!(
@@ -722,8 +724,9 @@ mod tests {
                 updated: meta.updated.clone(),
                 scenario: meta.scenario,
                 last_accessed: meta.last_accessed.clone(),
-                file_mtime: 0, // Test doesn't need real mtime
-                file_size: 0,  // Test doesn't need real size
+                file_mtime: 0,
+                file_size: 0,
+                needs_embedding: false,
             };
             metadata_store.upsert_entry(&entry).await.unwrap();
         }

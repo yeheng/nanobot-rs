@@ -256,8 +256,14 @@ impl EventStore {
         .execute(&mut *tx)
         .await?;
 
-        // Compute content token count once at write time (avoids re-calculation on read path)
-        let token_len = count_tokens(&event.content) as i64;
+        // Use pre-computed token count if caller already set it, otherwise compute now.
+        // This avoids redundant BPE encoding when the caller (e.g. ContextBuilder) has
+        // already counted tokens for in-memory events before persisting.
+        let token_len = if event.metadata.content_token_len > 0 {
+            event.metadata.content_token_len as i64
+        } else {
+            count_tokens(&event.content) as i64
+        };
 
         sqlx::query(
             r#"

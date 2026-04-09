@@ -253,13 +253,16 @@ impl ContextBuilder {
             }
         }
 
-        // 2. Inject summary as assistant message (if exists)
+        // 2. Inject summary as system message with boundary markers (if exists)
+        // Using System role prevents the LLM from mistaking the summary for a
+        // real assistant turn. Boundary markers clearly delineate summary content.
         if let Some(summary_text) = summary {
             if !summary_text.is_empty() {
-                messages.push(ChatMessage::assistant(format!(
-                    "{}{}",
+                messages.push(ChatMessage::system(format!(
+                    "{}{}{}",
                     crate::agent::compactor::SUMMARY_PREFIX,
-                    summary_text
+                    summary_text,
+                    crate::agent::compactor::SUMMARY_SUFFIX,
                 )));
             }
         }

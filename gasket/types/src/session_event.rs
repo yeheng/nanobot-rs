@@ -66,6 +66,21 @@ impl EventType {
     pub fn is_summary(&self) -> bool {
         matches!(self, EventType::Summary { .. })
     }
+
+    /// Map this event type to an LLM conversation role string.
+    ///
+    /// Single source of truth for `EventType → role` mapping.
+    /// When adding new event types, the exhaustive match here
+    /// ensures no silent fallback to "system".
+    pub fn role_str(&self) -> &'static str {
+        match self {
+            EventType::UserMessage => "user",
+            EventType::AssistantMessage => "assistant",
+            EventType::ToolCall { .. } => "tool",
+            EventType::ToolResult { .. } => "tool",
+            EventType::Summary { .. } => "system",
+        }
+    }
 }
 
 impl SessionEvent {

@@ -47,8 +47,11 @@ pub const DEFAULT_SUMMARIZATION_PROMPT: &str =
 /// Alias for backward compatibility.
 pub const SUMMARIZATION_PROMPT: &str = DEFAULT_SUMMARIZATION_PROMPT;
 
-/// Prefix for injected summary assistant messages.
-pub const SUMMARY_PREFIX: &str = "[Conversation Summary]: ";
+/// Prefix for injected summary system messages.
+/// Uses clear boundary markers to prevent the LLM from mistaking
+/// the summary for real conversation turns.
+pub const SUMMARY_PREFIX: &str = "[Conversation Summary]\n";
+pub const SUMMARY_SUFFIX: &str = "\n[End of Summary]";
 
 /// Prefix for recalled history injection.
 pub const RECALL_PREFIX: &str = "[回忆]";
@@ -354,7 +357,8 @@ mod tests {
     #[test]
     fn test_summary_prefix_format() {
         assert!(SUMMARY_PREFIX.starts_with('['));
-        assert!(SUMMARY_PREFIX.ends_with(": "));
+        assert!(SUMMARY_PREFIX.ends_with('\n'));
+        assert!(!SUMMARY_SUFFIX.is_empty());
     }
 
     #[test]

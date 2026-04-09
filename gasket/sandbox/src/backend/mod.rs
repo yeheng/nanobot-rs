@@ -117,6 +117,16 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         &backend_name
     };
 
+    // All known backend names across platforms
+    const KNOWN_BACKENDS: &[&str] = &[
+        "fallback",
+        "bwrap",
+        "sandbox-exec",
+        "job-objects",
+        "windows-fallback",
+        "unsafe-direct",
+    ];
+
     match backend_name {
         "fallback" => Box::new(FallbackBackend::new()),
         #[cfg(target_os = "linux")]
@@ -126,6 +136,22 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         #[cfg(target_os = "windows")]
         "job-objects" | "windows-fallback" | "unsafe-direct" => {
             Box::new(UnsafeDirectExecution::new())
+        }
+        name if KNOWN_BACKENDS.contains(&name) => {
+            tracing::warn!(
+                "Backend '{}' is not available on {}, using platform default instead",
+                backend_name,
+                platform.as_str()
+            );
+            match platform {
+                #[cfg(target_os = "linux")]
+                Platform::Linux => Box::new(LinuxBwrapBackend::new()),
+                #[cfg(target_os = "macos")]
+                Platform::MacOS => Box::new(MacOsSandboxBackend::new()),
+                #[cfg(target_os = "windows")]
+                Platform::Windows => Box::new(UnsafeDirectExecution::new()),
+                _ => Box::new(FallbackBackend::new()),
+            }
         }
         _ => {
             tracing::warn!(

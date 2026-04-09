@@ -9,7 +9,7 @@
 //! - Custom cache directories
 //! - Loading pre-downloaded models from local paths
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use directories::BaseDirs;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use parking_lot::Mutex;
@@ -22,97 +22,8 @@ pub const DEFAULT_MODEL: &str = "all-MiniLM-L6-v2";
 /// Default cache directory name (relative to home directory)
 pub const DEFAULT_CACHE_DIR: &str = ".gasket/embedding-cache";
 
-// ── Unified Model Registry (DRY: one source of truth) ───────────────────
-
-/// Model specification: name, dimension, aliases, and fastembed enum.
-#[derive(Debug, Clone)]
-pub struct ModelSpec {
-    /// Canonical model name (e.g., "all-MiniLM-L6-v2")
-    pub name: &'static str,
-    /// Embedding dimension
-    pub dim: usize,
-    /// Optional short alias for convenience (e.g., "minilm")
-    pub alias: Option<&'static str>,
-    /// FastEmbed enum variant
-    pub embedding_model: EmbeddingModel,
-}
-
-/// Registry of all supported embedding models.
-/// Add new models here — everything else derives from this.
-const MODEL_REGISTRY: &[ModelSpec] = &[
-    // MiniLM models
-    ModelSpec {
-        name: "all-MiniLM-L6-v2",
-        dim: 384,
-        alias: Some("minilm-l6"),
-        embedding_model: EmbeddingModel::AllMiniLML6V2,
-    },
-    ModelSpec {
-        name: "all-MiniLM-L12-v2",
-        dim: 384,
-        alias: Some("minilm-l12"),
-        embedding_model: EmbeddingModel::AllMiniLML12V2,
-    },
-    // BGE English models
-    ModelSpec {
-        name: "BAAI/bge-small-en-v1.5",
-        dim: 384,
-        alias: Some("bge-small-en"),
-        embedding_model: EmbeddingModel::BGESmallENV15,
-    },
-    ModelSpec {
-        name: "BAAI/bge-base-en-v1.5",
-        dim: 768,
-        alias: Some("bge-base-en"),
-        embedding_model: EmbeddingModel::BGEBaseENV15,
-    },
-    ModelSpec {
-        name: "BAAI/bge-large-en-v1.5",
-        dim: 1024,
-        alias: Some("bge-large-en"),
-        embedding_model: EmbeddingModel::BGELargeENV15,
-    },
-    // BGE Chinese models
-    ModelSpec {
-        name: "BAAI/bge-small-zh-v1.5",
-        dim: 384,
-        alias: Some("bge-small-zh"),
-        embedding_model: EmbeddingModel::BGESmallZHV15,
-    },
-    ModelSpec {
-        name: "BAAI/bge-large-zh-v1.5",
-        dim: 1024,
-        alias: Some("bge-large-zh"),
-        embedding_model: EmbeddingModel::BGELargeZHV15,
-    },
-    // MPNet
-    ModelSpec {
-        name: "sentence-transformers/all-mpnet-base-v2",
-        dim: 768,
-        alias: Some("mpnet"),
-        embedding_model: EmbeddingModel::AllMpnetBaseV2,
-    },
-];
-
-/// Find a model spec by name or alias (case-insensitive partial match).
-fn find_model_spec(name: &str) -> Option<&'static ModelSpec> {
-    // Exact match
-    let exact = MODEL_REGISTRY.iter().find(|spec| spec.name == name);
-    if exact.is_some() {
-        return exact;
-    }
-    // Alias match
-    let alias = MODEL_REGISTRY.iter().find(|spec| spec.alias == Some(name));
-    if alias.is_some() {
-        return alias;
-    }
-    // Fuzzy match (e.g., "minilm" matches "all-MiniLM-L6-v2")
-    let name_lower = name.to_lowercase();
-    MODEL_REGISTRY.iter().find(|spec| {
-        spec.name.to_lowercase().contains(&name_lower)
-            || spec.alias.map(|a| a.contains(&name_lower)).unwrap_or(false)
-    })
-}
+/// Default embedding dimension
+pub const DEFAULT_DIMENSION: usize = 384;
 
 // ── Configuration ───────────────────────────────────────────────────────
 
@@ -137,6 +48,7 @@ pub struct EmbeddingConfig {
     /// - `BAAI/bge-small-en-v1.5` (384-dim)
     /// - `BAAI/bge-base-en-v1.5` (768-dim)
     /// - `BAAI/bge-large-en-v1.5` (1024-dim)
+    /// - `BAAI/bge-m3` (1024-dim)
     /// - `sentence-transformers/all-mpnet-base-v2` (768-dim)
     pub model_name: String,
 
@@ -192,17 +104,18 @@ impl EmbeddingConfig {
     }
 
     /// Get the embedding dimension for the configured model.
-    /// Returns 384 as fallback for unknown models.
+    /// Returns dimension from fastembed's EmbeddingModel based on model name.
+    /// Falls back to DEFAULT_DIMENSION (384) if model is not recognized.
     pub fn get_model_dimension(&self) -> usize {
-        find_model_spec(&self.model_name)
-            .map(|s| s.dim)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    "Unknown model '{}', assuming 384 dimensions. Specify dimension explicitly if needed.",
-                    self.model_name
-                );
-                384
-            })
+        // Try to get dimension from fastembed's built-in model
+        if let Ok(embedding_model) = EmbeddingModel::try_from(self.model_name.clone()) {
+            if let Ok(info) = TextEmbedding::get_model_info(&embedding_model) {
+                return info.dim;
+            }
+        }
+
+        // Fallback to default dimension for unknown models
+        DEFAULT_DIMENSION
     }
 }
 
@@ -263,20 +176,12 @@ impl TextEmbedder {
 
     /// Load a model from the cache directory (downloads if not present)
     fn load_model_from_cache(model_name: &str, cache_dir: &Path) -> Result<TextEmbedding> {
-        let spec = find_model_spec(model_name).with_context(|| {
-            format!(
-                "Unsupported model: '{}'. Supported: {}",
-                model_name,
-                MODEL_REGISTRY
-                    .iter()
-                    .map(|s| s.name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+        // Parse model name to EmbeddingModel enum
+        let embedding_model = EmbeddingModel::try_from(model_name.to_string())
+            .map_err(|e| anyhow::anyhow!("Unsupported model: '{}'. {}", model_name, e))?;
 
         let model = TextEmbedding::try_new(
-            TextInitOptions::new(spec.embedding_model.clone())
+            TextInitOptions::new(embedding_model)
                 .with_cache_dir(cache_dir.to_path_buf())
                 .with_show_download_progress(true),
         )?;
@@ -305,8 +210,8 @@ impl TextEmbedder {
             model_path, model_name
         );
 
-        let embedding_model = find_model_spec(model_name)
-            .map(|s| s.embedding_model.clone())
+        // Try to parse as EmbeddingModel, fallback to default if unrecognized
+        let embedding_model = EmbeddingModel::try_from(model_name.to_string())
             .unwrap_or(EmbeddingModel::AllMiniLML6V2);
 
         let model = TextEmbedding::try_new(
@@ -438,8 +343,13 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
+        // Test fastembed built-in model dimensions
         assert_eq!(
             EmbeddingConfig::with_model("all-MiniLM-L6-v2").get_model_dimension(),
+            384
+        );
+        assert_eq!(
+            EmbeddingConfig::with_model("all-MiniLM-L12-v2").get_model_dimension(),
             384
         );
         assert_eq!(
@@ -454,44 +364,26 @@ mod tests {
             EmbeddingConfig::with_model("BAAI/bge-large-en-v1.5").get_model_dimension(),
             1024
         );
-    }
-
-    #[test]
-    fn test_model_alias() {
-        // Test alias matching
         assert_eq!(
-            EmbeddingConfig::with_model("minilm-l6").get_model_dimension(),
-            384
-        );
-        assert_eq!(
-            EmbeddingConfig::with_model("bge-base-en").get_model_dimension(),
-            768
+            EmbeddingConfig::with_model("BAAI/bge-m3").get_model_dimension(),
+            1024
         );
     }
 
     #[test]
-    fn test_model_fuzzy_match() {
-        // Test fuzzy matching
-        assert_eq!(
-            EmbeddingConfig::with_model("minilm").get_model_dimension(),
-            384
-        );
-    }
+    fn test_dimension_priority() {
+        // Test fastembed model default dimension
+        let config = EmbeddingConfig::with_model("all-MiniLM-L6-v2");
+        assert_eq!(config.get_model_dimension(), 384);
 
-    #[test]
-    fn test_find_model_spec() {
-        // Exact match
-        let spec = find_model_spec("all-MiniLM-L6-v2");
-        assert!(spec.is_some());
-        assert_eq!(spec.unwrap().dim, 384);
+        let config = EmbeddingConfig::with_model("BAAI/bge-base-en-v1.5");
+        assert_eq!(config.get_model_dimension(), 768);
 
-        // Alias match
-        let spec = find_model_spec("bge-base-en");
-        assert!(spec.is_some());
-        assert_eq!(spec.unwrap().dim, 768);
+        let config = EmbeddingConfig::with_model("BAAI/bge-large-en-v1.5");
+        assert_eq!(config.get_model_dimension(), 1024);
 
-        // Unknown model
-        let spec = find_model_spec("unknown-model");
-        assert!(spec.is_none());
+        // Default 384 for unknown model
+        let config = EmbeddingConfig::with_model("unknown-model");
+        assert_eq!(config.get_model_dimension(), 384);
     }
 }

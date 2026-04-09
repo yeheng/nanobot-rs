@@ -451,6 +451,7 @@ impl SqliteStore {
                 last_accessed TEXT NOT NULL DEFAULT '',
                 file_mtime  BIGINT NOT NULL DEFAULT 0,
                 file_size   BIGINT NOT NULL DEFAULT 0,
+                needs_embedding INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (scenario, path)
             )",
         )
@@ -608,6 +609,22 @@ impl SqliteStore {
         if !has_sequence {
             sqlx::query(
                 "ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Add needs_embedding column to memory_metadata if it doesn't exist.
+        let has_needs_embedding: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('memory_metadata') WHERE name = 'needs_embedding'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        if !has_needs_embedding {
+            sqlx::query(
+                "ALTER TABLE memory_metadata ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 1",
             )
             .execute(&self.pool)
             .await?;

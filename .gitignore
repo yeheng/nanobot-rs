@@ -29,3 +29,4 @@ nanobot
 repomix*
 config.yaml
 .fastembed_cache
+.worktrees/

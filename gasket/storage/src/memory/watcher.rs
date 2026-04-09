@@ -244,6 +244,7 @@ impl AutoIndexHandler {
                     last_accessed: meta.last_accessed.clone(),
                     file_mtime: disk_mtime,
                     file_size: disk_size,
+                    needs_embedding: true,
                 };
 
                 if let Err(e) = self.metadata_store.upsert_entry(&entry).await {
@@ -270,6 +271,15 @@ impl AutoIndexHandler {
                     .await
                 {
                     tracing::error!("AutoIndex: failed to upsert embedding: {}", e);
+                }
+
+                // Mark embedding as complete
+                if let Err(e) = self
+                    .metadata_store
+                    .mark_embedding_done(scenario, &filename)
+                    .await
+                {
+                    tracing::warn!("AutoIndex: failed to clear needs_embedding: {}", e);
                 }
 
                 tracing::debug!("AutoIndex: processed {}", filename);

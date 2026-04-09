@@ -146,7 +146,12 @@ impl MemoryManager {
 
     /// Create a new memory file and synchronously update SQLite (write-through).
     ///
-    /// Writes the file to disk, reads file_mtime, then upserts metadata + embedding into SQLite.
+    /// # Crash Recovery
+    ///
+    /// The filesystem is the SSOT (Single Source of Truth). File writes use
+    /// `atomic_write` (temp-file + rename) so a crash never leaves a partial file.
+    /// SQLite metadata/embedding upserts are best-effort after the file is durable —
+    /// if they fail, `reindex` or the file watcher will catch up on next startup.
     pub async fn create_memory(
         &self,
         scenario: Scenario,
@@ -180,71 +185,22 @@ impl MemoryManager {
         let filename = format!("{}.md", meta.id);
         let file_content = serialize_memory_file(&meta, content);
 
-        // 1. Write file atomically
+        // 1. Write file atomically (SSOT — must succeed)
         self.store
             .update(scenario, &filename, &file_content)
             .await?;
 
-        // 2. Read file mtime
-        let file_path = self
-            .store
-            .base_dir()
-            .join(scenario.dir_name())
-            .join(&filename);
-        let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
+        // 2. Best-effort SQLite sync (recoverable via reindex/watcher)
+        if let Err(e) = self
+            .sync_memory_to_db(scenario, &filename, &meta, content)
             .await
-            .map(|m| {
-                let mtime = m
-                    .modified()
-                    .ok()
-                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0);
-                (mtime, m.len())
-            })
-            .unwrap_or((0, 0));
-
-        // 3. Upsert metadata into SQLite
-        let entry = MemoryIndexEntry {
-            id: meta.id,
-            title: meta.title,
-            memory_type: meta.r#type,
-            tags: meta.tags.clone(),
-            frequency: meta.frequency,
-            tokens: meta.tokens as u32,
-            filename: filename.clone(),
-            updated: meta.updated,
-            scenario,
-            last_accessed: meta.last_accessed,
-            file_mtime,
-            file_size,
-        };
-        self.metadata_store.upsert_entry(&entry).await?;
-
-        // 4. Compute embedding using embedder
-        // Note: We compute the real embedding here to avoid the race condition
-        // where the watcher would overwrite a placeholder with the real embedding.
-        // If embedding fails, we skip it (no placeholder) and let the watcher
-        // handle it when it processes the file change event.
-        match self.embedder.embed(content).await {
-            Ok(embedding) => {
-                // 5. Upsert embedding into SQLite
-                self.embedding_store
-                    .upsert(
-                        &filename,
-                        scenario.dir_name(),
-                        tags,
-                        frequency,
-                        &embedding,
-                        tokens as u32,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                warn!("Embedding computation failed for new memory: {}. Skipping embedding - the watcher will retry.", e);
-                // Don't insert a placeholder - the watcher will catch the file change
-                // and compute the real embedding later.
-            }
+        {
+            warn!(
+                "SQLite sync failed for {}/{} (file is safe, reindex will recover): {}",
+                scenario.dir_name(),
+                filename,
+                e
+            );
         }
 
         info!(
@@ -258,8 +214,8 @@ impl MemoryManager {
 
     /// Update an existing memory file and synchronously update SQLite (write-through).
     ///
-    /// Reads the current file to preserve frontmatter metadata, updates the body,
-    /// then re-upserts metadata + embedding into SQLite.
+    /// Same crash-recovery semantics as `create_memory`: file write is atomic,
+    /// SQLite sync is best-effort after the file is durable.
     pub async fn update_memory(
         &self,
         scenario: Scenario,
@@ -278,69 +234,20 @@ impl MemoryManager {
 
         let file_content = serialize_memory_file(&meta, content);
 
-        // 3. Write file atomically (store.update handles version history)
+        // 3. Write file atomically (SSOT — must succeed)
         self.store.update(scenario, filename, &file_content).await?;
 
-        // 4. Read file mtime
-        let file_path = self
-            .store
-            .base_dir()
-            .join(scenario.dir_name())
-            .join(filename);
-        let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
+        // 4. Best-effort SQLite sync (recoverable via reindex/watcher)
+        if let Err(e) = self
+            .sync_memory_to_db(scenario, filename, &meta, content)
             .await
-            .map(|m| {
-                let mtime = m
-                    .modified()
-                    .ok()
-                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0);
-                (mtime, m.len())
-            })
-            .unwrap_or((0, 0));
-
-        // 5. Upsert metadata into SQLite
-        let entry = MemoryIndexEntry {
-            id: meta.id,
-            title: meta.title,
-            memory_type: meta.r#type,
-            tags: meta.tags.clone(),
-            frequency: meta.frequency,
-            tokens: meta.tokens as u32,
-            filename: filename.to_string(),
-            updated: meta.updated,
-            scenario,
-            last_accessed: meta.last_accessed,
-            file_mtime,
-            file_size,
-        };
-        self.metadata_store.upsert_entry(&entry).await?;
-
-        // 6. Compute embedding using embedder
-        // Note: We compute the real embedding here to avoid the race condition
-        // where the watcher would overwrite a placeholder with the real embedding.
-        // If embedding fails, we skip it (no placeholder) and let the watcher
-        // handle it when it processes the file change event.
-        match self.embedder.embed(content).await {
-            Ok(embedding) => {
-                // 7. Upsert embedding into SQLite
-                self.embedding_store
-                    .upsert(
-                        filename,
-                        scenario.dir_name(),
-                        &meta.tags,
-                        meta.frequency,
-                        &embedding,
-                        meta.tokens as u32,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                warn!("Embedding computation failed for updated memory: {}. Skipping embedding - the watcher will retry.", e);
-                // Don't insert a placeholder - the watcher will catch the file change
-                // and compute the real embedding later.
-            }
+        {
+            warn!(
+                "SQLite sync failed for {}/{} (file is safe, reindex will recover): {}",
+                scenario.dir_name(),
+                filename,
+                e
+            );
         }
 
         info!("Updated memory: {}/{}", scenario.dir_name(), filename);
@@ -362,6 +269,87 @@ impl MemoryManager {
         self.embedding_store.delete(&path_str).await?;
 
         info!("Deleted memory: {}/{}", scenario.dir_name(), filename);
+        Ok(())
+    }
+
+    /// Synchronize a single memory file's metadata + embedding into SQLite.
+    ///
+    /// Extracted from `create_memory` / `update_memory` to eliminate duplication.
+    /// Returns an error so callers can decide whether to fail or degrade gracefully.
+    async fn sync_memory_to_db(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        meta: &MemoryMeta,
+        content: &str,
+    ) -> Result<()> {
+        // 1. Read file mtime for cache invalidation
+        let file_path = self
+            .store
+            .base_dir()
+            .join(scenario.dir_name())
+            .join(filename);
+        let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
+            .await
+            .map(|m| {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                (mtime, m.len())
+            })
+            .unwrap_or((0, 0));
+
+        // 2. Upsert metadata into SQLite (needs_embedding = true until embedding succeeds)
+        let entry = MemoryIndexEntry {
+            id: meta.id.clone(),
+            title: meta.title.clone(),
+            memory_type: meta.r#type.clone(),
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.to_string(),
+            updated: meta.updated.clone(),
+            scenario,
+            last_accessed: meta.last_accessed.clone(),
+            file_mtime,
+            file_size,
+            needs_embedding: true,
+        };
+        self.metadata_store.upsert_entry(&entry).await?;
+
+        // 3. Compute embedding — if this fails, leave needs_embedding = true
+        //    so reindex/refresh can retry later.
+        match self.embedder.embed(content).await {
+            Ok(embedding) => {
+                self.embedding_store
+                    .upsert(
+                        filename,
+                        scenario.dir_name(),
+                        &meta.tags,
+                        meta.frequency,
+                        &embedding,
+                        meta.tokens as u32,
+                    )
+                    .await?;
+
+                // Mark embedding as complete
+                self.metadata_store
+                    .mark_embedding_done(scenario, filename)
+                    .await?;
+            }
+            Err(e) => {
+                warn!(
+                    "Embedding failed for {}/{} (needs_embedding=true, reindex will retry): {}",
+                    scenario.dir_name(),
+                    filename,
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 

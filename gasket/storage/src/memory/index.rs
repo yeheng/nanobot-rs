@@ -29,6 +29,9 @@ pub struct MemoryIndexEntry {
     pub file_mtime: u64,
     /// File size in bytes, used for cache invalidation alongside mtime
     pub file_size: u64,
+    /// Whether this entry still needs an embedding vector computed.
+    /// Set to `true` on creation, `false` after successful embedding.
+    pub needs_embedding: bool,
 }
 
 /// Scanner for memory file metadata within a scenario directory.
@@ -98,6 +101,7 @@ impl FileIndexManager {
                                 last_accessed: meta.last_accessed,
                                 file_mtime,
                                 file_size,
+                                needs_embedding: true,
                             });
                         }
                         Err(e) => {

@@ -122,13 +122,7 @@ impl HistoryCoordinator {
                         break;
                     }
                     tokens_used += event_tokens;
-                    let role = match event.event_type {
-                        gasket_types::session_event::EventType::UserMessage => "user".to_string(),
-                        gasket_types::session_event::EventType::AssistantMessage => {
-                            "assistant".to_string()
-                        }
-                        _ => "system".to_string(),
-                    };
+                    let role = event.event_type.role_str().to_string();
                     selected.push(ContextMessage {
                         role,
                         content: event.content,
