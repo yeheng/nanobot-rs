@@ -22,7 +22,7 @@
 ```
 Layer 3 (应用层):   CLI/Gateway — 配置加载、服务组装
 Layer 2 (会话层):   AgentSession — 会话管理、历史压缩、内存注入
-Layer 1 (内核层):   kernel::execute() — 纯 LLM 循环、工具分发、钩子管线
+Layer 1 (内核层):   kernel::execute() — 纯 LLM 循环、工具分发（无钩子）
 Layer 0 (扩展点):   Tool, PipelineHook, LlmProvider — trait 接口
 ```
 
@@ -37,13 +37,14 @@ Layer 0 (扩展点):   Tool, PipelineHook, LlmProvider — trait 接口
 pub struct RuntimeContext {
     pub provider: Arc<dyn LlmProvider>,
     pub tools: Arc<ToolRegistry>,
-    pub hooks: Arc<HookRegistry>,
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<TokenTracker>>,
 }
 
 /// 内核最小配置 — 只包含 LLM 循环需要的参数
+/// `#[non_exhaustive]` 防止外部随意添加字段，新字段必须通过 KernelConfigBuilder
+#[non_exhaustive]
 pub struct KernelConfig {
     pub model: String,
     pub max_iterations: u32,
@@ -51,6 +52,12 @@ pub struct KernelConfig {
     pub max_tokens: u32,
     pub max_tool_result_chars: usize,
     pub thinking_enabled: bool,
+}
+
+impl KernelConfig {
+    pub fn builder(model: String) -> KernelConfigBuilder {
+        KernelConfigBuilder::new(model)
+    }
 }
 ```
 
@@ -78,7 +85,20 @@ pub async fn execute_streaming(
 - 执行工具调用（通过 ToolRegistry）
 - 循环迭代直到完成或达到 max_iterations
 
-**内核不负责**：session 持久化、event sourcing、历史压缩、vault 注入、内存召回、cron 调度。
+**内核不负责**：session 持久化、event sourcing、历史压缩、vault 注入、内存召回、cron 调度、钩子执行。
+
+**重要：钩子边界**。内核不执行任何钩子。所有钩子（BeforeRequest、AfterHistory、BeforeLLM、AfterResponse）由会话层在调用内核前后执行。内核接收的是已经过完整预处理的消息列表：
+
+```rust
+// 会话层运行所有前置钩子
+let ChatRequest { messages, vault_values, .. } = builder.build(content, session_key).await?;
+
+// 内核接收 CLEAN INPUT — 无钩子逻辑
+let result = kernel::execute(&ctx, messages).await?;
+
+// 会话层运行所有后置钩子
+finalize_response(result, &context, &hooks).await;
+```
 
 ### 2.3 会话层
 
@@ -118,11 +138,41 @@ pub struct AgentSession {
 let sub = AgentLoop::for_subagent(provider, workspace, config, tools);
 
 // 重构后
-let ctx = RuntimeContext::new(provider, tools, HookRegistry::empty(), kernel_config);
+let ctx = RuntimeContext::new(provider, tools, kernel_config);
 let result = kernel::execute(&ctx, messages).await?;
 ```
 
 消除了 `for_subagent()` 的 `Option` 糊边界反模式。
+
+### 2.5 子 Agent 迁移路径（具体代码变更）
+
+当前 `SubagentManager` 在 `manager.rs:277` 和 `:587` 调用 `AgentLoop::for_subagent()`：
+
+```rust
+// 重构前 (subagents/manager.rs:277)
+let agent = AgentLoop::for_subagent(provider, workspace, config, tools)?;
+let response = agent.process_direct(task, &session_key).await?;
+
+// 重构后
+let kernel_config = KernelConfig::builder(config.model.clone())
+    .max_iterations(config.max_iterations)
+    .temperature(config.temperature)
+    .max_tokens(config.max_tokens)
+    .build();
+let ctx = RuntimeContext {
+    provider,
+    tools,
+    config: kernel_config,
+    spawner: None,
+    token_tracker: self.token_tracker.clone(),
+};
+let result = kernel::execute(&ctx, messages).await?;
+```
+
+关键变化：
+- `SubagentManager` 不再创建 `AgentLoop` 实例，直接构造 `RuntimeContext`
+- 无需 workspace 路径、无需 system_prompt、无需 session 管理
+- 子 agent 的 system prompt 通过 `messages` 参数传入（第一行设为 system message）
 
 ## 3. 模块重组
 
@@ -181,27 +231,32 @@ engine/src/
     ▼
 AgentSession.process("hello", session_key)
     │
-    ├─ 1. context.load_session(session_key)
-    ├─ 2. context.save_event(user_event)
-    ├─ 3. ContextBuilder.build()
+    ├─ 1. hooks.execute(BeforeRequest)           ← 会话层：前置钩子
+    ├─ 2. context.load_session(session_key)       ← 会话层：加载历史
+    ├─ 3. context.save_event(user_event)          ← 会话层：持久化
+    ├─ 4. ContextBuilder.build()                  ← 会话层：构建 prompt
     │     ├─ system_prompt + skills
     │     ├─ history (truncated to token_budget)
-    │     ├─ vault injection (Hook: BeforeLLM)
-    │     └─ memory recall (Hook: AfterHistory)
+    │     ├─ hooks.execute(AfterHistory)          ← 会话层：语义召回
+    │     ├─ hooks.execute(BeforeLLM)             ← 会话层：vault 注入
+    │     └─ → Vec<ChatMessage>
     │
-    ├─ 4. kernel::execute(&runtime_ctx, msgs)
+    ├─ 5. kernel::execute(&runtime_ctx, msgs)     ← 内核：纯函数，零副作用
     │     ├─ RequestHandler.build_chat_request()
     │     ├─ provider.chat_stream(request)
     │     ├─ stream → collect response
     │     ├─ if tool_calls → ToolExecutor.execute_one()
     │     └─ repeat until done or max_iterations
     │
-    ├─ 5. context.save_event(assistant_event)
-    ├─ 6. compactor.try_compact()
-    └─ 7. hooks.execute(AfterResponse)
+    ├─ 6. context.save_event(assistant_event)     ← 会话层：持久化
+    ├─ 7. compactor.try_compact()                 ← 会话层：后台压缩
+    └─ 8. hooks.execute(AfterResponse)            ← 会话层：后置钩子
 ```
 
-**关键属性**：步骤 4 是纯函数，无副作用。步骤 1-3 和 5-7 是会话层管理。
+**关键属性**：
+- 步骤 5 是纯函数，零副作用，不执行任何钩子
+- 步骤 1-4 是会话层的请求预处理（含所有前置钩子）
+- 步骤 6-8 是会话层的响应后处理（含所有后置钩子）
 
 ## 5. 调用方迁移
 
@@ -258,11 +313,21 @@ pub use kernel::execute as kernel_execute;
 
 ## 8. 实施阶段
 
-### Phase 1: 创建 kernel 模块
+### Phase 1: 创建 kernel 模块（TDD）
+- 定义 `RuntimeContext`, `KernelConfig`, `KernelError`
+- 编写内核 API 测试（先写测试）
+  ```rust
+  #[tokio::test]
+  async fn kernel_execute_single_turn() {
+      let ctx = RuntimeContext::mock();
+      let messages = vec![ChatMessage::user("hello")];
+      let result = kernel::execute(&ctx, messages).await.unwrap();
+      assert!(!result.content.is_empty());
+  }
+  ```
 - 创建 `engine/src/kernel/` 目录
 - 从 `agent/execution/executor.rs` 提取 `AgentExecutor` → `kernel::execute()`
-- 定义 `RuntimeContext`, `KernelConfig`, `KernelError`
-- 编写内核单元测试
+- 确保测试通过
 
 ### Phase 2: 创建 session 模块
 - 创建 `engine/src/session/` 目录
@@ -287,4 +352,4 @@ pub use kernel::execute as kernel_execute;
 2. 子 agent 直接使用 `kernel::execute()`，无需 `for_subagent()`
 3. `AgentSession` 的 `process()` 方法行为与当前 `AgentLoop::process_direct()` 完全一致
 4. 所有现有测试通过（通过别名或直接更新）
-5. `engine/src/kernel/` 总行数 < 500 行
+5. `engine/src/kernel/` 总行数 < 800 行（含测试）
