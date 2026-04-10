@@ -16,6 +16,7 @@
 //! - **Streaming-first**: SSE streaming with backpressure support
 
 pub mod agent;
+pub mod kernel;
 pub mod bus_adapter;
 pub mod config;
 pub mod cron;
