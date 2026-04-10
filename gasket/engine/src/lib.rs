@@ -75,6 +75,9 @@ pub use agent::{
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
 
+// ── Session ────────────────────────────────────────────────
+pub use session::AgentSession;
+
 // ── Config ─────────────────────────────────────────────────
 pub use config::{
     config_dir, load_config, CommandPolicyConfig, Config, ConfigLoader, EmbeddingConfig,
