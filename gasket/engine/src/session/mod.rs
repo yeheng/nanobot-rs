@@ -184,8 +184,7 @@ impl AgentSession {
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
         let hooks = Self::build_hooks();
-        let memory_manager =
-            Self::try_init_memory_manager(&memory_store, shared_embedder).await;
+        let memory_manager = Self::try_init_memory_manager(&memory_store, shared_embedder).await;
 
         Ok(Self {
             runtime_ctx,
@@ -229,8 +228,7 @@ impl AgentSession {
             crate::agent::execution::prompt::BOOTSTRAP_FILES_FULL,
         )
         .await?;
-        let skills_context =
-            crate::agent::execution::prompt::load_skills_context(workspace).await;
+        let skills_context = crate::agent::execution::prompt::load_skills_context(workspace).await;
         Ok((system_prompt, skills_context))
     }
 
@@ -245,10 +243,7 @@ impl AgentSession {
     }
 
     /// Set the token tracker.
-    pub fn with_token_tracker(
-        mut self,
-        tracker: Arc<crate::token_tracker::TokenTracker>,
-    ) -> Self {
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
         self.runtime_ctx.token_tracker = Some(tracker);
         self
     }
@@ -373,7 +368,10 @@ impl AgentSession {
         let result_handle = tokio::spawn(async move {
             let result = kernel::execute_streaming(&runtime_ctx, messages, event_tx).await?;
 
-            Ok(finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref()).await)
+            Ok(
+                finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref())
+                    .await,
+            )
         });
 
         Ok((event_rx, result_handle))
@@ -389,35 +387,37 @@ impl AgentSession {
 
         let memory_loader = if let Some(ref mgr) = self.memory_manager {
             let mgr = mgr.clone();
-            Some(move |content: &str| -> crate::agent::history::builder::MemoryLoaderFuture {
-                let mgr = mgr.clone();
-                let content = content.to_string();
-                Box::pin(async move {
-                    use gasket_storage::memory::MemoryQuery;
-                    let query = MemoryQuery::new().with_text(&content);
-                    match mgr.load_for_context(&query).await {
-                        Ok(ctx) if !ctx.memories.is_empty() => {
-                            let mut sections = Vec::new();
-                            sections.push("## Long-Term Memory".to_string());
-                            sections.push(format!(
-                                "The following memories were loaded ({} tokens):",
-                                ctx.tokens_used
-                            ));
-                            sections.push(String::new());
-                            for mem in &ctx.memories {
+            Some(
+                move |content: &str| -> crate::agent::history::builder::MemoryLoaderFuture {
+                    let mgr = mgr.clone();
+                    let content = content.to_string();
+                    Box::pin(async move {
+                        use gasket_storage::memory::MemoryQuery;
+                        let query = MemoryQuery::new().with_text(&content);
+                        match mgr.load_for_context(&query).await {
+                            Ok(ctx) if !ctx.memories.is_empty() => {
+                                let mut sections = Vec::new();
+                                sections.push("## Long-Term Memory".to_string());
                                 sections.push(format!(
-                                    "### {} [{}]",
-                                    mem.metadata.title, mem.metadata.scenario
+                                    "The following memories were loaded ({} tokens):",
+                                    ctx.tokens_used
                                 ));
-                                sections.push(mem.content.clone());
                                 sections.push(String::new());
+                                for mem in &ctx.memories {
+                                    sections.push(format!(
+                                        "### {} [{}]",
+                                        mem.metadata.title, mem.metadata.scenario
+                                    ));
+                                    sections.push(mem.content.clone());
+                                    sections.push(String::new());
+                                }
+                                Some(sections.join("\n"))
                             }
-                            Some(sections.join("\n"))
+                            _ => None,
                         }
-                        _ => None,
-                    }
-                })
-            })
+                    })
+                },
+            )
         } else {
             None
         };
@@ -533,13 +533,15 @@ async fn finalize_response(
         })
         .collect();
 
-    let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
-        crate::token_tracker::TokenUsage {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-        }
-    });
+    let token_usage_for_hooks =
+        result
+            .token_usage
+            .as_ref()
+            .map(|usage| crate::token_tracker::TokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+            });
 
     let mut hook_ctx = MutableContext {
         session_key: session_key_str,

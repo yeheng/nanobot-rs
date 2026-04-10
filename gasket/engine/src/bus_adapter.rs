@@ -68,8 +68,8 @@ impl MessageHandler for EngineHandler {
 
         // Spawn a task to convert kernel StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
-            use crate::kernel::StreamEvent as KernelStreamEvent;
             use crate::bus::StreamEvent as BusStreamEvent;
+            use crate::kernel::StreamEvent as KernelStreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
                 let bus_event = match event {

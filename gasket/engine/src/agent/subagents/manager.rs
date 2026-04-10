@@ -58,10 +58,7 @@ fn to_agent_response(result: kernel::ExecutionResult, model: &str) -> AgentRespo
 
 /// Build messages for kernel execution from system prompt and user task.
 fn build_kernel_messages(system_prompt: &str, task: &str) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(task),
-    ]
+    vec![ChatMessage::system(system_prompt), ChatMessage::user(task)]
 }
 
 /// RAII guard for session key management.
@@ -287,8 +284,7 @@ impl<'a> SubagentTaskBuilder<'a> {
             }
 
             // Build kernel context
-            let ctx =
-                build_kernel_context(provider, &agent_config, tools, token_tracker.clone());
+            let ctx = build_kernel_context(provider, &agent_config, tools, token_tracker.clone());
 
             // Load system prompt
             let system_prompt = match system_prompt_override {
@@ -757,11 +753,8 @@ impl SubagentManager {
             let ctx = build_kernel_context(provider, &config, tools, None);
             let messages = build_kernel_messages(&system_prompt, &prompt);
             let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
-            let result = tokio::time::timeout(
-                timeout_duration,
-                kernel::execute(&ctx, messages),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(timeout_duration, kernel::execute(&ctx, messages)).await;
             let content = match result {
                 Ok(Ok(response)) => {
                     format!("Background task completed:\n{}", response.content)
@@ -814,7 +807,12 @@ impl SubagentManager {
         let model_name = agent_config.model.clone();
 
         let sys_prompt = resolve_system_prompt(&self.workspace, system_prompt).await?;
-        let ctx = build_kernel_context(self.provider.clone(), &agent_config, self.tools.clone(), None);
+        let ctx = build_kernel_context(
+            self.provider.clone(),
+            &agent_config,
+            self.tools.clone(),
+            None,
+        );
         let messages = build_kernel_messages(&sys_prompt, prompt_text);
 
         let result = tokio::time::timeout(
@@ -921,8 +919,8 @@ impl SubagentManager {
 
         // timeout_result is Result<Result<AgentResponse, anyhow::Error>, anyhow::Error>
         // (JoinError was already converted to anyhow::Error inside the async block)
-        let inner: Result<AgentResponse, anyhow::Error> = timeout_result
-            .map_err(|e: anyhow::Error| anyhow::anyhow!("Join error: {}", e))?;
+        let inner: Result<AgentResponse, anyhow::Error> =
+            timeout_result.map_err(|e: anyhow::Error| anyhow::anyhow!("Join error: {}", e))?;
 
         inner
     }

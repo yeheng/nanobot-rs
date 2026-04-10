@@ -352,7 +352,10 @@ impl<'a> AgentExecutor<'a> {
         }
     }
 
-    pub async fn execute(&self, messages: Vec<ChatMessage>) -> Result<ExecutionResult, KernelError> {
+    pub async fn execute(
+        &self,
+        messages: Vec<ChatMessage>,
+    ) -> Result<ExecutionResult, KernelError> {
         self.execute_with_options(messages, &ExecutorOptions::new())
             .await
     }
@@ -380,7 +383,8 @@ impl<'a> AgentExecutor<'a> {
         event_tx: mpsc::Sender<StreamEvent>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        self.execute_internal(messages, Some(event_tx), options).await
+        self.execute_internal(messages, Some(event_tx), options)
+            .await
     }
 
     async fn execute_internal(
@@ -630,12 +634,11 @@ impl<'a> AgentExecutor<'a> {
                     break;
                 }
             }
-            debug!(
-                "[Kernel] Event stream ended, total events: {}",
-                event_count
-            );
+            debug!("[Kernel] Event stream ended, total events: {}", event_count);
 
-            response_future.await.map_err(|e| KernelError::Provider(e.to_string()))?
+            response_future
+                .await
+                .map_err(|e| KernelError::Provider(e.to_string()))?
         } else {
             stream::collect_stream_response(stream_result)
                 .await

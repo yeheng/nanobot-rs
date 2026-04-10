@@ -8,7 +8,9 @@ use colored::Colorize;
 use tracing::info;
 
 use gasket_engine::agent::memory::MemoryStore;
-use gasket_engine::agent::{AgentLoop, SubagentManager};
+use gasket_engine::agent::SubagentManager;
+use gasket_engine::bus_adapter::EngineHandler;
+use gasket_engine::session::AgentSession;
 #[allow(unused_imports)]
 use gasket_engine::channels::Channel;
 use gasket_engine::channels::OutboundSenderRegistry;
@@ -192,7 +194,7 @@ pub async fn cmd_gateway() -> Result<()> {
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
     let agent = Arc::new(
-        AgentLoop::with_pricing(
+        AgentSession::with_pricing(
             provider_info.provider,
             workspace.clone(),
             agent_config,
@@ -274,11 +276,12 @@ pub async fn cmd_gateway() -> Result<()> {
     // 2. Start Router Actor (dispatches inbound to per-session channels)
     {
         let outbound_tx = bus.outbound_sender();
-        // AgentLoop implements MessageHandler, so we can pass it directly
+        // EngineHandler adapts AgentSession to the MessageHandler trait
+        let handler = Arc::new(EngineHandler::new(agent));
         tasks.push(tokio::spawn(gasket_engine::bus::run_router_actor(
             inbound_rx,
             outbound_tx,
-            agent.clone(),
+            handler,
         )));
     }
 

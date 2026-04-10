@@ -22,11 +22,7 @@ pub async fn execute(
     ctx: &RuntimeContext,
     messages: Vec<ChatMessage>,
 ) -> Result<ExecutionResult, KernelError> {
-    let exec = AgentExecutor::new(
-        ctx.provider.clone(),
-        ctx.tools.clone(),
-        &ctx.config,
-    );
+    let exec = AgentExecutor::new(ctx.provider.clone(), ctx.tools.clone(), &ctx.config);
     let mut options = ExecutorOptions::new();
     if let Some(ref tracker) = ctx.token_tracker {
         options = options.with_token_tracker(tracker.clone());
@@ -40,14 +36,11 @@ pub async fn execute_streaming(
     messages: Vec<ChatMessage>,
     event_tx: mpsc::Sender<StreamEvent>,
 ) -> Result<ExecutionResult, KernelError> {
-    let exec = AgentExecutor::new(
-        ctx.provider.clone(),
-        ctx.tools.clone(),
-        &ctx.config,
-    );
+    let exec = AgentExecutor::new(ctx.provider.clone(), ctx.tools.clone(), &ctx.config);
     let mut options = ExecutorOptions::new();
     if let Some(ref tracker) = ctx.token_tracker {
         options = options.with_token_tracker(tracker.clone());
     }
-    exec.execute_stream_with_options(messages, event_tx, &options).await
+    exec.execute_stream_with_options(messages, event_tx, &options)
+        .await
 }
