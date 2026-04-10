@@ -1,6 +1,6 @@
 //! File system tools
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -17,22 +17,56 @@ use super::{Tool, ToolError, ToolResult};
 pub struct PathValidator {
     /// Canonicalized allowed directory (all symlinks resolved)
     pub allowed_dir: Option<PathBuf>,
+    /// Additional canonicalized directories always allowed (e.g. ~/.gasket)
+    pub extra_allowed_dirs: Vec<PathBuf>,
 }
 
 impl PathValidator {
     /// Create a new path validator with the given allowed directory.
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
         let canonical_allowed = allowed_dir.as_ref().and_then(|p| p.canonicalize().ok());
+        let extra_allowed_dirs = Self::default_extra_dirs();
         Self {
             allowed_dir: canonical_allowed,
+            extra_allowed_dirs,
         }
+    }
+
+    /// Build the default list of extra allowed directories (e.g. ~/.gasket).
+    fn default_extra_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            let gasket_dir = home.join(".gasket");
+            if let Ok(canonical) = gasket_dir.canonicalize() {
+                dirs.push(canonical);
+            }
+        }
+        dirs
+    }
+
+    /// Check whether a canonical path is within any allowed directory.
+    fn is_path_allowed(&self, canonical: &Path) -> bool {
+        // Check primary workspace
+        if let Some(allowed) = &self.allowed_dir {
+            if canonical.starts_with(allowed) {
+                return true;
+            }
+        }
+        // Check extra allowed dirs (e.g. ~/.gasket)
+        for extra in &self.extra_allowed_dirs {
+            if canonical.starts_with(extra) {
+                return true;
+            }
+        }
+        // If no primary dir is set, allow everything
+        self.allowed_dir.is_none()
     }
 
     /// Validate that a path is within the allowed directory.
     pub fn validate(&self, path: &str) -> Result<PathBuf, ToolError> {
         let path = PathBuf::from(path);
 
-        if let Some(allowed) = &self.allowed_dir {
+        if self.allowed_dir.is_some() || !self.extra_allowed_dirs.is_empty() {
             if !path.exists() {
                 return Err(ToolError::NotFound(format!(
                     "Path not found: {}",
@@ -44,7 +78,7 @@ impl PathValidator {
                 ToolError::NotFound(format!("Cannot resolve path: {} - {}", path.display(), e))
             })?;
 
-            if !canonical.starts_with(allowed) {
+            if !self.is_path_allowed(&canonical) {
                 return Err(ToolError::PermissionDenied(format!(
                     "Path outside workspace: {}",
                     path.display()
@@ -59,7 +93,7 @@ impl PathValidator {
     pub fn validate_for_write(&self, path: &str) -> Result<PathBuf, ToolError> {
         let path = PathBuf::from(path);
 
-        if let Some(allowed) = &self.allowed_dir {
+        if self.allowed_dir.is_some() || !self.extra_allowed_dirs.is_empty() {
             let parent = path.parent().unwrap_or(&path);
 
             if parent.exists() {
@@ -71,7 +105,7 @@ impl PathValidator {
                     ))
                 })?;
 
-                if !canonical_parent.starts_with(allowed) {
+                if !self.is_path_allowed(&canonical_parent) {
                     return Err(ToolError::PermissionDenied(format!(
                         "Path outside workspace: {}",
                         path.display()

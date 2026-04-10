@@ -142,6 +142,49 @@ struct AgentInitState {
 ///
 /// ## Security Note: Vault Values Lifecycle
 ///
+/// Thin wrapper to share a single `Arc<TextEmbedder>` as a `Box<dyn Embedder>`.
+/// Avoids initializing the ONNX model twice (once for IndexingService, once for MemoryManager).
+#[cfg(feature = "local-embedding")]
+struct SharedTextEmbedder(Arc<gasket_storage::TextEmbedder>);
+
+#[cfg(feature = "local-embedding")]
+#[async_trait::async_trait]
+impl gasket_storage::memory::Embedder for SharedTextEmbedder {
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.0.embed(text)
+    }
+    fn dimension(&self) -> usize {
+        self.0.dimension()
+    }
+}
+
+/// Conditional type for the shared embedder parameter.
+/// Without the `local-embedding` feature, this is just `()` (unused).
+#[cfg(feature = "local-embedding")]
+type SharedEmbedder = Arc<gasket_storage::TextEmbedder>;
+
+#[cfg(not(feature = "local-embedding"))]
+type SharedEmbedder = ();
+
+/// Parameters for the internal build step, grouped to avoid too-many-arguments.
+struct BuildContext {
+    event_store: Arc<EventStore>,
+    sqlite_store: Arc<gasket_storage::SqliteStore>,
+    workspace: PathBuf,
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    token_budget: usize,
+    summarization_prompt: Option<String>,
+    shared_embedder: Option<SharedEmbedder>,
+}
+
+/// Core agent execution loop.
+///
+/// Drives the turn-based conversation with the LLM, managing tool calls,
+/// context history, hooks, and lifecycle events.
+///
+/// # Vault Injection Safety
+///
 /// Injected vault values (plaintext secrets) are scoped to **single requests**.
 /// They are collected in `HookContext::vault_values` during BeforeLLM hook
 /// execution, then snapshot-cloned into `PipelineState` for the request duration.
@@ -203,13 +246,29 @@ impl AgentLoop {
         // Create and configure IndexingService
         let mut indexing_service = IndexingService::new(sqlite_store.clone());
 
+        // Create a single TextEmbedder instance (shared between IndexingService and MemoryManager)
         #[cfg(feature = "local-embedding")]
-        {
-            // Try to create embedder with default config
-            if let Ok(embedder) = gasket_storage::TextEmbedder::new() {
-                indexing_service.set_embedder(Arc::new(embedder));
+        let shared_embedder: Option<SharedEmbedder> = {
+            let embedder_config = config
+                .embedding_config
+                .as_ref()
+                .map(|c| gasket_storage::EmbeddingConfig::from(c.clone()))
+                .unwrap_or_default();
+            match gasket_storage::TextEmbedder::with_config(embedder_config) {
+                Ok(embedder) => {
+                    info!("TextEmbedder initialized successfully");
+                    let arc: SharedEmbedder = Arc::new(embedder);
+                    indexing_service.set_embedder(arc.clone());
+                    Some(arc)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize TextEmbedder: {}", e);
+                    None
+                }
             }
-        }
+        };
+        #[cfg(not(feature = "local-embedding"))]
+        let shared_embedder: Option<SharedEmbedder> = None;
 
         // Enable async queue and start worker
         indexing_service.enable_queue(10000);
@@ -229,15 +288,16 @@ impl AgentLoop {
             hooks,
             compactor,
             memory_manager,
-        } = Self::build_internal(
+        } = Self::build_internal(BuildContext {
             event_store,
             sqlite_store,
-            &workspace,
-            provider.clone(),
-            config.model.clone(),
-            history_config.token_budget,
-            config.summarization_prompt.clone(),
-        )
+            workspace: workspace.clone(),
+            provider: provider.clone(),
+            model: config.model.clone(),
+            token_budget: history_config.token_budget,
+            summarization_prompt: config.summarization_prompt.clone(),
+            shared_embedder,
+        })
         .await?;
 
         Ok(Self {
@@ -296,35 +356,28 @@ impl AgentLoop {
     /// Internal builder: common initialization for all constructors.
     ///
     /// Extracts shared logic from `with_services()` and `with_memory_store_and_pricing()`.
-    async fn build_internal(
-        event_store: Arc<EventStore>,
-        sqlite_store: Arc<gasket_storage::SqliteStore>,
-        workspace: &Path,
-        provider: Arc<dyn LlmProvider>,
-        model: String,
-        token_budget: usize,
-        summarization_prompt: Option<String>,
-    ) -> Result<AgentInitState, AgentError> {
-        let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
+    async fn build_internal(ctx: BuildContext) -> Result<AgentInitState, AgentError> {
+        let context = AgentContext::persistent(ctx.event_store.clone(), ctx.sqlite_store.clone());
 
         let mut compactor = ContextCompactor::new(
-            provider,
-            event_store.clone(),
-            sqlite_store.clone(),
-            model,
-            token_budget,
+            ctx.provider,
+            ctx.event_store.clone(),
+            ctx.sqlite_store.clone(),
+            ctx.model,
+            ctx.token_budget,
         );
-        if let Some(prompt) = summarization_prompt {
+        if let Some(prompt) = ctx.summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt);
         }
         let compactor = Arc::new(compactor);
 
-        let (system_prompt, skills_context) = Self::load_prompts(workspace).await?;
+        let (system_prompt, skills_context) = Self::load_prompts(&ctx.workspace).await?;
 
         let hooks = Self::build_hooks();
 
         // Try to initialize long-term memory manager (graceful if not available)
-        let memory_manager = Self::try_init_memory_manager(&sqlite_store).await;
+        let memory_manager =
+            Self::try_init_memory_manager(&ctx.sqlite_store, ctx.shared_embedder).await;
 
         Ok(AgentInitState {
             context,
@@ -426,8 +479,10 @@ impl AgentLoop {
 
     /// Try to initialize the long-term memory manager.
     /// Returns None if the memory directory doesn't exist or init fails.
+    /// Reuses the shared TextEmbedder from IndexingService to avoid double initialization.
     async fn try_init_memory_manager(
         sqlite_store: &gasket_storage::SqliteStore,
+        shared_embedder: Option<SharedEmbedder>,
     ) -> Option<Arc<MemoryManager>> {
         use gasket_storage::memory::{memory_base_dir, Embedder, NoopEmbedder};
 
@@ -440,22 +495,16 @@ impl AgentLoop {
             return None;
         }
 
-        // Use TextEmbedder if local-embedding feature is enabled, otherwise use NoopEmbedder
+        // Use the shared TextEmbedder if available, otherwise fall back to NoopEmbedder
         let embedder: Box<dyn Embedder> = {
             #[cfg(feature = "local-embedding")]
             {
-                match gasket_storage::TextEmbedder::new() {
-                    Ok(embedder) => {
-                        info!("Memory manager using TextEmbedder (local-embedding enabled)");
-                        Box::new(embedder) as Box<dyn Embedder>
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to initialize TextEmbedder, falling back to NoopEmbedder: {}",
-                            e
-                        );
-                        Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
-                    }
+                if let Some(arc_embedder) = shared_embedder {
+                    info!("Memory manager reusing shared TextEmbedder");
+                    Box::new(SharedTextEmbedder(arc_embedder)) as Box<dyn Embedder>
+                } else {
+                    info!("Memory manager using NoopEmbedder (TextEmbedder init failed earlier)");
+                    Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
                 }
             }
             #[cfg(not(feature = "local-embedding"))]

@@ -161,7 +161,7 @@ channels:
 # Enable semantic search and history recall features
 embedding:
   enabled: false  # Set to true to enable semantic history recall
-  model: "all-MiniLM-L6-v2"  # Options: all-MiniLM-L6-v2 (384d, default), BAAI/bge-small-en-v1.5 (384d), BAAI/bge-base-en-v1.5 (768d), BAAI/bge-large-en-v1.5 (1024d)
+  model: "AllMiniLML6V2"  # Options: AllMiniLML6V2 (384d, default), AllMiniLML12V2 (384d), BGESmallENV15 (384d), BGEBaseENV15 (768d), BGELargeENV15 (1024d), BGEM3 (1024d)
   # cache_dir: "~/.gasket/embedding-cache"  # Optional: custom cache directory
   # local_model_path: "/path/to/pre-downloaded/model"  # Optional: load from local path
 

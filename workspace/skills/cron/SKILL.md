@@ -15,7 +15,7 @@ Manage recurring tasks using Markdown + YAML frontmatter. Requires manual refres
 ```markdown
 ---
 name: daily-standup
-cron: "0 0 9 * * 1-5"
+cron: "0 9 * * 1-5"
 channel: telegram
 to: "group_chat_123"
 enabled: true
@@ -37,23 +37,24 @@ gasket cron refresh       # Manually refresh all cron tasks
 
 ## Cron Expression
 
-6-field format: `Second Minute Hour Day Month Weekday`
+Standard 5-field format is recommended: `Minute Hour Day Month Weekday`
 
 ```
-┌───────────── Second (0-59)
-│ ┌───────────── Minute (0-59)
-│ │ ┌───────────── Hour (0-23)
-│ │ │ ┌───────────── Day (1-31)
-│ │ │ │ ┌───────────── Month (1-12)
-│ │ │ │ │ ┌───────────── Weekday (0-6, 0=Sunday)
-* * * * * *
+┌───────────── Minute (0-59)
+│ ┌───────────── Hour (0-23)
+│ │ ┌───────────── Day (1-31)
+│ │ │ ┌───────────── Month (1-12)
+│ │ │ │ ┌───────────── Weekday (0-6, 0=Sunday)
+* * * * *
 ```
+
+6-field (`Sec Min Hour Day Month Weekday`) and 7-field (`Sec Min Hour Day Month Weekday Year`) are also accepted.
 
 **Common Patterns:**
-- `0 0 9 * * *` - Every day at 9:00
-- `0 0 9 * * 1-5` - Weekdays at 9:00
-- `0 0 */2 * * *` - Every 2 hours
-- `*/30 * * * * *` - Every 30 seconds
+- `0 9 * * *` - Every day at 9:00
+- `0 9 * * 1-5` - Weekdays at 9:00
+- `*/30 * * * *` - Every 30 minutes
+- `0 */2 * * *` - Every 2 hours
 
 ## Task Configuration
 

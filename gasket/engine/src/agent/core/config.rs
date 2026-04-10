@@ -40,6 +40,8 @@ pub struct AgentConfig {
     /// Custom summarization prompt (overrides built-in default).
     /// When set, this prompt is used by ContextCompactor to generate summaries.
     pub summarization_prompt: Option<String>,
+    /// Embedding configuration for semantic search and memory indexing.
+    pub embedding_config: Option<crate::config::EmbeddingConfig>,
 }
 
 impl Default for AgentConfig {
@@ -56,6 +58,7 @@ impl Default for AgentConfig {
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             summarization_prompt: None,
+            embedding_config: None,
         }
     }
 }

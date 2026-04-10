@@ -113,7 +113,17 @@ impl CronJob {
     /// Parse cron expression and calculate next run time.
     /// Returns (parsed_schedule, next_run_time).
     fn parse_schedule(cron_expr: &str) -> (Option<Schedule>, Option<DateTime<Utc>>) {
-        let schedule: Schedule = match cron_expr.parse() {
+        // Normalize: the `cron` crate requires 7 fields (sec min hour dom month dow year),
+        // but users typically provide 5-field standard cron.
+        let normalized = {
+            let parts: Vec<&str> = cron_expr.split_whitespace().collect();
+            match parts.len() {
+                5 => format!("0 {} *", cron_expr),
+                6 => format!("0 {}", cron_expr),
+                _ => cron_expr.to_string(),
+            }
+        };
+        let schedule: Schedule = match normalized.parse() {
             Ok(s) => s,
             Err(_) => return (None, None),
         };
@@ -218,20 +228,8 @@ impl CronService {
                         warn!("Failed to load cron job from {:?}: {}", path, e);
                     }
                 }
-            } else if ext == Some("yaml") || ext == Some("yml") {
-                match Self::parse_yaml_file(&path) {
-                    Ok(job) => {
-                        info!("Loaded cron job from yaml: {}", job.id);
-                        self.jobs.write().insert(job.id.clone(), job);
-                        count += 1;
-                    }
-                    Err(e) => {
-                        warn!("Failed to load cron job from {:?}: {}", path, e);
-                    }
-                }
             }
         }
-
         if count > 0 {
             info!("Loaded {} cron jobs from files", count);
         }
@@ -271,7 +269,7 @@ impl CronService {
             let path = entry.path();
             let ext = path.extension().and_then(|s| s.to_str());
 
-            if ext != Some("md") && ext != Some("yaml") && ext != Some("yml") {
+            if ext != Some("md") {
                 continue;
             }
 
@@ -311,7 +309,11 @@ impl CronService {
             let result = if ext == Some("md") {
                 Self::parse_markdown_file(&path)
             } else {
-                Self::parse_yaml_file(&path)
+                warn!(
+                    "Unsupported cron file format (only .md supported): {:?}",
+                    path
+                );
+                continue;
             };
 
             match result {
@@ -359,46 +361,6 @@ impl CronService {
     fn parse_markdown_file(path: &Path) -> anyhow::Result<CronJob> {
         let content = std::fs::read_to_string(path)?;
         parse_markdown(&content, path)
-    }
-
-    /// Parse a single yaml cron job file
-    fn parse_yaml_file(path: &Path) -> anyhow::Result<CronJob> {
-        let content = std::fs::read_to_string(path)?;
-
-        #[derive(Debug, Deserialize)]
-        struct YamlCronJob {
-            name: Option<String>,
-            message: String,
-            cron: String,
-            channel: Option<String>,
-            to: Option<String>,
-            #[serde(default = "default_true")]
-            enabled: bool,
-        }
-
-        let yaml_job: YamlCronJob = serde_yaml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse YAML: {}", e))?;
-
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        let (schedule, next_run) = CronJob::parse_schedule(&yaml_job.cron);
-
-        Ok(CronJob {
-            id: id.clone(),
-            name: yaml_job.name.unwrap_or(id),
-            cron: yaml_job.cron,
-            message: yaml_job.message,
-            channel: yaml_job.channel,
-            chat_id: yaml_job.to,
-            next_run,
-            enabled: yaml_job.enabled,
-            file_path: path.to_path_buf(),
-            schedule,
-        })
     }
 
     /// Add a job (creates/updates markdown file)

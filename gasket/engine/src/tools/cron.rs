@@ -108,8 +108,20 @@ impl Tool for CronTool {
                     ToolError::InvalidArguments("'message' is required for action 'add'. This is the text that will be sent at the scheduled time".to_string())
                 })?;
 
-                // Validate cron expression
-                let _: cron::Schedule = cron.parse().map_err(|e| {
+                // Normalize cron expression: the `cron` crate requires 7 fields
+                // (sec min hour dom month dow year), but users typically provide 5-field
+                // standard cron. Auto-prepend seconds (0) and append wildcard year (*).
+                let normalized = {
+                    let parts: Vec<&str> = cron.split_whitespace().collect();
+                    match parts.len() {
+                        5 => format!("0 {} *", cron), // 5-field → prepend 0 (sec), append * (year)
+                        6 => format!("0 {}", cron),   // 6-field → prepend 0 (sec)
+                        7 => cron.clone(),            // already 7-field
+                        _ => cron.clone(),            // let parser produce the error
+                    }
+                };
+
+                let _: cron::Schedule = normalized.parse().map_err(|e| {
                     ToolError::InvalidArguments(format!(
                         "Invalid cron expression '{}'. Expected format: 'MIN HOUR DAY MONTH WEEKDAY'. \
                          Examples: '0 9 * * *' (9 AM daily), '0 9 * * Mon' (9 AM Mondays), '*/5 * * * *' (every 5 min). Error: {}",

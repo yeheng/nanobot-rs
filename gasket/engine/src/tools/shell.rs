@@ -25,8 +25,12 @@ pub use gasket_sandbox::ProcessManager;
 // Use alias to avoid name conflict with core's SandboxConfig
 pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
 
-/// Dangerous patterns that could indicate command injection attempts
-const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", ">", ">>", "|", "\n", "\r"];
+/// Dangerous patterns that could indicate command injection attempts.
+///
+/// Note: `>` and `>>` are intentionally excluded — they are output redirections,
+/// not injection vectors. The sandbox layer already constrains file system access.
+/// Harmless fd-duplication patterns like `2>&1` must be allowed for normal use.
+const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r"];
 
 /// Shell execution tool with optional sandboxing.
 ///
@@ -359,7 +363,7 @@ mod tests {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Test various injection patterns
+        // Test various injection patterns (command chaining/substitution)
         let injection_attempts = vec![
             "echo hello && cat /etc/passwd",
             "echo hello; cat /etc/passwd",
@@ -367,7 +371,6 @@ mod tests {
             "echo `cat /etc/passwd`",
             "echo $(cat /etc/passwd)",
             "echo ${PATH}",
-            "echo hello > /tmp/file",
             "echo hello | cat",
         ];
 
@@ -385,6 +388,35 @@ mod tests {
                 "Command '{}' should have been blocked as unsafe",
                 cmd
             );
+        }
+    }
+
+    #[test]
+    fn test_redirect_patterns_allowed() {
+        let tool = ExecTool::default().with_enabled(true);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Redirect patterns are NOT injection vectors and should pass validation
+        let redirect_commands = vec![
+            "gasket memory reindex 2>&1",
+            "echo hello > /tmp/test_output.txt",
+            "echo hello >> /tmp/test_append.txt",
+        ];
+
+        for cmd in redirect_commands {
+            let result = rt.block_on(
+                tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()),
+            );
+            // Should NOT be blocked by injection check (may still fail on execution)
+            if let Err(e) = &result {
+                let err_msg = e.to_string();
+                assert!(
+                    !err_msg.contains("unsafe pattern"),
+                    "Redirect command '{}' should not be blocked as unsafe, got: {}",
+                    cmd,
+                    err_msg
+                );
+            }
         }
     }
 }

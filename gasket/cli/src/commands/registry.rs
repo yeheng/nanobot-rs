@@ -135,6 +135,7 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
         summarization_prompt: None,
+        embedding_config: Some(config.embedding.clone()),
     }
 }
 

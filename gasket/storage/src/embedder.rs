@@ -16,8 +16,8 @@ use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-/// Default embedding model name
-pub const DEFAULT_MODEL: &str = "all-MiniLM-L6-v2";
+/// Default embedding model name (fastembed enum variant name, case-insensitive)
+pub const DEFAULT_MODEL: &str = "AllMiniLML6V2";
 
 /// Default cache directory name (relative to home directory)
 pub const DEFAULT_CACHE_DIR: &str = ".gasket/embedding-cache";
@@ -43,13 +43,14 @@ pub struct TextEmbedder {
 pub struct EmbeddingConfig {
     /// Name of the embedding model to use
     ///
-    /// Supported models:
-    /// - `all-MiniLM-L6-v2` (384-dim, fast, default)
-    /// - `BAAI/bge-small-en-v1.5` (384-dim)
-    /// - `BAAI/bge-base-en-v1.5` (768-dim)
-    /// - `BAAI/bge-large-en-v1.5` (1024-dim)
-    /// - `BAAI/bge-m3` (1024-dim)
-    /// - `sentence-transformers/all-mpnet-base-v2` (768-dim)
+    /// Supported models (use enum variant name, case-insensitive):
+    /// - `AllMiniLML6V2` (384-dim, fast, default)
+    /// - `AllMiniLML12V2` (384-dim)
+    /// - `BGESmallENV15` (384-dim)
+    /// - `BGEBaseENV15` (768-dim)
+    /// - `BGELargeENV15` (1024-dim)
+    /// - `BGEM3` (1024-dim)
+    /// - `AllMpnetBaseV2` (768-dim)
     pub model_name: String,
 
     /// Optional custom cache directory for model weights
@@ -122,7 +123,7 @@ impl EmbeddingConfig {
 // ── TextEmbedder Implementation ──────────────────────────────────────────
 
 impl TextEmbedder {
-    /// Initialise with the default model (all-MiniLM-L6-v2).
+    /// Initialise with the default model (sentence-transformers/all-MiniLM-L6-v2).
     ///
     /// **First run only:** downloads model weights (~20-100 MB depending on model).
     pub fn new() -> Result<Self> {
@@ -329,8 +330,8 @@ mod tests {
 
     #[test]
     fn test_config_with_model() {
-        let config = EmbeddingConfig::with_model("BAAI/bge-base-en-v1.5");
-        assert_eq!(config.model_name, "BAAI/bge-base-en-v1.5");
+        let config = EmbeddingConfig::with_model("BGEBaseENV15");
+        assert_eq!(config.model_name, "BGEBaseENV15");
         assert_eq!(config.get_model_dimension(), 768);
     }
 
@@ -343,43 +344,43 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
-        // Test fastembed built-in model dimensions
+        // Test fastembed built-in model dimensions (enum variant names)
         assert_eq!(
-            EmbeddingConfig::with_model("all-MiniLM-L6-v2").get_model_dimension(),
+            EmbeddingConfig::with_model("AllMiniLML6V2").get_model_dimension(),
             384
         );
         assert_eq!(
-            EmbeddingConfig::with_model("all-MiniLM-L12-v2").get_model_dimension(),
+            EmbeddingConfig::with_model("AllMiniLML12V2").get_model_dimension(),
             384
         );
         assert_eq!(
-            EmbeddingConfig::with_model("BAAI/bge-small-en-v1.5").get_model_dimension(),
+            EmbeddingConfig::with_model("BGESmallENV15").get_model_dimension(),
             384
         );
         assert_eq!(
-            EmbeddingConfig::with_model("BAAI/bge-base-en-v1.5").get_model_dimension(),
+            EmbeddingConfig::with_model("BGEBaseENV15").get_model_dimension(),
             768
         );
         assert_eq!(
-            EmbeddingConfig::with_model("BAAI/bge-large-en-v1.5").get_model_dimension(),
+            EmbeddingConfig::with_model("BGELargeENV15").get_model_dimension(),
             1024
         );
         assert_eq!(
-            EmbeddingConfig::with_model("BAAI/bge-m3").get_model_dimension(),
+            EmbeddingConfig::with_model("BGEM3").get_model_dimension(),
             1024
         );
     }
 
     #[test]
     fn test_dimension_priority() {
-        // Test fastembed model default dimension
-        let config = EmbeddingConfig::with_model("all-MiniLM-L6-v2");
+        // Test fastembed model default dimension (enum variant names)
+        let config = EmbeddingConfig::with_model("AllMiniLML6V2");
         assert_eq!(config.get_model_dimension(), 384);
 
-        let config = EmbeddingConfig::with_model("BAAI/bge-base-en-v1.5");
+        let config = EmbeddingConfig::with_model("BGEBaseENV15");
         assert_eq!(config.get_model_dimension(), 768);
 
-        let config = EmbeddingConfig::with_model("BAAI/bge-large-en-v1.5");
+        let config = EmbeddingConfig::with_model("BGELargeENV15");
         assert_eq!(config.get_model_dimension(), 1024);
 
         // Default 384 for unknown model
