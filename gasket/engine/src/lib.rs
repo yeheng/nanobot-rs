@@ -143,8 +143,7 @@ pub mod channels {
     pub use gasket_channels::dingtalk;
     #[cfg(feature = "discord")]
     pub use gasket_channels::discord;
-    #[cfg(feature = "email")]
-    pub use gasket_channels::email;
+
     #[cfg(feature = "feishu")]
     pub use gasket_channels::feishu;
     #[cfg(feature = "slack")]
@@ -164,10 +163,10 @@ pub mod channels {
     pub use gasket_channels::wecom;
     pub use gasket_channels::{
         base, log_inbound, middleware, outbound, Channel, ChannelConfigError, ChannelType,
-        ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, InboundMessage,
-        InboundSender, MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry,
-        SessionKey, SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig,
-        TelegramConfig, WebSocketMessage,
+        ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, InboundMessage, InboundSender,
+        MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry, SessionKey,
+        SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
+        WebSocketMessage,
     };
 }
 

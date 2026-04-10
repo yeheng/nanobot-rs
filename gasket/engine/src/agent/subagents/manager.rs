@@ -723,7 +723,7 @@ impl SubagentManager {
             "telegram" => gasket_types::ChannelType::Telegram,
             "discord" => gasket_types::ChannelType::Discord,
             "slack" => gasket_types::ChannelType::Slack,
-            "email" => gasket_types::ChannelType::Email,
+
             "dingtalk" => gasket_types::ChannelType::Dingtalk,
             "feishu" => gasket_types::ChannelType::Feishu,
             _ => gasket_types::ChannelType::Cli,

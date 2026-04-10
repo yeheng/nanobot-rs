@@ -88,14 +88,6 @@ pub enum ConfigValidationError {
     #[error("Provider '{0}' is not available (missing API key)")]
     ProviderNotAvailable(String),
 
-    /// Incomplete email configuration
-    #[error("Email channel requires either IMAP or SMTP configuration (host, username, password, and from_address for SMTP)")]
-    IncompleteEmailConfig,
-
-    /// Missing specific email config field
-    #[error("Email configuration missing required field: {0}")]
-    MissingEmailField(String),
-
     /// Invalid channel configuration
     #[error("Channel '{0}' has invalid configuration: {1}")]
     InvalidChannelConfig(String, String),
@@ -158,9 +150,6 @@ impl From<anyhow::Error> for ChannelError {
 impl From<gasket_channels::ChannelConfigError> for ConfigValidationError {
     fn from(err: gasket_channels::ChannelConfigError) -> Self {
         match err {
-            gasket_channels::ChannelConfigError::IncompleteEmailConfig => {
-                ConfigValidationError::IncompleteEmailConfig
-            }
             gasket_channels::ChannelConfigError::InvalidChannelConfig(ch, msg) => {
                 ConfigValidationError::InvalidChannelConfig(ch, msg)
             }

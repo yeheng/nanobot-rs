@@ -23,7 +23,7 @@ telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "ope
 telegram = ["gasket-engine/telegram"]
 discord = ["gasket-engine/discord"]
 slack = ["gasket-engine/slack"]
-email = ["gasket-engine/email"]
+
 feishu = ["gasket-engine/feishu"]
 dingtalk = ["gasket-engine/dingtalk"]
 wecom = ["gasket-engine/wecom"]

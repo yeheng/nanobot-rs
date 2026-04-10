@@ -11,10 +11,10 @@ use tracing::{info, Level};
 use gasket_engine::agent::memory::MemoryStore;
 use gasket_engine::agent::{ModelResolver, SubagentManager};
 use gasket_engine::bus::events::SessionKey;
-use gasket_engine::kernel::StreamEvent;
-use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::config::{load_config, ModelRegistry};
+use gasket_engine::kernel::StreamEvent;
 use gasket_engine::providers::ProviderRegistry;
+use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::token_tracker::ModelPricing;
 
 use super::registry::CliModelResolver;

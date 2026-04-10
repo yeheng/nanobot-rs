@@ -10,13 +10,13 @@ use tracing::info;
 use gasket_engine::agent::memory::MemoryStore;
 use gasket_engine::agent::SubagentManager;
 use gasket_engine::bus_adapter::EngineHandler;
-use gasket_engine::session::AgentSession;
 #[allow(unused_imports)]
 use gasket_engine::channels::Channel;
 use gasket_engine::channels::OutboundSenderRegistry;
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::cron::CronService;
 use gasket_engine::providers::ProviderRegistry;
+use gasket_engine::session::AgentSession;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::CronTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata};
@@ -50,19 +50,12 @@ pub async fn cmd_gateway() -> Result<()> {
     let has_discord = config.channels.discord.as_ref().is_some_and(|c| c.enabled);
     let has_slack = config.channels.slack.as_ref().is_some_and(|c| c.enabled);
     let has_feishu = config.channels.feishu.as_ref().is_some_and(|c| c.enabled);
-    let has_email = config.channels.email.as_ref().is_some_and(|c| c.enabled);
     let has_dingtalk = config.channels.dingtalk.as_ref().is_some_and(|c| c.enabled);
 
     // WebSocket is enabled by feature flag
     let has_websocket = cfg!(feature = "all-channels");
 
-    if !has_telegram
-        && !has_discord
-        && !has_slack
-        && !has_feishu
-        && !has_email
-        && !has_dingtalk
-        && !has_websocket
+    if !has_telegram && !has_discord && !has_slack && !has_feishu && !has_dingtalk && !has_websocket
     {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
@@ -382,24 +375,6 @@ fn start_channels(
         }
     }
 
-    // Start Email if configured
-    #[cfg(feature = "email")]
-    if let Some(email_config) = &config.channels.email {
-        if email_config.enabled {
-            // Validate email configuration first
-            if !email_config.has_valid_config() {
-                errors.push(
-                    "Email: incomplete configuration (requires IMAP or SMTP with from_address)"
-                        .to_string(),
-                );
-            } else if let Err(e) =
-                start_email_channel(email_config, vault, inbound_processor, tasks)
-            {
-                errors.push(format!("Email: {}", e));
-            }
-        }
-    }
-
     // Start DingTalk if configured
     #[cfg(feature = "dingtalk")]
     if let Some(dingtalk_config) = &config.channels.dingtalk {
@@ -564,50 +539,6 @@ fn start_feishu_channel(
     tasks.push(tokio::spawn(async move {
         if let Err(e) = feishu_channel.start().await {
             tracing::error!("Feishu channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
-
-/// Start a single Email channel
-#[cfg(feature = "email")]
-fn start_email_channel(
-    email_config: &gasket_engine::config::EmailConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} Email channel", "✓".green());
-
-    let email_cfg = gasket_engine::channels::email::EmailConfig {
-        imap_host: email_config.imap_host.clone().unwrap_or_default(),
-        imap_port: email_config.imap_port,
-        imap_username: email_config.imap_username.clone().unwrap_or_default(),
-        imap_password: resolve_channel_secret(
-            &email_config.imap_password.clone().unwrap_or_default(),
-            vault,
-        ),
-        smtp_host: email_config.smtp_host.clone().unwrap_or_default(),
-        smtp_port: email_config.smtp_port,
-        smtp_username: email_config.smtp_username.clone().unwrap_or_default(),
-        smtp_password: resolve_channel_secret(
-            &email_config.smtp_password.clone().unwrap_or_default(),
-            vault,
-        ),
-        from_address: email_config.from_address.clone().unwrap_or_default(),
-        allow_from: email_config.allow_from.clone(),
-        consent_granted: email_config.consent_granted,
-    };
-
-    let email_channel = gasket_engine::channels::email::EmailChannel::new(
-        email_cfg,
-        inbound_processor.raw_sender(),
-    );
-
-    tasks.push(tokio::spawn(async move {
-        if let Err(e) = email_channel.start_polling().await {
-            tracing::error!("Email channel error: {}", e);
         }
     }));
 
