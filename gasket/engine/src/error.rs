@@ -137,6 +137,12 @@ pub enum PipelineError {
 // From<anyhow::Error> — preserve full error chain via Internal variant
 // ============================================================================
 
+impl From<crate::kernel::KernelError> for AgentError {
+    fn from(err: crate::kernel::KernelError) -> Self {
+        AgentError::Other(err.to_string())
+    }
+}
+
 impl From<anyhow::Error> for AgentError {
     fn from(err: anyhow::Error) -> Self {
         AgentError::Internal(err.into())

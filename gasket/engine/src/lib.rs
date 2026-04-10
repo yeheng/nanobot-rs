@@ -16,14 +16,15 @@
 //! - **Streaming-first**: SSE streaming with backpressure support
 
 pub mod agent;
-pub mod kernel;
 pub mod bus_adapter;
 pub mod config;
 pub mod cron;
 pub mod error;
 pub mod heartbeat;
 pub mod hooks;
+pub mod kernel;
 pub mod search;
+pub mod session;
 pub mod skills;
 pub mod token_tracker;
 pub mod tools;

@@ -16,10 +16,23 @@ pub struct RuntimeContext {
     pub token_tracker: Option<Arc<TokenTracker>>,
 }
 
+impl Clone for RuntimeContext {
+    fn clone(&self) -> Self {
+        Self {
+            provider: self.provider.clone(),
+            tools: self.tools.clone(),
+            config: self.config.clone(),
+            spawner: self.spawner.clone(),
+            token_tracker: self.token_tracker.clone(),
+        }
+    }
+}
+
 /// Minimal config for the LLM iteration loop.
 /// `#[non_exhaustive]` prevents external crates from adding fields
 /// — only LLM loop parameters belong here.
 #[non_exhaustive]
+#[derive(Clone)]
 pub struct KernelConfig {
     pub model: String,
     pub max_iterations: u32,
