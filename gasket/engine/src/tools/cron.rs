@@ -219,12 +219,23 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
+    /// Helper to create a CronService with a temp database for tests
+    async fn create_test_cron_service(temp_dir: &std::path::Path) -> Arc<CronService> {
+        let db_path = temp_dir.join("test_cron.db");
+        let sqlite_store = Arc::new(
+            gasket_storage::SqliteStore::with_path(db_path)
+                .await
+                .expect("Failed to create test SQLite store"),
+        );
+        Arc::new(CronService::new(temp_dir.to_path_buf(), sqlite_store).await)
+    }
+
     #[tokio::test]
     async fn test_cron_tool_add_missing_name() {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = create_test_cron_service(&temp_dir).await;
         let tool = CronTool::new(service);
 
         let args = json!({
@@ -247,7 +258,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = create_test_cron_service(&temp_dir).await;
         let tool = CronTool::new(service);
 
         let args = json!({
@@ -271,7 +282,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = create_test_cron_service(&temp_dir).await;
         let tool = CronTool::new(service.clone());
 
         // Add a job
@@ -304,7 +315,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("gasket-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
 
-        let service = Arc::new(CronService::new(temp_dir.clone()).await);
+        let service = create_test_cron_service(&temp_dir).await;
         let tool = CronTool::new(service.clone());
 
         // Add a job

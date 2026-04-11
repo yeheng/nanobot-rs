@@ -16,6 +16,7 @@ mod base;
 mod cron;
 mod filesystem;
 mod memorize;
+mod memory_refresh;
 mod memory_search;
 mod message;
 mod registry;
@@ -35,6 +36,7 @@ pub use gasket_types::{
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use memorize::MemorizeTool;
+pub use memory_refresh::MemoryRefreshTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;

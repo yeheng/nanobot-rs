@@ -1,8 +1,13 @@
 //! Cron service for scheduled tasks
 //!
-//! **File-Driven Architecture**: Jobs are defined in `~/.gasket/cron/*.md` files.
-//! No SQLite persistence — runtime state is in-memory only.
-//! Manual refresh via `refresh_all_jobs()` — compares file mtime and size to detect changes.
+//! **Hybrid Architecture**:
+//! - Config lives in `~/.gasket/cron/*.md` files (SSOT, read-only)
+//! - Execution state (last_run/next_run) lives in SQLite `cron_state` table
+//!
+//! This separation ensures:
+//! - Config files remain clean (no runtime mutations)
+//! - State survives restarts (missed ticks detection)
+//! - High-frequency writes don't wear out SSD with file rewrites
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,11 +17,12 @@ use chrono::{DateTime, Utc};
 use cron::Schedule;
 use gasket_storage::fs::atomic_write;
 use gasket_storage::memory::extract_frontmatter_raw;
+use gasket_storage::SqliteStore;
 use parking_lot::RwLock;
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
 
-/// A scheduled job (in-memory only)
+/// A scheduled job (config from file, state from database)
 #[derive(Debug, Clone)]
 pub struct CronJob {
     /// Unique job ID (filename without .md)
@@ -35,7 +41,9 @@ pub struct CronJob {
     pub tool: Option<String>,
     /// Tool arguments (JSON value)
     pub tool_args: Option<serde_json::Value>,
-    /// Next run time (in-memory only)
+    /// Last run time (restored from database)
+    pub last_run: Option<DateTime<Utc>>,
+    /// Next run time (restored from database)
     pub next_run: Option<DateTime<Utc>>,
     /// Enabled
     pub enabled: bool,
@@ -82,8 +90,11 @@ pub struct RefreshReport {
 
 /// Cron service for scheduled tasks.
 ///
-/// **File-Driven**: All job data lives in `~/.gasket/cron/*.md` files.
-/// No memory cache synchronization issues — files are Single Source of Truth.
+/// **Hybrid Architecture**:
+/// - Config (cron expression, message, tool) lives in `~/.gasket/cron/*.md` files
+/// - Execution state (last_run_at, next_run_at) lives in SQLite `cron_state` table
+///
+/// This separation ensures state survives restarts and enables missed-tick detection.
 pub struct CronService {
     /// In-memory job storage (Arc for sharing)
     jobs: Arc<RwLock<HashMap<String, CronJob>>>,
@@ -91,6 +102,8 @@ pub struct CronService {
     workspace: PathBuf,
     /// Cached file metadata for change detection
     file_metadata: Arc<RwLock<HashMap<String, FileMetadata>>>,
+    /// SQLite store for execution state persistence
+    db: Arc<SqliteStore>,
 }
 
 impl CronJob {
@@ -113,6 +126,7 @@ impl CronJob {
             chat_id: None,
             tool: None,
             tool_args: None,
+            last_run: None,
             next_run,
             enabled: true,
             file_path: PathBuf::new(),
@@ -183,6 +197,7 @@ fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
         chat_id: fm.to,
         tool: fm.tool,
         tool_args: fm.tool_args,
+        last_run: None,
         next_run,
         enabled: fm.enabled,
         file_path: file_path.to_path_buf(),
@@ -191,11 +206,11 @@ fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
 }
 
 impl CronService {
-    /// Create a new cron service with file-driven architecture.
+    /// Create a new cron service with hybrid file+database architecture.
     ///
     /// Jobs are loaded from `~/.gasket/cron/*.md` files.
-    /// Manual refresh via `refresh_all_jobs()` for detecting external file changes.
-    pub async fn new(workspace: PathBuf) -> Self {
+    /// Execution state is restored from SQLite `cron_state` table.
+    pub async fn new(workspace: PathBuf, db: Arc<SqliteStore>) -> Self {
         let jobs = Arc::new(RwLock::new(HashMap::new()));
         let file_metadata = Arc::new(RwLock::new(HashMap::new()));
 
@@ -203,16 +218,17 @@ impl CronService {
             jobs: jobs.clone(),
             workspace: workspace.clone(),
             file_metadata: file_metadata.clone(),
+            db,
         };
 
         // Load existing jobs from cron directory
-        service.load_all_jobs(&workspace);
+        service.load_all_jobs(&workspace).await;
 
         service
     }
 
-    /// Load all cron jobs from markdown or yaml files
-    fn load_all_jobs(&self, workspace: &Path) {
+    /// Load all cron jobs from markdown files, restoring state from database.
+    async fn load_all_jobs(&self, workspace: &Path) {
         let cron_dir = workspace.join("cron");
         if !cron_dir.exists() {
             let _ = std::fs::create_dir_all(&cron_dir);
@@ -230,7 +246,7 @@ impl CronService {
             let ext = path.extension().and_then(|s| s.to_str());
 
             if ext == Some("md") {
-                match Self::parse_markdown_file(&path) {
+                match self.parse_markdown_file_with_state(&path).await {
                     Ok(job) => {
                         info!("Loaded cron job from markdown: {}", job.id);
                         self.jobs.write().insert(job.id.clone(), job);
@@ -247,10 +263,54 @@ impl CronService {
         }
     }
 
+    /// Parse a markdown file and restore execution state from database.
+    async fn parse_markdown_file_with_state(&self, path: &Path) -> anyhow::Result<CronJob> {
+        let mut job = Self::parse_markdown_file(path)?;
+
+        // Restore state from database
+        match self.db.get_cron_state(&job.id).await {
+            Ok(Some((last_run_at, next_run_at))) => {
+                // Use database state if available
+                if let Some(last_run_str) = last_run_at {
+                    if let Ok(last_run) = DateTime::parse_from_rfc3339(&last_run_str) {
+                        job.last_run = Some(last_run.with_timezone(&Utc));
+                    }
+                }
+                if let Some(next_run_str) = next_run_at {
+                    if let Ok(next_run) = DateTime::parse_from_rfc3339(&next_run_str) {
+                        job.next_run = Some(next_run.with_timezone(&Utc));
+                    }
+                }
+                debug!("Restored cron state for {} from database", job.id);
+            }
+            Ok(None) => {
+                // No state in database - initialize with next_run based on now
+                if job.next_run.is_none() {
+                    // Invalid cron or couldn't parse - job will be disabled
+                    warn!("Cron job {} has invalid schedule, disabling", job.id);
+                } else {
+                    // Persist initial state to database
+                    if let Some(next_run) = job.next_run {
+                        let _ = self
+                            .db
+                            .upsert_cron_state(&job.id, None, Some(&next_run.to_rfc3339()))
+                            .await;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load cron state for {}: {}", job.id, e);
+            }
+        }
+
+        Ok(job)
+    }
+
     /// Refresh all cron jobs from disk, comparing mtime and size to detect changes.
     ///
     /// This is the manual replacement for the file watcher - call this method
     /// when you suspect external file changes may have occurred.
+    /// Also performs garbage collection of orphaned database state.
     pub async fn refresh_all_jobs(&self) -> anyhow::Result<RefreshReport> {
         let cron_dir = self.workspace.join("cron");
         if !cron_dir.exists() {
@@ -317,18 +377,8 @@ impl CronService {
                 }
             }
 
-            // Parse and update job
-            let result = if ext == Some("md") {
-                Self::parse_markdown_file(&path)
-            } else {
-                warn!(
-                    "Unsupported cron file format (only .md supported): {:?}",
-                    path
-                );
-                continue;
-            };
-
-            match result {
+            // Parse and update job (with state restoration from DB)
+            match self.parse_markdown_file_with_state(&path).await {
                 Ok(job) => {
                     if self.jobs.read().contains_key(&job_id) {
                         report.updated += 1;
@@ -355,14 +405,18 @@ impl CronService {
             }
         }
 
-        // Remove jobs for files that no longer exist
+        // Remove jobs for files that no longer exist + clean up database state
         let existing_ids: Vec<String> = self.jobs.read().keys().cloned().collect();
         for id in existing_ids {
             if !current_ids.contains(&id) {
                 self.jobs.write().remove(&id);
                 self.file_metadata.write().remove(&id);
+                // Clean up database state for removed job
+                if let Err(e) = self.db.delete_cron_state(&id).await {
+                    warn!("Failed to delete cron state for {}: {}", id, e);
+                }
                 report.removed += 1;
-                debug!("Removed stale cron job: {}", id);
+                debug!("Removed stale cron job and state: {}", id);
             }
         }
 
@@ -421,20 +475,27 @@ impl CronService {
         Ok(())
     }
 
-    /// Remove a job (deletes markdown file)
+    /// Remove a job (deletes markdown file and database state)
     #[instrument(name = "cron.remove_job", skip(self), fields(job_id = %id))]
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
         let cron_dir = self.workspace.join("cron");
         let file_path = cron_dir.join(format!("{}.md", id));
 
+        // Always clean up database state
+        if let Err(e) = self.db.delete_cron_state(id).await {
+            warn!("Failed to delete cron state for {}: {}", id, e);
+        }
+
         if !file_path.exists() {
             // Also remove from memory if it exists there (stale state)
             let removed_from_memory = self.jobs.write().remove(id).is_some();
+            self.file_metadata.write().remove(id);
             return Ok(removed_from_memory);
         }
 
         // FIRST remove from memory, then delete file
         self.jobs.write().remove(id);
+        self.file_metadata.write().remove(id);
 
         tokio::fs::remove_file(&file_path).await?;
         info!("Removed cron job: {}", id);
@@ -474,10 +535,82 @@ impl CronService {
     }
 
     /// Update job's next_run time (in-memory only, no persistence)
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use advance_job_tick instead for state persistence"
+    )]
     pub async fn update_job_next_run(&self, id: &str, next_run: Option<DateTime<Utc>>) {
         if let Some(job) = self.jobs.write().get_mut(id) {
             job.next_run = next_run;
         }
+    }
+
+    /// Advance job execution tick, persist state to database.
+    ///
+    /// This is the **correct** way to advance a job after execution.
+    /// It updates both memory and database state, ensuring:
+    /// - last_run_at records when the job actually ran
+    /// - next_run_at is calculated from current time (handles missed ticks)
+    /// - State survives process restarts
+    ///
+    /// Returns `(last_run_at, next_run_at)` on success.
+    #[instrument(name = "cron.advance_tick", skip_all, fields(job_id = %job_id))]
+    pub async fn advance_job_tick(
+        &self,
+        job_id: &str,
+    ) -> anyhow::Result<(DateTime<Utc>, DateTime<Utc>)> {
+        let now = Utc::now();
+
+        // Update in-memory state
+        let next_run = {
+            let mut jobs = self.jobs.write();
+            let job = jobs
+                .get_mut(job_id)
+                .ok_or_else(|| anyhow::anyhow!("Job not found: {}", job_id))?;
+
+            job.last_run = Some(now);
+
+            // Calculate next run based on current time (handles missed ticks)
+            let next = if let Some(schedule) = job.schedule.as_ref() {
+                schedule.after(&now).next().ok_or_else(|| {
+                    anyhow::anyhow!("Failed to calculate next run for job {}", job_id)
+                })?
+            } else {
+                // No valid schedule - job won't run again
+                return Err(anyhow::anyhow!("Job {} has no valid schedule", job_id));
+            };
+
+            job.next_run = Some(next);
+            next
+        };
+
+        // Persist to database
+        self.db
+            .upsert_cron_state(
+                job_id,
+                Some(&now.to_rfc3339()),
+                Some(&next_run.to_rfc3339()),
+            )
+            .await?;
+
+        debug!(
+            "Advanced job {} tick: last_run={}, next_run={}",
+            job_id, now, next_run
+        );
+
+        Ok((now, next_run))
+    }
+
+    /// Check if a job has missed ticks (next_run is in the past).
+    ///
+    /// Used on startup to detect and compensate for downtime.
+    pub async fn has_missed_ticks(&self, job_id: &str) -> anyhow::Result<bool> {
+        let jobs = self.jobs.read();
+        let job = jobs
+            .get(job_id)
+            .ok_or_else(|| anyhow::anyhow!("Job not found: {}", job_id))?;
+
+        Ok(job.next_run.is_some_and(|nr| nr <= Utc::now()))
     }
 }
 

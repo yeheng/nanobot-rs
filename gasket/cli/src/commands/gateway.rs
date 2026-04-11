@@ -19,6 +19,7 @@ use gasket_engine::session::AgentSession;
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::CronTool;
+use gasket_engine::tools::MemoryRefreshTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
 
@@ -78,9 +79,30 @@ pub async fn cmd_gateway() -> Result<()> {
     // MemoryStore provides the underlying SqliteStore for session management
     let memory_store = Arc::new(MemoryStore::new().await);
 
-    // Create cron service with file-driven architecture (no SQLite dependency)
-    // Manual refresh via 'gasket cron refresh' command
-    let cron_service = Arc::new(CronService::new(workspace.clone()).await);
+    // Create MemoryManager for memory refresh operations
+    let memory_manager = {
+        let pool = memory_store.pool();
+        let base_dir = workspace.join("memory");
+
+        // Use NoopEmbedder for Gateway (we don't need embeddings for refresh operations)
+        let embedder: Box<dyn gasket_engine::Embedder> =
+            Box::new(gasket_engine::NoopEmbedder::new(384));
+
+        Arc::new(
+            gasket_engine::session::memory::MemoryManager::new(base_dir, &pool, embedder)
+                .await
+                .expect("Failed to initialize MemoryManager"),
+        )
+    };
+
+    // Create cron service with hybrid file+database architecture
+    // State (last_run/next_run) persists in SQLite, config lives in ~/.gasket/cron/*.md
+    let sqlite_store = Arc::new(
+        gasket_engine::memory::SqliteStore::new()
+            .await
+            .expect("Failed to open SQLite store for cron persistence"),
+    );
+    let cron_service = Arc::new(CronService::new(workspace.clone(), sqlite_store).await);
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config, vault.as_deref())?;
@@ -170,6 +192,22 @@ pub async fn cmd_gateway() -> Result<()> {
                         tags: vec!["cron".to_string(), "schedule".to_string()],
                         requires_approval: false,
                         is_mutating: false,
+                    },
+                ));
+
+                ext.push((
+                    Box::new(MemoryRefreshTool::new(memory_manager.clone()))
+                        as Box<dyn gasket_engine::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Memory Refresh".to_string(),
+                        category: "system".to_string(),
+                        tags: vec![
+                            "memory".to_string(),
+                            "refresh".to_string(),
+                            "index".to_string(),
+                        ],
+                        requires_approval: false,
+                        is_mutating: true,
                     },
                 ));
 
@@ -701,13 +739,22 @@ fn start_cron_checker(
                             bus_for_cron.publish_inbound(inbound).await;
                         }
 
-                        // Update next_run time in memory (no persistence needed)
-                        let next_run = {
-                            let mut job = job.clone();
-                            job.update_next_run();
-                            job.next_run
-                        };
-                        cron_svc.update_job_next_run(&job.id, next_run).await;
+                        // Advance job tick and persist state to database
+                        // This ensures state survives restarts and missed ticks are handled
+                        match cron_svc.advance_job_tick(&job.id).await {
+                            Ok((last_run, next_run)) => {
+                                tracing::debug!(
+                                    "Advanced job {} tick: last_run={}, next_run={}",
+                                    job.id, last_run, next_run
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to advance job {} tick: {}. Job may run again on next check.",
+                                    job.id, e
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => {

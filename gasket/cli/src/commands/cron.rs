@@ -1,5 +1,7 @@
 //! Cron commands implementation
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use chrono::Utc;
 use colored::Colorize;
@@ -7,13 +9,21 @@ use uuid::Uuid;
 
 use gasket_engine::config::config_dir;
 use gasket_engine::cron::{CronJob, CronService};
+use gasket_engine::memory::SqliteStore;
+
+/// Helper to create a CronService with database persistence
+async fn create_cron_service() -> Result<CronService> {
+    let workspace = config_dir();
+    let sqlite_store = Arc::new(SqliteStore::new().await?);
+    Ok(CronService::new(workspace, sqlite_store).await)
+}
 
 /// List all scheduled cron jobs
 pub async fn cmd_cron_list() -> Result<()> {
     println!("{}\n", "Scheduled Jobs".bold());
 
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
     let jobs = service
         .list_jobs()
         .await
@@ -69,7 +79,7 @@ pub async fn cmd_cron_add(name: String, cron_expr: String, message: String) -> R
     job.next_run = next_run;
 
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
     service
         .add_job(job.clone())
         .await
@@ -112,7 +122,7 @@ fn normalize_cron_expression(expr: &str) -> Result<String> {
 /// Remove a cron job by ID
 pub async fn cmd_cron_remove(id: String) -> Result<()> {
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
 
     // Try to get job info first for better feedback
     let job = service
@@ -146,7 +156,7 @@ pub async fn cmd_cron_remove(id: String) -> Result<()> {
 /// Enable a cron job
 pub async fn cmd_cron_enable(id: String) -> Result<()> {
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
 
     let job = service
         .get_job(&id)
@@ -177,7 +187,7 @@ pub async fn cmd_cron_enable(id: String) -> Result<()> {
 /// Disable a cron job
 pub async fn cmd_cron_disable(id: String) -> Result<()> {
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
 
     let job = service
         .get_job(&id)
@@ -208,7 +218,7 @@ pub async fn cmd_cron_disable(id: String) -> Result<()> {
 /// Show detailed info for a cron job
 pub async fn cmd_cron_show(id: String) -> Result<()> {
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
 
     let job = service
         .get_job(&id)
@@ -257,7 +267,7 @@ pub async fn cmd_cron_show(id: String) -> Result<()> {
 /// Refresh all cron jobs from disk
 pub async fn cmd_cron_refresh() -> Result<()> {
     let workspace = config_dir();
-    let service = CronService::new(workspace).await;
+    let service = create_cron_service().await?;
 
     let report = service
         .refresh_all_jobs()

@@ -254,6 +254,61 @@ impl SqliteStore {
         Ok(row.map(|(count,)| count > 0).unwrap_or(false))
     }
 
+    // ── Cron State API (Execution state for cron jobs) ──
+
+    /// Get cron state for a job.
+    ///
+    /// Returns `(last_run_at, next_run_at)` if state exists, or `None` if not found.
+    pub async fn get_cron_state(
+        &self,
+        job_id: &str,
+    ) -> anyhow::Result<Option<(Option<String>, Option<String>)>> {
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT last_run_at, next_run_at FROM cron_state WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row)
+    }
+
+    /// Upsert cron state for a job.
+    ///
+    /// Persists execution state (last_run/next_run) to survive restarts.
+    pub async fn upsert_cron_state(
+        &self,
+        job_id: &str,
+        last_run: Option<&str>,
+        next_run: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO cron_state (job_id, last_run_at, next_run_at) VALUES ($1, $2, $3)",
+        )
+        .bind(job_id)
+        .bind(last_run)
+        .bind(next_run)
+        .execute(&self.pool)
+        .await?;
+        debug!(
+            "Updated cron state for job {}: last_run={:?}, next_run={:?}",
+            job_id, last_run, next_run
+        );
+        Ok(())
+    }
+
+    /// Delete cron state for a job.
+    ///
+    /// Call when a job is removed to keep database clean.
+    pub async fn delete_cron_state(&self, job_id: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM cron_state WHERE job_id = $1")
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() > 0 {
+            debug!("Deleted cron state for job {}", job_id);
+        }
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Verify that the database is usable (integrity + read/write).
     async fn health_check(&self) -> anyhow::Result<()> {
         // Integrity check
@@ -359,31 +414,25 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
-        // ── Cron jobs ──
+        // ── Cron state (execution state, separate from config) ──
+        // Config lives in ~/.gasket/cron/*.md files (SSOT)
+        // State (last_run/next_run) lives here (high-frequency writes)
 
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS cron_jobs (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                cron        TEXT NOT NULL,
-                message     TEXT NOT NULL,
-                channel     TEXT,
-                chat_id     TEXT,
-                last_run    TEXT,
-                next_run    TEXT,
-                enabled     INTEGER NOT NULL DEFAULT 1
+            "CREATE TABLE IF NOT EXISTS cron_state (
+                job_id      TEXT PRIMARY KEY,
+                last_run_at TEXT,
+                next_run_at TEXT
             )",
         )
         .execute(&self.pool)
         .await?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled)")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_cron_state_next_run ON cron_state(next_run_at)",
+        )
+        .execute(&self.pool)
+        .await?;
 
         // ── Session embeddings (for semantic history recall) ──
 
