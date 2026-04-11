@@ -88,15 +88,17 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         );
     }
 
-    let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
-        config: config.clone(),
-        workspace: workspace.clone(),
-        subagent_spawner: None,
-        extra_tools: vec![],
-        sqlite_store: Some(sqlite_store),
-        model_registry: Some(model_registry),
-        provider_registry: Some(provider_registry),
-    });
+    let tools = Arc::new(super::registry::build_tool_registry(
+        super::registry::ToolRegistryConfig {
+            config: config.clone(),
+            workspace: workspace.clone(),
+            subagent_spawner: None,
+            extra_tools: vec![],
+            sqlite_store: Some(sqlite_store),
+            model_registry: Some(model_registry),
+            provider_registry: Some(provider_registry),
+        },
+    ));
 
     // Create spawner for spawn/spawn_parallel tools
     let (_dummy_tx, _dummy_rx): (

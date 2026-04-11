@@ -19,7 +19,8 @@ use gasket_engine::session::AgentSession;
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::CronTool;
-use gasket_engine::tools::{MessageTool, ToolMetadata};
+use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
+use gasket_engine::SubagentSpawner;
 
 use super::registry::CliModelResolver;
 use crate::provider::setup_vault;
@@ -142,42 +143,43 @@ pub async fn cmd_gateway() -> Result<()> {
         })),
     );
 
-    #[allow(unused_mut)]
-    let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
-        config: config.clone(),
-        workspace: workspace.clone(),
-        subagent_spawner: Some(subagent_spawner.clone()),
-        extra_tools: {
-            let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
-                Box::new(MessageTool::new(bus.outbound_sender()))
-                    as Box<dyn gasket_engine::tools::Tool>,
-                ToolMetadata {
-                    display_name: "Send Message".to_string(),
-                    category: "communication".to_string(),
-                    tags: vec!["message".to_string(), "send".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            )];
+    let tools = Arc::new(super::registry::build_tool_registry(
+        super::registry::ToolRegistryConfig {
+            config: config.clone(),
+            workspace: workspace.clone(),
+            subagent_spawner: Some(subagent_spawner.clone()),
+            extra_tools: {
+                let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
+                    Box::new(MessageTool::new(bus.outbound_sender()))
+                        as Box<dyn gasket_engine::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Send Message".to_string(),
+                        category: "communication".to_string(),
+                        tags: vec!["message".to_string(), "send".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                )];
 
-            ext.push((
-                Box::new(CronTool::new(cron_service.clone()))
-                    as Box<dyn gasket_engine::tools::Tool>,
-                ToolMetadata {
-                    display_name: "Schedule Task".to_string(),
-                    category: "system".to_string(),
-                    tags: vec!["cron".to_string(), "schedule".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            ));
+                ext.push((
+                    Box::new(CronTool::new(cron_service.clone()))
+                        as Box<dyn gasket_engine::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Schedule Task".to_string(),
+                        category: "system".to_string(),
+                        tags: vec!["cron".to_string(), "schedule".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                ));
 
-            ext
+                ext
+            },
+            sqlite_store: None, // Cron service is now file-driven, no SQLite needed
+            model_registry: Some(model_registry.clone()),
+            provider_registry: Some(provider_registry.clone()),
         },
-        sqlite_store: None, // Cron service is now file-driven, no SQLite needed
-        model_registry: Some(model_registry.clone()),
-        provider_registry: Some(provider_registry.clone()),
-    });
+    ));
 
     // Convert pricing info to ModelPricing
     let pricing = provider_info
@@ -189,7 +191,7 @@ pub async fn cmd_gateway() -> Result<()> {
             provider_info.provider,
             workspace.clone(),
             agent_config,
-            tools,
+            tools.clone(),
             memory_store,
             pricing,
         )
@@ -278,7 +280,13 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // --- Background services ---
     start_heartbeat_service(&bus, &workspace, &mut tasks);
-    start_cron_checker(&cron_service, &bus, &mut tasks);
+    start_cron_checker(
+        &cron_service,
+        &bus,
+        tools.clone(),
+        subagent_spawner.clone(),
+        &mut tasks,
+    );
 
     // --- Start all configured channels using unified initializer ---
     let channel_errors = start_channels(&config, vault.as_deref(), &inbound_processor, &mut tasks);
@@ -613,9 +621,12 @@ fn start_heartbeat_service(
 }
 
 /// Start cron checker that polls for due jobs every 60 seconds.
+/// Supports direct tool execution (bypassing LLM) for zero-token system tasks.
 fn start_cron_checker(
     cron_service: &Arc<CronService>,
     bus: &Arc<gasket_engine::bus::MessageBus>,
+    tools: Arc<ToolRegistry>,
+    spawner: Arc<dyn SubagentSpawner>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let cron_svc = cron_service.clone();
@@ -628,23 +639,68 @@ fn start_cron_checker(
                 Ok(due) => {
                     for job in due {
                         tracing::info!("Cron job due: {} ({})", job.name, job.id);
+
                         let channel = job
                             .channel
                             .as_deref()
                             .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
                             .unwrap_or(gasket_engine::bus::ChannelType::Cli);
                         let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
-                        let inbound = gasket_engine::bus::events::InboundMessage {
-                            channel,
-                            sender_id: "cron".to_string(),
-                            chat_id,
-                            content: job.message.clone(),
-                            media: None,
-                            metadata: None,
-                            timestamp: chrono::Utc::now(),
-                            trace_id: None,
-                        };
-                        bus_for_cron.publish_inbound(inbound).await;
+
+                        // Check if this is a direct tool execution job (bypass LLM)
+                        if let Some(ref tool_name) = job.tool {
+                            // Direct tool execution path - ZERO LLM tokens consumed
+                            tracing::info!(
+                                "Executing cron job '{}' directly via tool '{}' (bypassing LLM)",
+                                job.name,
+                                tool_name
+                            );
+
+                            // Build ToolContext with necessary dependencies
+                            let ctx = gasket_engine::tools::ToolContext::default()
+                                .outbound_tx(bus_for_cron.outbound_sender())
+                                .spawner(spawner.clone());
+
+                            let args = job.tool_args.clone().unwrap_or(serde_json::json!({}));
+
+                            // Execute tool directly
+                            match tools.execute(tool_name, args, &ctx).await {
+                                Ok(result) => {
+                                    tracing::info!(
+                                        "Cron job '{}' completed successfully",
+                                        job.name
+                                    );
+                                    // Send result to output channel
+                                    let out_msg = gasket_engine::bus::events::OutboundMessage::new(
+                                        channel, &chat_id, result,
+                                    );
+                                    bus_for_cron.publish_outbound(out_msg).await;
+                                }
+                                Err(e) => {
+                                    tracing::error!("Cron job '{}' failed: {}", job.name, e);
+                                    // Send error to output channel
+                                    let error_msg = format!("Cron job error: {}", e);
+                                    let out_msg = gasket_engine::bus::events::OutboundMessage::new(
+                                        channel, &chat_id, error_msg,
+                                    );
+                                    bus_for_cron.publish_outbound(out_msg).await;
+                                }
+                            }
+                        } else {
+                            // Traditional LLM-based path
+                            let inbound = gasket_engine::bus::events::InboundMessage {
+                                channel,
+                                sender_id: "cron".to_string(),
+                                chat_id,
+                                content: job.message.clone(),
+                                media: None,
+                                metadata: None,
+                                timestamp: chrono::Utc::now(),
+                                trace_id: None,
+                            };
+                            bus_for_cron.publish_inbound(inbound).await;
+                        }
+
                         // Update next_run time in memory (no persistence needed)
                         let next_run = {
                             let mut job = job.clone();

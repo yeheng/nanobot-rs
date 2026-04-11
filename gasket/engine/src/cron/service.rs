@@ -25,12 +25,16 @@ pub struct CronJob {
     pub name: String,
     /// Cron expression
     pub cron: String,
-    /// Message to send
+    /// Message to send (for LLM-based jobs)
     pub message: String,
     /// Target channel
     pub channel: Option<String>,
     /// Target chat ID
     pub chat_id: Option<String>,
+    /// Tool name to execute directly (bypasses LLM)
+    pub tool: Option<String>,
+    /// Tool arguments (JSON value)
+    pub tool_args: Option<serde_json::Value>,
     /// Next run time (in-memory only)
     pub next_run: Option<DateTime<Utc>>,
     /// Enabled
@@ -50,6 +54,10 @@ struct CronJobFrontmatter {
     to: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
+    /// Tool name to execute directly (bypasses LLM)
+    tool: Option<String>,
+    /// Tool arguments as JSON value
+    tool_args: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -103,6 +111,8 @@ impl CronJob {
             message: message.into(),
             channel: None,
             chat_id: None,
+            tool: None,
+            tool_args: None,
             next_run,
             enabled: true,
             file_path: PathBuf::new(),
@@ -171,6 +181,8 @@ fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {
         message: body,
         channel: fm.channel,
         chat_id: fm.to,
+        tool: fm.tool,
+        tool_args: fm.tool_args,
         next_run,
         enabled: fm.enabled,
         file_path: file_path.to_path_buf(),
@@ -374,21 +386,28 @@ impl CronService {
 
         // Write markdown file
         let file_path = cron_dir.join(format!("{}.md", job.id));
-        let content = format!(
-            "---
-name: {}
-cron: \"{}\"
-channel: {}
-to: {}
-enabled: {}
----
 
-{}",
-            job.name,
-            job.cron,
-            job.channel.as_deref().unwrap_or(""),
-            job.chat_id.as_deref().unwrap_or(""),
-            job.enabled,
+        // Build frontmatter dynamically
+        let mut frontmatter_lines = vec![
+            format!("name: {}", job.name),
+            format!("cron: \"{}\"", job.cron),
+            format!("channel: {}", job.channel.as_deref().unwrap_or("")),
+            format!("to: {}", job.chat_id.as_deref().unwrap_or("")),
+            format!("enabled: {}", job.enabled),
+        ];
+
+        // Add tool and tool_args if present
+        if let Some(ref tool) = job.tool {
+            frontmatter_lines.push(format!("tool: {}", tool));
+        }
+        if let Some(ref args) = job.tool_args {
+            let args_yaml = serde_yaml::to_string(args)?;
+            frontmatter_lines.push(format!("tool_args: {}", args_yaml.trim()));
+        }
+
+        let content = format!(
+            "---\n{}\n---\n\n{}",
+            frontmatter_lines.join("\n"),
             job.message
         );
 

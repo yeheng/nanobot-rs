@@ -291,19 +291,11 @@ impl AgentSession {
         provider: Arc<dyn gasket_providers::LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
         memory_store: Arc<MemoryStore>,
         pricing: Option<ModelPricing>,
     ) -> Result<Self, AgentError> {
-        Self::with_services(
-            provider,
-            workspace,
-            config,
-            Arc::new(tools),
-            memory_store,
-            pricing,
-        )
-        .await
+        Self::with_services(provider, workspace, config, tools, memory_store, pricing).await
     }
 
     async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
