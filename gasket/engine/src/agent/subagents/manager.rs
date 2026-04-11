@@ -13,18 +13,53 @@ use tracing::{info, instrument, warn};
 use super::tracker::{SubagentEvent, SubagentResult};
 use crate::agent::core::AgentConfig;
 use crate::agent::execution::prompt;
-use crate::agent::streaming::stream::StreamEvent;
 use crate::bus::events::{OutboundMessage, SessionKey};
-use crate::hooks::HookRegistry;
+use crate::kernel;
+use crate::session::config::AgentConfigExt;
 use crate::tools::ToolRegistry;
-use gasket_providers::LlmProvider;
+use gasket_providers::{ChatMessage, LlmProvider};
 
-use crate::agent::core::loop_::{AgentLoop, AgentResponse};
+use crate::agent::core::loop_::AgentResponse;
 
 /// Default timeout for subagent execution (10 minutes)
 const SUBAGENT_TIMEOUT_SECS: u64 = 600;
 
 use super::runner::ModelResolver;
+
+// ── Kernel helpers ──────────────────────────────────────────────────────────
+
+/// Build a RuntimeContext for subagent execution.
+fn build_kernel_context(
+    provider: Arc<dyn LlmProvider>,
+    config: &AgentConfig,
+    tools: Arc<ToolRegistry>,
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+) -> kernel::RuntimeContext {
+    kernel::RuntimeContext {
+        provider,
+        tools,
+        config: config.to_kernel_config(),
+        spawner: None,
+        token_tracker,
+    }
+}
+
+/// Convert kernel ExecutionResult to AgentResponse.
+fn to_agent_response(result: kernel::ExecutionResult, model: &str) -> AgentResponse {
+    AgentResponse {
+        content: result.content,
+        reasoning_content: result.reasoning_content,
+        tools_used: result.tools_used,
+        model: Some(model.to_string()),
+        token_usage: result.token_usage,
+        cost: result.cost,
+    }
+}
+
+/// Build messages for kernel execution from system prompt and user task.
+fn build_kernel_messages(system_prompt: &str, task: &str) -> Vec<ChatMessage> {
+    vec![ChatMessage::system(system_prompt), ChatMessage::user(task)]
+}
 
 /// RAII guard for session key management.
 ///
@@ -118,8 +153,6 @@ pub struct SubagentTaskBuilder<'a> {
     session_key: Option<SessionKey>,
     /// Cancellation token for graceful shutdown
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
-    /// Optional hooks registry (uses empty registry if None)
-    hooks: Option<Arc<HookRegistry>>,
     /// Token tracker shared with parent for budget enforcement
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
 }
@@ -137,7 +170,6 @@ impl<'a> SubagentTaskBuilder<'a> {
             system_prompt: None,
             session_key: None,
             cancellation_token: None,
-            hooks: None,
             token_tracker: None,
         }
     }
@@ -184,26 +216,6 @@ impl<'a> SubagentTaskBuilder<'a> {
         self
     }
 
-    /// Set custom hooks for this subagent.
-    ///
-    /// When set, the subagent will use these hooks instead of an empty registry.
-    /// This allows subagents to have their own hook pipeline (e.g., for logging,
-    /// auditing, or custom preprocessing).
-    pub fn with_hooks(mut self, hooks: Arc<HookRegistry>) -> Self {
-        self.hooks = Some(hooks);
-        self
-    }
-
-    /// Inherit hooks from the main agent.
-    ///
-    /// This is a convenience method that's equivalent to `with_hooks(agent_hooks)`.
-    /// Use this when you want the subagent to share the same hook pipeline as
-    /// the main agent (e.g., for shared logging or vault access).
-    pub fn inherit_hooks(mut self, agent_hooks: Arc<HookRegistry>) -> Self {
-        self.hooks = Some(agent_hooks);
-        self
-    }
-
     /// Set the token tracker for budget enforcement across parent and subagents.
     ///
     /// When set, the subagent will accumulate its token usage to the shared tracker,
@@ -244,7 +256,6 @@ impl<'a> SubagentTaskBuilder<'a> {
         let task = self.task.clone();
         let subagent_id = self.subagent_id.clone();
         let cancellation_token = self.cancellation_token.clone();
-        let hooks = self.hooks.clone();
         let event_tx = self.event_tx.clone();
         let system_prompt_override = self.system_prompt;
         let token_tracker = self.token_tracker.clone();
@@ -272,31 +283,8 @@ impl<'a> SubagentTaskBuilder<'a> {
                 });
             }
 
-            // Initialize agent
-            let agent =
-                match AgentLoop::for_subagent(provider, workspace.clone(), agent_config, tools) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!("[Subagent {}] Failed to initialize: {}", subagent_id, e);
-                        Self::send_initialization_error(
-                            &subagent_id,
-                            &task,
-                            &model_name,
-                            &e.to_string(),
-                            &event_tx,
-                            &result_tx,
-                        )
-                        .await;
-                        return;
-                    }
-                };
-
-            // Apply hooks if provided
-            let mut agent = if let Some(ref hooks) = hooks {
-                agent.with_hooks(hooks.clone())
-            } else {
-                agent
-            };
+            // Build kernel context
+            let ctx = build_kernel_context(provider, &agent_config, tools, token_tracker.clone());
 
             // Load system prompt
             let system_prompt = match system_prompt_override {
@@ -325,17 +313,16 @@ impl<'a> SubagentTaskBuilder<'a> {
                     }
                 }
             };
-            agent.set_system_prompt(system_prompt);
 
-            // Execute with timeout
-            let session_key = SessionKey::new(gasket_types::ChannelType::Cli, &subagent_id);
-            let response = Self::execute_with_timeout(
-                agent,
+            // Execute with timeout via kernel
+            let response = Self::execute_kernel_with_timeout(
+                ctx,
+                &system_prompt,
                 &task,
-                &session_key,
                 &event_tx,
                 &subagent_id,
                 &cancellation_token,
+                &model_name,
             )
             .await;
 
@@ -343,7 +330,6 @@ impl<'a> SubagentTaskBuilder<'a> {
             if let Some(ref tracker) = token_tracker {
                 if let Ok(ref resp) = response {
                     if let Some(ref usage) = resp.token_usage {
-                        // Convert from gasket_types::TokenUsage (used in AgentResponse) to gasket_types::TokenUsage (tracker format)
                         let token_usage =
                             gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
                         tracker.accumulate(&token_usage, resp.cost);
@@ -407,91 +393,100 @@ impl<'a> SubagentTaskBuilder<'a> {
             .await;
     }
 
-    /// Execute agent with timeout and cancellation support.
-    async fn execute_with_timeout(
-        agent: AgentLoop,
+    /// Execute subagent via kernel with timeout and cancellation support.
+    async fn execute_kernel_with_timeout(
+        ctx: kernel::RuntimeContext,
+        system_prompt: &str,
         task: &str,
-        session_key: &SessionKey,
         event_tx: &Option<mpsc::Sender<SubagentEvent>>,
         subagent_id: &str,
         cancellation_token: &Option<tokio_util::sync::CancellationToken>,
+        model_name: &str,
     ) -> Result<AgentResponse, anyhow::Error> {
         let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
 
         if let Some(tx) = event_tx {
             // Streaming path
-            Self::execute_streaming(
-                agent,
+            Self::execute_kernel_streaming(
+                ctx,
+                system_prompt,
                 task,
-                session_key,
                 tx,
                 subagent_id,
                 cancellation_token,
                 timeout_duration,
+                model_name,
             )
             .await
         } else {
             // Non-streaming path
-            match tokio::time::timeout(timeout_duration, agent.process_direct(task, session_key))
-                .await
-            {
-                Ok(Ok(resp)) => Ok(resp),
+            let messages = build_kernel_messages(system_prompt, task);
+            match tokio::time::timeout(timeout_duration, kernel::execute(&ctx, messages)).await {
+                Ok(Ok(result)) => Ok(to_agent_response(result, model_name)),
                 Ok(Err(e)) => Err(anyhow::anyhow!("Execution failed: {}", e)),
                 Err(_) => Err(anyhow::anyhow!("Timed out after {:?}", timeout_duration)),
             }
         }
     }
 
-    /// Execute agent with streaming support.
-    async fn execute_streaming(
-        agent: AgentLoop,
+    /// Execute subagent via kernel with streaming support.
+    async fn execute_kernel_streaming(
+        ctx: kernel::RuntimeContext,
+        system_prompt: &str,
         task: &str,
-        session_key: &SessionKey,
         event_tx: &mpsc::Sender<SubagentEvent>,
         subagent_id: &str,
         cancellation_token: &Option<tokio_util::sync::CancellationToken>,
         timeout_duration: std::time::Duration,
+        model_name: &str,
     ) -> Result<AgentResponse, anyhow::Error> {
         let tx_clone = event_tx.clone();
         let id_clone = subagent_id.to_string();
         let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cancellation_token_clone = cancellation_token.clone();
 
-        let (mut event_rx, result_handle) = agent
-            .process_direct_streaming_with_channel(task, session_key)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create streaming channel: {}", e))?;
+        let (kernel_event_tx, mut event_rx) = mpsc::channel(64);
+        let ctx_clone = ctx.clone();
+        let messages = build_kernel_messages(system_prompt, task);
+        let model_name_owned = model_name.to_string();
+
+        let result_handle = tokio::spawn(async move {
+            let result = kernel::execute_streaming(&ctx_clone, messages, kernel_event_tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok::<AgentResponse, anyhow::Error>(to_agent_response(result, &model_name_owned))
+        });
 
         let forward_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    StreamEvent::Content(content) => {
+                    kernel::StreamEvent::Content(content) => {
                         let _ = tx_clone.try_send(SubagentEvent::Content {
                             id: id_clone.clone(),
                             content,
                         });
                     }
-                    StreamEvent::Reasoning(content) => {
+                    kernel::StreamEvent::Reasoning(content) => {
                         let _ = tx_clone.try_send(SubagentEvent::Thinking {
                             id: id_clone.clone(),
                             content,
                         });
                     }
-                    StreamEvent::ToolStart { name, arguments } => {
+                    kernel::StreamEvent::ToolStart { name, arguments } => {
                         let _ = tx_clone.try_send(SubagentEvent::ToolStart {
                             id: id_clone.clone(),
                             tool_name: name,
                             arguments,
                         });
                     }
-                    StreamEvent::ToolEnd { name, output } => {
+                    kernel::StreamEvent::ToolEnd { name, output } => {
                         let _ = tx_clone.try_send(SubagentEvent::ToolEnd {
                             id: id_clone.clone(),
                             tool_name: name,
                             output,
                         });
                     }
-                    StreamEvent::Done => {
+                    kernel::StreamEvent::Done => {
                         let iter = iteration_counter
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             + 1;
@@ -500,7 +495,7 @@ impl<'a> SubagentTaskBuilder<'a> {
                             iteration: iter,
                         });
                     }
-                    StreamEvent::TokenStats { .. } => {}
+                    kernel::StreamEvent::TokenStats { .. } => {}
                 }
             }
         });
@@ -514,18 +509,19 @@ impl<'a> SubagentTaskBuilder<'a> {
                     Err(anyhow::anyhow!("cancelled"))
                 }
                 result = tokio::time::timeout(timeout_duration, result_handle) => {
-                    result
-                        .map_err(|_| anyhow::anyhow!("timed out"))
-                        .and_then(|r| r.map_err(|e| anyhow::anyhow!("Task join error: {}", e)))
-                        .and_then(|r| r.map_err(|e| anyhow::anyhow!("Execution failed: {}", e)))
+                    let join_result = result.map_err(|_| anyhow::anyhow!("timed out"))?;
+                    let inner: Result<AgentResponse, anyhow::Error> = join_result
+                        .map_err(|e: tokio::task::JoinError| anyhow::anyhow!("Task join error: {}", e))?;
+                    inner
                 }
             }
         } else {
-            tokio::time::timeout(timeout_duration, result_handle)
+            let timeout_result = tokio::time::timeout(timeout_duration, result_handle)
                 .await
-                .map_err(|_| anyhow::anyhow!("timed out"))
-                .and_then(|r| r.map_err(|e| anyhow::anyhow!("Task join error: {}", e)))
-                .and_then(|r| r.map_err(|e| anyhow::anyhow!("Execution failed: {}", e)))
+                .map_err(|_| anyhow::anyhow!("timed out"))?;
+            let inner: Result<AgentResponse, anyhow::Error> = timeout_result
+                .map_err(|e: tokio::task::JoinError| anyhow::anyhow!("Task join error: {}", e))?;
+            inner
         };
 
         let _ = forward_handle.await;
@@ -577,22 +573,17 @@ impl<'a> SubagentTaskBuilder<'a> {
     }
 }
 
-async fn build_subagent_internal(
-    provider: Arc<dyn LlmProvider>,
-    workspace: PathBuf,
-    config: AgentConfig,
-    tools: Arc<ToolRegistry>,
+/// Load system prompt for subagent execution.
+async fn resolve_system_prompt(
+    workspace: &std::path::Path,
     system_prompt: Option<&str>,
-) -> anyhow::Result<AgentLoop> {
-    let mut agent = AgentLoop::for_subagent(provider, workspace.clone(), config, tools)?;
-
-    let sys = match system_prompt {
-        Some(s) => s.to_string(),
-        None => prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await?,
-    };
-    agent.set_system_prompt(sys);
-
-    Ok(agent)
+) -> anyhow::Result<String> {
+    match system_prompt {
+        Some(s) => Ok(s.to_string()),
+        None => prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
+            .await
+            .map_err(|e| anyhow::anyhow!("System prompt load failed: {}", e)),
+    }
 }
 
 impl SubagentManager {
@@ -726,35 +717,18 @@ impl SubagentManager {
         SubagentTaskBuilder::new(self, subagent_id.into(), task.into())
     }
 
-    async fn build_subagent(
-        &self,
-        provider: Arc<dyn LlmProvider>,
-        config: AgentConfig,
-        system_prompt: Option<&str>,
-    ) -> anyhow::Result<AgentLoop> {
-        build_subagent_internal(
-            provider,
-            self.workspace.clone(),
-            config,
-            self.tools.clone(),
-            system_prompt,
-        )
-        .await
-    }
-
     #[instrument(name = "subagent.submit", skip_all)]
     pub fn submit(&self, prompt: &str, channel: &str, chat_id: &str) -> anyhow::Result<()> {
         let channel_enum = match channel {
             "telegram" => gasket_types::ChannelType::Telegram,
             "discord" => gasket_types::ChannelType::Discord,
             "slack" => gasket_types::ChannelType::Slack,
-            "email" => gasket_types::ChannelType::Email,
+
             "dingtalk" => gasket_types::ChannelType::Dingtalk,
             "feishu" => gasket_types::ChannelType::Feishu,
             _ => gasket_types::ChannelType::Cli,
         };
         let chat_id = chat_id.to_string();
-        let session_key = SessionKey::new(channel_enum.clone(), &chat_id);
         let outbound_tx = self.outbound_tx.clone();
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
@@ -767,20 +741,20 @@ impl SubagentManager {
                 max_iterations: 10,
                 ..Default::default()
             };
-            let agent =
-                match build_subagent_internal(provider, workspace, config, tools, None).await {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!("Failed to initialise subagent: {}", e);
-                        return;
-                    }
-                };
+
+            let system_prompt = match resolve_system_prompt(&workspace, None).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to load system prompt: {}", e);
+                    return;
+                }
+            };
+
+            let ctx = build_kernel_context(provider, &config, tools, None);
+            let messages = build_kernel_messages(&system_prompt, &prompt);
             let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
-            let result = tokio::time::timeout(
-                timeout_duration,
-                agent.process_direct(&prompt, &session_key),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(timeout_duration, kernel::execute(&ctx, messages)).await;
             let content = match result {
                 Ok(Ok(response)) => {
                     format!("Background task completed:\n{}", response.content)
@@ -820,8 +794,8 @@ impl SubagentManager {
         &self,
         prompt_text: &str,
         system_prompt: Option<&str>,
-        channel: &str,
-        chat_id: &str,
+        _channel: &str,
+        _chat_id: &str,
     ) -> anyhow::Result<AgentResponse> {
         info!("Subagent (sync) started: {}", &prompt_text);
 
@@ -830,21 +804,26 @@ impl SubagentManager {
             max_iterations: 10,
             ..Default::default()
         };
+        let model_name = agent_config.model.clone();
 
-        let agent = self
-            .build_subagent(self.provider.clone(), agent_config, system_prompt)
-            .await?;
+        let sys_prompt = resolve_system_prompt(&self.workspace, system_prompt).await?;
+        let ctx = build_kernel_context(
+            self.provider.clone(),
+            &agent_config,
+            self.tools.clone(),
+            None,
+        );
+        let messages = build_kernel_messages(&sys_prompt, prompt_text);
 
-        let channel_enum = gasket_types::ChannelType::new(channel);
-        let session_key = SessionKey::new(channel_enum, chat_id);
-
-        tokio::time::timeout(
+        let result = tokio::time::timeout(
             std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
-            agent.process_direct(prompt_text, &session_key),
+            kernel::execute(&ctx, messages),
         )
         .await
         .map_err(|_| anyhow::anyhow!("Subagent timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
-        .map_err(|e| anyhow::anyhow!("{}", e))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        Ok(to_agent_response(result, &model_name))
     }
 
     /// Submit a prompt with a **specific model** and wait for the response.
@@ -858,28 +837,28 @@ impl SubagentManager {
         system_prompt: Option<&str>,
         provider: Arc<dyn LlmProvider>,
         agent_config: AgentConfig,
-        channel: &str,
-        chat_id: &str,
+        _channel: &str,
+        _chat_id: &str,
     ) -> anyhow::Result<AgentResponse> {
         info!(
             "Subagent (model switch) started with model '{}': {}",
             agent_config.model, &prompt_text
         );
+        let model_name = agent_config.model.clone();
 
-        let agent = self
-            .build_subagent(provider, agent_config, system_prompt)
-            .await?;
+        let sys_prompt = resolve_system_prompt(&self.workspace, system_prompt).await?;
+        let ctx = build_kernel_context(provider, &agent_config, self.tools.clone(), None);
+        let messages = build_kernel_messages(&sys_prompt, prompt_text);
 
-        let channel_enum = gasket_types::ChannelType::new(channel);
-        let session_key = SessionKey::new(channel_enum, chat_id);
-
-        tokio::time::timeout(
+        let result = tokio::time::timeout(
             std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
-            agent.process_direct(prompt_text, &session_key),
+            kernel::execute(&ctx, messages),
         )
         .await
         .map_err(|_| anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
-        .map_err(|e| anyhow::anyhow!("{}", e))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        Ok(to_agent_response(result, &model_name))
     }
 
     /// Submit a prompt with a **specific model** and stream events to a callback.
@@ -897,23 +876,28 @@ impl SubagentManager {
         mut stream_callback: F,
     ) -> anyhow::Result<AgentResponse>
     where
-        F: FnMut(StreamEvent) + Send + 'static,
+        F: FnMut(kernel::StreamEvent) + Send + 'static,
     {
         info!(
             "Subagent (model switch streaming) started with model '{}': {}",
             agent_config.model, prompt_text
         );
+        let model_name = agent_config.model.clone();
 
-        let agent = self
-            .build_subagent(provider, agent_config, system_prompt)
-            .await?;
+        let sys_prompt = resolve_system_prompt(&self.workspace, system_prompt).await?;
+        let ctx = build_kernel_context(provider, &agent_config, self.tools.clone(), None);
+        let messages = build_kernel_messages(&sys_prompt, prompt_text);
 
-        let session_key = SessionKey::new(gasket_types::ChannelType::Cli, "model_switch_streaming");
+        let (kernel_event_tx, mut event_rx) = mpsc::channel(64);
+        let ctx_clone = ctx.clone();
+        let model_name_owned = model_name.clone();
 
-        let (mut event_rx, result_handle) = agent
-            .process_direct_streaming_with_channel(prompt_text, &session_key)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let result_handle = tokio::spawn(async move {
+            let result = kernel::execute_streaming(&ctx_clone, messages, kernel_event_tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok::<AgentResponse, anyhow::Error>(to_agent_response(result, &model_name_owned))
+        });
 
         let forward_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
@@ -921,7 +905,7 @@ impl SubagentManager {
             }
         });
 
-        let result = tokio::time::timeout(
+        let timeout_result = tokio::time::timeout(
             std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
             async {
                 let (result, _) = tokio::join!(result_handle, forward_handle);
@@ -931,9 +915,14 @@ impl SubagentManager {
         .await
         .map_err(|_| {
             anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s")
-        })??;
+        })?;
 
-        Ok(result?)
+        // timeout_result is Result<Result<AgentResponse, anyhow::Error>, anyhow::Error>
+        // (JoinError was already converted to anyhow::Error inside the async block)
+        let inner: Result<AgentResponse, anyhow::Error> =
+            timeout_result.map_err(|e: anyhow::Error| anyhow::anyhow!("Join error: {}", e))?;
+
+        inner
     }
 
     /// Send a WebSocket message to the outbound channel.

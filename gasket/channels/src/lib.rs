@@ -41,8 +41,7 @@ pub mod webhook;
 pub mod dingtalk;
 #[cfg(feature = "discord")]
 pub mod discord;
-#[cfg(feature = "email")]
-pub mod email;
+
 #[cfg(feature = "feishu")]
 pub mod feishu;
 #[cfg(feature = "slack")]
@@ -57,8 +56,7 @@ pub mod wecom;
 // Convenience re-exports
 pub use base::Channel;
 pub use config::{
-    ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
-    TelegramConfig,
+    ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{

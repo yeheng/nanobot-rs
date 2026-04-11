@@ -115,40 +115,6 @@ pub async fn cmd_channels_status() -> Result<()> {
         }
     }
 
-    // Check Email
-    #[cfg(feature = "email")]
-    {
-        if let Some(email) = &config.channels.email {
-            has_channels = true;
-            let status = if email.enabled { "enabled" } else { "disabled" };
-
-            println!("{}", "Email".blue().bold());
-            println!("  Status:     {}", status);
-            println!(
-                "  IMAP:       {}",
-                if email.imap_host.is_some() {
-                    "✓"
-                } else {
-                    "✗"
-                }
-            );
-            println!(
-                "  SMTP:       {}",
-                if email.smtp_host.is_some() {
-                    "✓"
-                } else {
-                    "✗"
-                }
-            );
-            println!(
-                "  Consent:    {}",
-                if email.consent_granted { "✓" } else { "✗" }
-            );
-            println!("  Allow From: {} users", email.allow_from.len());
-            println!();
-        }
-    }
-
     if !has_channels {
         println!("No channels configured.");
         println!("\nAdd channel configuration to ~/.gasket/config.yaml");
@@ -185,14 +151,6 @@ channels:
     println!(
         "  Slack:    {}",
         if cfg!(feature = "slack") {
-            "✓"
-        } else {
-            "✗"
-        }
-    );
-    println!(
-        "  Email:    {}",
-        if cfg!(feature = "email") {
             "✓"
         } else {
             "✗"

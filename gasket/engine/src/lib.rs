@@ -22,7 +22,9 @@ pub mod cron;
 pub mod error;
 pub mod heartbeat;
 pub mod hooks;
+pub mod kernel;
 pub mod search;
+pub mod session;
 pub mod skills;
 pub mod token_tracker;
 pub mod tools;
@@ -72,6 +74,9 @@ pub use agent::{
 
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
+
+// ── Session ────────────────────────────────────────────────
+pub use session::AgentSession;
 
 // ── Config ─────────────────────────────────────────────────
 pub use config::{
@@ -138,8 +143,7 @@ pub mod channels {
     pub use gasket_channels::dingtalk;
     #[cfg(feature = "discord")]
     pub use gasket_channels::discord;
-    #[cfg(feature = "email")]
-    pub use gasket_channels::email;
+
     #[cfg(feature = "feishu")]
     pub use gasket_channels::feishu;
     #[cfg(feature = "slack")]
@@ -159,10 +163,10 @@ pub mod channels {
     pub use gasket_channels::wecom;
     pub use gasket_channels::{
         base, log_inbound, middleware, outbound, Channel, ChannelConfigError, ChannelType,
-        ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, InboundMessage,
-        InboundSender, MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry,
-        SessionKey, SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig,
-        TelegramConfig, WebSocketMessage,
+        ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, InboundMessage, InboundSender,
+        MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry, SessionKey,
+        SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
+        WebSocketMessage,
     };
 }
 

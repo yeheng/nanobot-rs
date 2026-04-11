@@ -55,8 +55,8 @@ impl Tool for MessageTool {
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Target channel (e.g., 'telegram', 'discord', 'slack', 'email')",
-                    "enum": ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "cli"]
+                    "description": "Target channel (e.g., 'telegram', 'discord', 'slack')",
+                    "enum": ["telegram", "discord", "slack", "dingtalk", "feishu", "cli"]
                 },
                 "chat_id": {
                     "type": "string",

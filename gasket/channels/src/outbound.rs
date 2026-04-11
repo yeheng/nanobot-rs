@@ -110,16 +110,6 @@ impl OutboundSenderRegistry {
             }
         }
 
-        #[cfg(feature = "email")]
-        if let Some(ref email_config) = config.email {
-            if email_config.enabled && email_config.has_smtp_config() {
-                registry.senders.insert(
-                    ChannelType::Email,
-                    Arc::new(EmailSender::from_config(email_config)),
-                );
-            }
-        }
-
         #[cfg(feature = "dingtalk")]
         if let Some(ref dingtalk_config) = config.dingtalk {
             if dingtalk_config.enabled {
@@ -319,57 +309,6 @@ impl OutboundSender for FeishuSender {
 
     fn name(&self) -> &str {
         "feishu"
-    }
-}
-
-/// Email outbound sender.
-#[cfg(feature = "email")]
-#[derive(Clone)]
-pub struct EmailSender {
-    smtp_host: String,
-    smtp_port: u16,
-    smtp_username: String,
-    smtp_password: String,
-    from_address: String,
-}
-
-#[cfg(feature = "email")]
-impl EmailSender {
-    pub fn from_config(config: &crate::config::EmailConfig) -> Self {
-        Self {
-            smtp_host: config.smtp_host.clone().unwrap_or_default(),
-            smtp_port: config.smtp_port,
-            smtp_username: config.smtp_username.clone().unwrap_or_default(),
-            smtp_password: config.smtp_password.clone().unwrap_or_default(),
-            from_address: config.from_address.clone().unwrap_or_default(),
-        }
-    }
-}
-
-#[cfg(feature = "email")]
-#[async_trait]
-impl OutboundSender for EmailSender {
-    async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        let to = msg.chat_id.trim_start_matches("email:");
-        crate::email::send_email_stateless(
-            &self.smtp_host,
-            self.smtp_port,
-            &self.smtp_username,
-            &self.smtp_password,
-            &self.from_address,
-            to,
-            "Re: Your message",
-            &msg.content,
-        )
-        .await
-        .map_err(|e| ChannelError::DeliveryFailed {
-            channel: "email".to_string(),
-            message: e.to_string(),
-        })
-    }
-
-    fn name(&self) -> &str {
-        "email"
     }
 }
 

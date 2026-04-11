@@ -1,25 +1,25 @@
 //! Adapter for integrating with gasket-bus
 
-use crate::agent::AgentLoop;
 use crate::bus::MessageHandler;
+use crate::session::AgentSession;
 use async_trait::async_trait;
 use gasket_types::SessionKey;
 use std::sync::Arc;
 
 /// Engine handler for bus integration.
 pub struct EngineHandler {
-    agent_loop: Arc<AgentLoop>,
+    session: Arc<AgentSession>,
 }
 
 impl EngineHandler {
     /// Create a new engine handler.
-    pub fn new(agent_loop: Arc<AgentLoop>) -> Self {
-        Self { agent_loop }
+    pub fn new(session: Arc<AgentSession>) -> Self {
+        Self { session }
     }
 
-    /// Get the underlying agent loop.
-    pub fn agent_loop(&self) -> &AgentLoop {
-        &self.agent_loop
+    /// Get the underlying session.
+    pub fn session(&self) -> &AgentSession {
+        &self.session
     }
 }
 
@@ -31,7 +31,7 @@ impl MessageHandler for EngineHandler {
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let response = self
-            .agent_loop
+            .session
             .process_direct(message, session_key)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -59,31 +59,31 @@ impl MessageHandler for EngineHandler {
         // Clone session_key for the spawned task
         let session_key_owned = session_key.clone();
 
-        // Get the streaming result from AgentLoop
+        // Get the streaming result from AgentSession
         let (mut agent_event_rx, result_handle) = self
-            .agent_loop
+            .session
             .process_direct_streaming_with_channel(message, session_key)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-        // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
+        // Spawn a task to convert kernel StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
-            use crate::agent::streaming::stream::StreamEvent as AgentStreamEvent;
             use crate::bus::StreamEvent as BusStreamEvent;
+            use crate::kernel::StreamEvent as KernelStreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
                 let bus_event = match event {
-                    AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
-                    AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
-                    AgentStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
+                    KernelStreamEvent::Content(content) => BusStreamEvent::Content(content),
+                    KernelStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
+                    KernelStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
                         name,
                         arguments: arguments.unwrap_or_default(),
                     },
-                    AgentStreamEvent::ToolEnd { name, output } => {
+                    KernelStreamEvent::ToolEnd { name, output } => {
                         BusStreamEvent::ToolEnd { name, output }
                     }
-                    AgentStreamEvent::Done => BusStreamEvent::Done,
-                    AgentStreamEvent::TokenStats {
+                    KernelStreamEvent::Done => BusStreamEvent::Done,
+                    KernelStreamEvent::TokenStats {
                         input_tokens,
                         output_tokens,
                         total_tokens,

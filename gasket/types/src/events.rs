@@ -20,8 +20,6 @@ pub enum ChannelType {
     Discord,
     /// Slack channel
     Slack,
-    /// Email channel
-    Email,
     /// DingTalk (钉钉) channel
     Dingtalk,
     /// Feishu (飞书) channel
@@ -64,7 +62,6 @@ impl ChannelType {
             ChannelType::Telegram => "telegram",
             ChannelType::Discord => "discord",
             ChannelType::Slack => "slack",
-            ChannelType::Email => "email",
             ChannelType::Dingtalk => "dingtalk",
             ChannelType::Feishu => "feishu",
             ChannelType::Wecom => "wecom",
@@ -81,7 +78,6 @@ impl ChannelType {
             "telegram" => ChannelType::Telegram,
             "discord" => ChannelType::Discord,
             "slack" => ChannelType::Slack,
-            "email" => ChannelType::Email,
             "dingtalk" => ChannelType::Dingtalk,
             "feishu" => ChannelType::Feishu,
             "wecom" => ChannelType::Wecom,
@@ -583,7 +579,6 @@ mod tests {
         assert_eq!(ChannelType::Telegram.as_str(), "telegram");
         assert_eq!(ChannelType::Discord.as_str(), "discord");
         assert_eq!(ChannelType::Slack.as_str(), "slack");
-        assert_eq!(ChannelType::Email.as_str(), "email");
         assert_eq!(ChannelType::Dingtalk.as_str(), "dingtalk");
         assert_eq!(ChannelType::Feishu.as_str(), "feishu");
         assert_eq!(ChannelType::Wecom.as_str(), "wecom");

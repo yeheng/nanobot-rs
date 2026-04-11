@@ -11,12 +11,12 @@ default = []
 telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
-email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
+
 dingtalk = ["sha2", "axum", "tower", "tower-http", "dashmap"]
 feishu = ["axum", "tower", "tower-http", "dashmap"]
 wecom = ["sha1", "aes", "cbc", "quick-xml", "axum", "tower", "tower-http", "dashmap"]
 webhook = ["axum", "tower", "tower-http", "dashmap"]
-all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
+all-channels = ["telegram", "discord", "slack", "dingtalk", "feishu", "wecom", "webhook"]
 
 [dependencies]
 # Internal crates
@@ -70,12 +70,6 @@ serenity = { workspace = true, optional = true }
 
 # Slack WebSocket (optional)
 tokio-tungstenite = { workspace = true, optional = true }
-
-# Email (optional)
-lettre = { workspace = true, optional = true }
-async-imap = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
-rustls-native-certs = { workspace = true, optional = true }
 
 # Webhook HTTP server (optional - used by dingtalk, feishu, wecom, and standalone webhook)
 axum = { workspace = true, optional = true, features = ["ws"] }
