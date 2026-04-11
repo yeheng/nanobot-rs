@@ -17,9 +17,7 @@ use gasket_providers::ChatMessage;
 use tokio::sync::mpsc;
 
 /// Build an AgentExecutor and ExecutorOptions from RuntimeContext.
-fn build_executor_and_options(
-    ctx: &RuntimeContext,
-) -> (AgentExecutor<'_>, ExecutorOptions<'_>) {
+fn build_executor_and_options(ctx: &RuntimeContext) -> (AgentExecutor<'_>, ExecutorOptions<'_>) {
     let exec = AgentExecutor::new(ctx.provider.clone(), ctx.tools.clone(), &ctx.config);
     let mut options = ExecutorOptions::new();
     if let Some(ref tracker) = ctx.token_tracker {

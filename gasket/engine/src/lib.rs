@@ -45,9 +45,7 @@ pub use kernel::{
 };
 
 // ── Subagents ──────────────────────────────────────────────
-pub use subagents::{
-    run_subagent, ModelResolver, SubagentManager, SubagentTracker, TrackerError,
-};
+pub use subagents::{run_subagent, ModelResolver, SubagentManager, SubagentTracker, TrackerError};
 
 // ── History (re-export from storage) ───────────────────────
 pub use gasket_storage::{

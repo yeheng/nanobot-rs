@@ -276,7 +276,12 @@ impl ExecutionState {
         }
     }
 
-    fn into_result(self, content: String, reasoning_content: Option<String>, ledger: TokenLedger) -> ExecutionResult {
+    fn into_result(
+        self,
+        content: String,
+        reasoning_content: Option<String>,
+        ledger: TokenLedger,
+    ) -> ExecutionResult {
         ExecutionResult {
             content,
             reasoning_content,
