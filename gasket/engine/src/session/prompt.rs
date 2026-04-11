@@ -9,8 +9,7 @@ use std::path::Path;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-use crate::agent::core;
-use crate::agent::count_tokens;
+use gasket_storage::count_tokens;
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile
 pub const BOOTSTRAP_FILES_FULL: &[&str] = &[
@@ -116,7 +115,7 @@ pub async fn load_system_prompt(
 /// Scans for skill definitions and returns a formatted string for prompt injection,
 /// or `None` if no skills are found.
 pub async fn load_skills_context(workspace: &Path) -> Option<String> {
-    let ctx = core::load_skills(workspace).await?;
+    let ctx = super::load_skills(workspace).await?;
     if ctx.is_empty() {
         None
     } else {

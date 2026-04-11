@@ -11,15 +11,15 @@ use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
 use super::tracker::{SubagentEvent, SubagentResult};
-use crate::agent::core::AgentConfig;
-use crate::agent::execution::prompt;
 use crate::bus::events::{OutboundMessage, SessionKey};
 use crate::kernel;
+use crate::session::config::AgentConfig;
 use crate::session::config::AgentConfigExt;
+use crate::session::prompt;
 use crate::tools::ToolRegistry;
 use gasket_providers::{ChatMessage, LlmProvider};
 
-use crate::agent::core::loop_::AgentResponse;
+use crate::session::AgentResponse;
 
 /// Default timeout for subagent execution (10 minutes)
 const SUBAGENT_TIMEOUT_SECS: u64 = 600;
@@ -41,6 +41,7 @@ fn build_kernel_context(
         config: config.to_kernel_config(),
         spawner: None,
         token_tracker,
+        pricing: None,
     }
 }
 
@@ -430,6 +431,7 @@ impl<'a> SubagentTaskBuilder<'a> {
     }
 
     /// Execute subagent via kernel with streaming support.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_kernel_streaming(
         ctx: kernel::RuntimeContext,
         system_prompt: &str,
@@ -609,7 +611,7 @@ impl SubagentManager {
             tools,
             outbound_tx,
             session_key: Arc::new(std::sync::Mutex::new(None)),
-            timeout_secs: crate::agent::core::DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            timeout_secs: crate::session::config::DEFAULT_SUBAGENT_TIMEOUT_SECS,
             model_resolver,
             token_tracker: None,
         }

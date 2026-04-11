@@ -8,14 +8,14 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
-use gasket_engine::agent::memory::MemoryStore;
-use gasket_engine::agent::{ModelResolver, SubagentManager};
 use gasket_engine::bus::events::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::kernel::StreamEvent;
+use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::token_tracker::ModelPricing;
+use gasket_engine::{ModelResolver, SubagentManager};
 
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;

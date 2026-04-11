@@ -17,12 +17,12 @@ use std::sync::Arc;
 use gasket_providers::ChatMessage;
 use gasket_types::{SessionEvent, SessionKey};
 
-use crate::agent::core::context::AgentContext;
-use crate::agent::HistoryConfig;
 use crate::error::AgentError;
 use crate::hooks::{HookAction, HookPoint, HookRegistry, MutableContext, VaultHook};
+use crate::session::context::AgentContext;
 use crate::vault::{VaultInjector, VaultStore};
 use gasket_storage::process_history;
+use gasket_storage::HistoryConfig;
 
 /// Type alias for memory loader futures.
 pub type MemoryLoaderFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
@@ -260,9 +260,9 @@ impl ContextBuilder {
             if !summary_text.is_empty() {
                 messages.push(ChatMessage::system(format!(
                     "{}{}{}",
-                    crate::agent::memory::compactor::SUMMARY_PREFIX,
+                    crate::session::compactor::SUMMARY_PREFIX,
                     summary_text,
-                    crate::agent::memory::compactor::SUMMARY_SUFFIX,
+                    crate::session::compactor::SUMMARY_SUFFIX,
                 )));
             }
         }

@@ -89,7 +89,7 @@ impl MacOsSandboxBackend {
 )
 (allow process-exec)
 (allow network-outbound)
-(allow signal (target same))
+(allow signal (target self))
 (allow file-read-metadata)
 "#
         )

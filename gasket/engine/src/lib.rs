@@ -15,7 +15,7 @@
 //! - **Event sourcing**: All state changes persisted as events
 //! - **Streaming-first**: SSE streaming with backpressure support
 
-pub mod agent;
+// NOTE: `agent/` module removed — migrated to `kernel/` + `session/` + `subagents/`
 pub mod bus_adapter;
 pub mod config;
 pub mod cron;
@@ -26,51 +26,37 @@ pub mod kernel;
 pub mod search;
 pub mod session;
 pub mod skills;
+pub mod subagents;
 pub mod token_tracker;
 pub mod tools;
 pub mod vault;
 
-// ── Agent ──────────────────────────────────────────────────
-pub use agent::{
-    // History
-    count_tokens,
-    process_history,
-    // Stream
-    // Subagents
-    run_subagent,
-    // Core loop
-    AgentConfig,
-    // Context (enum dispatch)
-    AgentContext,
-    // Execution
-    AgentExecutor,
-    AgentLoop,
-    AgentResponse,
-    BufferedEvents,
-    ExecutionResult,
-    ExecutorOptions,
-    HistoryConfig,
-    HistoryQuery,
-    HistoryQueryBuilder,
-    HistoryResult,
-    HistoryRetriever,
-    IndexingService,
-    // Memory & compression
-    MemoryStore,
-    ModelResolver,
-    PersistentContext,
-    ProcessedHistory,
-    QueryOrder,
-    ResultMeta,
-    SemanticQuery,
-    SessionKeyGuard,
-    StreamEvent,
-    SubagentManager,
-    SubagentTracker,
-    TimeRange,
-    ToolExecutor,
-    TrackerError,
+// ── Session (replaces agent/core) ───────────────────────────
+pub use session::{
+    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryManager,
+    MemoryProvider, MemoryStore, PersistentContext, PhaseBreakdown,
 };
+// Backward-compatible alias
+pub use session::AgentSession as AgentLoop;
+
+// ── Kernel ─────────────────────────────────────────────────
+pub use kernel::{
+    AgentExecutor, BufferedEvents, ExecutionResult, ExecutorOptions, StreamEvent, ToolExecutor,
+};
+
+// ── Subagents ──────────────────────────────────────────────
+pub use subagents::{
+    run_subagent, ModelResolver, SessionKeyGuard, SubagentManager, SubagentTracker, TrackerError,
+};
+
+// ── History (re-export from storage) ───────────────────────
+pub use gasket_storage::{
+    count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
+    HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
+};
+
+// ── Indexing (from session/history) ────────────────────────
+pub use session::history::indexing::{IndexingQueue, IndexingService, Priority, QueueError};
 
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
@@ -190,7 +176,7 @@ pub mod providers {
 
 // Memory
 pub mod memory {
-    pub use crate::agent::MemoryStore;
+    pub use crate::session::MemoryStore;
     pub use gasket_storage::memory::{memory_base_dir, AutoIndexHandler, RefreshReport};
     pub use gasket_storage::memory::{EmbeddingStore, MetadataStore};
     pub use gasket_storage::{EventStore, SqliteStore, StoreError};

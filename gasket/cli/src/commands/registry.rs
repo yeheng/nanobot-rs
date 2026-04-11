@@ -4,8 +4,6 @@
 
 use std::sync::Arc;
 
-use gasket_engine::agent::AgentConfig;
-use gasket_engine::agent::SubagentManager;
 use gasket_engine::config::{Config, ModelRegistry};
 use gasket_engine::memory::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;
@@ -16,6 +14,8 @@ use gasket_engine::tools::{
     ToolMetadata, ToolRegistry, WriteFileTool,
 };
 use gasket_engine::tools::{SpawnParallelTool, SpawnTool};
+use gasket_engine::AgentConfig;
+use gasket_engine::SubagentManager;
 
 /// CLI-level implementation of ModelResolver using ProviderRegistry + ModelRegistry.
 ///
@@ -27,13 +27,13 @@ pub struct CliModelResolver {
     pub model_registry: ModelRegistry,
 }
 
-impl gasket_engine::agent::ModelResolver for CliModelResolver {
+impl gasket_engine::ModelResolver for CliModelResolver {
     fn resolve_model(
         &self,
         model_id: &str,
     ) -> Option<(
         std::sync::Arc<dyn gasket_engine::providers::LlmProvider>,
-        gasket_engine::agent::AgentConfig,
+        gasket_engine::AgentConfig,
     )> {
         // 1. Try to resolve from named model profiles (e.g., "smart-assistant")
         if let Some((_id, profile)) = self
@@ -43,7 +43,7 @@ impl gasket_engine::agent::ModelResolver for CliModelResolver {
             let provider_name = profile.provider.clone();
             let provider = self.provider_registry.get_or_create(&provider_name).ok()?;
 
-            let config = gasket_engine::agent::AgentConfig {
+            let config = gasket_engine::AgentConfig {
                 model: profile.model.clone(),
                 temperature: profile.temperature.unwrap_or(1.0),
                 max_tokens: profile.max_tokens.unwrap_or(65536),
@@ -60,7 +60,7 @@ impl gasket_engine::agent::ModelResolver for CliModelResolver {
             let model_name = parts[1];
 
             if let Ok(provider) = self.provider_registry.get_or_create(provider_name) {
-                let config = gasket_engine::agent::AgentConfig {
+                let config = gasket_engine::AgentConfig {
                     model: model_name.to_string(),
                     ..Default::default()
                 };
@@ -70,7 +70,7 @@ impl gasket_engine::agent::ModelResolver for CliModelResolver {
 
         // 3. Try as bare provider name (e.g., "minimax" → use provider's default model)
         if let Ok(provider) = self.provider_registry.get_or_create(model_id) {
-            let config = gasket_engine::agent::AgentConfig {
+            let config = gasket_engine::AgentConfig {
                 model: provider.default_model().to_string(),
                 ..Default::default()
             };

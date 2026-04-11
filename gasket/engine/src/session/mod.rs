@@ -3,21 +3,25 @@
 //! AgentSession owns session state (events, prompts, memory, compaction)
 //! and delegates the core LLM loop to `kernel::execute()`.
 
+pub mod compactor;
 pub mod config;
+pub mod context;
+pub mod history;
+pub mod memory;
+pub mod prompt;
+pub mod store;
 
+pub use compactor::ContextCompactor;
 pub use config::AgentConfig;
+pub use context::{AgentContext, PersistentContext};
+pub use memory::{MemoryContext, MemoryManager, PhaseBreakdown};
+pub use store::{MemoryProvider, MemoryStore};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
-use crate::agent::core::context::AgentContext;
-use crate::agent::history::indexing::IndexingService;
-use crate::agent::memory::compactor::ContextCompactor;
-use crate::agent::memory::manager::MemoryManager;
-use crate::agent::memory::store::MemoryStore;
-use crate::agent::HistoryConfig;
 use crate::error::AgentError;
 use crate::hooks::{HookPoint, HookRegistry, MutableContext};
 use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
@@ -27,6 +31,9 @@ use crate::vault::redact_secrets;
 use config::AgentConfigExt;
 use gasket_storage::EventStore;
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
+
+use history::builder::BuildOutcome;
+use history::indexing::IndexingService;
 
 /// Response from agent processing
 #[derive(Debug, Clone)]
@@ -48,7 +55,7 @@ struct FinalizeContext {
 }
 
 impl FinalizeContext {
-    fn from_request(req: &crate::agent::history::builder::ChatRequest) -> Self {
+    fn from_request(req: &history::builder::ChatRequest) -> Self {
         Self {
             session_key_str: req.session_key.clone(),
             content: req.user_content.clone(),
@@ -80,6 +87,84 @@ impl gasket_storage::memory::Embedder for SharedTextEmbedder {
     }
 }
 
+// ── Skill loading (inlined from agent/core/mod.rs) ──
+
+use crate::skills::{SkillsLoader, SkillsRegistry};
+
+/// Load skills from builtin and user directories.
+///
+/// Returns a context summary string if any skills were loaded, or None otherwise.
+pub async fn load_skills(workspace: &Path) -> Option<String> {
+    let user_skills_dir = workspace.join("skills");
+    let builtin_skills_dir = find_builtin_skills_dir();
+
+    let builtin_dir = match builtin_skills_dir {
+        Some(dir) => dir,
+        None => {
+            debug!("Built-in skills directory not found, loading user skills only");
+            if !user_skills_dir.exists() {
+                debug!("No skills directories found");
+                return None;
+            }
+            PathBuf::from("/nonexistent")
+        }
+    };
+
+    let loader = SkillsLoader::new(user_skills_dir, builtin_dir);
+    match SkillsRegistry::from_loader(loader).await {
+        Ok(registry) => {
+            let summary = registry.generate_context_summary().await;
+            if summary.is_empty() {
+                info!("No skills loaded");
+                None
+            } else {
+                info!(
+                    "Loaded {} skills ({} available)",
+                    registry.len(),
+                    registry.list_available().len()
+                );
+                Some(summary)
+            }
+        }
+        Err(e) => {
+            warn!("Failed to load skills: {}", e);
+            None
+        }
+    }
+}
+
+/// Find the builtin skills directory.
+pub fn find_builtin_skills_dir() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(project_root) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
+            let candidate = project_root.join("engine").join("skills");
+            if candidate.exists() {
+                debug!("Found builtin skills at {:?}", candidate);
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("engine").join("skills");
+        if candidate.exists() {
+            debug!("Found builtin skills at {:?}", candidate);
+            return Some(candidate);
+        }
+        let candidate = cwd.join("skills");
+        if candidate.exists() {
+            debug!("Found builtin skills at {:?}", candidate);
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
 /// Owns session state (events, prompts, memory, compaction) and delegates
@@ -92,8 +177,7 @@ pub struct AgentSession {
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<HookRegistry>,
-    history_config: HistoryConfig,
-    pricing: Option<ModelPricing>,
+    history_config: gasket_storage::HistoryConfig,
     compactor: Option<Arc<ContextCompactor>>,
     memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
@@ -154,7 +238,7 @@ impl AgentSession {
         indexing_service.start_worker();
         let indexing_service = Arc::new(indexing_service);
 
-        let history_config = HistoryConfig {
+        let history_config = gasket_storage::HistoryConfig {
             max_events: config.memory_window,
             ..Default::default()
         };
@@ -166,6 +250,7 @@ impl AgentSession {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
+            pricing: pricing.clone(),
         };
 
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
@@ -195,7 +280,6 @@ impl AgentSession {
             skills_context,
             hooks,
             history_config,
-            pricing,
             compactor: Some(compactor),
             memory_manager,
             indexing_service: Some(indexing_service),
@@ -223,17 +307,14 @@ impl AgentSession {
     }
 
     async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
-        let system_prompt = crate::agent::execution::prompt::load_system_prompt(
-            workspace,
-            crate::agent::execution::prompt::BOOTSTRAP_FILES_FULL,
-        )
-        .await?;
-        let skills_context = crate::agent::execution::prompt::load_skills_context(workspace).await;
+        let system_prompt =
+            prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
+        let skills_context = prompt::load_skills_context(workspace).await;
         Ok((system_prompt, skills_context))
     }
 
     fn build_hooks() -> Arc<HookRegistry> {
-        crate::agent::history::builder::build_default_hooks()
+        history::builder::build_default_hooks()
     }
 
     /// Set the subagent spawner.
@@ -284,8 +365,6 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
-        use crate::agent::history::builder::BuildOutcome;
-
         let outcome = self.prepare_pipeline(content, session_key).await?;
 
         let request = match outcome {
@@ -330,8 +409,6 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        use crate::agent::history::builder::BuildOutcome;
-
         let outcome = self.prepare_pipeline(content, session_key).await?;
 
         let request = match outcome {
@@ -382,13 +459,13 @@ impl AgentSession {
         &self,
         content: &str,
         session_key: &SessionKey,
-    ) -> Result<crate::agent::history::builder::BuildOutcome, AgentError> {
-        use crate::agent::history::builder::ContextBuilder;
+    ) -> Result<history::builder::BuildOutcome, AgentError> {
+        use history::builder::ContextBuilder;
 
         let memory_loader = if let Some(ref mgr) = self.memory_manager {
             let mgr = mgr.clone();
             Some(
-                move |content: &str| -> crate::agent::history::builder::MemoryLoaderFuture {
+                move |content: &str| -> history::builder::MemoryLoaderFuture {
                     let mgr = mgr.clone();
                     let content = content.to_string();
                     Box::pin(async move {
@@ -440,7 +517,7 @@ impl AgentSession {
     /// Try to initialize the long-term memory manager.
     async fn try_init_memory_manager(
         memory_store: &MemoryStore,
-        shared_embedder: Option<SharedEmbedder>,
+        _shared_embedder: Option<SharedEmbedder>,
     ) -> Option<Arc<MemoryManager>> {
         use gasket_storage::memory::{memory_base_dir, Embedder, NoopEmbedder};
 
@@ -453,7 +530,7 @@ impl AgentSession {
         let embedder: Box<dyn Embedder> = {
             #[cfg(feature = "local-embedding")]
             {
-                if let Some(arc_embedder) = shared_embedder {
+                if let Some(arc_embedder) = _shared_embedder {
                     info!("Memory manager reusing shared TextEmbedder");
                     Box::new(SharedTextEmbedder(arc_embedder)) as Box<dyn Embedder>
                 } else {

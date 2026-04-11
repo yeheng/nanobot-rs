@@ -1,10 +1,10 @@
 //! Memory management commands.
 
 use anyhow::Result;
-use gasket_engine::agent::MemoryManager;
 use gasket_engine::memory::{
     memory_base_dir, AutoIndexHandler, EmbeddingStore, MetadataStore, SqliteStore,
 };
+use gasket_engine::MemoryManager;
 #[cfg(feature = "local-embedding")]
 use gasket_engine::TextEmbedder;
 use gasket_engine::{Embedder, NoopEmbedder};

@@ -14,6 +14,7 @@ pub struct RuntimeContext {
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<TokenTracker>>,
+    pub pricing: Option<crate::token_tracker::ModelPricing>,
 }
 
 impl Clone for RuntimeContext {
@@ -24,6 +25,7 @@ impl Clone for RuntimeContext {
             config: self.config.clone(),
             spawner: self.spawner.clone(),
             token_tracker: self.token_tracker.clone(),
+            pricing: self.pricing.clone(),
         }
     }
 }
