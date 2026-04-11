@@ -1379,7 +1379,7 @@ mod tests {
 /// This allows HistoryCoordinator to depend on the trait rather than
 /// the concrete type, enabling test doubles and future alternative backends.
 #[async_trait::async_trait]
-impl crate::agent::memory::store::MemoryProvider for MemoryManager {
+impl super::store::MemoryProvider for MemoryManager {
     async fn load_for_context(&self, query: &MemoryQuery) -> anyhow::Result<MemoryContext> {
         self.load_for_context(query).await
     }

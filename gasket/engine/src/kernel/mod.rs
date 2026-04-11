@@ -10,10 +10,9 @@ pub mod stream;
 
 pub use context::{KernelConfig, RuntimeContext};
 pub use error::KernelError;
-pub use executor::{ExecutionResult, ExecutorOptions};
+pub use executor::{AgentExecutor, ExecutionResult, ExecutorOptions, ToolExecutor};
 pub use stream::{BufferedEvents, StreamEvent};
 
-use executor::AgentExecutor;
 use gasket_providers::ChatMessage;
 use tokio::sync::mpsc;
 
@@ -26,6 +25,9 @@ pub async fn execute(
     let mut options = ExecutorOptions::new();
     if let Some(ref tracker) = ctx.token_tracker {
         options = options.with_token_tracker(tracker.clone());
+    }
+    if let Some(ref pricing) = ctx.pricing {
+        options = options.with_pricing(pricing.clone());
     }
     exec.execute_with_options(messages, &options).await
 }
@@ -40,6 +42,9 @@ pub async fn execute_streaming(
     let mut options = ExecutorOptions::new();
     if let Some(ref tracker) = ctx.token_tracker {
         options = options.with_token_tracker(tracker.clone());
+    }
+    if let Some(ref pricing) = ctx.pricing {
+        options = options.with_pricing(pricing.clone());
     }
     exec.execute_stream_with_options(messages, event_tx, &options)
         .await

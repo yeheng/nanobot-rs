@@ -37,8 +37,8 @@ use tracing::{debug, info, warn};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_storage::{EventStore, SqliteStore};
 
-use crate::agent::count_tokens;
 use crate::vault::redact_secrets;
+use gasket_storage::count_tokens;
 
 /// Default prompt for LLM summarization (used when no custom prompt is configured).
 pub const DEFAULT_SUMMARIZATION_PROMPT: &str =

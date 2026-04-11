@@ -36,7 +36,7 @@ use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{Session, SessionEvent};
 
-use crate::agent::history::coordinator::HistoryCoordinator;
+use super::history::coordinator::HistoryCoordinator;
 
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
@@ -232,53 +232,15 @@ impl AgentContext {
         }
     }
 
-    /// Get history for a session.
-    ///
-    /// For `Persistent` context, retrieves events from the EventStore.
-    /// For `Stateless` context, returns an empty vector.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - Session key to retrieve history for
-    /// * `branch` - Optional branch name (defaults to "main" if None)
-    ///
-    /// # Returns
-    ///
-    /// A vector of session events in chronological order (oldest first).
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use HistoryCoordinator::query(SessionContext) instead"
-    )]
-    pub async fn get_history(&self, key: &str, branch: Option<&str>) -> Vec<SessionEvent> {
-        match self {
-            Self::Persistent(ctx) => ctx
-                .event_store
-                .get_branch_history(key, branch.unwrap_or("main"))
-                .await
-                .unwrap_or_default(),
-            Self::Stateless => vec![],
-        }
-    }
-
     /// Recall relevant historical messages based on recency and content heuristics.
     ///
     /// Returns the top-K most relevant messages from the event store using
     /// a scoring function that combines recency and content length.
     /// For `Stateless` context, returns an empty vector.
     ///
-    /// # Arguments
-    ///
-    /// * `key` - Session key to retrieve history for
-    /// * `_query_embedding` - Query embedding (currently unused, reserved for future semantic search)
-    /// * `top_k` - Maximum number of messages to return
-    ///
-    /// # Returns
-    ///
-    /// A vector of message contents, sorted by relevance score (highest first).
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use HistoryCoordinator::query(SemanticSearch) instead"
-    )]
+    /// # Note
+    /// The `_query_embedding` parameter is currently unused but reserved for
+    /// future semantic search support via `HistoryCoordinator`.
     pub async fn recall_history(
         &self,
         key: &str,
@@ -300,7 +262,6 @@ impl AgentContext {
                     return Ok(Vec::new());
                 }
 
-                // Score by recency (more recent = higher) and content length
                 let mut scored: Vec<(f32, String)> = events
                     .iter()
                     .enumerate()
@@ -316,34 +277,6 @@ impl AgentContext {
                 Ok(scored.into_iter().take(top_k).map(|(_, c)| c).collect())
             }
             Self::Stateless => Ok(Vec::new()),
-        }
-    }
-
-    /// Load the latest summary for a session.
-    ///
-    /// For `Persistent` context, queries the event store for the most recent
-    /// `EventType::Summary` event. For `Stateless` context, returns `None`.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use HistoryCoordinator::query(LatestSummary) instead"
-    )]
-    pub async fn load_latest_summary(&self, session_key: &str, branch: &str) -> Option<String> {
-        match self {
-            Self::Persistent(ctx) => {
-                match ctx
-                    .event_store
-                    .get_latest_summary(session_key, branch)
-                    .await
-                {
-                    Ok(Some(event)) => Some(event.content),
-                    Ok(None) => None,
-                    Err(e) => {
-                        debug!("Failed to load session summary: {}", e);
-                        None
-                    }
-                }
-            }
-            Self::Stateless => None,
         }
     }
 
@@ -374,7 +307,6 @@ impl AgentContext {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use chrono::Utc;
@@ -466,13 +398,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_stateless_get_history() {
-        let context = AgentContext::Stateless;
-        let history = context.get_history("test", None).await;
-        assert!(history.is_empty());
-    }
-
     // ============================================================
     // Integration tests with real EventStore
     // ============================================================
@@ -509,168 +434,6 @@ mod tests {
 
         let result = context.save_event(event).await;
         assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_persistent_context_get_history() {
-        let pool = setup_test_db().await;
-        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
-        let event_store = Arc::new(EventStore::new(pool));
-
-        let context = AgentContext::persistent(event_store, sqlite_store);
-
-        // Save multiple events
-        let e1 = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Hello".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        context.save_event(e1.clone()).await.unwrap();
-
-        let e2 = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::AssistantMessage,
-            content: "Hi there!".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        context.save_event(e2.clone()).await.unwrap();
-
-        // Retrieve history
-        let history = context.get_history("test:session", None).await;
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].content, "Hello");
-        assert_eq!(history[1].content, "Hi there!");
-    }
-
-    #[tokio::test]
-    async fn test_persistent_context_get_history_with_branch() {
-        let pool = setup_test_db().await;
-        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
-        let event_store = Arc::new(EventStore::new(pool));
-
-        let context = AgentContext::persistent(event_store, sqlite_store);
-
-        // Save event to main branch
-        let main_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Main branch message".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        context.save_event(main_event).await.unwrap();
-
-        // Save event to feature branch
-        let feature_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Feature branch message".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("feature".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        context.save_event(feature_event).await.unwrap();
-
-        // Query main branch
-        let main_history = context.get_history("test:session", Some("main")).await;
-        assert_eq!(main_history.len(), 1);
-        assert_eq!(main_history[0].content, "Main branch message");
-
-        // Query feature branch
-        let feature_history = context.get_history("test:session", Some("feature")).await;
-        assert_eq!(feature_history.len(), 1);
-        assert_eq!(feature_history[0].content, "Feature branch message");
-    }
-
-    #[tokio::test]
-    async fn test_persistent_context_flow() {
-        // Setup in-memory database
-        let pool = setup_test_db().await;
-        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
-        let event_store = Arc::new(EventStore::new(pool));
-
-        let context = AgentContext::persistent(event_store, sqlite_store);
-        assert!(context.is_persistent());
-
-        // Save event
-        let event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Hello".into(),
-            embedding: None,
-            metadata: EventMetadata::default(),
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-
-        context.save_event(event).await.unwrap();
-
-        // Load history
-        let history = context.get_history("test:session", None).await;
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "Hello");
-    }
-
-    #[tokio::test]
-    async fn test_persistent_context_clear_session() {
-        let pool = setup_test_db().await;
-        let sqlite_store = Arc::new(gasket_storage::SqliteStore::from_pool(pool.clone()));
-        let event_store = Arc::new(EventStore::new(pool));
-
-        let context = AgentContext::persistent(event_store, sqlite_store);
-        assert!(context.is_persistent());
-
-        // Save event
-        let event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Hello".into(),
-            embedding: None,
-            metadata: EventMetadata::default(),
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        context.save_event(event).await.unwrap();
-
-        // Verify history exists
-        let history = context.get_history("test:session", None).await;
-        assert_eq!(history.len(), 1);
-
-        // Clear session
-        let result = context.clear_session("test:session").await;
-        assert!(result.is_ok());
-
-        // Verify history is cleared
-        let history = context.get_history("test:session", None).await;
-        assert!(history.is_empty());
     }
 
     #[tokio::test]

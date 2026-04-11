@@ -10,9 +10,9 @@ use gasket_storage::{EventFilter, EventStoreTrait, SqliteStore};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
 
-use crate::agent::memory::compactor::ContextCompactor;
-use crate::agent::memory::manager::MemoryContext;
-use crate::agent::memory::store::MemoryProvider;
+use crate::session::compactor::ContextCompactor;
+use crate::session::memory::MemoryContext;
+use crate::session::store::MemoryProvider;
 
 /// History query intent — the only query entry point type.
 ///

@@ -58,7 +58,7 @@ use async_trait::async_trait;
 use gasket_storage::memory::{MemoryHit, MemoryQuery, Scenario};
 use gasket_types::session_event::SessionEvent;
 
-use crate::agent::memory::manager::MemoryContext;
+use super::memory::MemoryContext;
 
 /// MemoryProvider trait — memory system query and mutation interface.
 ///

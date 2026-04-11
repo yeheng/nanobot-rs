@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::agent::core::AgentConfig;
-use crate::agent::execution::{AgentExecutor, ExecutionResult};
+use crate::kernel::{AgentExecutor, ExecutionResult};
+use crate::session::config::{AgentConfig, AgentConfigExt};
 use crate::tools::ToolRegistry;
 use anyhow::Result;
 use gasket_providers::{ChatMessage, LlmProvider};
@@ -28,7 +28,8 @@ pub async fn run_subagent(
     config: &AgentConfig,
 ) -> Result<ExecutionResult, anyhow::Error> {
     let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
-    let executor = AgentExecutor::new(provider, tools, config);
+    let kernel_config = config.to_kernel_config();
+    let executor = AgentExecutor::new(provider, tools, &kernel_config);
     executor
         .execute(messages)
         .await

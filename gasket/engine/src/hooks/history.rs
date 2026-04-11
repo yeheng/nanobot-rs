@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::{HookAction, HookPoint, MutableContext, PipelineHook, ReadonlyContext};
-use crate::agent::core::context::AgentContext;
 use crate::error::AgentError;
+use crate::session::context::AgentContext;
 use gasket_providers::ChatMessage;
 use gasket_storage::TextEmbedder;
 
@@ -80,7 +80,6 @@ impl PipelineHook for HistoryRecallHook {
         HookPoint::AfterHistory
     }
 
-    #[allow(deprecated)]
     async fn run(&self, ctx: &mut MutableContext<'_>) -> Result<HookAction, AgentError> {
         if self.k == 0 {
             return Ok(HookAction::Continue);

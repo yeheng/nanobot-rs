@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::agent::core::{AgentResponse, DEFAULT_WAIT_TIMEOUT_SECS};
+use crate::session::{config::DEFAULT_WAIT_TIMEOUT_SECS, AgentResponse};
 
 /// Subagent execution result
 #[derive(Debug, Clone)]
