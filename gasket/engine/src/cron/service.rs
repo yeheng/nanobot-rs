@@ -612,6 +612,54 @@ impl CronService {
 
         Ok(job.next_run.is_some_and(|nr| nr <= Utc::now()))
     }
+
+    /// Ensure system-maintained cron jobs exist.
+    ///
+    /// Creates default system jobs for memory decay, memory refresh, and cron
+    /// reload if they are not already present. These jobs bypass LLM and execute
+    /// tools directly (zero token cost).
+    pub async fn ensure_system_cron_jobs(&self) {
+        let system_jobs = [
+            (
+                "system-memory-decay",
+                "Memory Decay",
+                "0 0 */6 * * *", // every 6 hours
+                Some("memory_decay".to_string()),
+                None,
+            ),
+            (
+                "system-memory-refresh",
+                "Memory Refresh",
+                "0 0 */3 * * *", // every 3 hours
+                Some("memory_refresh".to_string()),
+                Some(serde_json::json!({"action": "sync"})),
+            ),
+            (
+                "system-cron-refresh",
+                "Cron Reload",
+                "0 0 * * * *", // every hour
+                Some("cron".to_string()),
+                Some(serde_json::json!({"action": "refresh"})),
+            ),
+        ];
+
+        for (id, name, cron_expr, tool, tool_args) in &system_jobs {
+            let exists = self.jobs.read().contains_key(*id);
+            if exists {
+                debug!("System cron job '{}' already exists, skipping", id);
+                continue;
+            }
+
+            let mut job = CronJob::new(*id, *name, *cron_expr, "system maintenance");
+            job.tool = tool.clone();
+            job.tool_args = tool_args.clone();
+
+            match self.add_job(job).await {
+                Ok(()) => info!("Created system cron job: {} ({})", name, id),
+                Err(e) => warn!("Failed to create system cron job '{}': {}", id, e),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
