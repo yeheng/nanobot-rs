@@ -25,6 +25,25 @@ pub const DEFAULT_CACHE_DIR: &str = ".gasket/embedding-cache";
 /// Default embedding dimension
 pub const DEFAULT_DIMENSION: usize = 384;
 
+// ── Helper Functions ─────────────────────────────────────────────────────
+
+/// Expand tilde (~) in a path to the home directory
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        // Try BaseDirs first
+        if let Some(base_dirs) = BaseDirs::new() {
+            return base_dirs.home_dir().join(stripped);
+        }
+        // Fallback to HOME env var
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+        // If all fails, return path without tilde
+        return PathBuf::from(stripped);
+    }
+    path
+}
+
 // ── Configuration ───────────────────────────────────────────────────────
 
 /// Thread-safe text embedder backed by a local ONNX model.
@@ -94,14 +113,26 @@ impl EmbeddingConfig {
     }
 
     /// Resolve the cache directory path
-    /// - If explicitly set, use that
+    /// - If explicitly set, use that (with tilde expansion)
     /// - Otherwise, use default: `~/.gasket/embedding-cache`
     pub fn resolve_cache_dir(&self) -> PathBuf {
-        self.cache_dir.clone().unwrap_or_else(|| {
-            BaseDirs::new()
-                .map(|dirs| dirs.home_dir().join(DEFAULT_CACHE_DIR))
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR))
-        })
+        self.cache_dir.clone().map_or_else(
+            || {
+                // Use default cache directory in home directory
+                BaseDirs::new()
+                    .map(|dirs| dirs.home_dir().join(DEFAULT_CACHE_DIR))
+                    .unwrap_or_else(|| {
+                        // Fallback: use HOME env var if BaseDirs fails
+                        std::env::var("HOME")
+                            .map(|home| PathBuf::from(home).join(DEFAULT_CACHE_DIR))
+                            .unwrap_or_else(|_| PathBuf::from(DEFAULT_CACHE_DIR))
+                    })
+            },
+            |path| {
+                // Expand tilde (~) in custom cache directory path
+                expand_tilde(path)
+            },
+        )
     }
 
     /// Get the embedding dimension for the configured model.
