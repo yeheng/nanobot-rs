@@ -118,7 +118,6 @@ impl Tool for MemoryRefreshTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // Note: Full integration tests require a MemoryManager with SQLite setup.
     // This test verifies the parameter schema is correct.
