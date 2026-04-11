@@ -1,7 +1,7 @@
 //! Stream processing utilities for the kernel.
 //!
 //! Provides streaming event types and native async Stream support.
-//! Extracted from agent/streaming/stream.rs — no functional changes.
+//! Uses the unified `StreamEvent` from `gasket_types` - no local event type.
 
 use std::collections::HashMap;
 
@@ -10,35 +10,8 @@ use futures::stream::Stream;
 use futures::StreamExt;
 use tracing::{debug, trace};
 
-use gasket_channels::events::WebSocketMessage;
 use gasket_providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};
-
-/// Events emitted during streaming.
-#[derive(Debug)]
-pub enum StreamEvent {
-    /// Incremental text content
-    Content(String),
-    /// Incremental reasoning/thinking content
-    Reasoning(String),
-    /// A tool is being called
-    ToolStart {
-        name: String,
-        /// Tool arguments as JSON string (optional)
-        arguments: Option<String>,
-    },
-    /// Tool execution finished
-    ToolEnd { name: String, output: String },
-    /// Token usage statistics (emitted when stream completes)
-    TokenStats {
-        input_tokens: usize,
-        output_tokens: usize,
-        total_tokens: usize,
-        cost: f64,
-        currency: String,
-    },
-    /// Stream completed
-    Done,
-}
+pub use gasket_types::StreamEvent;
 
 /// Accumulates streamed tool-call deltas into complete `ToolCall` objects.
 pub struct ToolCallAccumulator {
@@ -189,7 +162,7 @@ pub fn stream_events(
                     if let Some(ref text) = chunk.delta.content {
                         if !text.is_empty() {
                             content.push_str(text);
-                            if tx.try_send(StreamEvent::Content(text.clone())).is_err() {
+                            if tx.try_send(StreamEvent::content(text.clone())).is_err() {
                                 debug!(
                                     "[StreamEvents] Channel closed, aborting after {} chunks",
                                     chunk_count
@@ -213,7 +186,7 @@ pub fn stream_events(
                         if !reasoning.is_empty() {
                             reasoning_content.push_str(reasoning);
                             if tx
-                                .try_send(StreamEvent::Reasoning(reasoning.clone()))
+                                .try_send(StreamEvent::thinking(reasoning.clone()))
                                 .is_err()
                             {
                                 debug!("[StreamEvents] Channel closed during reasoning");
@@ -299,7 +272,7 @@ pub async fn collect_stream_response(
 /// Buffered events for a single subagent or agent execution.
 #[derive(Debug, Default)]
 pub struct BufferedEvents {
-    pub messages: Vec<WebSocketMessage>,
+    pub messages: Vec<gasket_types::WebSocketMessage>,
     pub completed: bool,
 }
 
@@ -308,7 +281,7 @@ impl BufferedEvents {
         Self::default()
     }
 
-    pub fn push(&mut self, message: WebSocketMessage) {
+    pub fn push(&mut self, message: gasket_types::WebSocketMessage) {
         self.messages.push(message);
     }
 
@@ -320,7 +293,7 @@ impl BufferedEvents {
         self.messages.len()
     }
 
-    pub fn flush(&mut self) -> Vec<WebSocketMessage> {
+    pub fn flush(&mut self) -> Vec<gasket_types::WebSocketMessage> {
         std::mem::take(&mut self.messages)
     }
 
@@ -417,7 +390,7 @@ mod tests {
     #[test]
     fn test_buffer_clear() {
         let mut buffer = BufferedEvents::new();
-        buffer.push(WebSocketMessage::content("test"));
+        buffer.push(gasket_types::WebSocketMessage::content("test"));
         buffer.completed = true;
 
         buffer.clear();

@@ -14,8 +14,9 @@ use gasket_engine::kernel::StreamEvent;
 use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
+use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
-use gasket_engine::{ModelResolver, SubagentManager};
+use gasket_engine::ModelResolver;
 
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
@@ -90,20 +91,23 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
-        subagent_manager: None,
+        subagent_spawner: None,
         extra_tools: vec![],
         sqlite_store: Some(sqlite_store),
         model_registry: Some(model_registry),
         provider_registry: Some(provider_registry),
     });
 
-    // Create SubagentManager for spawn/spawn_parallel tools (uses dummy outbound channel)
-    let (dummy_tx, _dummy_rx) = tokio::sync::mpsc::channel(16);
+    // Create spawner for spawn/spawn_parallel tools
+    let (_dummy_tx, _dummy_rx): (
+        tokio::sync::mpsc::Sender<gasket_engine::channels::OutboundMessage>,
+        _,
+    ) = tokio::sync::mpsc::channel(16);
     let subagent_tools = Arc::new(super::registry::build_tool_registry(
         super::registry::ToolRegistryConfig {
             config: config.clone(),
             workspace: workspace.clone(),
-            subagent_manager: None,
+            subagent_spawner: None,
             extra_tools: vec![],
             sqlite_store: None,
             model_registry: None,
@@ -111,7 +115,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         },
     ));
 
-    // Create model resolver for SubagentManager to support model_id switching in spawn tools
+    // Create model resolver for subagent spawner to support model_id switching in spawn tools
     let mut resolver_registry = ProviderRegistry::from_config(&config);
     if let Some(ref v) = vault {
         resolver_registry.with_vault(v.clone());
@@ -121,15 +125,13 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         model_registry: ModelRegistry::from_config(&config.agents),
     });
 
-    let subagent_manager = Arc::new(
-        SubagentManager::with_model_resolver(
+    let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
+        SimpleSpawner::new(
             provider_info.provider.clone(),
-            workspace.clone(),
             subagent_tools,
-            dummy_tx,
-            Some(model_resolver),
+            workspace.clone(),
         )
-        .await,
+        .with_model_resolver(model_resolver),
     );
 
     // Convert pricing info to ModelPricing
@@ -147,7 +149,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?
-    .with_spawner(subagent_manager as Arc<dyn gasket_engine::SubagentSpawner>);
+    .with_spawner(subagent_spawner);
 
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
@@ -168,9 +170,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 let forward_handle = tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
                         match event {
-                            StreamEvent::Content(text) => print!("{}", text),
-                            StreamEvent::Reasoning(text) => {
-                                eprint!("{}", text.dimmed().italic());
+                            StreamEvent::Content {
+                                agent_id: _,
+                                content,
+                            } => print!("{}", content),
+                            StreamEvent::Thinking {
+                                agent_id: _,
+                                content,
+                            } => {
+                                eprint!("{}", content.dimmed().italic());
                                 std::io::stderr().flush().ok();
                             }
                             StreamEvent::TokenStats {
@@ -179,6 +187,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 total_tokens,
                                 cost,
                                 currency,
+                                agent_id: _,
                             } => {
                                 let symbol = if currency == "CNY" { "¥" } else { "$" };
                                 eprintln!(
@@ -186,7 +195,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                     input_tokens, output_tokens, total_tokens, symbol, cost
                                 );
                             }
-                            StreamEvent::Done => println!(),
+                            StreamEvent::Done { agent_id: _ } => println!(),
+                            // Skip subagent events in CLI output
                             _ => {}
                         }
                     }
@@ -261,12 +271,18 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                     let forward_handle = tokio::spawn(async move {
                                         while let Some(event) = event_rx.recv().await {
                                             match event {
-                                                StreamEvent::Content(text) => {
-                                                    print!("{}", text);
+                                                StreamEvent::Content {
+                                                    agent_id: _,
+                                                    content,
+                                                } => {
+                                                    print!("{}", content);
                                                     std::io::stdout().flush().ok();
                                                 }
-                                                StreamEvent::Reasoning(text) => {
-                                                    eprint!("{}", text.dimmed().italic());
+                                                StreamEvent::Thinking {
+                                                    agent_id: _,
+                                                    content,
+                                                } => {
+                                                    eprint!("{}", content.dimmed().italic());
                                                     std::io::stderr().flush().ok();
                                                 }
                                                 StreamEvent::TokenStats {
@@ -275,13 +291,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                                     total_tokens,
                                                     cost,
                                                     currency,
+                                                    agent_id: _,
                                                 } => {
                                                     let symbol =
                                                         if currency == "CNY" { "¥" } else { "$" };
                                                     eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                                         input_tokens, output_tokens, total_tokens, symbol, cost);
                                                 }
-                                                StreamEvent::Done => {}
+                                                StreamEvent::Done { agent_id: _ } => {}
+                                                // Skip subagent events in CLI output
                                                 _ => {}
                                             }
                                         }

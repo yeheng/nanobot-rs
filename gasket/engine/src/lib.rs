@@ -45,7 +45,10 @@ pub use kernel::{
 };
 
 // ── Subagents ──────────────────────────────────────────────
-pub use subagents::{run_subagent, ModelResolver, SubagentManager, SubagentTracker, TrackerError};
+pub use subagents::{run_subagent, ModelResolver, SimpleSpawner, SubagentTracker, TrackerError};
+
+// Re-export from gasket_types for convenience
+pub use gasket_types::SubagentSpawner;
 
 // ── History (re-export from storage) ───────────────────────
 pub use gasket_storage::{
@@ -104,8 +107,7 @@ pub use token_tracker::{
 // ── Tools ──────────────────────────────────────────────────
 pub use tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MemorySearchTool, MessageTool, ReadFileTool,
-    SpawnParallelTool, SpawnTool, SubagentSpawner, ToolRegistry, WebFetchTool, WebSearchTool,
-    WriteFileTool,
+    SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 // ── Vault ──────────────────────────────────────────────────

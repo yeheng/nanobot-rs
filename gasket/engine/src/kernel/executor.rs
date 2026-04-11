@@ -13,7 +13,7 @@ use tracing::{debug, info, instrument, warn};
 
 use super::context::KernelConfig;
 use super::error::KernelError;
-use super::stream::{self, StreamEvent};
+use super::stream::{self};
 use crate::token_tracker::{ModelPricing, TokenTracker, TokenUsage};
 use crate::tools::{SubagentSpawner, ToolContext, ToolRegistry};
 use crate::vault::redact_secrets;
@@ -21,6 +21,7 @@ use gasket_providers::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError, ThinkingConfig,
     ToolCall,
 };
+use gasket_types::StreamEvent;
 
 /// Default response when no content is available
 const DEFAULT_NO_RESPONSE: &str = "I've completed processing but have no response to give.";
@@ -422,14 +423,14 @@ impl<'a> AgentExecutor<'a> {
                     reasoning_content,
                 } => {
                     if let Some(ref tx) = event_tx {
-                        let _ = tx.send(StreamEvent::Done).await;
+                        let _ = tx.send(StreamEvent::done()).await;
                     }
                     return Ok(state.into_result(content, reasoning_content, ledger));
                 }
                 IterationOutcome::ContinueWithTools => {}
                 IterationOutcome::MaxIterationsReached => {
                     if let Some(ref tx) = event_tx {
-                        let _ = tx.send(StreamEvent::Done).await;
+                        let _ = tx.send(StreamEvent::done()).await;
                     }
                     return Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger));
                 }
@@ -437,11 +438,12 @@ impl<'a> AgentExecutor<'a> {
         }
 
         if let Some(ref tx) = event_tx {
-            let _ = tx.send(StreamEvent::Done).await;
+            let _ = tx.send(StreamEvent::done()).await;
         }
         Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_iteration(
         &self,
         iteration: u32,
@@ -593,16 +595,13 @@ impl<'a> AgentExecutor<'a> {
 
             if let Some(tx) = event_tx {
                 let _ = tx
-                    .send(StreamEvent::ToolStart {
-                        name: tool_name.clone(),
-                        arguments: Some(tool_args.clone()),
-                    })
+                    .send(StreamEvent::tool_start(&tool_name, Some(tool_args.clone())))
                     .await;
                 let _ = tx
-                    .send(StreamEvent::ToolEnd {
-                        name: tool_name.clone(),
-                        output: result.output.clone(),
-                    })
+                    .send(StreamEvent::tool_end(
+                        &tool_name,
+                        Some(result.output.clone()),
+                    ))
                     .await;
             }
 
@@ -677,13 +676,13 @@ impl<'a> AgentExecutor<'a> {
                     .map(|p| p.currency.as_str())
                     .unwrap_or("USD");
                 let _ = tx
-                    .send(StreamEvent::TokenStats {
-                        input_tokens: total_usage.input_tokens,
-                        output_tokens: total_usage.output_tokens,
-                        total_tokens: total_usage.total_tokens,
-                        cost: ledger.total_cost,
-                        currency: currency.to_string(),
-                    })
+                    .send(StreamEvent::token_stats(
+                        total_usage.input_tokens,
+                        total_usage.output_tokens,
+                        total_usage.total_tokens,
+                        ledger.total_cost,
+                        currency,
+                    ))
                     .await;
             }
         }

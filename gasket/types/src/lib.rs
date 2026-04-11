@@ -17,7 +17,7 @@ pub mod tool;
 
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
-    SessionKeyParseError, WebSocketMessage,
+    SessionKeyParseError, StreamEvent, WebSocketMessage,
 };
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,

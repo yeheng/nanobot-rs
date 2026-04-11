@@ -69,21 +69,41 @@ impl MessageHandler for EngineHandler {
         // Spawn a task to convert kernel StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
             use crate::bus::StreamEvent as BusStreamEvent;
-            use crate::kernel::StreamEvent as KernelStreamEvent;
+            use gasket_types::StreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
+                // Skip subagent events - only forward main agent events
+                if event.is_subagent_event() {
+                    continue;
+                }
+
                 let bus_event = match event {
-                    KernelStreamEvent::Content(content) => BusStreamEvent::Content(content),
-                    KernelStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
-                    KernelStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
+                    StreamEvent::Content {
+                        agent_id: _,
+                        content,
+                    } => BusStreamEvent::Content(content),
+                    StreamEvent::Thinking {
+                        agent_id: _,
+                        content,
+                    } => BusStreamEvent::Reasoning(content),
+                    StreamEvent::ToolStart {
+                        agent_id: _,
+                        name,
+                        arguments,
+                    } => BusStreamEvent::ToolStart {
                         name,
                         arguments: arguments.unwrap_or_default(),
                     },
-                    KernelStreamEvent::ToolEnd { name, output } => {
-                        BusStreamEvent::ToolEnd { name, output }
-                    }
-                    KernelStreamEvent::Done => BusStreamEvent::Done,
-                    KernelStreamEvent::TokenStats {
+                    StreamEvent::ToolEnd {
+                        agent_id: _,
+                        name,
+                        output,
+                    } => BusStreamEvent::ToolEnd {
+                        name,
+                        output: output.unwrap_or_default(),
+                    },
+                    StreamEvent::Done { agent_id: _ } => BusStreamEvent::Done,
+                    StreamEvent::TokenStats {
                         input_tokens,
                         output_tokens,
                         total_tokens,
@@ -93,6 +113,8 @@ impl MessageHandler for EngineHandler {
                         completion: output_tokens,
                         total: total_tokens,
                     },
+                    // Subagent lifecycle events are filtered above
+                    _ => continue,
                 };
 
                 if event_tx.send(bus_event).await.is_err() {

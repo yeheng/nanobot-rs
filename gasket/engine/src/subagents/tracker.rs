@@ -10,6 +10,11 @@
 //! - `take_event_receiver()` - transfers event receiver ownership to a spawned task
 //!
 //! This design is more idiomatic Rust and eliminates unnecessary synchronization overhead.
+//!
+//! ## Unified Event Type
+//!
+//! Uses `gasket_types::StreamEvent` directly - no conversion needed. The `agent_id` field
+//! in `StreamEvent` distinguishes between main agent (`None`) and subagent (`Some(uuid)`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::session::{config::DEFAULT_WAIT_TIMEOUT_SECS, AgentResponse};
+use gasket_types::StreamEvent;
 
 /// Subagent execution result
 #[derive(Debug, Clone)]
@@ -28,35 +34,6 @@ pub struct SubagentResult {
     pub response: AgentResponse,
     /// Model name used for this execution
     pub model: Option<String>,
-}
-
-/// Events emitted during subagent execution for real-time streaming
-#[derive(Debug, Clone)]
-pub enum SubagentEvent {
-    /// Subagent started execution
-    Started { id: String, task: String },
-    /// Thinking/reasoning content (incremental)
-    Thinking { id: String, content: String },
-    /// LLM output content (incremental) - actual response text
-    Content { id: String, content: String },
-    /// Subagent iteration completed (useful for tracking multi-turn conversations)
-    Iteration { id: String, iteration: u32 },
-    /// Tool call started
-    ToolStart {
-        id: String,
-        tool_name: String,
-        arguments: Option<String>,
-    },
-    /// Tool call finished
-    ToolEnd {
-        id: String,
-        tool_name: String,
-        output: String,
-    },
-    /// Subagent completed with result
-    Completed { id: String, result: SubagentResult },
-    /// Subagent encountered an error
-    Error { id: String, error: String },
 }
 
 /// Error type for tracker operations
@@ -83,9 +60,9 @@ pub struct SubagentTracker {
     results: Arc<RwLock<HashMap<String, SubagentResult>>>,
     result_tx: mpsc::Sender<SubagentResult>,
     result_rx: Option<mpsc::Receiver<SubagentResult>>,
-    /// Event channel for real-time streaming
-    event_tx: mpsc::Sender<SubagentEvent>,
-    event_rx: Option<mpsc::Receiver<SubagentEvent>>,
+    /// Event channel for real-time streaming (using unified StreamEvent)
+    event_tx: mpsc::Sender<StreamEvent>,
+    event_rx: Option<mpsc::Receiver<StreamEvent>>,
     /// Cancellation token for all spawned subagents
     cancellation_token: CancellationToken,
 }
@@ -114,8 +91,8 @@ impl SubagentTracker {
         self.result_tx.clone()
     }
 
-    /// Get a sender for streaming events
-    pub fn event_sender(&self) -> mpsc::Sender<SubagentEvent> {
+    /// Get a sender for streaming events (unified StreamEvent)
+    pub fn event_sender(&self) -> mpsc::Sender<StreamEvent> {
         self.event_tx.clone()
     }
 
@@ -127,7 +104,7 @@ impl SubagentTracker {
     /// # Errors
     ///
     /// Returns `TrackerError::EventReceiverAlreadyTaken` if called more than once.
-    pub fn take_event_receiver(&mut self) -> Result<mpsc::Receiver<SubagentEvent>, TrackerError> {
+    pub fn take_event_receiver(&mut self) -> Result<mpsc::Receiver<StreamEvent>, TrackerError> {
         self.event_rx
             .take()
             .ok_or(TrackerError::EventReceiverAlreadyTaken)

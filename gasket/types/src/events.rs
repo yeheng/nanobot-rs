@@ -346,42 +346,61 @@ pub struct MediaAttachment {
     pub caption: Option<String>,
 }
 
-// ── WebSocket Streaming Messages ─────────────────────────────
+// ── Unified Stream Event ────────────────────────────────────
 
-/// WebSocket streaming message types for real-time UI updates.
+/// Unified stream event for real-time streaming across the entire pipeline.
 ///
-/// These message types enable the frontend to display thinking process,
-/// tool calls, and content streaming in real-time.
+/// This single event type eliminates the "中间商赚差价" pattern of converting
+/// between `StreamEvent` -> `SubagentEvent` -> `WebSocketMessage`.
 ///
-/// # Protocol
+/// The `agent_id` field distinguishes between:
+/// - `None`: Main agent events
+/// - `Some(id)`: Subagent events (id is the subagent's UUID)
+///
+/// # Protocol (JSON representation for WebSocket)
 ///
 /// ```json
-/// // Thinking/reasoning content
-/// {"type": "thinking", "content": "..."}
+/// // Main agent thinking/reasoning
+/// {"type": "thinking", "agent_id": null, "content": "..."}
+///
+/// // Subagent thinking (agent_id identifies the subagent)
+/// {"type": "thinking", "agent_id": "uuid-123", "content": "..."}
 ///
 /// // Tool call started
-/// {"type": "tool_start", "name": "tool_name", "arguments": "{...}"}
+/// {"type": "tool_start", "agent_id": null, "name": "tool_name", "arguments": "{...}"}
 ///
 /// // Tool call completed
-/// {"type": "tool_end", "name": "tool_name", "output": "..."}
+/// {"type": "tool_end", "agent_id": null, "name": "tool_name", "output": "..."}
 ///
 /// // Streaming content chunk
-/// {"type": "content", "content": "..."}
+/// {"type": "content", "agent_id": null, "content": "..."}
 ///
 /// // Stream completed
-/// {"type": "done"}
+/// {"type": "done", "agent_id": null}
 ///
-/// // Plain text message (legacy)
-/// {"type": "text", "content": "..."}
+/// // Subagent lifecycle events
+/// {"type": "subagent_started", "agent_id": "uuid-123", "task": "...", "index": 1}
+/// {"type": "subagent_completed", "agent_id": "uuid-123", "index": 1, "summary": "...", "tool_count": 5}
+/// {"type": "subagent_error", "agent_id": "uuid-123", "index": 1, "error": "..."}
+///
+/// // Token statistics (main agent only, typically)
+/// {"type": "token_stats", "agent_id": null, "input_tokens": 1000, "output_tokens": 500, ...}
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum WebSocketMessage {
+pub enum StreamEvent {
     /// Thinking/reasoning content from the LLM
-    Thinking { content: String },
+    Thinking {
+        /// Agent ID (`None` for main agent, `Some(uuid)` for subagent)
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
+        content: String,
+    },
 
     /// A tool call has started
     ToolStart {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
         name: String,
         #[serde(default)]
         arguments: Option<String>,
@@ -389,153 +408,192 @@ pub enum WebSocketMessage {
 
     /// A tool call has completed
     ToolEnd {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
         name: String,
         #[serde(default)]
         output: Option<String>,
     },
 
     /// Streaming content chunk
-    Content { content: String },
+    Content {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
+        content: String,
+    },
 
-    /// Stream has completed
-    Done,
+    /// Stream has completed for this iteration
+    Done {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
+    },
 
-    /// Plain text message (legacy support)
-    Text { content: String },
+    /// Token usage statistics
+    TokenStats {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        cost: f64,
+        currency: String,
+    },
 
-    // === Subagent 专用消息（新增） ===
+    // === Subagent Lifecycle Events ===
     /// Subagent started execution
     SubagentStarted {
-        id: String,   // UUID
-        task: String, // Task description
-        index: u32,   // Task index (1, 2, 3...)
-    },
-    /// Subagent thinking content (incremental)
-    SubagentThinking { id: String, content: String },
-    /// Subagent output content (incremental)
-    SubagentContent { id: String, content: String },
-    /// Subagent tool call started
-    SubagentToolStart {
-        id: String,
-        name: String,
-        #[serde(default)]
-        arguments: Option<String>,
-    },
-    /// Subagent tool call completed
-    SubagentToolEnd {
-        id: String,
-        name: String,
-        #[serde(default)]
-        output: Option<String>,
-    },
-    /// Subagent execution completed
-    SubagentCompleted {
-        id: String,
+        agent_id: String,
+        task: String,
         index: u32,
-        summary: String, // Brief summary (first 100 chars)
-        tool_count: u32, // Number of tool calls
     },
-    /// Subagent execution error
+
+    /// Subagent completed execution
+    SubagentCompleted {
+        agent_id: String,
+        index: u32,
+        summary: String,
+        tool_count: u32,
+    },
+
+    /// Subagent encountered an error
     SubagentError {
-        id: String,
+        agent_id: String,
         index: u32,
         error: String,
     },
+
+    /// Plain text message (legacy support for non-streaming channels)
+    Text {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<String>,
+        content: String,
+    },
 }
 
-impl WebSocketMessage {
-    /// Create a thinking message
+/// Legacy alias for backward compatibility.
+///
+/// **DEPRECATED**: Use `StreamEvent` directly. This alias will be removed
+/// in a future version.
+pub type WebSocketMessage = StreamEvent;
+
+impl StreamEvent {
+    // === Main Agent Event Constructors ===
+
+    /// Create a thinking message for the main agent
     pub fn thinking(content: impl Into<String>) -> Self {
         Self::Thinking {
+            agent_id: None,
             content: content.into(),
         }
     }
 
-    /// Create a tool_start message
+    /// Create a tool_start message for the main agent
     pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
         Self::ToolStart {
+            agent_id: None,
             name: name.into(),
             arguments,
         }
     }
 
-    /// Create a tool_end message
+    /// Create a tool_end message for the main agent
     pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
         Self::ToolEnd {
+            agent_id: None,
             name: name.into(),
             output,
         }
     }
 
-    /// Create a content message
+    /// Create a content message for the main agent
     pub fn content(content: impl Into<String>) -> Self {
         Self::Content {
+            agent_id: None,
             content: content.into(),
         }
     }
 
-    /// Create a done message
+    /// Create a done message for the main agent
     pub fn done() -> Self {
-        Self::Done
+        Self::Done { agent_id: None }
+    }
+
+    /// Create a token_stats message for the main agent
+    pub fn token_stats(
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        cost: f64,
+        currency: impl Into<String>,
+    ) -> Self {
+        Self::TokenStats {
+            agent_id: None,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            currency: currency.into(),
+        }
     }
 
     /// Create a plain text message (legacy)
     pub fn text(content: impl Into<String>) -> Self {
         Self::Text {
+            agent_id: None,
             content: content.into(),
         }
     }
 
-    // === Subagent message constructors ===
+    // === Subagent Event Constructors ===
 
-    /// Create a subagent_started message
-    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
-        Self::SubagentStarted {
-            id: id.into(),
-            task: task.into(),
-            index,
-        }
-    }
-
-    /// Create a subagent_thinking message
+    /// Create a thinking message for a subagent
     pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self::SubagentThinking {
-            id: id.into(),
+        Self::Thinking {
+            agent_id: Some(id.into()),
             content: content.into(),
         }
     }
 
-    /// Create a subagent_content message
-    pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self::SubagentContent {
-            id: id.into(),
-            content: content.into(),
-        }
-    }
-
-    /// Create a subagent_tool_start message
+    /// Create a tool_start message for a subagent
     pub fn subagent_tool_start(
         id: impl Into<String>,
         name: impl Into<String>,
         arguments: Option<String>,
     ) -> Self {
-        Self::SubagentToolStart {
-            id: id.into(),
+        Self::ToolStart {
+            agent_id: Some(id.into()),
             name: name.into(),
             arguments,
         }
     }
 
-    /// Create a subagent_tool_end message
+    /// Create a tool_end message for a subagent
     pub fn subagent_tool_end(
         id: impl Into<String>,
         name: impl Into<String>,
         output: Option<String>,
     ) -> Self {
-        Self::SubagentToolEnd {
-            id: id.into(),
+        Self::ToolEnd {
+            agent_id: Some(id.into()),
             name: name.into(),
             output,
+        }
+    }
+
+    /// Create a content message for a subagent
+    pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::Content {
+            agent_id: Some(id.into()),
+            content: content.into(),
+        }
+    }
+
+    /// Create a subagent_started message
+    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
+        Self::SubagentStarted {
+            agent_id: id.into(),
+            task: task.into(),
+            index,
         }
     }
 
@@ -547,7 +605,7 @@ impl WebSocketMessage {
         tool_count: u32,
     ) -> Self {
         Self::SubagentCompleted {
-            id: id.into(),
+            agent_id: id.into(),
             index,
             summary: summary.into(),
             tool_count,
@@ -557,10 +615,39 @@ impl WebSocketMessage {
     /// Create a subagent_error message
     pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
         Self::SubagentError {
-            id: id.into(),
+            agent_id: id.into(),
             index,
             error: error.into(),
         }
+    }
+
+    // === Utility Methods ===
+
+    /// Get the agent_id if this is a subagent event
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Self::Thinking { agent_id, .. } => agent_id.as_deref(),
+            Self::ToolStart { agent_id, .. } => agent_id.as_deref(),
+            Self::ToolEnd { agent_id, .. } => agent_id.as_deref(),
+            Self::Content { agent_id, .. } => agent_id.as_deref(),
+            Self::Done { agent_id } => agent_id.as_deref(),
+            Self::TokenStats { agent_id, .. } => agent_id.as_deref(),
+            Self::Text { agent_id, .. } => agent_id.as_deref(),
+            // Subagent lifecycle events always have an agent_id
+            Self::SubagentStarted { agent_id, .. } => Some(agent_id),
+            Self::SubagentCompleted { agent_id, .. } => Some(agent_id),
+            Self::SubagentError { agent_id, .. } => Some(agent_id),
+        }
+    }
+
+    /// Check if this event is from a subagent
+    pub fn is_subagent_event(&self) -> bool {
+        self.agent_id().is_some()
+    }
+
+    /// Check if this is a main agent event
+    pub fn is_main_agent_event(&self) -> bool {
+        self.agent_id().is_none()
     }
 
     /// Serialize to JSON string
@@ -629,29 +716,56 @@ mod tests {
         assert_eq!(original, parsed);
     }
 
-    // === Subagent message tests ===
+    // === Unified StreamEvent tests ===
+
+    #[test]
+    fn test_main_agent_events() {
+        // Test that main agent events have no agent_id
+        let thinking = StreamEvent::thinking("test");
+        assert!(thinking.agent_id().is_none());
+        assert!(thinking.is_main_agent_event());
+
+        let content = StreamEvent::content("hello");
+        assert!(content.agent_id().is_none());
+        assert!(!content.is_subagent_event());
+
+        let done = StreamEvent::done();
+        assert!(done.agent_id().is_none());
+    }
+
+    #[test]
+    fn test_subagent_events() {
+        // Test that subagent events have agent_id
+        let thinking = StreamEvent::subagent_thinking("uuid-123", "test");
+        assert_eq!(thinking.agent_id(), Some("uuid-123"));
+        assert!(thinking.is_subagent_event());
+
+        let content = StreamEvent::subagent_content("uuid-123", "hello");
+        assert_eq!(content.agent_id(), Some("uuid-123"));
+    }
 
     #[test]
     fn test_subagent_started_serialization() {
-        let msg = WebSocketMessage::subagent_started("id-123", "Search docs", 1);
+        let msg = StreamEvent::subagent_started("id-123", "Search docs", 1);
         let json = msg.to_json();
         assert!(json.contains(r#""type":"subagent_started"#));
-        assert!(json.contains(r#""id":"id-123"#));
+        assert!(json.contains(r#""agent_id":"id-123"#));
         assert!(json.contains(r#""task":"Search docs"#));
         assert!(json.contains(r#""index":1"#));
     }
 
     #[test]
     fn test_subagent_thinking_serialization() {
-        let msg = WebSocketMessage::subagent_thinking("id-123", "Analyzing...");
+        let msg = StreamEvent::subagent_thinking("id-123", "Analyzing...");
         let json = msg.to_json();
-        assert!(json.contains(r#""type":"subagent_thinking"#));
+        assert!(json.contains(r#""type":"thinking"#));
+        assert!(json.contains(r#""agent_id":"id-123"#));
         assert!(json.contains(r#""content":"Analyzing..."#));
     }
 
     #[test]
     fn test_subagent_completed_serialization() {
-        let msg = WebSocketMessage::subagent_completed("id-123", 1, "Done", 5);
+        let msg = StreamEvent::subagent_completed("id-123", 1, "Done", 5);
         let json = msg.to_json();
         assert!(json.contains(r#""type":"subagent_completed"#));
         assert!(json.contains(r#""tool_count":5"#));
@@ -659,11 +773,16 @@ mod tests {
 
     #[test]
     fn test_subagent_message_deserialization() {
-        let json = r#"{"type":"subagent_started","id":"id-123","task":"Test task","index":1}"#;
-        let msg: WebSocketMessage = serde_json::from_str(json).unwrap();
+        let json =
+            r#"{"type":"subagent_started","agent_id":"id-123","task":"Test task","index":1}"#;
+        let msg: StreamEvent = serde_json::from_str(json).unwrap();
         match msg {
-            WebSocketMessage::SubagentStarted { id, task, index } => {
-                assert_eq!(id, "id-123");
+            StreamEvent::SubagentStarted {
+                agent_id,
+                task,
+                index,
+            } => {
+                assert_eq!(agent_id, "id-123");
                 assert_eq!(task, "Test task");
                 assert_eq!(index, 1);
             }
@@ -673,22 +792,53 @@ mod tests {
 
     #[test]
     fn test_subagent_tool_messages() {
-        let start_msg = WebSocketMessage::subagent_tool_start(
+        let start_msg = StreamEvent::subagent_tool_start(
             "id-123",
             "read_file",
             Some(r#"{"path":"/test.txt"}"#.to_string()),
         );
         let json = start_msg.to_json();
-        assert!(json.contains(r#""type":"subagent_tool_start"#));
+        assert!(json.contains(r#""type":"tool_start"#));
+        assert!(json.contains(r#""agent_id":"id-123"#));
         assert!(json.contains(r#""name":"read_file"#));
 
-        let end_msg = WebSocketMessage::subagent_tool_end(
+        let end_msg = StreamEvent::subagent_tool_end(
             "id-123",
             "read_file",
             Some("file contents".to_string()),
         );
         let json = end_msg.to_json();
-        assert!(json.contains(r#""type":"subagent_tool_end"#));
+        assert!(json.contains(r#""type":"tool_end"#));
         assert!(json.contains(r#""output":"file contents"#));
+    }
+
+    #[test]
+    fn test_token_stats_event() {
+        let stats = StreamEvent::token_stats(1000, 500, 1500, 0.01, "USD");
+        match stats {
+            StreamEvent::TokenStats {
+                agent_id,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost,
+                currency,
+            } => {
+                assert!(agent_id.is_none());
+                assert_eq!(input_tokens, 1000);
+                assert_eq!(output_tokens, 500);
+                assert_eq!(total_tokens, 1500);
+                assert!((cost - 0.01).abs() < 0.0001);
+                assert_eq!(currency, "USD");
+            }
+            _ => panic!("Expected TokenStats"),
+        }
+    }
+
+    #[test]
+    fn test_backward_compatibility_websocket_message_alias() {
+        // WebSocketMessage is now an alias for StreamEvent
+        let msg: WebSocketMessage = StreamEvent::thinking("test");
+        assert!(matches!(msg, StreamEvent::Thinking { .. }));
     }
 }

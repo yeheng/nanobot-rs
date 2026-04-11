@@ -13,6 +13,9 @@ pub use error::KernelError;
 pub use executor::{AgentExecutor, ExecutionResult, ExecutorOptions, ToolExecutor};
 pub use stream::{BufferedEvents, StreamEvent};
 
+// Re-export from gasket_types for convenience
+pub use gasket_types::StreamEvent as KernelStreamEvent;
+
 use gasket_providers::ChatMessage;
 use tokio::sync::mpsc;
 

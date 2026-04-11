@@ -16,10 +16,10 @@ use gasket_engine::cron::CronService;
 use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::AgentSession;
+use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::CronTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata};
-use gasket_engine::SubagentManager;
 
 use super::registry::CliModelResolver;
 use crate::provider::setup_vault;
@@ -116,7 +116,7 @@ pub async fn cmd_gateway() -> Result<()> {
         super::registry::ToolRegistryConfig {
             config: config.clone(),
             workspace: workspace.clone(),
-            subagent_manager: None,
+            subagent_spawner: None,
             extra_tools: vec![],
             sqlite_store: None, // Subagent doesn't need history search
             model_registry: Some(model_registry.clone()),
@@ -124,31 +124,29 @@ pub async fn cmd_gateway() -> Result<()> {
         },
     ));
 
-    let subagent_manager = Arc::new(
-        SubagentManager::with_model_resolver(
+    let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
+        SimpleSpawner::new(
             provider_info.provider.clone(),
-            workspace.clone(),
             subagent_tools,
-            bus.outbound_sender(),
-            Some(Arc::new(CliModelResolver {
-                provider_registry: {
-                    let mut r = ProviderRegistry::from_config(&config);
-                    if let Some(ref v) = vault {
-                        r.with_vault(v.clone());
-                    }
-                    r
-                },
-                model_registry: ModelRegistry::from_config(&config.agents),
-            })),
+            workspace.clone(),
         )
-        .await,
+        .with_model_resolver(Arc::new(CliModelResolver {
+            provider_registry: {
+                let mut r = ProviderRegistry::from_config(&config);
+                if let Some(ref v) = vault {
+                    r.with_vault(v.clone());
+                }
+                r
+            },
+            model_registry: ModelRegistry::from_config(&config.agents),
+        })),
     );
 
     #[allow(unused_mut)]
     let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
-        subagent_manager: Some(subagent_manager.clone()),
+        subagent_spawner: Some(subagent_spawner.clone()),
         extra_tools: {
             let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
                 Box::new(MessageTool::new(bus.outbound_sender()))
@@ -197,7 +195,7 @@ pub async fn cmd_gateway() -> Result<()> {
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
-        .with_spawner(subagent_manager.clone() as Arc<dyn gasket_engine::SubagentSpawner>),
+        .with_spawner(subagent_spawner.clone()),
     );
 
     // Track running tasks

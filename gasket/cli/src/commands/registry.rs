@@ -15,7 +15,7 @@ use gasket_engine::tools::{
 };
 use gasket_engine::tools::{SpawnParallelTool, SpawnTool};
 use gasket_engine::AgentConfig;
-use gasket_engine::SubagentManager;
+use gasket_engine::SubagentSpawner;
 
 /// CLI-level implementation of ModelResolver using ProviderRegistry + ModelRegistry.
 ///
@@ -146,7 +146,7 @@ pub struct ToolRegistryConfig {
     /// Workspace path
     pub workspace: std::path::PathBuf,
     /// Optional subagent manager for spawn tool
-    pub subagent_manager: Option<Arc<SubagentManager>>,
+    pub subagent_spawner: Option<Arc<dyn SubagentSpawner>>,
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
     pub extra_tools: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)>,
     /// SQLite store for history search (optional)
@@ -171,7 +171,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     let ToolRegistryConfig {
         config,
         workspace,
-        subagent_manager,
+        subagent_spawner,
         extra_tools,
         sqlite_store,
         model_registry,
@@ -179,7 +179,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     } = registry_config;
 
     // Suppress unused warnings when tool-spawn feature is disabled
-    let _ = (&subagent_manager, &model_registry, &provider_registry);
+    let _ = (&subagent_spawner, &model_registry, &provider_registry);
 
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {

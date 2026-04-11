@@ -805,6 +805,69 @@ pub struct PhaseBreakdown {
     pub on_demand_tokens: usize,
 }
 
+/// Implement MemoryProvider trait for MemoryManager.
+///
+/// This allows HistoryCoordinator to depend on the trait rather than
+/// the concrete type, enabling test doubles and future alternative backends.
+#[async_trait::async_trait]
+impl super::store::MemoryProvider for MemoryManager {
+    async fn load_for_context(&self, query: &MemoryQuery) -> anyhow::Result<MemoryContext> {
+        self.load_for_context(query).await
+    }
+
+    async fn search(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<MemoryHit>> {
+        let memory_query = MemoryQuery {
+            text: Some(query.to_string()),
+            tags: vec![],
+            scenario: None,
+            max_tokens: Some(top_k * 200),
+        };
+        let ctx = self.load_for_context(&memory_query).await?;
+        let hits: Vec<MemoryHit> = ctx
+            .memories
+            .into_iter()
+            .map(|m| MemoryHit {
+                path: format!("{}/{}", m.metadata.scenario.dir_name(), m.metadata.id),
+                scenario: m.metadata.scenario,
+                title: m.metadata.title.clone(),
+                tags: m.metadata.tags,
+                frequency: m.metadata.frequency,
+                score: 0.0,
+                tokens: m.metadata.tokens,
+            })
+            .take(top_k)
+            .collect();
+        Ok(hits)
+    }
+
+    async fn create_memory(
+        &self,
+        scenario: Scenario,
+        _filename: &str,
+        title: &str,
+        tags: &[String],
+        frequency: Frequency,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.create_memory(scenario, title, tags, frequency, content)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_memory(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.update_memory(scenario, filename, content).await
+    }
+
+    async fn delete_memory(&self, scenario: Scenario, filename: &str) -> anyhow::Result<()> {
+        self.delete_memory(scenario, filename).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1371,68 +1434,5 @@ mod tests {
         let report = manager.reindex().await.unwrap();
         assert_eq!(1, report.total_files);
         assert_eq!(0, report.total_errors);
-    }
-}
-
-/// Implement MemoryProvider trait for MemoryManager.
-///
-/// This allows HistoryCoordinator to depend on the trait rather than
-/// the concrete type, enabling test doubles and future alternative backends.
-#[async_trait::async_trait]
-impl super::store::MemoryProvider for MemoryManager {
-    async fn load_for_context(&self, query: &MemoryQuery) -> anyhow::Result<MemoryContext> {
-        self.load_for_context(query).await
-    }
-
-    async fn search(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<MemoryHit>> {
-        let memory_query = MemoryQuery {
-            text: Some(query.to_string()),
-            tags: vec![],
-            scenario: None,
-            max_tokens: Some(top_k * 200),
-        };
-        let ctx = self.load_for_context(&memory_query).await?;
-        let hits: Vec<MemoryHit> = ctx
-            .memories
-            .into_iter()
-            .map(|m| MemoryHit {
-                path: format!("{}/{}", m.metadata.scenario.dir_name(), m.metadata.id),
-                scenario: m.metadata.scenario,
-                title: m.metadata.title.clone(),
-                tags: m.metadata.tags,
-                frequency: m.metadata.frequency,
-                score: 0.0,
-                tokens: m.metadata.tokens,
-            })
-            .take(top_k)
-            .collect();
-        Ok(hits)
-    }
-
-    async fn create_memory(
-        &self,
-        scenario: Scenario,
-        _filename: &str,
-        title: &str,
-        tags: &[String],
-        frequency: Frequency,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        self.create_memory(scenario, title, tags, frequency, content)
-            .await?;
-        Ok(())
-    }
-
-    async fn update_memory(
-        &self,
-        scenario: Scenario,
-        filename: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        self.update_memory(scenario, filename, content).await
-    }
-
-    async fn delete_memory(&self, scenario: Scenario, filename: &str) -> anyhow::Result<()> {
-        self.delete_memory(scenario, filename).await
     }
 }
