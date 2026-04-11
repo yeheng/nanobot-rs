@@ -198,7 +198,7 @@ ThinkingConfig {
 
 ### 2.6 流式输出类型
 
-> **来源**: `gasket-core::agent::stream::StreamEvent`
+> **来源**: `gasket-engine::kernel::stream::StreamEvent`
 
 ```rust
 pub enum StreamEvent {
@@ -416,7 +416,7 @@ pub struct SessionMetadata {
 
 ### 3.1 Session
 
-> **来源**: `gasket-core::session::Session`
+> **来源**: `gasket-types::session_event::Session`
 
 ```rust
 Session {
@@ -435,7 +435,7 @@ SessionMessage {
 
 ### 3.2 历史处理配置
 
-> **来源**: `gasket_storage::processor`
+> **来源**: `gasket_storage::history`
 
 ```rust
 HistoryConfig {
@@ -504,60 +504,48 @@ pub struct PersistentContext {
 
 ### 4.9 ContextCompactor
 
-同步上下文压缩器 — 替代异步后台摘要。在每次代理响应后直接调用，确保下一个请求看到最新摘要。
+上下文压缩器 — 在 token 预算超限时触发摘要生成。
 
 ```rust
 pub struct ContextCompactor {
-    /// 用于生成摘要的 LLM 提供商
     provider: Arc<dyn LlmProvider>,
-    /// 用于持久化摘要事件的事件存储
     event_store: Arc<EventStore>,
-    /// 用于摘要的模型
+    sqlite_store: Arc<SqliteStore>,
     model: String,
-    /// 上下文窗口的 token 预算
     token_budget: usize,
-    /// 压缩阈值乘数（默认 1.2）
-    compaction_threshold: f32,
-    /// 自定义摘要提示
-    summarization_prompt: String,
 }
 
 impl ContextCompactor {
-    /// 创建新的压缩器
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         event_store: Arc<EventStore>,
+        sqlite_store: Arc<SqliteStore>,
         model: String,
         token_budget: usize,
     ) -> Self;
 
-    /// 设置自定义摘要提示
     pub fn with_summarization_prompt(self, prompt: impl Into<String>) -> Self;
 
-    /// 设置自定义压缩阈值乘数
-    pub fn with_threshold(self, threshold: f32) -> Self;
-
-    /// 对被驱逐的事件运行压缩
-    pub async fn compact(
+    /// 非阻塞压缩检查
+    pub fn try_compact(
         &self,
         session_key: &str,
-        evicted_events: &[SessionEvent],
+        estimated_tokens: usize,
         vault_values: &[String],
-    ) -> anyhow::Result<Option<String>>;
+    );
 }
 ```
 
 **关键设计点：**
-- **同步执行**：在用户收到响应后在 `finalize_response()` 中运行（无额外延迟）
-- **无竞态条件**：下一个请求始终看到最新摘要（消除 `tokio::spawn` 时序问题）
-- **批量阈值**：仅在被驱逐的 token 超过 `token_budget * (threshold - 1.0)` 时压缩
-- **LSM-tree 类比**：L0（活动上下文）在溢出时刷新到 L1（摘要检查点）
+- **非阻塞执行**：`try_compact` 生成异步任务，不阻塞响应
+- **Token 预算检查**：当 `estimated_tokens` 超过预算时触发压缩
+- **后台摘要**：压缩在后台执行，完成后保存到 EventStore
 
 **生命周期：**
 ```text
-AgentLoop::process_direct()
+AgentSession::process_direct()
   → prepare_pipeline()     // 历史 + 提示组装
-  → run_agent_loop()       // LLM 迭代
+  → kernel::execute()      // LLM 迭代 (纯函数)
   → finalize_response()    // 保存事件 + 压缩 + 返回
 ```
 
@@ -638,7 +626,7 @@ MemoryHit {
 
 ### 4.5 MemoryProvider Trait
 
-> **来源**: `gasket-engine::agent::memory_provider`
+> **来源**: `gasket-engine::session::store::MemoryProvider`
 
 解耦 HistoryCoordinator 与 MemoryManager 的窄接口。
 
@@ -656,7 +644,7 @@ pub trait MemoryProvider: Send + Sync {
 
 ### 4.6 MemoryContext
 
-> **来源**: `gasket-engine::agent::memory_manager`
+> **来源**: `gasket-engine::session::memory::MemoryManager`
 
 三阶段加载的结果。
 
@@ -680,7 +668,7 @@ PhaseBreakdown {
 
 ### 5.1 VaultEntryV2
 
-> **来源**: `gasket-vault::VaultEntryV2`
+> **来源**: `gasket-engine::vault::VaultEntryV2`
 
 ```rust
 VaultEntryV2 {
@@ -699,7 +687,7 @@ VaultMetadata {
 
 ### 5.2 VaultFileV2
 
-> **来源**: `gasket-vault::VaultFileV2`
+> **来源**: `gasket-engine::vault::VaultFileV2`
 
 ```rust
 VaultFileV2 {
@@ -712,7 +700,7 @@ VaultFileV2 {
 
 ### 5.3 InjectionReport
 
-> **来源**: `gasket-core::vault::injector`
+> **来源**: `gasket-engine::vault::injector`
 
 ```rust
 InjectionReport {
@@ -886,7 +874,7 @@ InjectionReport {
 
 ### 8.1 SubagentManager
 
-> **来源**: `gasket-core::agent::subagent`
+> **来源**: `gasket-engine::subagents::manager`
 
 ```rust
 pub struct SubagentManager {
@@ -919,7 +907,7 @@ pub struct SubagentTaskBuilder<'a> {
 
 ### 8.3 SubagentEvent
 
-> **来源**: `gasket-core::agent::subagent_tracker`
+> **来源**: `gasket-engine::subagents::tracker`
 
 ```rust
 pub enum SubagentEvent {
@@ -943,7 +931,7 @@ pub struct SubagentResult {
 
 ### 9.1 Hook 类型定义
 
-> **来源**: `gasket-core::hooks::types`
+> **来源**: `gasket-engine::hooks::types`
 
 ```rust
 pub enum HookPoint {

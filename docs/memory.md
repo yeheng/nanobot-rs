@@ -346,17 +346,16 @@ memory_embeddings (
 | `lifecycle.rs` | AccessLog + FrequencyManager — 频率衰减/提升 + 批量访问追踪 + SQL 驱动衰减 |
 | `watcher.rs` | MemoryWatcher — 文件监控与防抖 + AutoIndexHandler mtime 比对 |
 
-### Engine 层 (`gasket/engine/src/agent/`)
+### Engine 层 (`gasket/engine/src/session/`)
 
 | 文件 | 职责 |
 |------|------|
-| `memory_manager.rs` | MemoryManager 门面 — 三阶段加载 + Write-Through CRUD + Token 预算执行 |
-| `memory_provider.rs` | MemoryProvider trait — 解耦 HistoryCoordinator 与具体实现的查询接口 |
-| `memory.rs` | MemoryStore — SqliteStore 薄包装，用于机器状态（会话、摘要、定时任务） |
+| `memory.rs` | MemoryManager 门面 — 三阶段加载 + Write-Through CRUD + Token 预算执行 |
+| `store.rs` | MemoryProvider trait + MemoryStore — 解耦 HistoryCoordinator 与具体实现的查询接口 |
 
-### Agent Loop 集成
+### AgentSession 集成
 
-MemoryManager 在 Agent Loop 的 `prepare_pipeline()` 中注入：
+MemoryManager 在 AgentSession 的 `prepare_pipeline()` 中注入：
 
 ```
 用户消息 → [系统提示] → [记忆加载] → [历史处理] → [摘要注入] → [组装提示] → LLM

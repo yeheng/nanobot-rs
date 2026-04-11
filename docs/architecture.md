@@ -10,27 +10,27 @@
 gasket-rs/                    (Cargo workspace)
 ├── engine/                   核心编排 crate — Agent 引擎、工具、Hook 系统
 │   └── src/
-│       ├── agent/             Agent 核心引擎 (loop, executor, prompt, history, stream, compactor, indexing, subagent, context)
+│       ├── kernel/            纯函数执行核心 (executor, stream)
+│       ├── session/           会话管理层 (AgentSession, context, compactor, memory)
+│       ├── subagents/         子代理系统 (manager, tracker, runner)
 │       ├── config/            配置加载 (YAML → Struct)
 │       ├── cron/              定时任务服务
 │       ├── heartbeat/         心跳服务
-│       ├── hooks/             Pipeline Hook 系统 (BeforeRequest, AfterResponse, etc.)
-│       ├── skills/            技能系统 (loader, registry, skill, metadata)
+│       ├── hooks/             Pipeline Hook 系统
+│       ├── skills/            技能系统
 │       ├── tools/             工具系统 (14 个内置工具)
-│       └── vault/             敏感数据隔离 re-export (从 vault)
+│       └── vault/             敏感数据隔离模块
 ├── cli/                      CLI 可执行文件
 │   └── src/
 │       ├── main.rs            命令入口 + Gateway 启动器
 │       ├── cli.rs             CLI 交互模式
 │       ├── provider.rs        Provider 工厂
-│       └── commands/          子命令 (onboard, status, agent, gateway, channels, cron, vault)
-├── types/                    共享类型定义 (Tool trait, events 等)
+│       └── commands/          子命令 (onboard, status, agent, gateway, channels, cron, vault, memory)
+├── types/                    共享类型定义 (Tool trait, events, session_event 等)
 ├── providers/                LLM 提供商实现
-├── storage/                  SQLite 存储实现
-├── vault/                    Vault 敏感数据管理
+├── storage/                  SQLite 存储 + 记忆系统实现
 ├── channels/                 通信渠道实现
 ├── sandbox/                  沙箱执行环境
-├── bus/                      消息总线 Actor 实现
 └── tantivy/                  Tantivy 搜索 MCP 服务器 (独立二进制)
 ```
 
@@ -53,10 +53,10 @@ gasket-rs/                    (Cargo workspace)
 │                        engine (Library)                          │
 │                                │           │                     │
 │  ┌─────────────────────────────▼───────────▼──────────────────┐  │
-│  │                      Agent Loop (核心引擎)                  │  │
+│  │                   AgentSession (会话管理)                   │  │
 │  │  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐   │  │
-│  │  │  Prompt    │  │    Tool      │  │    History        │   │  │
-│  │  │  Loader    │  │   Executor   │  │   Processor      │   │  │
+│  │  │   Prompt   │  │    kernel    │  │    Session        │   │  │
+│  │  │   Loader   │  │   execute    │  │   Management     │   │  │
 │  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
 │  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
 │  │  │  Context Compactor │  │      Hook Registry         │   │  │
@@ -65,74 +65,55 @@ gasket-rs/                    (Cargo workspace)
 │  └──────────┬──────────────┬──────────────────┬──────────────┘  │
 │             │              │                  │                  │
 │  ┌──────────▼──────┐  ┌───▼──────────┐  ┌───▼──────────────┐  │
-│  │  Providers      │  │  Tool        │  │   Session        │  │
+│  │  Providers      │  │  Tool        │  │   Memory         │  │
 │  │  (re-export)    │  │  Registry    │  │   Manager        │  │
-│  │                 │  │              │  │   (SQLite 后端)   │  │
-│  │ ┌─────────────┐ │  │ ┌──────────┐ │  │                   │  │
-│  │ │  OpenAI     │ │  │ │Filesystem│ │  └─────────┬─────────┘  │
-│  │ │  Compatible │ │  │ │Shell     │ │            │            │
-│  │ │  Provider   │ │  │ │WebSearch │ │  ┌─────────▼─────────┐  │
-│  │ ├─────────────┤ │  │ │WebFetch  │ │  │  Memory Store     │  │
-│  │ │  Gemini     │ │  │ │Spawn    │ │  │  (re-export)      │  │
-│  │ │  Provider   │ │  │ │SpawnPar.│ │  │  ┌─────────────┐  │  │
-│  │ │             │ │  │ │Message  │ │  │  │             │  │  │
-│  │ ├─────────────┤ │  │ │Cron     │ │  │  │ memories    │  │  │
-│  │ │  Copilot    │ │  │ │MCP Tools│ │  │  │ sessions    │  │  │
-│  │ │  Provider   │ │  │ │Memory   │ │  │  │ session_msg │  │  │
-│  │ └─────────────┘ │  │ │ Search  │ │  │  │ kv_store    │  │  │
-│  └────────────────┘  │ │Sandbox  │ │  │  │ cron_jobs   │  │  │
-│                      │ └──────────┘ │  │  └─────────────┘  │  │
-│  ┌────────────────┐  └──────────────┘  └───────────────────┘  │
-│  │  Message Bus   │                                            │
-│  │  (Actor 模型)  │                                            │
-│  │                │                                            │
-│  │  Router Actor  │   ┌───────────────────────────────────┐   │
-│  │  Session Actor │   │   Pipeline Hooks                  │   │
-│  │  Outbound Actor│   │   ~/.gasket/hooks/               │   │
-│  └───────┬────────┘   │   BeforeRequest.sh                │   │
-│          │            │   AfterResponse.sh                │   │
-│  ┌───────▼──────────────────────────┐  └──────────────────┘   │
-│  │        Channel Manager           │                         │
-│  │  ┌──────┐ ┌───────┐ ┌────────┐  │                         │
-│  │  │Tele- │ │Discord│ │ Slack  │  │  ┌───────────────────┐  │
-│  │  │gram  │ │       │ │        │  │  │   Config Loader   │  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │  │   (YAML → Struct) │  │
-│  │  │飞书  │ │ 邮件  │ │ 钉钉  │  │  └───────────────────┘  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │                         │
-│  │  │企业  │ │WebSoc-│ │  CLI   │  │  ┌───────────────────┐  │
-│  │  │微信  │ │ket    │ │       │  │  │   Skills Loader   │  │
-│  │  └──────┘ └───────┘ └────────┘  │  │   (MD → Context)  │  │
-│  └─────────────────────────────────┘  └───────────────────┘  │
-│                                                               │
-│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐ │
-│  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      │ │
-│  │  Service      │  │  (文件驱动：     │  │  (JSON-RPC 2.0)  │ │
-│  │               │  │   ~/.gasket/   │  │                  │ │
-│  │               │  │   cron/*.md)   │  │                  │ │
-│  └───────────────┘  └────────────────┘  └──────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Vault (敏感数据隔离模块)                    │  │
-│  │              (re-export from vault crate)               │  │
-│  │                                                         │  │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
-│  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
-│  │  │ (JSON 存储) │  │ (运行时注入) │  │  (XChaCha20)  │  │  │
-│  │  └─────────────┘  └──────────────┘  └───────────────┘  │  │
-│  │                                                         │  │
-│  │  占位符语法: {{vault:key}}                              │  │
-│  │  日志脱敏: redact_secrets()                             │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Search/Embedding (搜索/嵌入模块)            │  │
-│  │              (from storage crate with local-embedding)  │  │
-│  │                                                         │  │
-│  │  SearchQuery: BooleanQuery, FuzzyQuery, DateRange       │  │
-│  │  SearchResult: HighlightedText                          │  │
-│  │  TextEmbedder, cosine_similarity                        │  │
-│  │  注: 高级 Tantivy 全文搜索在独立的 tantivy crate         │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  │                 │  │              │  │                  │  │
+│  │ ┌─────────────┐ │  │ ┌──────────┐ │  │  长期记忆系统     │  │
+│  │ │  OpenAI     │ │  │ │Filesystem│ │  │  (Scenario-based)│  │
+│  │ │  Compatible │ │  │ │Shell     │ │  └─────────────────┘  │
+│  │ │  Provider   │ │  │ │WebSearch │ │                       │
+│  │ ├─────────────┤ │  │ │WebFetch  │ │  ┌─────────────────┐  │
+│  │ │  Gemini     │ │  │ │Spawn    │ │  │  EventStore     │  │
+│  │ │  Provider   │ │  │ │SpawnPar.│ │  │  (SQLite 后端)   │  │
+│  │ │             │ │  │ │Message  │ │  │                 │  │
+│  │ ├─────────────┤ │  │ │Cron     │ │  │  session_events │  │
+│  │ │  Copilot    │ │  │ │MCP Tools│ │  │  memory_metadata│  │
+│  │ │  Provider   │ │  │ │Memory   │ │  └─────────────────┘  │
+│  │ └─────────────┘ │  │ └──────────┘ │                       │
+│  └────────────────┘  └──────────────┘                       │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  kernel (纯函数执行核心)                                  ││
+│  │  ├── executor.rs: AgentExecutor, ToolExecutor            ││
+│  │  ├── stream.rs: StreamEvent 流式输出                     ││
+│  │  └── context.rs: RuntimeContext, KernelConfig            ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  subagents (子代理系统)                                   ││
+│  │  ├── manager.rs: SubagentManager, SubagentTaskBuilder   ││
+│  │  ├── tracker.rs: SubagentTracker, 并行任务协调          ││
+│  │  └── runner.rs: run_subagent, ModelResolver             ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                             │
+│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐│
+│  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      ││
+│  │  Service      │  │  (文件驱动：     │  │  (JSON-RPC 2.0)  ││
+│  │               │  │   ~/.gasket/   │  │                  ││
+│  │               │  │   cron/*.md)   │  │                  ││
+│  └───────────────┘  └────────────────┘  └──────────────────┘│
+│                                                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │              Vault (敏感数据隔离模块)                    ││
+│  │                                                         ││
+│  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ││
+│  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  ││
+│  │  │ (JSON 存储) │  │ (运行时注入) │  │  (XChaCha20)  │  ││
+│  │  └─────────────┘  └──────────────┘  └───────────────┘  ││
+│  │                                                         ││
+│  │  占位符语法: {{vault:key}}                              ││
+│  │  日志脱敏: redact_secrets()                             ││
+│  └─────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────┘
 
                     ┌─────────────────────┐
@@ -148,14 +129,15 @@ gasket-rs/                    (Cargo workspace)
 | 原则 | 实现方式 |
 |------|----------|
 | **AgentContext 枚举** | 零成本枚举分发替代 Option<T> 模式，PersistentContext 变体（完整依赖）和 Stateless 变体（无持久化） |
-| **Actor 模型消息传递** | Gateway 使用三个 Actor（Router → Session → Outbound）通过 mpsc channel 通信，零锁设计 |
+| **Kernel 纯函数设计** | `kernel::execute()` 和 `kernel::execute_streaming()` 无副作用，输入输出清晰 |
+| **Session 状态管理** | `AgentSession` 包装 kernel，管理会话状态、提示加载、Hook 注册 |
 | **Pipeline Hook 扩展** | 五个执行点（BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse）支持顺序/并行策略 |
 | **Feature Flag 编译** | 各通信渠道通过 Cargo feature flag 独立编译，按需启用 |
-| **无内存缓存** | SessionManager 直接读写 SQLite，利用 SQLite page cache 避免缓存一致性问题 |
+| **无内存缓存** | Session 直接读写 SQLite，利用 SQLite page cache 避免缓存一致性问题 |
 | **Vault 敏感数据隔离** | 敏感数据与 LLM 可访问存储完全隔离，仅运行时注入，支持加密存储 |
 | **模块化 Skills 系统** | 独立的 skills/ 模块，支持 Markdown + YAML frontmatter 格式，渐进式加载 |
 | **文件驱动 Cron** | Cron jobs 存储在 ~/.gasket/cron/*.md，notify 监听热重载，无需 SQLite 持久化 |
-| **Crate 分离** | 核心类型、提供商、存储、Vault、渠道等已拆分为独立 crate，通过 re-export 保持兼容性 |
+| **Crate 分离** | 核心类型、提供商、存储、渠道等已拆分为独立 crate |
 
 ---
 
@@ -166,18 +148,24 @@ engine
     │
     ├── re-exports from types
     │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
+    │       └── SessionEvent, EventType, Session (事件溯源类型)
     │
     ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
     ├── re-exports from storage (as memory 模块)
     │       └── SqliteStore, EventStore, StoreError, MemoryStore
+    │       └── memory 子模块 (MetadataStore, EmbeddingStore 等)
     │
-    ├── re-exports from storage (as search 模块)
-    │       └── TextEmbedder, cosine_similarity, top_k_similar (feature: local-embedding)
+    ├── session/ (会话管理层)
+    │       └── AgentSession (原 AgentLoop), AgentContext, ContextCompactor
+    │       └── MemoryManager, MemoryProvider trait
     │
-    ├── re-exports from vault
-    │       └── VaultStore, VaultInjector, VaultCrypto, etc.
+    ├── kernel/ (纯函数执行核心)
+    │       └── AgentExecutor, ToolExecutor, execute(), execute_streaming()
+    │
+    ├── subagents/ (子代理系统)
+    │       └── SubagentManager, SubagentTracker
     │
     ├── optional: channels (feature flags)
     │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
@@ -189,6 +177,48 @@ engine
 ---
 
 ## 关键组件说明
+
+### AgentSession (原 AgentLoop)
+
+`AgentSession` 是会话管理的核心结构，负责：
+
+```rust
+pub struct AgentSession {
+    runtime_ctx: RuntimeContext,    // kernel 执行上下文
+    context: AgentContext,          // 持久化/无状态上下文
+    config: AgentConfig,            // Agent 配置
+    workspace: PathBuf,             // 工作空间路径
+    system_prompt: String,          // 系统提示
+    skills_context: Option<String>, // 技能上下文
+    hooks: Arc<HookRegistry>,       // Hook 注册表
+    compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
+    memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
+    indexing_service: Option<Arc<IndexingService>>, // 索引服务
+}
+```
+
+**关键方法：**
+- `process_direct()` — 处理消息并返回响应
+- `process_direct_streaming_with_channel()` — 流式处理
+
+### Kernel 执行核心
+
+纯函数设计，无副作用：
+
+```rust
+/// 纯函数: 执行 LLM 对话循环
+pub async fn execute(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+) -> Result<ExecutionResult, KernelError>;
+
+/// 纯函数: 流式 LLM 对话循环
+pub async fn execute_streaming(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: mpsc::Sender<StreamEvent>,
+) -> Result<ExecutionResult, KernelError>;
+```
 
 ### Cron Service (文件驱动架构)
 
@@ -262,7 +292,6 @@ pub enum HookPoint {
 | Crate | Flag | 用途 |
 |-------|------|------|
 | engine | `local-embedding` | ONNX 嵌入 (fastembed) |
-| engine | `smart-model-selection` | 动态模型切换 |
 | engine | `telegram` | Telegram 渠道 |
 | engine | `discord` | Discord 渠道 |
 | engine | `slack` | Slack 渠道 |
@@ -293,8 +322,7 @@ pub enum HookPoint {
 |-------|------|------|
 | `types` | 共享类型定义，最小依赖 | 无 |
 | `providers` | LLM 提供商实现 | types, async-trait |
-| `storage` | SQLite 存储 + embedding | types, sqlx, fastembed |
-| `vault` | Vault 加密存储 | AES-GCM, Argon2 |
+| `storage` | SQLite 存储 + embedding + 记忆系统 | types, sqlx, fastembed |
 | `channels` | 通信渠道 | teloxide, serenity, etc. |
-| `sandbox` | 沙箱执行 | sandbox |
+| `sandbox` | 沙箱执行 | 系统进程管理 |
 | `tantivy` | 全文搜索 MCP 服务器 | tantivy |

@@ -11,7 +11,7 @@ User Input
   │
   ▼
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  reedline    │───▶│  AgentLoop   │───▶│   Prompt     │
+│  reedline    │───▶│ AgentSession │───▶│   Prompt     │
 │  (REPL)      │    │  .process_   │    │   Loader     │
 │              │    │   direct()   │    │              │
 └──────────────┘    └──────┬───────┘    └──────┬───────┘
@@ -119,7 +119,7 @@ User Input
               │           │ │       │ │           │
               │ Sequential│ ...     │ ...         │
               │ processing│ │       │ │           │
-              │ AgentLoop │ │       │ │           │
+              │AgentSession│ │       │ │           │
               │ .process_ │ │       │ │           │
               │  direct() │ │       │ │           │
               │           │ │       │ │           │
@@ -149,7 +149,7 @@ User Input
 | Actor | Responsibility | Concurrency Model |
 |-------|----------------|-------------------|
 | **Router Actor** | Distributes messages to Session Actors by SessionKey, lazy creation/cleanup | Single task, owns routing table HashMap, zero locks |
-| **Session Actor** | Processes all messages for a single session serially, calls AgentLoop | Independent tokio::spawn per session, shares `Arc<AgentLoop>` |
+| **Session Actor** | Processes all messages for a single session serially, calls AgentSession | Independent tokio::spawn per session, shares `Arc<AgentSession>` |
 | **Outbound Actor** | Cross-network HTTP/WebSocket sending, doesn't block upstream | Single task, external API blocking doesn't affect Agent |
 
 ---
@@ -175,7 +175,7 @@ User Input
               ┌────────▼─────────┐
               │  Router Actor    │
               │  (Gateway mode)  │
-              │  or AgentLoop    │
+              │  or AgentSession │
               │  .process_direct │
               │  (CLI mode)      │
               └────────┬─────────┘
@@ -389,7 +389,7 @@ User message: "Connect with {{vault:api_key}}"
 Processed message: "Connect with sk-xxxx"
                    │
                    ▼
-            AgentLoop processes
+            AgentSession processes
 ```
 
 ### InjectionReport
@@ -409,7 +409,7 @@ InjectionReport {
 ### Event Persistence Flow
 
 ```
-AgentLoop.process_direct()
+AgentSession::process_direct()
   │
   ├── User message ──▶ SessionEvent {
   │       event_type: UserMessage,
@@ -531,7 +531,7 @@ Query with Summary
 ```
 ─── submit() (async fire-and-forget) ───
 
-Caller ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
+Caller ──▶ tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
   │                              │                              │
   │  Returns Ok(()) immediately  │  10 min timeout             │  via outbound_tx
   │                              │                              │  to channel
@@ -541,7 +541,7 @@ Caller ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ Out
 
 ─── submit_and_wait() (sync wait) ───
 
-Caller ──▶ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ oneshot::Sender
+Caller ──▶ tokio::spawn ──▶ AgentSession::process_direct() ──▶ oneshot::Sender
   │              │                                              │
   │  await rx    │  10 min timeout                               │ tx.send(result)
   │  (blocking)  │                                              │

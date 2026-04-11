@@ -199,7 +199,7 @@ Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outb
 ```
 
 - **Router Actor**: 拥有路由表 `HashMap<SessionKey, Sender>`，按 session 分发，懒创建/清理
-- **Session Actor**: 串行处理单 session 消息，共享 `Arc<AgentLoop>`，空闲超时自毁
+- **Session Actor**: 串行处理单 session 消息，共享 `Arc<AgentSession>`，空闲超时自毁
 - **Outbound Actor**: 专职网络发送，隔离外部 API 延迟
 
 ---
@@ -293,33 +293,43 @@ trait MemoryStore: Send + Sync {
 
 ---
 
-## 9. agent/ — Agent 核心引擎
+## 9. session/ — 会话管理（原 agent/）
 
 | 文件 | 职责 |
 |------|------|
-| `loop_.rs` | `AgentLoop` — 核心处理循环，编排所有组件 |
-| `executor.rs` | `ToolExecutor` — 工具调用执行（支持并行批量） |
-| `executor_core.rs` | `AgentExecutor` — 核心 LLM 执行循环，支持流式 |
+| `mod.rs` | `AgentSession` — 会话管理核心，包装 kernel 执行 |
+| `config.rs` | `AgentConfig` — Agent 配置（含 kernel 转换支持） |
 | `context.rs` | `AgentContext` 枚举 — 零成本枚举分发（Persistent/Stateless） |
-| `compactor.rs` | `ContextCompactor` — 同步上下文压缩（替代 SummarizationService） |
-| `indexing.rs` | `IndexingService` — 语义索引服务（与压缩解耦） |
-| `stream.rs` | `StreamEvent` 枚举 — 流式输出事件（Content, Reasoning, ToolStart/End, Done） |
-| `stream_buffer.rs` | `BufferedEvents` — WebSocket 消息缓冲排序 |
-| `subagent.rs` | `SubagentManager` + `SubagentTaskBuilder` — Builder 模式子代理管理 |
-| `subagent_tracker.rs` | `SubagentTracker` — 并行任务协调，支持取消 |
-| `memory.rs` | `MemoryStore` — 会话内存存储（包装 SqliteStore） |
+| `compactor.rs` | `ContextCompactor` — 同步上下文压缩 |
+| `memory.rs` | `MemoryManager`, `MemoryContext`, `MemoryProvider` — 记忆管理 |
 | `prompt.rs` | 引导文件加载、技能上下文、token 截断 |
-| `request.rs` | `RequestHandler` — 请求构建与重试逻辑 |
-| `skill_loader.rs` | 技能文件加载（工作空间 + 内置目录） |
+| `store.rs` | `MemoryStore` — 内存存储包装器 |
+
+### AgentSession
+
+`AgentSession` 是会话管理的核心结构，包装 kernel 执行：
+
+```rust
+pub struct AgentSession {
+    runtime_ctx: RuntimeContext,    // kernel 执行上下文
+    context: AgentContext,          // 持久化/无状态上下文
+    config: AgentConfig,            // Agent 配置
+    workspace: PathBuf,             // 工作空间路径
+    system_prompt: String,          // 系统提示
+    skills_context: Option<String>, // 技能上下文
+    hooks: Arc<HookRegistry>,       // Hook 注册表
+    compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
+    memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
+    indexing_service: Option<Arc<IndexingService>>, // 索引服务
+}
+```
 
 ### AgentContext 枚举
 
-零成本枚举分发，替代之前的 trait 方案：
-
 ```rust
 pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless,
+    Persistent(PersistentContext),  // 主 Agent，完整事件溯源
+    Stateless,                      // 子 Agent，无持久化
 }
 
 pub struct PersistentContext {
@@ -330,27 +340,44 @@ pub struct PersistentContext {
 }
 ```
 
-| 变体 | 用途 |
+---
+
+## 10. kernel/ — 纯函数执行核心
+
+| 文件 | 职责 |
 |------|------|
-| `Persistent(PersistentContext)` | 主 Agent，完整事件溯源 |
-| `Stateless` | 子 Agent，无持久化 |
+| `mod.rs` | `execute()`, `execute_streaming()` — 纯函数执行入口 |
+| `executor.rs` | `AgentExecutor`, `ToolExecutor`, `ExecutionResult` — 执行器实现 |
+| `context.rs` | `RuntimeContext`, `KernelConfig` — 运行时上下文和配置 |
+| `stream.rs` | `StreamEvent`, `BufferedEvents` — 流式输出事件 |
+| `error.rs` | `KernelError` — 内核错误类型 |
 
-### 上下文压缩
-
-`ContextCompactor` 在历史消息被驱逐时执行同步压缩：
+### 纯函数执行接口
 
 ```rust
-pub struct ContextCompactor { /* provider, event_store, model, token_budget, threshold */ }
+/// 执行 LLM 对话循环
+pub async fn execute(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+) -> Result<ExecutionResult, KernelError>;
 
-impl ContextCompactor {
-    pub fn new(provider, event_store, model, token_budget) -> Self;
-    pub fn with_summarization_prompt(self, prompt) -> Self;
-    pub fn with_threshold(self, threshold: f32) -> Self;
-    pub async fn compact(&self, session_key, evicted_events, vault_values) -> Result<Option<String>>;
-}
+/// 流式 LLM 对话循环
+pub async fn execute_streaming(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: mpsc::Sender<StreamEvent>,
+) -> Result<ExecutionResult, KernelError>;
 ```
 
-当历史消息超过 token budget，压缩器调用 LLM 生成摘要并持久化为 Summary 事件。
+---
+
+## 11. subagents/ — 子代理系统
+
+| 文件 | 职责 |
+|------|------|
+| `manager.rs` | `SubagentManager`, `SubagentTaskBuilder` — Builder 模式子代理管理 |
+| `tracker.rs` | `SubagentTracker`, `TrackerError` — 并行任务协调 |
+| `runner.rs` | `run_subagent()`, `ModelResolver` — 子代理运行和模型解析 |
 
 ### SubagentManager API
 
@@ -372,7 +399,7 @@ let task_id = manager
 
 ---
 
-## 10. config/ — 配置管理
+## 12. config/ — 配置管理
 
 | 文件 | 职责 |
 |------|------|
@@ -385,10 +412,11 @@ let task_id = manager
 
 ---
 
-## 11. vault/ — 敏感数据隔离模块
+## 13. vault/ — 敏感数据隔离模块（engine 内部）
 
 > 详细使用指南见 [vault-guide.md](vault-guide.md)
-> **注意**: 核心类型从 `vault` crate re-export。
+
+Vault 模块位于 `engine/src/vault/`，不是独立 crate。
 
 ### 核心组件
 
@@ -416,7 +444,7 @@ let task_id = manager
 
 ---
 
-## 12. search/ — 搜索与嵌入
+## 14. search/ — 搜索与嵌入
 
 > **注意**: 搜索类型从 `storage` crate re-export。高级 Tantivy 全文搜索在独立 `tantivy` crate。
 
@@ -437,36 +465,22 @@ let task_id = manager
 2. `cosine_similarity(query, candidate) -> f32` — 计算相似度分数
 3. `top_k_similar(query, vectors, k) -> Vec<(f32, String)>` — 排序结果
 
-### 历史查询构建器
-
-```rust
-let results = HistoryQuery::builder("session-key")
-    .branch("main")
-    .time_range(start, end)
-    .event_types(vec!["UserMessage".into()])
-    .semantic_text("搜索查询")
-    .tools(vec!["exec".into()])
-    .limit(10)
-    .order(QueryOrder::ReverseChronological)
-    .build();
-```
-
 ---
 
-## 13. 其他模块
+## 15. 其他模块
 
 | 模块 | 说明 |
 |------|------|
-| `cron/` | `CronService` + `CronJob` — 定时任务服务，SQLite 持久化 |
+| `cron/` | `CronService` + `CronJob` — 定时任务服务，文件驱动 |
 | `heartbeat/` | `HeartbeatService` — 读取 HEARTBEAT.md，定时触发主动任务 |
-| `skills/` | 技能系统 — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata`（见第 14 节） |
+| `skills/` | 技能系统 — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata`（见第 16 节） |
 | `bus_adapter.rs` | `EngineHandler` — 桥接引擎到 Bus Actor 系统 |
 | `error.rs` | 统一错误类型（AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError） |
 | `token_tracker.rs` | Token 计数、成本计算、会话统计追踪 |
 
 ---
 
-## 14. skills/ — 技能系统
+## 16. skills/ — 技能系统
 
 ### 模块结构
 

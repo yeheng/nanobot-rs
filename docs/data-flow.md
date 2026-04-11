@@ -11,14 +11,14 @@
   │
   ▼
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  reedline    │───▶│  AgentLoop   │───▶│   Prompt     │
+│  reedline    │───▶│ AgentSession │───▶│   Prompt     │
 │  (REPL)      │    │  .process_   │    │   Loader     │
 │              │    │   direct()   │    │              │
 └──────────────┘    └──────┬───────┘    └──────┬───────┘
                            │                    │
                     ┌──────▼───────┐     ┌──────▼───────┐
-                    │   Session    │     │ 构建 System  │
-                    │   Manager    │     │ Prompt:      │
+                    │    Agent     │     │ 构建 System  │
+                    │   Context    │     │ Prompt:      │
                     │  (SQLite)    │     │ PROFILE.md + │
                     │  ┌────────┐  │     │ SOUL.md +    │
                     │  │save    │  │     │ AGENTS.md +  │
@@ -115,7 +115,7 @@
               │ Actor #1  │ │Act #2 │ │ Actor #N  │
               │           │ │       │ │           │
               │ 串行处理   │ ...     │ ...         │
-              │ AgentLoop │ │       │ │           │
+              │AgentSession│ │       │ │           │
               │ .process_ │ │       │ │           │
               │  direct() │ │       │ │           │
               │           │ │       │ │           │
@@ -144,7 +144,7 @@
 | Actor | 职责 | 并发模型 |
 |-------|------|----------|
 | **Router Actor** | 按 SessionKey 分发消息到 Session Actor，懒创建/清理 | 单任务，拥有路由表 HashMap，零锁 |
-| **Session Actor** | 串行处理单个 session 的所有消息，调用 AgentLoop | 每 session 独立 tokio::spawn，共享 `Arc<AgentLoop>` |
+| **Session Actor** | 串行处理单个 session 的所有消息，调用 AgentSession | 每 session 独立 tokio::spawn，共享 `Arc<AgentSession>` |
 | **Outbound Actor** | 跨网络 HTTP/WebSocket 发送，不阻塞上游 | 单任务，即使外部 API 阻塞也不影响 Agent |
 
 ### WebSocket 流式处理
@@ -153,7 +153,7 @@
 Session Actor
     │
     ▼
-AgentLoop::process_direct_streaming_with_channel()
+AgentSession::process_direct_streaming_with_channel()
     │
     ▼
 mpsc::Receiver<StreamEvent>
@@ -194,7 +194,7 @@ Outbound Actor ──▶ WebSocket 客户端
               ┌────────▼─────────┐
               │  Router Actor    │
               │  (Gateway 模式)   │
-              │  或 AgentLoop    │
+              │  或 AgentSession │
               │  .process_direct │
               │  (CLI 模式)      │
               └────────┬─────────┘
@@ -212,8 +212,9 @@ Outbound Actor ──▶ WebSocket 客户端
 ```
                               ┌──────────────┐
                               │   开始处理    │
-                              │  process_    │
-                              │  direct()    │
+                              │ AgentSession │
+                              │.process_direc│
+                              │     t()      │
                               └──────┬───────┘
                                      │
                               ┌──────▼───────┐
@@ -416,7 +417,7 @@ pub enum StreamEvent {
 处理后的消息: "使用 sk-xxxx 调用 API"
                    │
                    ▼
-            AgentLoop 处理
+            AgentSession 处理
 ```
 
 ### InjectionReport
@@ -451,7 +452,7 @@ InjectionReport {
               │
               ▼
     tokio::spawn(async {
-        AgentLoop::process_direct_streaming()
+        AgentSession::process_direct_streaming()
     })
               │
               ▼
@@ -466,7 +467,7 @@ InjectionReport {
   │  立即返回 Ok(())
   │
   ▼
-tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
+tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
                      │                              │
                      │  10 分钟超时                  │  通过 outbound_tx
                      │                              │  发送到渠道
@@ -496,18 +497,18 @@ tokio::spawn ──▶ AgentLoop.process_direct() ──▶ OutboundMessage
 ## 8. 上下文压缩数据流
 
 ```
-AgentLoop::finalize_response()
+finalize_response()
     │
     ▼
 process_history() ──▶ 识别被驱逐消息
     │
     ▼
-ContextCompactor::compact(key, evicted)
+ContextCompactor::try_compact(key, estimated_tokens)
     │
-    ├──▶ evicted 为空? ──▶ 返回
+    ├──▶ token_budget 未超限? ──▶ 返回
     │
     ▼
-同步执行 {
+异步执行 {
     │
     ▼
     LLM 生成摘要
@@ -522,9 +523,8 @@ ContextCompactor::compact(key, evicted)
 
 ### 压缩执行策略
 
-- 同步执行在 `finalize_response` 中
-- 压缩完成后立即保存 Summary 事件到 EventStore
-- 不使用后台任务或并发锁
+- 非阻塞压缩在 `finalize_response` 中触发
+- 压缩在后台执行，不阻塞响应
 - 每次响应都会检查并执行压缩（如需要）
 
 ---
@@ -532,7 +532,7 @@ ContextCompactor::compact(key, evicted)
 ## 9. Hook 系统数据流
 
 ```
-AgentLoop::process_direct()
+AgentSession::process_direct()
     │
     ├──▶ BeforeRequest Hook ──▶ 可修改/中止请求
     │

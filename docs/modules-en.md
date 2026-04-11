@@ -189,7 +189,7 @@ Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outb
 ```
 
 - **Router Actor**: Owns routing table `HashMap<SessionKey, Sender>`, distributes by session, lazy creation/cleanup
-- **Session Actor**: Processes single session messages serially, shares `Arc<AgentLoop>`, self-destructs on idle timeout
+- **Session Actor**: Processes single session messages serially, shares `Arc<AgentSession>`, self-destructs on idle timeout
 - **Outbound Actor**: Dedicated network sending, isolates external API latency
 
 ---
@@ -281,33 +281,43 @@ trait MemoryStore: Send + Sync {
 
 ---
 
-## 9. agent/ — Agent Core Engine
+## 9. session/ — Session Management (formerly agent/)
 
 | File | Responsibility |
 |------|----------------|
-| `loop_.rs` | `AgentLoop` — Core processing loop, orchestrates all components |
-| `executor.rs` | `ToolExecutor` — Tool call execution (supports parallel batch) |
-| `executor_core.rs` | `AgentExecutor` — Core LLM execution loop with streaming support |
+| `mod.rs` | `AgentSession` — Session management core, wraps kernel execution |
+| `config.rs` | `AgentConfig` — Agent configuration with kernel conversion support |
 | `context.rs` | `AgentContext` enum — Zero-cost enum dispatch (Persistent/Stateless) |
-| `compactor.rs` | `ContextCompactor` — Synchronous context compression (replaces SummarizationService) |
-| `indexing.rs` | `IndexingService` — Semantic indexing service (decoupled from compaction) |
-| `stream.rs` | `StreamEvent` enum — Streaming output events (Content, Reasoning, ToolStart/End, Done) |
-| `stream_buffer.rs` | `BufferedEvents` — WebSocket message buffering for ordering |
-| `subagent.rs` | `SubagentManager` + `SubagentTaskBuilder` — Builder pattern subagent management |
-| `subagent_tracker.rs` | `SubagentTracker` — Parallel task coordination with cancellation |
-| `memory.rs` | `MemoryStore` — Session memory store wrapping SqliteStore |
+| `compactor.rs` | `ContextCompactor` — Context compression |
+| `memory.rs` | `MemoryManager`, `MemoryContext`, `MemoryProvider` — Memory management |
 | `prompt.rs` | Bootstrap file loading, skills context, token truncation |
-| `request.rs` | `RequestHandler` — Request building with retry logic |
-| `skill_loader.rs` | Skill file loading from workspace and built-in directories |
+| `store.rs` | `MemoryStore` — Memory store wrapper |
+
+### AgentSession
+
+`AgentSession` is the core session management structure that wraps kernel execution:
+
+```rust
+pub struct AgentSession {
+    runtime_ctx: RuntimeContext,    // Kernel execution context
+    context: AgentContext,          // Persistent/stateless context
+    config: AgentConfig,            // Agent configuration
+    workspace: PathBuf,             // Workspace path
+    system_prompt: String,          // System prompt
+    skills_context: Option<String>, // Skills context
+    hooks: Arc<HookRegistry>,       // Hook registry
+    compactor: Option<Arc<ContextCompactor>>, // Context compactor
+    memory_manager: Option<Arc<MemoryManager>>, // Memory manager
+    indexing_service: Option<Arc<IndexingService>>, // Indexing service
+}
+```
 
 ### AgentContext Enum
 
-Zero-cost enum dispatch replacing the previous trait-based approach:
-
 ```rust
 pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless,
+    Persistent(PersistentContext),  // Main agent with full event sourcing
+    Stateless,                      // Subagent with no persistence
 }
 
 pub struct PersistentContext {
@@ -318,27 +328,44 @@ pub struct PersistentContext {
 }
 ```
 
-| Variant | Purpose |
-|---------|---------|
-| `Persistent(PersistentContext)` | Main agent with full event sourcing |
-| `Stateless` | Subagent with no persistence |
+---
 
-### Context Compaction
+## 10. kernel/ — Pure Function Execution Core
 
-`ContextCompactor` performs synchronous context compression when history is evicted:
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | `execute()`, `execute_streaming()` — Pure function execution entry points |
+| `executor.rs` | `AgentExecutor`, `ToolExecutor`, `ExecutionResult` — Executor implementations |
+| `context.rs` | `RuntimeContext`, `KernelConfig` — Runtime context and configuration |
+| `stream.rs` | `StreamEvent`, `BufferedEvents` — Streaming output events |
+| `error.rs` | `KernelError` — Kernel error types |
+
+### Pure Function Execution Interface
 
 ```rust
-pub struct ContextCompactor { /* provider, event_store, model, token_budget, threshold */ }
+/// Execute LLM conversation loop
+pub async fn execute(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+) -> Result<ExecutionResult, KernelError>;
 
-impl ContextCompactor {
-    pub fn new(provider, event_store, model, token_budget) -> Self;
-    pub fn with_summarization_prompt(self, prompt) -> Self;
-    pub fn with_threshold(self, threshold: f32) -> Self;
-    pub async fn compact(&self, session_key, evicted_events, vault_values) -> Result<Option<String>>;
-}
+/// Streaming LLM conversation loop
+pub async fn execute_streaming(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: mpsc::Sender<StreamEvent>,
+) -> Result<ExecutionResult, KernelError>;
 ```
 
-When history messages exceed the token budget, the compactor calls the LLM to generate a summary and persists it as a Summary event.
+---
+
+## 11. subagents/ — Subagent System
+
+| File | Responsibility |
+|------|----------------|
+| `manager.rs` | `SubagentManager`, `SubagentTaskBuilder` — Builder pattern subagent management |
+| `tracker.rs` | `SubagentTracker`, `TrackerError` — Parallel task coordination |
+| `runner.rs` | `run_subagent()`, `ModelResolver` — Subagent execution and model resolution |
 
 ### SubagentManager API
 
@@ -347,11 +374,8 @@ Builder pattern for flexible task creation:
 ```rust
 let task_id = manager
     .task("sub-1", "Execute task")
-    .with_provider(provider)
-    .with_config(config)
     .with_system_prompt("Custom prompt".to_string())
     .with_streaming(event_tx)
-    .with_session_key(session_key)
     .with_cancellation_token(token)
     .with_hooks(hooks)
     .spawn(result_tx)
@@ -373,9 +397,11 @@ let task_id = manager
 
 ---
 
-## 11. vault/ — Sensitive Data Isolation Module
+## 13. vault/ — Sensitive Data Isolation Module (inside engine)
 
 > Detailed usage guide in [vault-guide.md](vault-guide.md)
+
+Vault module is located at `engine/src/vault/`, not a separate crate.
 
 ### Core Components
 
@@ -403,7 +429,7 @@ Password: {{vault:db_password}}
 
 ---
 
-## 12. search/ — Search & Embedding
+## 14. search/ — Search & Embedding
 
 > **Note**: Search types re-exported from `storage` crate. Advanced Tantivy full-text search in standalone `tantivy` crate.
 
@@ -440,20 +466,20 @@ let results = HistoryQuery::builder("session-key")
 
 ---
 
-## 13. Other Modules
+## 15. Other Modules
 
 | Module | Description |
 |------|-------------|
-| `cron/` | `CronService` + `CronJob` — Scheduled task service with SQLite persistence |
+| `cron/` | `CronService` + `CronJob` — Scheduled task service, file-driven |
 | `heartbeat/` | `HeartbeatService` — Reads HEARTBEAT.md, triggers periodic proactive tasks |
-| `skills/` | Skills system — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata` (see Section 14) |
+| `skills/` | Skills system — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata` (see Section 16) |
 | `bus_adapter.rs` | `EngineHandler` — Bridges engine to bus actor system |
 | `error.rs` | Unified error types (AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError) |
 | `token_tracker.rs` | Token counting, cost calculation, session stats tracking |
 
 ---
 
-## 14. skills/ — Skills System
+## 16. skills/ — Skills System
 
 ### Module Structure
 

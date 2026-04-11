@@ -10,28 +10,27 @@
 gasket-rs/                    (Cargo workspace)
 ├── engine/                   Core orchestration crate — Agent engine, tools, Hook system
 │   └── src/
-│       ├── agent/             Agent core engine (loop, executor, prompt, history, stream, compactor, indexing, subagent, context)
+│       ├── kernel/            Pure function execution core (executor, stream)
+│       ├── session/           Session management (AgentSession, context, compactor, memory)
+│       ├── subagents/         Subagent system (manager, tracker, runner)
 │       ├── config/            Configuration loading (YAML → Struct)
 │       ├── cron/              Scheduled task service
 │       ├── heartbeat/         Heartbeat service
-│       ├── hooks/             Pipeline Hook system (BeforeRequest, AfterResponse, etc.)
-│       ├── skills/            Skills system (loader, registry, skill, metadata)
+│       ├── hooks/             Pipeline Hook system
+│       ├── skills/            Skills system
 │       ├── tools/             Tool system (14 built-in tools)
-│       ├── vault/             Sensitive data isolation re-export (from vault)
-│       └── search/            Semantic search re-export (from storage)
+│       └── vault/             Sensitive data isolation module
 ├── cli/                      CLI executable
 │   └── src/
 │       ├── main.rs            Command entry + Gateway launcher
 │       ├── cli.rs             CLI interactive mode
 │       ├── provider.rs        Provider factory
-│       └── commands/          Subcommands (onboard, status, agent, gateway, channels, cron, vault)
-├── types/                    Shared type definitions (Tool trait, events, etc.)
+│       └── commands/          Subcommands (onboard, status, agent, gateway, channels, cron, vault, memory)
+├── types/                    Shared type definitions (Tool trait, events, session_event, etc.)
 ├── providers/                LLM provider implementations
-├── storage/                  SQLite storage + embedding
-├── vault/                    Vault sensitive data management
+├── storage/                  SQLite storage + embedding + memory system
 ├── channels/                 Communication channel implementations
 ├── sandbox/                  Sandbox execution environment
-├── bus/                      Message bus Actor implementation
 └── tantivy/                  Tantivy search MCP server (standalone binary)
 ```
 
@@ -54,10 +53,10 @@ gasket-rs/                    (Cargo workspace)
 │                        engine (Library)                          │
 │                                │           │                     │
 │  ┌─────────────────────────────▼───────────▼──────────────────┐  │
-│  │                      Agent Loop (Core Engine)               │  │
+│  │                   AgentSession (Session Management)          │  │
 │  │  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐   │  │
-│  │  │  Prompt    │  │    Tool      │  │    History        │   │  │
-│  │  │  Loader    │  │   Executor   │  │   Processor      │   │  │
+│  │  │   Prompt   │  │    kernel    │  │    Session        │   │  │
+│  │  │   Loader   │  │   execute    │  │   Management     │   │  │
 │  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
 │  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
 │  │  │  Context Compactor │  │      Hook Registry         │   │  │
@@ -66,28 +65,37 @@ gasket-rs/                    (Cargo workspace)
 │  └──────────┬──────────────┬──────────────────┬──────────────┘  │
 │             │              │                  │                  │
 │  ┌──────────▼──────┐  ┌───▼──────────┐  ┌───▼──────────────┐  │
-│  │  Providers      │  │  Tool        │  │   Session        │  │
+│  │  Providers      │  │  Tool        │  │   Memory         │  │
 │  │  (re-export)    │  │  Registry    │  │   Manager        │  │
-│  │                 │  │              │  │   (SQLite Backend)│  │
+│  │                 │  │              │  │                  │  │
 │  │ ┌─────────────┐ │  │ ┌──────────┐ │  │                   │  │
-│  │ │  OpenAI     │ │  │ │Filesystem│ │  └─────────┬─────────┘  │
-│  │ │  Compatible │ │  │ │Shell     │ │            │            │
-│  │ │  Provider   │ │  │ │WebSearch │ │  ┌─────────▼─────────┐  │
-│  │ ├─────────────┤ │  │ │WebFetch  │ │  │  Memory Store     │  │
-│  │ │  Gemini     │ │  │ │Spawn    │ │  │  (re-export)      │  │
-│  │ │  Provider   │ │  │ │Message  │ │  │  ┌─────────────┐  │  │
-│  │ ├─────────────┤ │  │ │SpawnPar.│ │  │  │ memories    │  │  │
-│  │ │  Copilot    │ │  │ │Cron     │ │  │  │ sessions    │  │  │
-│  │ │  Provider   │ │  │ │MCP Tools│ │  │  │ session_msg │  │  │
-│  │ └─────────────┘ │  │ │Memory   │ │  │  │ kv_store    │  │  │
-│  │                 │  │ │ Search  │ │  │  │ cron_jobs   │  │  │
-│  │                 │  │ │Sandbox  │ │  │  │ embeddings  │  │  │
-│  │                 │  │ │Sandbox  │ │  │  │ cron_jobs   │  │  │
-│  └────────────────┘  │ └──────────┘ │  │  └─────────────┘  │  │
-│                      │              │  └───────────────────┘  │
-│  ┌────────────────┐  └──────────────┘                         │
-│  │  Message Bus   │                                            │
-│  │  (Actor Model) │                                            │
+│  │ │  OpenAI     │ │  │ │Filesystem│ │  │  Long-term       │  │
+│  │ │  Compatible │ │  │ │Shell     │ │  │  Memory System   │  │
+│  │ │  Provider   │ │  │ │WebSearch │ │  │  (Scenario-based)│  │
+│  │ ├─────────────┤ │  │ │WebFetch  │ │  └─────────────────┘  │
+│  │ │  Gemini     │ │  │ │Spawn    │ │                       │
+│  │ │  Provider   │ │  │ │SpawnPar.│ │  ┌─────────────────┐  │
+│  │ │             │ │  │ │Message  │ │  │  EventStore     │  │
+│  │ ├─────────────┤ │  │ │Cron     │ │  │  (SQLite Backend)│  │
+│  │ │  Copilot    │ │  │ │MCP Tools│ │  │                 │  │
+│  │ │  Provider   │ │  │ │Memory   │ │  │  session_events │  │
+│  │ └─────────────┘ │  │ └──────────┘ │  │  memory_metadata│  │
+│  │                 │  │              │  └─────────────────┘  │
+│  │                 │  │              │                       │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  kernel (Pure Function Execution Core)                  ││
+│  │  ├── executor.rs: AgentExecutor, ToolExecutor          ││
+│  │  ├── stream.rs: StreamEvent streaming output           ││
+│  │  └── context.rs: RuntimeContext, KernelConfig          ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │  subagents (Subagent System)                            ││
+│  │  ├── manager.rs: SubagentManager, SubagentTaskBuilder  ││
+│  │  ├── tracker.rs: SubagentTracker, parallel coordination││
+│  │  └── runner.rs: run_subagent, ModelResolver            ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                             │
 │  │                │                                            │
 │  │  Router Actor  │   ┌───────────────────────────────────┐   │
 │  │  Session Actor │   │   Pipeline Hooks                  │   │
@@ -108,12 +116,14 @@ gasket-rs/                    (Cargo workspace)
 │                                                               │
 │  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐ │
 │  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      │ │
-│  │  Service      │  │  (Scheduled)   │  │  (JSON-RPC 2.0)  │ │
+│  │  Service      │  │  (file-driven: │  │  (JSON-RPC 2.0)  │ │
+│  │               │  │   ~/.gasket/   │  │                  │ │
+│  │               │  │   cron/*.md)   │  │                  │ │
 │  └───────────────┘  └────────────────┘  └──────────────────┘ │
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Vault (Sensitive Data Isolation)           │  │
-│  │              (re-export from vault)              │  │
+│  │              (engine internal module)                   │  │
 │  │                                                         │  │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
 │  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
@@ -149,13 +159,15 @@ gasket-rs/                    (Cargo workspace)
 | Principle | Implementation |
 |-----------|----------------|
 | **AgentContext enum** | Zero-cost enum dispatch instead of Option<T> pattern, PersistentContext variant (full deps) and Stateless variant (no persistence) |
-| **Actor model messaging** | Gateway uses three Actors (Router → Session → Outbound) communicating via mpsc channels, zero-lock design |
+| **Kernel pure function design** | `kernel::execute()` and `kernel::execute_streaming()` with no side effects, clear input/output |
+| **Session state management** | `AgentSession` wraps kernel, manages session state, prompt loading, hook registration |
 | **Pipeline Hook extension** | Five execution points (BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse) with sequential/parallel strategies |
 | **Feature flag compilation** | Communication channels compiled via Cargo feature flags, enable on demand |
-| **No in-memory cache** | SessionManager reads/writes SQLite directly, leverages SQLite page cache to avoid consistency issues |
+| **No in-memory cache** | Session reads/writes SQLite directly, leverages SQLite page cache to avoid consistency issues |
 | **Vault sensitive data isolation** | Sensitive data completely isolated from LLM-accessible storage, injected only at runtime, supports encrypted storage |
 | **Modular Skills system** | Independent skills/ module, supports Markdown + YAML frontmatter format, progressive loading |
-| **Crate separation** | Core types, providers, storage, Vault, channels split into independent crates, compatibility via re-exports |
+| **File-driven Cron** | Cron jobs stored in ~/.gasket/cron/*.md, notify watches for hot reload, no SQLite persistence |
+| **Crate separation** | Core types, providers, storage, channels split into independent crates |
 
 ---
 
@@ -166,18 +178,24 @@ engine
     │
     ├── re-exports from types
     │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
+    │       └── SessionEvent, EventType, Session (event sourcing types)
     │
     ├── re-exports from providers
     │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
     │
     ├── re-exports from storage (as memory module)
     │       └── SqliteStore, EventStore, StoreError, MemoryStore
+    │       └── memory submodule (MetadataStore, EmbeddingStore, etc.)
     │
-    ├── re-exports from storage (as search module)
-    │       └── TextEmbedder, cosine_similarity, top_k_similar (feature: local-embedding)
+    ├── session/ (Session management layer)
+    │       └── AgentSession (formerly AgentLoop), AgentContext, ContextCompactor
+    │       └── MemoryManager, MemoryProvider trait
     │
-    ├── re-exports from vault
-    │       └── VaultStore, VaultInjector, VaultCrypto, etc.
+    ├── kernel/ (Pure function execution core)
+    │       └── AgentExecutor, ToolExecutor, execute(), execute_streaming()
+    │
+    ├── subagents/ (Subagent system)
+    │       └── SubagentManager, SubagentTracker
     │
     ├── optional: channels (feature flags)
     │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
@@ -189,6 +207,48 @@ engine
 ---
 
 ## Key Components
+
+### AgentSession (formerly AgentLoop)
+
+`AgentSession` is the core session management structure:
+
+```rust
+pub struct AgentSession {
+    runtime_ctx: RuntimeContext,    // Kernel execution context
+    context: AgentContext,          // Persistent/stateless context
+    config: AgentConfig,            // Agent configuration
+    workspace: PathBuf,             // Workspace path
+    system_prompt: String,          // System prompt
+    skills_context: Option<String>, // Skills context
+    hooks: Arc<HookRegistry>,       // Hook registry
+    compactor: Option<Arc<ContextCompactor>>, // Context compactor
+    memory_manager: Option<Arc<MemoryManager>>, // Memory manager
+    indexing_service: Option<Arc<IndexingService>>, // Indexing service
+}
+```
+
+**Key methods:**
+- `process_direct()` — Process message and return response
+- `process_direct_streaming_with_channel()` — Streaming processing
+
+### Kernel Execution Core
+
+Pure function design with no side effects:
+
+```rust
+/// Pure function: Execute LLM conversation loop
+pub async fn execute(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+) -> Result<ExecutionResult, KernelError>;
+
+/// Pure function: Streaming LLM conversation loop
+pub async fn execute_streaming(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: mpsc::Sender<StreamEvent>,
+) -> Result<ExecutionResult, KernelError>;
+```
 
 ### AgentContext Enum
 
@@ -296,7 +356,6 @@ pub enum HookPoint {
 | Crate | Flag | Purpose |
 |-------|------|---------|
 | engine | `local-embedding` | ONNX embedding via fastembed |
-| engine | `smart-model-selection` | Dynamic model switching |
 | engine | `telegram` | Telegram channel |
 | engine | `discord` | Discord channel |
 | engine | `slack` | Slack channel |
@@ -327,8 +386,7 @@ pub enum HookPoint {
 |-------|---------|--------------|
 | `types` | Shared type definitions, minimal deps | None |
 | `providers` | LLM provider implementations | types, async-trait |
-| `storage` | SQLite storage + embedding | types, sqlx |
-| `vault` | Vault encrypted storage | XChaCha20-Poly1305, Argon2 |
+| `storage` | SQLite storage + embedding + memory system | types, sqlx, fastembed |
 | `channels` | Communication channels | teloxide, serenity, etc. |
-| `sandbox` | Sandbox execution | sandbox |
+| `sandbox` | Sandbox execution | System process management |
 | `tantivy` | Full-text search MCP server | tantivy |

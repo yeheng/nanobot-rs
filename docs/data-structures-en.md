@@ -427,60 +427,48 @@ pub struct PersistentContext {
 
 ### 3.9 ContextCompactor
 
-Synchronous context compactor — replaces async background summarization. Called directly after each agent response to ensure the next request sees the latest summary.
+Context compactor — triggers summary generation when token budget is exceeded.
 
 ```rust
 pub struct ContextCompactor {
-    /// LLM provider for generating summaries
     provider: Arc<dyn LlmProvider>,
-    /// Event store for persisting summary events
     event_store: Arc<EventStore>,
-    /// Model to use for summarization
+    sqlite_store: Arc<SqliteStore>,
     model: String,
-    /// Token budget for context window
     token_budget: usize,
-    /// Compaction threshold multiplier (default 1.2)
-    compaction_threshold: f32,
-    /// Custom summarization prompt
-    summarization_prompt: String,
 }
 
 impl ContextCompactor {
-    /// Create a new compactor
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         event_store: Arc<EventStore>,
+        sqlite_store: Arc<SqliteStore>,
         model: String,
         token_budget: usize,
     ) -> Self;
 
-    /// Set a custom summarization prompt
     pub fn with_summarization_prompt(self, prompt: impl Into<String>) -> Self;
 
-    /// Set a custom compaction threshold multiplier
-    pub fn with_threshold(self, threshold: f32) -> Self;
-
-    /// Run compaction on evicted events
-    pub async fn compact(
+    /// Non-blocking compaction check
+    pub fn try_compact(
         &self,
         session_key: &str,
-        evicted_events: &[SessionEvent],
+        estimated_tokens: usize,
         vault_values: &[String],
-    ) -> anyhow::Result<Option<String>>;
+    );
 }
 ```
 
 **Key Design Points:**
-- **Synchronous execution**: Runs in `finalize_response()` after user receives response (no added latency)
-- **No race conditions**: Next request always sees latest summary (eliminates `tokio::spawn` timing issues)
-- **Batch threshold**: Only compacts when evicted tokens exceed `token_budget * (threshold - 1.0)`
-- **LSM-tree analogy**: L0 (active context) flushes to L1 (summary checkpoint) on overflow
+- **Non-blocking execution**: `try_compact` spawns async task, doesn't block response
+- **Token budget check**: Compaction triggered when `estimated_tokens` exceeds budget
+- **Background summarization**: Compression runs in background, saves to EventStore when done
 
 **Lifecycle:**
 ```text
-AgentLoop::process_direct()
+AgentSession::process_direct()
   → prepare_pipeline()     // history + prompt assembly
-  → run_agent_loop()       // LLM iteration
+  → kernel::execute()      // LLM iteration (pure function)
   → finalize_response()    // save event + compact + return
 ```
 

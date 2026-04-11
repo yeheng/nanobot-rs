@@ -14,17 +14,16 @@ flowchart TB
         Vault[Vault Secrets]
     end
 
-    subgraph AgentCore["Agent Core - loop_.rs"]
-        AL[AgentLoop]
+    subgraph AgentCore["Agent Core - session/mod.rs"]
+        AL[AgentSession]
         AC[AgentContext Enum]
         PC[PersistentContext]
         SC[Stateless]
     end
 
-    subgraph Execution["Execution Layer - executor_core.rs"]
+    subgraph Execution["Execution Layer - kernel/executor.rs"]
         AE[AgentExecutor]
         TE[ToolExecutor]
-        RH[RequestHandler]
     end
 
     subgraph Subagent["Subagent System"]
@@ -62,18 +61,18 @@ flowchart TB
 
 ---
 
-## 2. AgentLoop Execution Flow Details
+## 2. AgentSession Execution Flow Details
 
 ```mermaid
 flowchart LR
     subgraph Phase1["Phase 1: Preprocessing"]
-        A[pre_request Hook] --> B[Load Session]
+        A[BeforeRequest Hook] --> B[Load Session]
         B --> C[Save User Message]
     end
 
     subgraph Phase2["Phase 2: History Processing"]
         D[Process History] --> E{Has evicted?}
-        E -->|Yes| F[Background Compression]
+        E -->|Yes| F[Context Compression]
         E -->|No| G[Load Summary]
         F --> G
     end
@@ -84,15 +83,15 @@ flowchart LR
         J --> K[Vault Injection]
     end
 
-    subgraph Phase4["Phase 4: LLM Execution"]
-        L[AgentExecutor] --> M{Tool Calls?}
-        M -->|Yes| N[Execute Tools]
+    subgraph Phase4["Phase 4: Kernel Execution"]
+        L[kernel::execute] --> M{Tool Calls?}
+        M -->|Yes| N[ToolExecutor]
         N --> L
-        M -->|No| O[Return Response]
+        M -->|No| O[Return ExecutionResult]
     end
 
     subgraph Phase5["Phase 5: Post-processing"]
-        P[post_response Hook] --> Q[Save Assistant Message]
+        P[AfterResponse Hook] --> Q[Save Assistant Message]
     end
 
     Phase1 --> Phase2 --> Phase3 --> Phase4 --> Phase5
@@ -119,7 +118,7 @@ sequenceDiagram
     loop For each task
         SPT->>SM: submit_tracked_streaming()
         SM->>Sub: tokio::spawn(async)
-        Sub->>Sub: AgentLoop::process_direct()
+        Sub->>Sub: AgentSession::process_direct_streaming()
     end
 
     par Result Collection
@@ -143,19 +142,19 @@ sequenceDiagram
 
 ```mermaid
 classDiagram
-    class AgentLoop {
-        +provider: Arc~LlmProvider~
-        +tools: Arc~ToolRegistry~
+    class AgentSession {
+        +runtime_ctx: RuntimeContext
+        +context: AgentContext
         +config: AgentConfig
-        +context: Arc~AgentContext~
+        +workspace: PathBuf
         +system_prompt: String
-        +vault_injector: Option~VaultInjector~
-        +pricing: Option~ModelPricing~
-        +hook_registry: Arc~HookRegistry~
+        +skills_context: Option~String~
+        +hooks: Arc~HookRegistry~
+        +compactor: Option~Arc~ContextCompactor~~
+        +memory_manager: Option~Arc~MemoryManager~~
         +process_direct()
-        +process_direct_streaming()
         +process_direct_streaming_with_channel()
-        -run_agent_loop()
+        -prepare_pipeline()
     }
 
     class ContextCompactor {
@@ -235,14 +234,12 @@ classDiagram
         +drain_events()
     }
 
-    AgentLoop --> AgentContext : uses
+    AgentSession --> AgentContext : uses
     AgentContext ..> PersistentContext : variant
     AgentContext ..> Stateless : variant
     PersistentContext --> ContextCompactor : uses
-    AgentLoop --> AgentExecutor : delegates
-    SubagentManager ..> AgentLoop : creates
+    AgentSession --> AgentExecutor : delegates via kernel
     SubagentManager --> SubagentTracker : uses
-    SubagentManager ..> SubagentTaskBuilder : creates
 ```
 
 ---
@@ -251,7 +248,7 @@ classDiagram
 
 | Mode | Context Type | Persistence | Typical Use | Entry Point |
 |------|-----------|--------|---------|--------|
-| **Main Agent** | AgentContext::Persistent | Yes | User conversation | `AgentLoop::new()` |
+| **Main Agent** | AgentContext::Persistent | Yes | User conversation | `AgentSession::new()` |
 | **Background Subagent** | AgentContext::Stateless | No | Background tasks | `SubagentManager::submit()` |
 | **Sync Subagent** | AgentContext::Stateless | No | Governance agent | `SubagentManager::submit_and_wait()` |
 | **Parallel Subagent** | AgentContext::Stateless | No | Parallel computation | `SpawnParallelTool::execute()` |
@@ -266,15 +263,17 @@ classDiagram
 ```
 User Input
     ↓
-AgentLoop::process_direct() [loop_.rs:440]
+AgentSession::process_direct() [session/mod.rs]
     ↓
-AgentLoop::run_agent_loop() [loop_.rs:735]
+prepare_pipeline() → BuildOutcome::Ready
     ↓
-AgentExecutor::execute_with_options() [executor_core.rs:152]
+kernel::execute() [kernel/mod.rs]
     ↓
-RequestHandler::send_with_retry() [request.rs]
+AgentExecutor::execute_with_options() [kernel/executor.rs]
     ↓
 LlmProvider::chat_stream()
+    ↓
+finalize_response() → AgentResponse
 ```
 
 ### 6.2 Subagent Execution Path
@@ -282,19 +281,19 @@ LlmProvider::chat_stream()
 ```
 Tool Call (spawn_parallel)
     ↓
-SpawnParallelTool::execute() [spawn_parallel.rs]
+SpawnParallelTool::execute() [tools/spawn_parallel.rs]
     ↓
 SubagentTracker::new() + event_sender()
     ↓
-SubagentManager::task(id, prompt) → SubagentTaskBuilder [subagent.rs]
+SubagentManager::task(id, prompt) → SubagentTaskBuilder [subagents/manager.rs]
     ↓
 SubagentTaskBuilder::with_streaming().spawn()
     ↓
 tokio::spawn(async { ... })
     ↓
-AgentLoop::builder() → AgentContext::Stateless [loop_.rs]
+AgentSession::with_pricing() → AgentContext::Stateless
     ↓
-AgentLoop::process_direct_streaming()
+process_direct_streaming()
     ↓
 Result → mpsc::channel → SubagentTracker
 ```
@@ -393,16 +392,20 @@ task_local! {
 
 | File | Responsibility | Key Structures |
 |------|------|---------|
-| `loop_.rs` | Main Agent loop | `AgentLoop`, `AgentConfig`, `AgentResponse` |
-| `executor_core.rs` | Core execution engine | `AgentExecutor`, `ExecutionResult` |
-| `executor.rs` | Execution facade | `AgentExecutor`, `ToolExecutor` |
-| `context.rs` | Context management | `AgentContext` enum, `PersistentContext`, `Stateless` |
-| `subagent.rs` | Subagent management | `SubagentManager`, `SubagentTaskBuilder`, `SessionKeyGuard` |
-| `subagent_tracker.rs` | Parallel tracking | `SubagentTracker`, `SubagentEvent`, `SubagentResult` |
-| `spawn_parallel.rs` | Parallel tool | `SpawnParallelTool` |
-| `pipeline.rs` | Simplified pipeline | `process_message()` |
-| `stream.rs` | Stream events | `StreamEvent` |
-| `request.rs` | Request building | `RequestHandler` |
+| `session/mod.rs` | Session management core | `AgentSession`, `AgentResponse`, `FinalizeContext` |
+| `session/config.rs` | Agent configuration | `AgentConfig`, `AgentConfigExt` |
+| `session/context.rs` | Context management | `AgentContext` enum, `PersistentContext` |
+| `session/compactor.rs` | Context compression | `ContextCompactor` |
+| `session/memory.rs` | Memory management | `MemoryManager`, `MemoryContext`, `MemoryProvider` |
+| `session/prompt.rs` | Prompt loading | `load_system_prompt()`, `load_skills_context()` |
+| `kernel/mod.rs` | Pure function entry | `execute()`, `execute_streaming()` |
+| `kernel/executor.rs` | Core execution engine | `AgentExecutor`, `ToolExecutor`, `ExecutionResult` |
+| `kernel/context.rs` | Runtime context | `RuntimeContext`, `KernelConfig` |
+| `kernel/stream.rs` | Stream events | `StreamEvent`, `BufferedEvents` |
+| `subagents/manager.rs` | Subagent management | `SubagentManager`, `SubagentTaskBuilder` |
+| `subagents/tracker.rs` | Parallel tracking | `SubagentTracker`, `SubagentEvent`, `SubagentResult` |
+| `subagents/runner.rs` | Subagent execution | `run_subagent()`, `ModelResolver` |
+| `tools/spawn_parallel.rs` | Parallel tool | `SpawnParallelTool` |
 | `processor.rs` | History processing | `process_history()`, `HistoryConfig`, `ProcessedHistory` |
 | `compactor.rs` | Context compression | `ContextCompactor`, `CompactionConfig` |
 | `prompt.rs` | Prompt loading | `load_prompt()`, `load_skills_context()` |

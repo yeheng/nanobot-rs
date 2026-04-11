@@ -343,17 +343,16 @@ memory_embeddings (
 | `lifecycle.rs` | AccessLog + FrequencyManager — frequency decay/promotion + batched access tracking + SQL-driven decay |
 | `watcher.rs` | MemoryWatcher — file watching with debouncing + AutoIndexHandler mtime comparison |
 
-### Engine Layer (`gasket/engine/src/agent/`)
+### Engine Layer (`gasket/engine/src/session/`)
 
 | File | Responsibility |
 |------|---------------|
-| `memory_manager.rs` | MemoryManager facade — three-phase loading + write-through CRUD + token budget enforcement |
-| `memory_provider.rs` | MemoryProvider trait — decouples HistoryCoordinator from concrete implementation |
-| `memory.rs` | MemoryStore — thin SqliteStore wrapper for machine-state (sessions, summaries, cron jobs) |
+| `memory.rs` | MemoryManager facade — three-phase loading + write-through CRUD + token budget enforcement |
+| `store.rs` | MemoryProvider trait + MemoryStore — decouples HistoryCoordinator from concrete implementation |
 
-### Agent Loop Integration
+### AgentSession Integration
 
-MemoryManager is injected in the Agent Loop's `prepare_pipeline()`:
+MemoryManager is injected in the AgentSession's `prepare_pipeline()`:
 
 ```
 User message → [System Prompts] → [Memory Loading] → [History Processing] → [Summary Injection] → [Assemble Prompt] → LLM
