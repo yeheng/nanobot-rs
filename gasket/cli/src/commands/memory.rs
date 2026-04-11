@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use gasket_engine::memory::{
-    memory_base_dir, AutoIndexHandler, EmbeddingStore, MetadataStore, SqliteStore,
+    memory_base_dir, AutoIndexHandler, EmbeddingStore, FileMemoryStore, FrequencyManager,
+    MetadataStore, SqliteStore,
 };
 use gasket_engine::MemoryManager;
 #[cfg(feature = "local-embedding")]
@@ -98,6 +99,43 @@ pub async fn cmd_memory_refresh() -> Result<()> {
 
     println!("Reindex complete:");
     println!("  {} files indexed", report.total_files);
+
+    Ok(())
+}
+
+/// Manually run memory frequency decay.
+///
+/// Scans all memories and demotes stale entries:
+/// - Hot → Warm (7 days without access)
+/// - Warm → Cold (30 days without access)
+/// - Cold → Archived (90 days without access)
+///
+/// Useful for manual maintenance or non-Gateway (CLI-only) usage.
+pub async fn cmd_memory_decay() -> Result<()> {
+    println!("Running memory frequency decay...");
+
+    let base_dir = memory_base_dir();
+    if !base_dir.exists() {
+        println!("Memory directory does not exist: {}", base_dir.display());
+        println!("Nothing to decay.");
+        return Ok(());
+    }
+
+    let store = FileMemoryStore::new(base_dir);
+    let sqlite = SqliteStore::new().await?;
+    let metadata_store = MetadataStore::new(sqlite.pool().clone());
+
+    let report = FrequencyManager::run_decay_batch(&store, &metadata_store).await?;
+
+    println!("Decay complete:");
+    println!("  {} candidates scanned", report.total_scanned);
+    println!("  {} memories decayed", report.decayed);
+    if report.errors > 0 {
+        println!("  {} errors", report.errors);
+    }
+    if report.decayed == 0 {
+        println!("  All memories are fresh — no decay needed.");
+    }
 
     Ok(())
 }

@@ -7,6 +7,7 @@ use chrono::Utc;
 use std::path::PathBuf;
 
 /// Filesystem-backed memory store.
+#[derive(Clone)]
 pub struct FileMemoryStore {
     base_dir: PathBuf,
 }

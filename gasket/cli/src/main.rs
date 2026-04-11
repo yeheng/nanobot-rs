@@ -95,6 +95,7 @@ async fn main() -> Result<()> {
         },
         Some(Commands::Memory { command }) => match command {
             MemoryCommands::Refresh => commands::cmd_memory_refresh().await,
+            MemoryCommands::Decay => commands::cmd_memory_decay().await,
         },
         None => {
             // No command - show help

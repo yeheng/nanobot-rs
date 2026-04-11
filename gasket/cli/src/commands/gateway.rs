@@ -325,6 +325,7 @@ pub async fn cmd_gateway() -> Result<()> {
         subagent_spawner.clone(),
         &mut tasks,
     );
+    start_memory_maintenance(&workspace, &mut tasks);
 
     // --- Start all configured channels using unified initializer ---
     let channel_errors = start_channels(&config, vault.as_deref(), &inbound_processor, &mut tasks);
@@ -759,6 +760,57 @@ fn start_cron_checker(
                 }
                 Err(e) => {
                     tracing::error!("Failed to get due cron jobs: {}", e);
+                }
+            }
+        }
+    }));
+}
+
+/// Start memory decay maintenance daemon.
+///
+/// Runs every 6 hours to decay stale memories:
+/// - Hot → Warm (7 days without access)
+/// - Warm → Cold (30 days without access)
+/// - Cold → Archived (90 days without access)
+///
+/// Profile/Decisions/Reference scenarios are exempt from decay.
+/// SQLite WAL mode handles concurrent access — no distributed lock needed.
+fn start_memory_maintenance(workspace: &Path, tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    let store = gasket_engine::memory::FileMemoryStore::new(workspace.join("memory"));
+    let pool = {
+        let db_path = workspace.join("gasket.db");
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                gasket_engine::memory::SqliteStore::with_path(db_path)
+                    .await
+                    .expect("Failed to open SQLite for memory maintenance")
+                    .pool()
+                    .clone()
+            })
+        })
+    };
+    let metadata_store = gasket_engine::memory::MetadataStore::new(pool);
+
+    tasks.push(tokio::spawn(async move {
+        // Every 6 hours
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+        loop {
+            interval.tick().await;
+            match gasket_engine::memory::FrequencyManager::run_decay_batch(&store, &metadata_store)
+                .await
+            {
+                Ok(report) if report.decayed > 0 => {
+                    tracing::info!(
+                        "Memory decay maintenance: {} scanned, {} decayed",
+                        report.total_scanned,
+                        report.decayed
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Memory decay maintenance failed: {}", e);
+                }
+                _ => {
+                    tracing::debug!("Memory decay maintenance: no stale memories found");
                 }
             }
         }

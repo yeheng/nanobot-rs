@@ -221,4 +221,7 @@ pub enum VaultCommands {
 pub enum MemoryCommands {
     /// Manually refresh memory files from disk (detects external file changes by comparing mtime and size)
     Refresh,
+
+    /// Run memory frequency decay (demote stale hot/warm/cold memories)
+    Decay,
 }

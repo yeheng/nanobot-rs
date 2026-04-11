@@ -177,7 +177,9 @@ pub mod providers {
 // Memory
 pub mod memory {
     pub use crate::session::MemoryStore;
-    pub use gasket_storage::memory::{memory_base_dir, AutoIndexHandler, RefreshReport};
+    pub use gasket_storage::memory::{
+        memory_base_dir, AutoIndexHandler, FileMemoryStore, FrequencyManager, RefreshReport,
+    };
     pub use gasket_storage::memory::{EmbeddingStore, MetadataStore};
     pub use gasket_storage::{EventStore, SqliteStore, StoreError};
 }

@@ -21,6 +21,7 @@ use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Boxed embedder trait object for dependency injection.
@@ -35,6 +36,9 @@ pub struct MemoryManager {
     retrieval: RetrievalEngine,
     embedder: BoxedEmbedder,
     budget: TokenBudget,
+    /// In-memory access log for deferred batched writes.
+    /// Records every read and flushes to disk asynchronously when threshold is reached.
+    access_log: Arc<tokio::sync::Mutex<AccessLog>>,
 }
 
 impl MemoryManager {
@@ -67,6 +71,7 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
+            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
         })
     }
 
@@ -94,6 +99,7 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
+            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
         })
     }
 
@@ -115,6 +121,7 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
+            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
         }
     }
 
@@ -137,6 +144,67 @@ impl MemoryManager {
                 .sync_entries(*scenario, &entries)
                 .await?;
         }
+        Ok(())
+    }
+
+    // ========================================================================
+    // Access tracking (read-path recording + write-behind flush)
+    // ========================================================================
+
+    /// Record a memory access and trigger async flush if threshold is reached.
+    ///
+    /// This method is designed to be called on every successful file read in the
+    /// three-phase loading pipeline. Access events accumulate in memory and are
+    /// flushed to disk in batches via `tokio::spawn`, ensuring zero blocking
+    /// of the hot LLM response path.
+    async fn record_access(&self, scenario: Scenario, filename: &str) {
+        let mut log = self.access_log.lock().await;
+        log.record(scenario, filename);
+
+        if log.should_flush() {
+            let entries = log.drain();
+            let store = self.store.clone();
+            let metadata_store = self.metadata_store.clone();
+
+            tokio::spawn(async move {
+                let mut temp_log = AccessLog::new(entries.len().max(1));
+                for e in &entries {
+                    temp_log.record(e.scenario, &e.filename);
+                }
+                match FrequencyManager::flush_access_log(&mut temp_log, &store, &metadata_store)
+                    .await
+                {
+                    Ok(report) if report.total_flushed > 0 => {
+                        debug!(
+                            "Access log flushed: {} files updated, {} promoted",
+                            report.total_flushed, report.promoted
+                        );
+                    }
+                    Err(e) => warn!("Access log flush failed: {}", e),
+                    _ => {}
+                }
+            });
+        }
+    }
+
+    /// Flush any remaining access log entries on graceful shutdown.
+    ///
+    /// Call this before dropping the MemoryManager to ensure the final batch
+    /// of access records is persisted. This is a synchronous flush (blocking)
+    /// since the process is shutting down anyway.
+    pub async fn shutdown_flush(&self) -> Result<()> {
+        let mut log = self.access_log.lock().await;
+        if log.is_empty() {
+            return Ok(());
+        }
+
+        let count = log.len();
+        info!(
+            "Flushing {} remaining access log entries on shutdown",
+            count
+        );
+
+        FrequencyManager::flush_access_log(&mut log, &self.store, &self.metadata_store).await?;
         Ok(())
     }
 
@@ -550,6 +618,7 @@ impl MemoryManager {
                         "Bootstrap: loaded profile/{} ({} tokens)",
                         entry.filename, mem.metadata.tokens
                     );
+                    self.record_access(Scenario::Profile, &entry.filename).await;
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -596,6 +665,7 @@ impl MemoryManager {
                         "Bootstrap: loaded active/{} ({:?}, {} tokens)",
                         entry.filename, entry.frequency, mem.metadata.tokens
                     );
+                    self.record_access(Scenario::Active, &entry.filename).await;
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -658,6 +728,7 @@ impl MemoryManager {
                     debug!("Scenario: loaded hot item {}", entry.title);
                     tokens_used += entry.tokens as usize;
                     loaded.insert(key);
+                    self.record_access(scenario, &entry.filename).await;
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -699,6 +770,7 @@ impl MemoryManager {
                     debug!("Scenario: loaded warm item {}", entry.title);
                     tokens_used += entry.tokens as usize;
                     loaded.insert(key);
+                    self.record_access(scenario, &entry.filename).await;
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -762,6 +834,8 @@ impl MemoryManager {
                     debug!("On-demand: loaded {}", result.title);
                     tokens_used += tokens;
                     loaded.insert(key);
+                    self.record_access(result.scenario, &result.memory_path)
+                        .await;
                     memories.push(mem);
                 }
                 Err(e) => {
