@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::kernel::{AgentExecutor, ExecutionResult};
+use crate::kernel::{AgentExecutor, ExecutionResult, ExecutorOptions};
 use crate::session::config::{AgentConfig, AgentConfigExt};
 use crate::tools::ToolRegistry;
 use anyhow::Result;
@@ -31,7 +31,7 @@ pub async fn run_subagent(
     let kernel_config = config.to_kernel_config();
     let executor = AgentExecutor::new(provider, tools, &kernel_config);
     executor
-        .execute(messages)
+        .execute_with_options(messages, &ExecutorOptions::new())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))
 }

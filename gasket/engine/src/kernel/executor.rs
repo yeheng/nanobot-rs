@@ -261,12 +261,11 @@ pub struct ExecutionResult {
     pub cost: f64,
 }
 
-/// Accumulated execution state
+/// Accumulated execution state — message history and tool tracking only.
+/// Token accounting is handled separately by `TokenLedger`.
 struct ExecutionState {
     messages: Vec<ChatMessage>,
     tools_used: Vec<String>,
-    total_usage: Option<TokenUsage>,
-    total_cost: f64,
 }
 
 impl ExecutionState {
@@ -274,12 +273,38 @@ impl ExecutionState {
         Self {
             messages,
             tools_used: Vec::new(),
+        }
+    }
+
+    fn into_result(self, content: String, reasoning_content: Option<String>, ledger: TokenLedger) -> ExecutionResult {
+        ExecutionResult {
+            content,
+            reasoning_content,
+            tools_used: self.tools_used,
+            token_usage: ledger.total_usage,
+            cost: ledger.total_cost,
+        }
+    }
+}
+
+/// Token usage ledger — separated from ExecutionState for purity.
+///
+/// Each iteration returns its `TokenUsage` delta; this ledger accumulates
+/// them across the full execution lifecycle.
+struct TokenLedger {
+    total_usage: Option<TokenUsage>,
+    total_cost: f64,
+}
+
+impl TokenLedger {
+    fn new() -> Self {
+        Self {
             total_usage: None,
             total_cost: 0.0,
         }
     }
 
-    fn accumulate_usage(&mut self, usage: &TokenUsage, pricing: Option<&ModelPricing>) {
+    fn accumulate(&mut self, usage: &TokenUsage, pricing: Option<&ModelPricing>) {
         let cost = pricing
             .map(|p| p.calculate_cost(usage.input_tokens, usage.output_tokens))
             .unwrap_or(0.0);
@@ -294,16 +319,6 @@ impl ExecutionState {
             None => usage.clone(),
         });
         self.total_cost += cost;
-    }
-
-    fn into_result(self, content: String, reasoning_content: Option<String>) -> ExecutionResult {
-        ExecutionResult {
-            content,
-            reasoning_content,
-            tools_used: self.tools_used,
-            token_usage: self.total_usage,
-            cost: self.total_cost,
-        }
     }
 }
 
@@ -352,29 +367,12 @@ impl<'a> AgentExecutor<'a> {
         }
     }
 
-    pub async fn execute(
-        &self,
-        messages: Vec<ChatMessage>,
-    ) -> Result<ExecutionResult, KernelError> {
-        self.execute_with_options(messages, &ExecutorOptions::new())
-            .await
-    }
-
     pub async fn execute_with_options(
         &self,
         messages: Vec<ChatMessage>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
         self.execute_internal(messages, None, options).await
-    }
-
-    pub async fn execute_stream(
-        &self,
-        messages: Vec<ChatMessage>,
-        event_tx: mpsc::Sender<StreamEvent>,
-    ) -> Result<ExecutionResult, KernelError> {
-        self.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
-            .await
     }
 
     pub async fn execute_stream_with_options(
@@ -394,6 +392,7 @@ impl<'a> AgentExecutor<'a> {
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
         let mut state = ExecutionState::new(messages);
+        let mut ledger = TokenLedger::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
         let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
 
@@ -404,6 +403,7 @@ impl<'a> AgentExecutor<'a> {
                 .process_iteration(
                     iteration,
                     &mut state,
+                    &mut ledger,
                     &executor,
                     &request_handler,
                     event_tx.as_ref(),
@@ -419,14 +419,14 @@ impl<'a> AgentExecutor<'a> {
                     if let Some(ref tx) = event_tx {
                         let _ = tx.send(StreamEvent::Done).await;
                     }
-                    return Ok(state.into_result(content, reasoning_content));
+                    return Ok(state.into_result(content, reasoning_content, ledger));
                 }
                 IterationOutcome::ContinueWithTools => {}
                 IterationOutcome::MaxIterationsReached => {
                     if let Some(ref tx) = event_tx {
                         let _ = tx.send(StreamEvent::Done).await;
                     }
-                    return Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None));
+                    return Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger));
                 }
             }
         }
@@ -434,13 +434,14 @@ impl<'a> AgentExecutor<'a> {
         if let Some(ref tx) = event_tx {
             let _ = tx.send(StreamEvent::Done).await;
         }
-        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
+        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger))
     }
 
     async fn process_iteration(
         &self,
         iteration: u32,
         state: &mut ExecutionState,
+        ledger: &mut TokenLedger,
         executor: &ToolExecutor<'_>,
         request_handler: &RequestHandler<'_>,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
@@ -453,10 +454,10 @@ impl<'a> AgentExecutor<'a> {
             .map_err(|e| KernelError::Provider(e.to_string()))?;
 
         let response = self
-            .get_response(stream_result, event_tx, state, options)
+            .get_response(stream_result, event_tx, ledger, options)
             .await?;
 
-        Self::log_token_usage(state, &options.pricing, iteration);
+        Self::log_token_usage(ledger, &options.pricing, iteration);
         Self::log_response(&response, iteration, options.vault_values);
 
         if let Some(outcome) = Self::check_final_response(&response) {
@@ -473,8 +474,8 @@ impl<'a> AgentExecutor<'a> {
         Ok(IterationOutcome::ContinueWithTools)
     }
 
-    fn log_token_usage(state: &ExecutionState, pricing: &Option<ModelPricing>, iteration: u32) {
-        if let Some(ref usage) = state.total_usage {
+    fn log_token_usage(ledger: &TokenLedger, pricing: &Option<ModelPricing>, iteration: u32) {
+        if let Some(ref usage) = ledger.total_usage {
             let currency = pricing
                 .as_ref()
                 .map(|p| p.currency.as_str())
@@ -484,7 +485,7 @@ impl<'a> AgentExecutor<'a> {
                 iteration,
                 crate::token_tracker::format_request_stats(
                     usage,
-                    state.total_cost,
+                    ledger.total_cost,
                     currency,
                     pricing.as_ref()
                 )
@@ -613,13 +614,15 @@ impl<'a> AgentExecutor<'a> {
         &self,
         stream_result: ChatStream,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        state: &mut ExecutionState,
+        ledger: &mut TokenLedger,
         options: &ExecutorOptions<'_>,
     ) -> Result<ChatResponse, KernelError> {
-        let response = if let Some(tx) = event_tx {
-            debug!("[Kernel] Starting streaming mode");
-            let (mut event_stream, response_future) = stream::stream_events(stream_result);
+        // Always use the streaming pipeline — "Everything is a Stream".
+        // For non-streaming callers, events are silently drained.
+        let (mut event_stream, response_future) = stream::stream_events(stream_result);
 
+        if let Some(tx) = event_tx {
+            // Forward events to external channel
             let mut event_count = 0usize;
             while let Some(event) = event_stream.next().await {
                 event_count += 1;
@@ -635,35 +638,34 @@ impl<'a> AgentExecutor<'a> {
                 }
             }
             debug!("[Kernel] Event stream ended, total events: {}", event_count);
-
-            response_future
-                .await
-                .map_err(|e| KernelError::Provider(e.to_string()))?
         } else {
-            stream::collect_stream_response(stream_result)
-                .await
-                .map_err(|e| KernelError::Provider(e.to_string()))?
-        };
+            // Non-streaming: silently drain events to drive the stream to completion
+            while event_stream.next().await.is_some() {}
+        }
+
+        let response = response_future
+            .await
+            .map_err(|e| KernelError::Provider(e.to_string()))?;
 
         if let Some(ref api_usage) = response.usage {
             let usage = gasket_types::TokenUsage::from_api_fields(
                 api_usage.input_tokens,
                 api_usage.output_tokens,
             );
-            state.accumulate_usage(&usage, options.pricing.as_ref());
-            Self::send_token_stats_event(state, event_tx, options).await;
+            ledger.accumulate(&usage, options.pricing.as_ref());
+            Self::send_token_stats_event(ledger, event_tx, options).await;
         }
 
         Ok(response)
     }
 
     async fn send_token_stats_event(
-        state: &ExecutionState,
+        ledger: &TokenLedger,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         options: &ExecutorOptions<'_>,
     ) {
         if let Some(tx) = event_tx {
-            if let Some(ref total_usage) = state.total_usage {
+            if let Some(ref total_usage) = ledger.total_usage {
                 let currency = options
                     .pricing
                     .as_ref()
@@ -674,7 +676,7 @@ impl<'a> AgentExecutor<'a> {
                         input_tokens: total_usage.input_tokens,
                         output_tokens: total_usage.output_tokens,
                         total_tokens: total_usage.total_tokens,
-                        cost: state.total_cost,
+                        cost: ledger.total_cost,
                         currency: currency.to_string(),
                     })
                     .await;
@@ -723,29 +725,29 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_state_accumulate_usage() {
-        let mut state = ExecutionState::new(vec![]);
+    fn test_token_ledger_accumulate_usage() {
+        let mut ledger = TokenLedger::new();
         let pricing = ModelPricing::new(1.0, 2.0, "USD");
 
         let usage1 = gasket_types::TokenUsage::new(100, 50);
-        state.accumulate_usage(&usage1, Some(&pricing));
-        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
-        assert!((state.total_cost - 0.0002).abs() < 0.00001);
+        ledger.accumulate(&usage1, Some(&pricing));
+        assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 100);
+        assert!((ledger.total_cost - 0.0002).abs() < 0.00001);
 
         let usage2 = gasket_types::TokenUsage::new(200, 100);
-        state.accumulate_usage(&usage2, Some(&pricing));
-        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 300);
-        assert_eq!(state.total_usage.as_ref().unwrap().output_tokens, 150);
-        assert!((state.total_cost - 0.0006).abs() < 0.00001);
+        ledger.accumulate(&usage2, Some(&pricing));
+        assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 300);
+        assert_eq!(ledger.total_usage.as_ref().unwrap().output_tokens, 150);
+        assert!((ledger.total_cost - 0.0006).abs() < 0.00001);
     }
 
     #[test]
-    fn test_execution_state_no_pricing() {
-        let mut state = ExecutionState::new(vec![]);
+    fn test_token_ledger_no_pricing() {
+        let mut ledger = TokenLedger::new();
         let usage = gasket_types::TokenUsage::new(100, 50);
-        state.accumulate_usage(&usage, None);
-        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
-        assert_eq!(state.total_cost, 0.0);
+        ledger.accumulate(&usage, None);
+        assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(ledger.total_cost, 0.0);
     }
 
     #[test]

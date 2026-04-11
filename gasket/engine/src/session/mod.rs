@@ -360,41 +360,22 @@ impl AgentSession {
     }
 
     /// Process a message and return response.
+    ///
+    /// Thin wrapper around the streaming pipeline — events are silently discarded
+    /// and only the final `AgentResponse` is returned.
     pub async fn process_direct(
         &self,
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
-        let outcome = self.prepare_pipeline(content, session_key).await?;
+        let (_event_rx, handle) = self
+            .process_direct_streaming_with_channel(content, session_key)
+            .await?;
 
-        let request = match outcome {
-            BuildOutcome::Aborted(msg) => {
-                return Ok(AgentResponse {
-                    content: msg,
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(self.config.model.clone()),
-                    token_usage: None,
-                    cost: 0.0,
-                });
-            }
-            BuildOutcome::Ready(req) => req,
-        };
-
-        let fctx = FinalizeContext::from_request(&request);
-
-        // Call the kernel — pure LLM execution
-        let result = kernel::execute(&self.runtime_ctx, request.messages).await?;
-
-        Ok(finalize_response(
-            result,
-            &fctx,
-            &self.context,
-            &self.hooks,
-            &self.config.model,
-            self.compactor.as_ref(),
-        )
-        .await)
+        // Discard streaming events, await final result
+        handle
+            .await
+            .map_err(|e| AgentError::SessionError(format!("Task join error: {}", e)))?
     }
 
     /// Process a message with streaming.

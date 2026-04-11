@@ -1,23 +1,23 @@
 # Gasket
 
-> 版本: 1.0.0 | 语言: Rust (Edition 2021) | 许可: MIT
+> 版本: 2.0.0 | 语言: Rust (Edition 2021) | 许可: MIT
 
 ---
 
 ## 项目概览
 
-Gasket-RS 是一个用 Rust 编写的**轻量级个人 AI 助手框架**。它通过统一的 Agent Loop 连接多种 LLM 提供商和多种通信渠道，支持工具调用、长期记忆、定时任务、子代理和 MCP 协议。
+Gasket-RS 是一个用 Rust 编写的**轻量级个人 AI 助手框架**。它通过统一的 Agent Loop 连接多种 LLM 提供商和多种通信渠道，支持工具调用、长期记忆、定时任务、子代理。
 
 ### 核心特性
 
 | 特性 | 说明 |
 |------|------|
-| 多 LLM 提供商 | OpenRouter, OpenAI, Anthropic, DeepSeek, 智谱, 通义千问, Moonshot, MiniMax, Ollama, Gemini, Copilot |
+| 多 LLM 提供商 | OpenAI 兼容: OpenRouter, OpenAI, Anthropic, DeepSeek, 智谱, 通义千问, Moonshot, MiniMax, Ollama; 独立接口: Gemini, Copilot |
 | 多通信渠道 | CLI, Telegram, Discord, Slack, 飞书, 钉钉, 企业微信, WebSocket |
 | 工具系统 | 文件读写, Shell 执行, Web 搜索/抓取, 消息发送, 定时任务, 子代理, 记忆搜索 |
-| MCP 协议 | 通过 JSON-RPC 2.0 over stdio 连接外部工具服务器 |
+| Tantivy 全文搜索 | 独立 CLI 工具提供高性能全文搜索索引管理 |
 | 流式输出 | 支持 SSE 流式响应, 包含 thinking/reasoning 模式 |
-| 持久化存储 | SQLite (FTS5 全文搜索) 存储会话历史、结构化记忆、任务状态 |
+| 持久化存储 | SQLite 存储会话历史、结构化记忆、任务状态，支持向量嵌入搜索 |
 | 技能系统 | 从 Markdown+YAML frontmatter 文件动态加载技能 |
 | Actor 消息模型 | Router → Session → Outbound 三 Actor 零锁流水线 |
 | 可扩展 Hook | 外部 Shell 脚本 Hook 系统 (UNIX 哲学) |
@@ -34,25 +34,22 @@ gasket-rs/                    (Cargo workspace)
 │       ├── cron/              定时任务
 │       ├── hooks/             外部 Shell Hook
 │       ├── kernel/            Agent 执行内核
-│       ├── mcp/               MCP 协议客户端
-│       ├── memory/            存储层 re-export (SQLite + FTS5)
+│       ├── memory/            存储层 re-export (SQLite + 向量嵌入)
 │       ├── providers/         LLM 提供商 re-export
 │       ├── session/           会话管理 (历史/索引/状态)
 │       ├── skills/            技能加载器
 │       ├── subagents/         子代理管理
 │       ├── tools/             工具系统
-│       ├── vault/             敏感数据管理
+│       ├── vault/             敏感数据管理 (加密/密钥存储)
 │       └── ...
 ├── cli/                      CLI 可执行文件
 │   └── src/                   命令入口 + Gateway 启动器
 ├── types/                    共享类型定义
-├── providers/                LLM 提供商实现
+├── providers/                LLM 提供商实现 (OpenAI 兼容接口为主)
 ├── storage/                  SQLite 存储 + embedding
-├── vault/                    Vault 敏感数据管理
 ├── channels/                 通信渠道实现
 ├── sandbox/                  沙箱执行环境
-├── bus/                      消息总线 Actor 实现
-└── tantivy/                  Tantivy 搜索 MCP 服务器
+└── tantivy/                  Tantivy 全文搜索 CLI 工具
 ```
 
 ---
@@ -66,7 +63,7 @@ gasket-rs/                    (Cargo workspace)
 | [结构设计](docs/architecture.md) | 系统架构图、Crate 结构、核心设计原则 |
 | [数据结构设计](docs/data-structures.md) | 消息类型、LLM 请求/响应、SQLite 表结构、文件系统存储 |
 | [数据流设计](docs/data-flow.md) | CLI/Gateway/Heartbeat/Cron 模式数据流、Agent 执行流程、流式输出 |
-| [模块设计](docs/modules.md) | providers, tools, channels, mcp, bus, hooks, memory, session 等模块详解 |
+| [模块设计](docs/modules.md) | providers, tools, channels, bus, hooks, memory, session 等模块详解 |
 | [Copilot 配置](docs/copilot-setup.md) | GitHub Copilot (PAT/OAuth) 的两种调用方式与设置指南 |
 
 ---
