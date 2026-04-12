@@ -1,328 +1,556 @@
-# 结构设计
+# 系统架构
 
-> Gasket-RS 系统架构总览
-
----
-
-## Crate 结构
-
-```
-gasket-rs/                    (Cargo workspace)
-├── engine/                   核心编排 crate — Agent 引擎、工具、Hook 系统
-│   └── src/
-│       ├── kernel/            纯函数执行核心 (executor, stream)
-│       ├── session/           会话管理层 (AgentSession, context, compactor, memory)
-│       ├── subagents/         子代理系统 (manager, tracker, runner)
-│       ├── config/            配置加载 (YAML → Struct)
-│       ├── cron/              定时任务服务
-│       ├── heartbeat/         心跳服务
-│       ├── hooks/             Pipeline Hook 系统
-│       ├── skills/            技能系统
-│       ├── tools/             工具系统 (14 个内置工具)
-│       └── vault/             敏感数据隔离模块
-├── cli/                      CLI 可执行文件
-│   └── src/
-│       ├── main.rs            命令入口 + Gateway 启动器
-│       ├── cli.rs             CLI 交互模式
-│       ├── provider.rs        Provider 工厂
-│       └── commands/          子命令 (onboard, status, agent, gateway, channels, cron, vault, memory)
-├── types/                    共享类型定义 (Tool trait, events, session_event 等)
-├── providers/                LLM 提供商实现
-├── storage/                  SQLite 存储 + 记忆系统实现
-├── channels/                 通信渠道实现
-├── sandbox/                  沙箱执行环境
-└── tantivy/                  Tantivy 搜索 MCP 服务器 (独立二进制)
-```
+> Gasket 整体架构设计——各部件如何协同工作
 
 ---
 
-## 系统架构图
+## 一句话理解
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        cli (Binary)                              │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐   │
-│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │   │
-│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │   │
-│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘   │
-└────────────────────────────────┼───────────┼─────────────────────┘
-                                 │           │
-─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
-                                 │           │
-┌────────────────────────────────┼───────────┼─────────────────────┐
-│                        engine (Library)                          │
-│                                │           │                     │
-│  ┌─────────────────────────────▼───────────▼──────────────────┐  │
-│  │                   AgentSession (会话管理)                   │  │
-│  │  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐   │  │
-│  │  │   Prompt   │  │    kernel    │  │    Session        │   │  │
-│  │  │   Loader   │  │   execute    │  │   Management     │   │  │
-│  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
-│  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
-│  │  │  Context Compactor │  │      Hook Registry         │   │  │
-│  │  │  (同步压缩)        │  │  (BeforeRequest/AfterResp) │   │  │
-│  │  └────────────────────┘  └────────────────────────────┘   │  │
-│  └──────────┬──────────────┬──────────────────┬──────────────┘  │
-│             │              │                  │                  │
-│  ┌──────────▼──────┐  ┌───▼──────────┐  ┌───▼──────────────┐  │
-│  │  Providers      │  │  Tool        │  │   Memory         │  │
-│  │  (re-export)    │  │  Registry    │  │   Manager        │  │
-│  │                 │  │              │  │                  │  │
-│  │ ┌─────────────┐ │  │ ┌──────────┐ │  │  长期记忆系统     │  │
-│  │ │  OpenAI     │ │  │ │Filesystem│ │  │  (Scenario-based)│  │
-│  │ │  Compatible │ │  │ │Shell     │ │  └─────────────────┘  │
-│  │ │  Provider   │ │  │ │WebSearch │ │                       │
-│  │ ├─────────────┤ │  │ │WebFetch  │ │  ┌─────────────────┐  │
-│  │ │  Gemini     │ │  │ │Spawn    │ │  │  EventStore     │  │
-│  │ │  Provider   │ │  │ │SpawnPar.│ │  │  (SQLite 后端)   │  │
-│  │ │             │ │  │ │Message  │ │  │                 │  │
-│  │ ├─────────────┤ │  │ │Cron     │ │  │  session_events │  │
-│  │ │  Copilot    │ │  │ │MCP Tools│ │  │  memory_metadata│  │
-│  │ │  Provider   │ │  │ │Memory   │ │  └─────────────────┘  │
-│  │ └─────────────┘ │  │ └──────────┘ │                       │
-│  └────────────────┘  └──────────────┘                       │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │  kernel (纯函数执行核心)                                  ││
-│  │  ├── executor.rs: AgentExecutor, ToolExecutor            ││
-│  │  ├── stream.rs: StreamEvent 流式输出                     ││
-│  │  └── context.rs: RuntimeContext, KernelConfig            ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │  subagents (子代理系统)                                   ││
-│  │  ├── manager.rs: SubagentManager, SubagentTaskBuilder   ││
-│  │  ├── tracker.rs: SubagentTracker, 并行任务协调          ││
-│  │  └── runner.rs: run_subagent, ModelResolver             ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                             │
-│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐│
-│  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      ││
-│  │  Service      │  │  (文件驱动：     │  │  (JSON-RPC 2.0)  ││
-│  │               │  │   ~/.gasket/   │  │                  ││
-│  │               │  │   cron/*.md)   │  │                  ││
-│  └───────────────┘  └────────────────┘  └──────────────────┘│
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │              Vault (敏感数据隔离模块)                    ││
-│  │                                                         ││
-│  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ││
-│  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  ││
-│  │  │ (JSON 存储) │  │ (运行时注入) │  │  (XChaCha20)  │  ││
-│  │  └─────────────┘  └──────────────┘  └───────────────┘  ││
-│  │                                                         ││
-│  │  占位符语法: {{vault:key}}                              ││
-│  │  日志脱敏: redact_secrets()                             ││
-│  └─────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────────┘
-
-                    ┌─────────────────────┐
-                    │   External LLM APIs  │
-                    │  OpenAI / Anthropic  │
-                    │  DeepSeek / Gemini   │
-                    │  Ollama / Copilot    │
-                    └─────────────────────┘
-```
-
-### 核心设计原则
-
-| 原则 | 实现方式 |
-|------|----------|
-| **AgentContext 枚举** | 零成本枚举分发替代 Option<T> 模式，PersistentContext 变体（完整依赖）和 Stateless 变体（无持久化） |
-| **Kernel 纯函数设计** | `kernel::execute()` 和 `kernel::execute_streaming()` 无副作用，输入输出清晰 |
-| **Session 状态管理** | `AgentSession` 包装 kernel，管理会话状态、提示加载、Hook 注册 |
-| **Pipeline Hook 扩展** | 五个执行点（BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse）支持顺序/并行策略 |
-| **Feature Flag 编译** | 各通信渠道通过 Cargo feature flag 独立编译，按需启用 |
-| **无内存缓存** | Session 直接读写 SQLite，利用 SQLite page cache 避免缓存一致性问题 |
-| **Vault 敏感数据隔离** | 敏感数据与 LLM 可访问存储完全隔离，仅运行时注入，支持加密存储 |
-| **模块化 Skills 系统** | 独立的 skills/ 模块，支持 Markdown + YAML frontmatter 格式，渐进式加载 |
-| **文件驱动 Cron** | Cron jobs 存储在 ~/.gasket/cron/*.md，notify 监听热重载，无需 SQLite 持久化 |
-| **Crate 分离** | 核心类型、提供商、存储、渠道等已拆分为独立 crate |
+Gasket 就像一个**AI 助手的操作系统**，把用户输入、AI 大脑、记忆、工具连接在一起。
 
 ---
 
-## 模块依赖关系
+## 整体架构图
 
-```
-engine
-    │
-    ├── re-exports from types
-    │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
-    │       └── SessionEvent, EventType, Session (事件溯源类型)
-    │
-    ├── re-exports from providers
-    │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
-    │
-    ├── re-exports from storage (as memory 模块)
-    │       └── SqliteStore, EventStore, StoreError, MemoryStore
-    │       └── memory 子模块 (MetadataStore, EmbeddingStore 等)
-    │
-    ├── session/ (会话管理层)
-    │       └── AgentSession (原 AgentLoop), AgentContext, ContextCompactor
-    │       └── MemoryManager, MemoryProvider trait
-    │
-    ├── kernel/ (纯函数执行核心)
-    │       └── AgentExecutor, ToolExecutor, execute(), execute_streaming()
-    │
-    ├── subagents/ (子代理系统)
-    │       └── SubagentManager, SubagentTracker
-    │
-    ├── optional: channels (feature flags)
-    │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
-    │
-    └── optional: providers (feature flags)
-            └── Gemini, Copilot
+```mermaid
+flowchart TB
+    subgraph 用户层
+        CLI[命令行终端]
+        TG[Telegram]
+        DC[Discord]
+        SL[Slack]
+        FS[飞书]
+        WS[WebSocket]
+    end
+    
+    subgraph 接入层
+        Router[消息路由器]
+    end
+    
+    subgraph 核心层
+        Session[会话管理]
+        Kernel[AI大脑]
+        Hook[钩子系统]
+    end
+    
+    subgraph 能力层
+        Tools[工具箱]
+        Memory[记忆库]
+        Skills[技能库]
+    end
+    
+    subgraph 外部服务
+        LLM[LLM API
+        GPT/Claude/DeepSeek]
+        Web[互联网]
+        File[本地文件]
+    end
+    
+    CLI --> Router
+    TG --> Router
+    DC --> Router
+    SL --> Router
+    FS --> Router
+    WS --> Router
+    
+    Router --> Session
+    Session --> Kernel
+    Session --> Hook
+    
+    Kernel --> Tools
+    Kernel --> Memory
+    Session --> Skills
+    
+    Kernel --> LLM
+    Tools --> Web
+    Tools --> File
 ```
 
 ---
 
-## 关键组件说明
+## 各层职责
 
-### AgentSession (原 AgentLoop)
+### 1. 用户层：多种入口
 
-`AgentSession` 是会话管理的核心结构，负责：
-
-```rust
-pub struct AgentSession {
-    runtime_ctx: RuntimeContext,    // kernel 执行上下文
-    context: AgentContext,          // 持久化/无状态上下文
-    config: AgentConfig,            // Agent 配置
-    workspace: PathBuf,             // 工作空间路径
-    system_prompt: String,          // 系统提示
-    skills_context: Option<String>, // 技能上下文
-    hooks: Arc<HookRegistry>,       // Hook 注册表
-    compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
-    memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
-    indexing_service: Option<Arc<IndexingService>>, // 索引服务
-}
+```mermaid
+flowchart LR
+    subgraph 用户从哪里进来
+        A[命令行]
+        B[Telegram]
+        C[Discord]
+        D[其他]
+    end
+    
+    subgraph 统一处理
+        E[统一消息格式]
+    end
+    
+    A --> E
+    B --> E
+    C --> E
+    D --> E
 ```
 
-**关键方法：**
-- `process_direct()` — 处理消息并返回响应
-- `process_direct_streaming_with_channel()` — 流式处理
+无论用户从哪个渠道进来，都会被转换成统一的消息格式：
+- 用户ID
+- 消息内容
+- 渠道类型
+- 时间戳
 
-### Kernel 执行核心
+### 2. 接入层：消息路由
 
-纯函数设计，无副作用：
-
-```rust
-/// 纯函数: 执行 LLM 对话循环
-pub async fn execute(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-) -> Result<ExecutionResult, KernelError>;
-
-/// 纯函数: 流式 LLM 对话循环
-pub async fn execute_streaming(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-    event_tx: mpsc::Sender<StreamEvent>,
-) -> Result<ExecutionResult, KernelError>;
+```mermaid
+flowchart TB
+    subgraph 消息路由
+        R[Router]
+        
+        R -->|用户A| S1[Session A]
+        R -->|用户B| S2[Session B]
+        R -->|用户C| S3[Session C]
+    end
+    
+    S1 --> Out[Outbound]
+    S2 --> Out
+    S3 --> Out
+    
+    Out --> TG[回复Telegram]
+    Out --> DC[回复Discord]
 ```
 
-### Cron Service (文件驱动架构)
+**关键设计**：
+- 每个用户有独立的 Session
+- Session 之间互不干扰
+- 自动创建和清理 Session
 
-```rust
-pub struct CronService {
-    /// In-memory job storage
-    jobs: RwLock<HashMap<String, CronJob>>,
-    /// Workspace path
-    workspace: PathBuf,
-    /// File watcher
-    watcher: RwLock<Option<RecommendedWatcher>>,
-    /// Watcher event receiver
-    rx: Mutex<Receiver<Result<Event, notify::Error>>>,
-}
+### 3. 核心层：三剑客
+
+```mermaid
+flowchart TB
+    subgraph 核心三剑客
+        Session[会话管理<br/>大管家]
+        Kernel[AI大脑<br/>思考者]
+        Hook[钩子系统<br/>检查点]
+    end
+    
+    User[用户] --> Session
+    Session --> Hook
+    Hook --> Kernel
+    Kernel --> Session
+    Session --> User
+    
+    style Session fill:#E3F2FD
+    style Kernel fill:#FFF3E0
+    style Hook fill:#F3E5F5
 ```
 
-**职责：**
-- 启动时扫描 `~/.gasket/cron/*.md` 文件
-- 解析 Markdown + YAML frontmatter 格式
-- 通过 `notify` crate 监听文件变化，支持热重载
-- 内存中计算和更新 `next_run` 时间
+| 组件 | 比喻 | 职责 |
+|------|------|------|
+| Session | 管家 | 接待、准备资料、记录 |
+| Kernel | 大脑 | 思考、决策、生成回复 |
+| Hook | 检查点 | 安全检查、数据注入、日志 |
 
-### AgentContext 枚举
+### 4. 能力层：工具箱
 
-零成本枚举分发，编译期替代 `Option<T>` 模式：
-
-```rust
-pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless,
-}
+```mermaid
+mindmap
+  root((能力层))
+    工具箱
+      文件操作
+      网络搜索
+      命令执行
+      子代理
+    记忆库
+      短期历史
+      长期记忆
+      用户画像
+    技能库
+      代码审查
+      写作助手
+      数据分析
 ```
-
-```rust
-pub struct PersistentContext {
-    pub event_store: Arc<EventStore>,
-    pub sqlite_store: Arc<SqliteStore>,
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
-}
-```
-
-AgentContext 关键方法:
-- `persistent(event_store, sqlite_store) -> Self` — 创建持久化变体
-- `is_persistent(&self) -> bool` — 运行时检查变体类型
-- `load_session(&self, key) -> Session` — 从事件存储加载会话
-- `save_event(&self, event) -> Result` — 追加事件到事件存储
-- `get_history(&self, key, branch) -> Vec<SessionEvent>` — 获取分支历史
-- `recall_history(&self, key, embedding, top_k) -> Vec<String>` — 语义召回
-- `clear_session(&self, key) -> Result` — 清除会话数据
-
-| 变体 | 用途 |
-|------|------|
-| `Persistent(PersistentContext)` | 主 Agent，完整事件溯源（SQLite） |
-| `Stateless` | 子 Agent，无持久化，纯计算 |
-
-### Hook 系统
-
-```rust
-pub enum HookPoint {
-    BeforeRequest,  // 顺序，可修改/中止
-    AfterHistory,   // 顺序，可修改
-    BeforeLLM,      // 顺序，最后修改
-    AfterToolCall,  // 并行，只读
-    AfterResponse,  // 并行，只读
-}
-```
-
-### Feature Flags
-
-| Crate | Flag | 用途 |
-|-------|------|------|
-| engine | `local-embedding` | ONNX 嵌入 (fastembed) |
-| engine | `telegram` | Telegram 渠道 |
-| engine | `discord` | Discord 渠道 |
-| engine | `slack` | Slack 渠道 |
-| engine | `email` | 邮件渠道 |
-| engine | `feishu` | 飞书渠道 |
-| engine | `dingtalk` | 钉钉渠道 |
-| engine | `wecom` | 企业微信渠道 |
-| engine | `webhook` | Webhook 服务器 |
-| engine | `provider-gemini` | Google Gemini 提供商 |
-| engine | `provider-copilot` | GitHub Copilot 提供商 |
-| storage | `local-embedding` | fastembed ONNX 嵌入 (~20MB) |
-| cli | `full` | 全部功能 |
-| cli | `telemetry` | OpenTelemetry 支持 |
-
-### Actor 模型
-
-| Actor | 职责 | 特点 |
-|-------|------|------|
-| Router | 按 SessionKey 分发 | 单任务，HashMap 路由表 |
-| Session | 串行处理消息 | 每 session 一个，空闲超时自毁 |
-| Outbound | HTTP/WebSocket 发送 | 单任务，fire-and-forget 发送 |
 
 ---
 
-## 扩展 Crate
+## 数据流动
 
-| Crate | 用途 | 依赖 |
-|-------|------|------|
-| `types` | 共享类型定义，最小依赖 | 无 |
-| `providers` | LLM 提供商实现 | types, async-trait |
-| `storage` | SQLite 存储 + embedding + 记忆系统 | types, sqlx, fastembed |
-| `channels` | 通信渠道 | teloxide, serenity, etc. |
-| `sandbox` | 沙箱执行 | 系统进程管理 |
-| `tantivy` | 全文搜索 MCP 服务器 | tantivy |
+### 完整请求处理流程
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant R as Router
+    participant S as Session
+    participant H as Hooks
+    participant K as Kernel
+    participant L as LLM
+    participant T as Tools
+    participant M as Memory
+    
+    U->>R: 发送消息
+    R->>R: 路由到对应Session
+    
+    activate S
+    S->>M: 加载用户记忆
+    M-->>S: 返回记忆
+    
+    S->>H: BeforeRequest钩子
+    H-->>S: 继续/中止
+    
+    S->>S: 保存用户消息到历史
+    S->>S: 组装上下文
+    
+    S->>K: 请求处理
+    
+    activate K
+    K->>L: 发送提示词
+    L-->>K: 返回思考+可能的工具调用
+    
+    alt 需要工具
+        K->>T: 调用工具
+        T-->>K: 返回结果
+        K->>L: 带上结果再请求
+        L-->>K: 最终回复
+    end
+    
+    K-->>S: 返回结果
+    deactivate K
+    
+    S->>H: AfterResponse钩子
+    S->>S: 保存AI回复
+    S->>M: 更新访问记录
+    
+    S-->>R: 返回结果
+    deactivate S
+    
+    R-->>U: 显示回复
+```
+
+---
+
+## 模块详解
+
+### Session：会话管理
+
+```mermaid
+flowchart TB
+    subgraph Session内部
+        A[接收请求]
+        B[加载上下文]
+        C[调用Kernel]
+        D[保存结果]
+    end
+    
+    subgraph 上下文组成
+        S[系统提示]
+        SK[技能]
+        H[历史]
+        M[记忆]
+        Q[当前问题]
+    end
+    
+    A --> B
+    B --> S
+    B --> SK
+    B --> H
+    B --> M
+    B --> Q
+    S --> C
+    SK --> C
+    H --> C
+    M --> C
+    Q --> C
+    C --> D
+```
+
+### Kernel：AI 大脑
+
+```mermaid
+flowchart TB
+    subgraph Kernel思考循环
+        Start([开始]) --> Input[接收上下文]
+        Input --> Ask[询问LLM]
+        Ask --> Analyze{分析回复}
+        
+        Analyze -->|需要工具| Tool[执行工具]
+        Tool --> Result[工具结果]
+        Result --> Ask
+        
+        Analyze -->|直接回答| Output[输出结果]
+        Analyze -->|达到上限| Output
+        
+        Output --> End([结束])
+    end
+    
+    style Tool fill:#FFD700
+```
+
+### Memory：记忆系统
+
+```mermaid
+flowchart TB
+    subgraph 记忆层次
+        H[历史<br/>短期记忆]
+        P[Profile<br/>用户画像]
+        K[Knowledge<br/>知识]
+        A[Active<br/>当前工作]
+    end
+    
+    subgraph 存储
+        S1[SQLite<br/>会话历史]
+        S2[Markdown文件<br/>长期记忆]
+    end
+    
+    H --> S1
+    P --> S2
+    K --> S2
+    A --> S2
+```
+
+### Tools：工具系统
+
+```mermaid
+flowchart TB
+    subgraph 工具注册表
+        R[ToolRegistry]
+    end
+    
+    subgraph 各类工具
+        F[文件工具]
+        W[网络工具]
+        E[执行工具]
+        S[子代理]
+        M[记忆工具]
+    end
+    
+    R --> F
+    R --> W
+    R --> E
+    R --> S
+    R --> M
+    
+    F --> FS[本地文件]
+    W --> Web[互联网]
+    E --> Shell[Shell命令]
+    S --> Sub[创建子AI]
+    M --> Mem[读写记忆]
+```
+
+---
+
+## 关键设计决策
+
+### 1. 纯函数 Kernel
+
+```mermaid
+flowchart LR
+    subgraph 输入
+        A[上下文
+        配置
+        工具]
+    end
+    
+    subgraph Kernel
+        B[黑盒处理
+        无副作用
+        可预测]
+    end
+    
+    subgraph 输出
+        C[回复内容
+        工具调用]
+    end
+    
+    A --> B --> C
+    
+    style B fill:#C8E6C9
+```
+
+**好处**：
+- 相同输入，相同输出
+- 容易测试
+- 方便重试和缓存
+
+### 2. 枚举替代 Option
+
+```mermaid
+flowchart TB
+    subgraph 老方法
+        O[Option&lt;Context&gt;]
+        O -->|Some| P[持久化]
+        O -->|None| S[无状态]
+    end
+    
+    subgraph 新方法
+        E[AgentContext枚举]
+        E -->|Persistent| P2[持久化上下文]
+        E -->|Stateless| S2[无状态]
+    end
+    
+    style E fill:#C8E6C9
+```
+
+**好处**：
+- 编译期就知道类型
+- 零运行时开销
+- 代码更清晰
+
+### 3. 文件 + 数据库混合存储
+
+```mermaid
+flowchart TB
+    subgraph Cron任务
+        F[Markdown文件
+人类可读]
+        D[SQLite状态
+机器高效]
+    end
+    
+    subgraph 记忆
+        F2[Markdown文件
+人类可编辑]
+        D2[SQLite索引
+快速查询]
+    end
+    
+    F <-->|配置| D
+    F2 <-->|内容| D2
+```
+
+**好处**：
+- 人类可编辑（Markdown）
+- 机器高性能（SQLite）
+- 版本控制友好
+
+---
+
+## 扩展点
+
+### 1. Hooks：自定义行为
+
+```mermaid
+flowchart LR
+    A[BeforeRequest] --> B[处理中]
+    B --> C[AfterResponse]
+    
+    A --> A1[敏感词过滤]
+    A --> A2[输入格式化]
+    
+    C --> C1[记录日志]
+    C --> C2[发送通知]
+```
+
+### 2. Skills：自定义能力
+
+```mermaid
+flowchart TB
+    User[用户] --> Core[核心系统]
+    
+    subgraph 技能插件
+        S1[代码审查技能]
+        S2[写作助手技能]
+        S3[数据分析技能]
+    end
+    
+    Core --> S1
+    Core --> S2
+    Core --> S3
+    
+    S1 --> Core
+    S2 --> Core
+    S3 --> Core
+```
+
+### 3. MCP：外部工具服务
+
+```mermaid
+flowchart TB
+    Gasket[Gasket核心]
+    MCP[MCP客户端]
+    
+    subgraph 外部服务
+        S1[数据库服务]
+        S2[图像生成]
+        S3[企业API]
+    end
+    
+    Gasket --> MCP
+    MCP --> S1
+    MCP --> S2
+    MCP --> S3
+```
+
+---
+
+## 部署模式
+
+### 模式1：CLI 交互模式
+
+```mermaid
+flowchart LR
+    User[用户] --> CLI[gasket agent]
+    CLI --> Engine[Engine核心]
+    Engine --> LLM
+```
+
+### 模式2：Gateway 服务模式
+
+```mermaid
+flowchart TB
+    subgraph 外部用户
+        T[Telegram用户]
+        D[Discord用户]
+    end
+    
+    subgraph Gasket服务
+        G[gasket gateway]
+        R[Router]
+        S1[Session 1]
+        S2[Session 2]
+    end
+    
+    T --> G
+    D --> G
+    G --> R
+    R --> S1
+    R --> S2
+```
+
+### 模式3：混合模式
+
+```mermaid
+flowchart TB
+    User[用户] --> Choice{选择?}
+    
+    Choice -->|快速任务| CLI[gasket agent]
+    Choice -->|长期服务| Gateway[gasket gateway]
+    
+    CLI --> Engine
+    Gateway --> Engine
+    
+    Engine --> LLM
+```
+
+---
+
+## 总结
+
+```mermaid
+mindmap
+  root((Gasket架构))
+    用户层
+      多渠道接入
+      统一消息格式
+    接入层
+      Router路由
+      Session管理
+    核心层
+      纯函数Kernel
+      灵活Hook系统
+    能力层
+      丰富工具
+      长期记忆
+      动态技能
+    设计哲学
+      简洁可预测
+      人类友好
+      可扩展
