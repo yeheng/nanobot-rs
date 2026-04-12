@@ -17,11 +17,11 @@
 //! watcher uses mtime comparison to detect external edits.
 
 use anyhow::Result;
+use chrono::Utc;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Boxed embedder trait object for dependency injection.
@@ -36,9 +36,13 @@ pub struct MemoryManager {
     retrieval: RetrievalEngine,
     embedder: BoxedEmbedder,
     budget: TokenBudget,
-    /// In-memory access log for deferred batched writes.
-    /// Records every read and flushes to disk asynchronously when threshold is reached.
-    access_log: Arc<tokio::sync::Mutex<AccessLog>>,
+    /// Lock-free channel for recording memory accesses.
+    /// Sends access entries to a background worker that batches and flushes.
+    access_tx: tokio::sync::mpsc::UnboundedSender<AccessEntry>,
+    /// Shutdown signal for the access log background worker.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Background task handle for graceful shutdown.
+    access_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl MemoryManager {
@@ -63,6 +67,9 @@ impl MemoryManager {
         );
         let budget = TokenBudget::default();
 
+        let (access_tx, shutdown_tx, access_task) =
+            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+
         Ok(Self {
             store,
             index_manager,
@@ -71,7 +78,9 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
-            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
+            access_tx,
+            shutdown_tx,
+            access_task: std::sync::Mutex::new(access_task),
         })
     }
 
@@ -91,6 +100,9 @@ impl MemoryManager {
             EmbeddingStore::new(pool.clone()),
         );
 
+        let (access_tx, shutdown_tx, access_task) =
+            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+
         Ok(Self {
             store,
             index_manager,
@@ -99,7 +111,9 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
-            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
+            access_tx,
+            shutdown_tx,
+            access_task: std::sync::Mutex::new(access_task),
         })
     }
 
@@ -113,6 +127,9 @@ impl MemoryManager {
         embedder: BoxedEmbedder,
         budget: TokenBudget,
     ) -> Self {
+        let (access_tx, shutdown_tx, access_task) =
+            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+
         Self {
             store,
             index_manager,
@@ -121,8 +138,36 @@ impl MemoryManager {
             retrieval,
             embedder,
             budget,
-            access_log: Arc::new(tokio::sync::Mutex::new(AccessLog::default_threshold())),
+            access_tx,
+            shutdown_tx,
+            access_task: std::sync::Mutex::new(access_task),
         }
+    }
+
+    /// Spawn the background access log worker.
+    ///
+    /// Creates an MPSC channel for lock-free access recording and a watch
+    /// channel for shutdown signaling. The worker batches entries in memory
+    /// and flushes to disk when the threshold is reached.
+    fn spawn_access_worker(
+        store: FileMemoryStore,
+        metadata_store: MetadataStore,
+    ) -> (
+        tokio::sync::mpsc::UnboundedSender<AccessEntry>,
+        tokio::sync::watch::Sender<bool>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
+        let (access_tx, access_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(access_log_worker(
+            access_rx,
+            shutdown_rx,
+            store,
+            metadata_store,
+        ));
+
+        (access_tx, shutdown_tx, Some(handle))
     }
 
     /// Initialize memory system (create directories, sync metadata to SQLite).
@@ -148,63 +193,35 @@ impl MemoryManager {
     }
 
     // ========================================================================
-    // Access tracking (read-path recording + write-behind flush)
+    // Access tracking (lock-free channel + background write-behind flush)
     // ========================================================================
 
-    /// Record a memory access and trigger async flush if threshold is reached.
+    /// Record a memory access — lock-free, non-blocking.
     ///
-    /// This method is designed to be called on every successful file read in the
-    /// three-phase loading pipeline. Access events accumulate in memory and are
-    /// flushed to disk in batches via `tokio::spawn`, ensuring zero blocking
-    /// of the hot LLM response path.
-    async fn record_access(&self, scenario: Scenario, filename: &str) {
-        let mut log = self.access_log.lock().await;
-        log.record(scenario, filename);
-
-        if log.should_flush() {
-            let entries = log.drain();
-            let store = self.store.clone();
-            let metadata_store = self.metadata_store.clone();
-
-            tokio::spawn(async move {
-                let mut temp_log = AccessLog::new(entries.len().max(1));
-                for e in &entries {
-                    temp_log.record(e.scenario, &e.filename);
-                }
-                match FrequencyManager::flush_access_log(&mut temp_log, &store, &metadata_store)
-                    .await
-                {
-                    Ok(report) if report.total_flushed > 0 => {
-                        debug!(
-                            "Access log flushed: {} files updated, {} promoted",
-                            report.total_flushed, report.promoted
-                        );
-                    }
-                    Err(e) => warn!("Access log flush failed: {}", e),
-                    _ => {}
-                }
-            });
-        }
+    /// Sends the access entry to the background worker via MPSC channel.
+    /// The worker batches entries and flushes to disk when the threshold is
+    /// reached. This method never blocks or awaits, making it safe on the
+    /// hot LLM response path.
+    fn record_access(&self, scenario: Scenario, filename: &str) {
+        let entry = AccessEntry {
+            scenario,
+            filename: filename.to_string(),
+            timestamp: Utc::now(),
+        };
+        let _ = self.access_tx.send(entry);
     }
 
     /// Flush any remaining access log entries on graceful shutdown.
     ///
-    /// Call this before dropping the MemoryManager to ensure the final batch
-    /// of access records is persisted. This is a synchronous flush (blocking)
-    /// since the process is shutting down anyway.
+    /// Sends a shutdown signal to the background worker, which flushes any
+    /// remaining entries before exiting. Awaits the worker task to ensure
+    /// all data is persisted before returning.
     pub async fn shutdown_flush(&self) -> Result<()> {
-        let mut log = self.access_log.lock().await;
-        if log.is_empty() {
-            return Ok(());
+        let _ = self.shutdown_tx.send(true);
+        let handle = { self.access_task.lock().unwrap().take() };
+        if let Some(handle) = handle {
+            let _ = handle.await;
         }
-
-        let count = log.len();
-        info!(
-            "Flushing {} remaining access log entries on shutdown",
-            count
-        );
-
-        FrequencyManager::flush_access_log(&mut log, &self.store, &self.metadata_store).await?;
         Ok(())
     }
 
@@ -618,7 +635,7 @@ impl MemoryManager {
                         "Bootstrap: loaded profile/{} ({} tokens)",
                         entry.filename, mem.metadata.tokens
                     );
-                    self.record_access(Scenario::Profile, &entry.filename).await;
+                    self.record_access(Scenario::Profile, &entry.filename);
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -665,7 +682,7 @@ impl MemoryManager {
                         "Bootstrap: loaded active/{} ({:?}, {} tokens)",
                         entry.filename, entry.frequency, mem.metadata.tokens
                     );
-                    self.record_access(Scenario::Active, &entry.filename).await;
+                    self.record_access(Scenario::Active, &entry.filename);
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -728,7 +745,7 @@ impl MemoryManager {
                     debug!("Scenario: loaded hot item {}", entry.title);
                     tokens_used += entry.tokens as usize;
                     loaded.insert(key);
-                    self.record_access(scenario, &entry.filename).await;
+                    self.record_access(scenario, &entry.filename);
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -770,7 +787,7 @@ impl MemoryManager {
                     debug!("Scenario: loaded warm item {}", entry.title);
                     tokens_used += entry.tokens as usize;
                     loaded.insert(key);
-                    self.record_access(scenario, &entry.filename).await;
+                    self.record_access(scenario, &entry.filename);
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -834,8 +851,7 @@ impl MemoryManager {
                     debug!("On-demand: loaded {}", result.title);
                     tokens_used += tokens;
                     loaded.insert(key);
-                    self.record_access(result.scenario, &result.memory_path)
-                        .await;
+                    self.record_access(result.scenario, &result.memory_path);
                     memories.push(mem);
                 }
                 Err(e) => {
@@ -850,6 +866,64 @@ impl MemoryManager {
         }
 
         Ok(memories)
+    }
+}
+
+// ── Background access log worker ──────────────────────────────────────────
+
+/// Background worker that receives access entries from the MPSC channel,
+/// batches them in memory, and flushes to disk when the threshold is reached.
+///
+/// On shutdown signal (watch channel) or channel closure, flushes any remaining
+/// entries before exiting.
+async fn access_log_worker(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AccessEntry>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    store: FileMemoryStore,
+    metadata_store: MetadataStore,
+) {
+    let mut log = AccessLog::default_threshold();
+
+    loop {
+        tokio::select! {
+            entry = rx.recv() => {
+                match entry {
+                    Some(entry) => {
+                        log.record(entry.scenario, &entry.filename);
+                        if log.should_flush() {
+                            match FrequencyManager::flush_access_log(
+                                &mut log, &store, &metadata_store,
+                            )
+                            .await
+                            {
+                                Ok(report) if report.total_flushed > 0 => {
+                                    debug!(
+                                        "Access log flushed: {} files updated, {} promoted",
+                                        report.total_flushed, report.promoted
+                                    );
+                                }
+                                Err(e) => warn!("Access log flush failed: {}", e),
+                                _ => {}
+                            }
+                        }
+                    }
+                    None => break, // Channel closed — all senders dropped
+                }
+            }
+            _ = shutdown_rx.changed() => break, // Shutdown signal received
+        }
+    }
+
+    // Final flush on shutdown — drain remaining entries to disk
+    if !log.is_empty() {
+        info!(
+            "Flushing {} remaining access log entries on shutdown",
+            log.len()
+        );
+        if let Err(e) = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store).await
+        {
+            warn!("Shutdown flush failed: {}", e);
+        }
     }
 }
 

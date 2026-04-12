@@ -14,7 +14,7 @@ use super::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::{ResourceLimits, SandboxConfig};
 use crate::error::{Result, SandboxError};
 
-/// Fallback executor — direct `bash -c` with ulimit-based resource limits.
+/// Fallback executor — direct `sh -c` with ulimit-based resource limits.
 pub struct FallbackBackend {
     _limits: ResourceLimits,
 }
@@ -64,8 +64,8 @@ impl SandboxBackend for FallbackBackend {
         let limits = ResourceLimits::from(&config.limits);
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
-        let mut command = Command::new("bash");
-        // Use bash -c with the command string.
+        let mut command = Command::new("sh");
+        // Use sh -c with the command string.
         // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
         // and check_dangerous_patterns() in the CommandBuilder.
         // The sandbox isolation (bwrap/sandbox-exec) provides additional defense.
@@ -88,7 +88,7 @@ impl SandboxBackend for FallbackBackend {
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
         // Build async command with kill_on_drop to ensure process termination on timeout
-        let mut command = AsyncCommand::new("bash");
+        let mut command = AsyncCommand::new("sh");
         command
             .arg("-c")
             .arg(&prefixed_cmd)
@@ -150,6 +150,6 @@ mod tests {
         let cmd = backend.build_command("echo test", Path::new("/tmp"), &config);
         assert!(cmd.is_ok());
         let cmd = cmd.unwrap();
-        assert_eq!(cmd.get_program(), "bash");
+        assert_eq!(cmd.get_program(), "sh");
     }
 }

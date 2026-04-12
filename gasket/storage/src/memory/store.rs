@@ -4,7 +4,7 @@ use super::types::*;
 use crate::fs::atomic_write;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Filesystem-backed memory store.
 #[derive(Clone)]
@@ -29,6 +29,59 @@ impl FileMemoryStore {
     /// Create store using default ~/.gasket/memory/ path.
     pub fn default_path() -> Self {
         Self::new(memory_base_dir())
+    }
+
+    /// Validate that a resolved path stays within the memory base directory.
+    ///
+    /// - If the file exists: canonicalizes to resolve symlinks and `..`,
+    ///   then verifies the target is a descendant of `base_dir`.
+    /// - If the file does not exist: canonicalizes the parent directory
+    ///   and verifies the filename contains no path separators or `..`.
+    fn validate_path(&self, target: &Path) -> Result<()> {
+        if target.exists() {
+            let canonical_target = target
+                .canonicalize()
+                .with_context(|| format!("Path does not exist: {}", target.display()))?;
+            let canonical_base = self
+                .base_dir
+                .canonicalize()
+                .unwrap_or_else(|_| self.base_dir.clone());
+
+            if !canonical_target.starts_with(&canonical_base) {
+                anyhow::bail!(
+                    "Path traversal blocked: {} is outside memory directory {}",
+                    canonical_target.display(),
+                    canonical_base.display()
+                );
+            }
+        } else {
+            // New file — validate the parent directory and filename safety
+            if let Some(filename) = target.file_name() {
+                let name = filename.to_string_lossy();
+                if name.contains("..") || name.contains('/') || name.contains('\\') {
+                    anyhow::bail!("Unsafe filename rejected: {}", name);
+                }
+            }
+            if let Some(parent) = target.parent() {
+                let canonical_parent = parent.canonicalize().with_context(|| {
+                    format!("Parent directory does not exist: {}", parent.display())
+                })?;
+                let canonical_base = self
+                    .base_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.base_dir.clone());
+
+                if !canonical_parent.starts_with(&canonical_base) {
+                    anyhow::bail!(
+                        "Path traversal blocked: parent {} is outside memory directory {}",
+                        canonical_parent.display(),
+                        canonical_base.display()
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Initialize directory structure: create all 6 scenario dirs + .history/.
@@ -92,6 +145,7 @@ impl FileMemoryStore {
     /// Read a memory file by scenario and filename.
     pub async fn read(&self, scenario: Scenario, filename: &str) -> Result<MemoryFile> {
         let path = self.base_dir.join(scenario.dir_name()).join(filename);
+        self.validate_path(&path)?;
         let content = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read memory file: {}", filename))?;
@@ -110,6 +164,7 @@ impl FileMemoryStore {
         new_content: &str,
     ) -> Result<()> {
         let path = self.base_dir.join(scenario.dir_name()).join(filename);
+        self.validate_path(&path)?;
 
         // Save current version to history
         if path.exists() {
@@ -139,6 +194,7 @@ impl FileMemoryStore {
     /// Delete a memory file.
     pub async fn delete(&self, scenario: Scenario, filename: &str) -> Result<()> {
         let path = self.base_dir.join(scenario.dir_name()).join(filename);
+        self.validate_path(&path)?;
         tokio::fs::remove_file(&path)
             .await
             .with_context(|| format!("Failed to delete memory file: {}", filename))

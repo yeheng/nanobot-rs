@@ -119,11 +119,11 @@ impl LinuxBwrapBackend {
         // Working directory inside sandbox
         command.arg("--chdir").arg(working_dir);
 
-        // The actual command - execute via bash
+        // The actual command - execute via sh
         // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
         // and check_dangerous_patterns() in the CommandBuilder.
         // The bwrap sandbox isolation provides additional defense-in-depth.
-        command.arg("bash").arg("-c").arg(cmd);
+        command.arg("sh").arg("-c").arg(cmd);
 
         debug!("bwrap command: {:?}", command);
         command
@@ -206,8 +206,8 @@ impl SandboxBackend for LinuxBwrapBackend {
         // Working directory inside sandbox
         command.arg("--chdir").arg(working_dir);
 
-        // The actual command - execute via bash
-        command.arg("bash").arg("-c").arg(cmd);
+        // The actual command - execute via sh
+        command.arg("sh").arg("-c").arg(cmd);
 
         // Kill process when the handle is dropped (critical for timeout handling)
         command.kill_on_drop(true);

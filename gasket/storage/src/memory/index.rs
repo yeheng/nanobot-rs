@@ -12,6 +12,7 @@ use super::frontmatter::*;
 use super::types::*;
 use anyhow::Result;
 use std::path::PathBuf;
+use tracing::warn;
 
 /// A single entry representing a memory file's metadata.
 #[derive(Debug, Clone)]
@@ -71,6 +72,25 @@ impl FileIndexManager {
             }
 
             let path = entry.path();
+
+            // Path traversal defense: verify the resolved path stays within
+            // the memory base directory. This catches symlinks that point
+            // outside ~/.gasket/memory/ as well as encoded traversal sequences.
+            if let Ok(canonical) = path.canonicalize() {
+                let canonical_base = self
+                    .base_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.base_dir.clone());
+                if !canonical.starts_with(&canonical_base) {
+                    warn!(
+                        "Skipping memory file outside sandbox: {} -> {}",
+                        name,
+                        canonical.display()
+                    );
+                    continue;
+                }
+            }
+
             let file_mtime = tokio::fs::metadata(&path)
                 .await
                 .ok()

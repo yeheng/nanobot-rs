@@ -114,7 +114,7 @@ impl MacOsSandboxBackend {
         command
             .arg("-p")
             .arg(profile)
-            .arg("bash")
+            .arg("sh")
             .arg("-c")
             .arg(prefixed_cmd)
             .current_dir(working_dir);
@@ -170,7 +170,7 @@ impl SandboxBackend for MacOsSandboxBackend {
         command
             .arg("-p")
             .arg(&profile)
-            .arg("bash")
+            .arg("sh")
             .arg("-c")
             .arg(&prefixed_cmd)
             .current_dir(working_dir)
@@ -243,7 +243,7 @@ mod tests {
         // Second arg should be the profile (starts with "(version 1)")
         let profile = args[1].to_string_lossy();
         assert!(profile.starts_with("(version 1)"));
-        assert_eq!(args[2], "bash");
+        assert_eq!(args[2], "sh");
         assert_eq!(args[3], "-c");
     }
 }

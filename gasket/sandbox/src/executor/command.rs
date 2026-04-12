@@ -82,7 +82,7 @@ impl CommandBuilder {
     pub fn build_fallback(&self) -> Command {
         let prefixed_cmd = format!("{}{}", self.limits.to_ulimit_prefix(), self.command);
 
-        let mut cmd = Command::new("bash");
+        let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(&prefixed_cmd)
             .current_dir(&self.working_dir);
@@ -140,6 +140,6 @@ mod tests {
         let builder = CommandBuilder::new("echo hello").working_dir("/tmp");
         let cmd = builder.build_fallback();
 
-        assert_eq!(cmd.get_program(), "bash");
+        assert_eq!(cmd.get_program(), "sh");
     }
 }

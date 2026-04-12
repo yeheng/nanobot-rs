@@ -181,6 +181,11 @@ pub struct AgentSession {
     compactor: Option<Arc<ContextCompactor>>,
     memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
+    /// Pending finalization tasks — tracked for graceful shutdown.
+    /// Each oneshot receiver resolves when its corresponding spawned task
+    /// completes `finalize_response`. On shutdown, `graceful_shutdown()`
+    /// awaits all of these to prevent data loss.
+    pending_done: std::sync::Mutex<Vec<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 impl AgentSession {
@@ -283,6 +288,7 @@ impl AgentSession {
             compactor: Some(compactor),
             memory_manager,
             indexing_service: Some(indexing_service),
+            pending_done: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -351,6 +357,35 @@ impl AgentSession {
         }
     }
 
+    /// Gracefully shut down the session, awaiting all in-flight finalization tasks.
+    ///
+    /// Call this before dropping the session or shutting down the gateway to ensure
+    /// all pending `finalize_response` calls complete. This prevents data loss where
+    /// an assistant message has been generated but not yet persisted to the EventStore.
+    pub async fn graceful_shutdown(&self) {
+        // Flush memory manager access log
+        if let Some(ref mgr) = self.memory_manager {
+            if let Err(e) = mgr.shutdown_flush().await {
+                warn!("Memory manager shutdown flush failed: {}", e);
+            }
+        }
+
+        // Await all pending finalization tasks
+        let receivers: Vec<_> = self.pending_done.lock().unwrap().drain(..).collect();
+        if !receivers.is_empty() {
+            info!(
+                "Graceful shutdown: awaiting {} pending finalization task(s)",
+                receivers.len()
+            );
+            for rx in receivers {
+                // Each receiver resolves when its finalize_response completes.
+                // Ignore errors (task may have panicked or been cancelled).
+                let _ = rx.await;
+            }
+            info!("All finalization tasks completed");
+        }
+    }
+
     /// Process a message and return response.
     ///
     /// Thin wrapper around the streaming pipeline — events are silently discarded
@@ -415,13 +450,21 @@ impl AgentSession {
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
 
+        // Create a completion tracker so graceful shutdown can await this task.
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        self.pending_done.lock().unwrap().push(done_rx);
+
         let result_handle = tokio::spawn(async move {
             let result = kernel::execute_streaming(&runtime_ctx, messages, event_tx).await?;
 
-            Ok(
+            let response =
                 finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref())
-                    .await,
-            )
+                    .await;
+
+            // Signal completion for graceful shutdown tracking
+            let _ = done_tx.send(());
+
+            Ok(response)
         });
 
         Ok((event_rx, result_handle))
