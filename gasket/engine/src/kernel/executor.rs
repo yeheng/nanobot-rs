@@ -208,7 +208,8 @@ impl<'a> RequestHandler<'a> {
                         "Provider error (retryable): {}. Retrying {}/{}",
                         e, retries, MAX_RETRIES
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries).min(15))).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries).min(15)))
+                        .await;
                 }
             }
         }
@@ -601,7 +602,10 @@ impl<'a> AgentExecutor<'a> {
                     // 发送 tool_end 事件
                     if let Some(ref sender) = tx {
                         let _ = sender
-                            .send(StreamEvent::tool_end(&tool_name, Some(result.output.clone())))
+                            .send(StreamEvent::tool_end(
+                                &tool_name,
+                                Some(result.output.clone()),
+                            ))
                             .await;
                     }
 
@@ -616,11 +620,9 @@ impl<'a> AgentExecutor<'a> {
 
         for (_, tool_call_id, tool_name, output) in results {
             state.tools_used.push(tool_name.clone());
-            state.messages.push(ChatMessage::tool_result(
-                tool_call_id,
-                tool_name,
-                output,
-            ));
+            state
+                .messages
+                .push(ChatMessage::tool_result(tool_call_id, tool_name, output));
         }
     }
 
