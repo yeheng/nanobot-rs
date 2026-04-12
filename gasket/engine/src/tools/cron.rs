@@ -43,7 +43,8 @@ impl Tool for CronTool {
         "Schedule tasks to run at specific times. \
          Actions: 'add' creates a scheduled job with a name, cron expression (e.g., '0 9 * * *' for 9 AM daily), \
          and message; 'list' shows all jobs; 'remove' deletes a job by its ID; 'refresh' manually reloads all \
-         cron files from disk, comparing mtime and size to detect external changes."
+         cron files from disk; 'refresh_next_run' recalculates next execution times based on current time \
+         for all jobs or a specific job by ID."
     }
 
     fn parameters(&self) -> Value {
@@ -52,8 +53,8 @@ impl Tool for CronTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["add", "list", "remove", "refresh"],
-                    "description": "Action to perform: 'add' creates a job, 'list' shows all jobs, 'remove' deletes a job, 'refresh' manually reloads all cron files from disk"
+                    "enum": ["add", "list", "remove", "refresh", "refresh_next_run"],
+                    "description": "Action to perform: 'add' creates a job, 'list' shows all jobs, 'remove' deletes a job, 'refresh' reloads cron files from disk, 'refresh_next_run' recalculates next execution times based on current time"
                 },
                 "name": {
                     "type": "string",
@@ -61,7 +62,7 @@ impl Tool for CronTool {
                 },
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression (required for add). Format: 'MIN HOUR DAY MONTH WEEKDAY'. Examples: '0 9 * * *' = 9 AM daily, '0 9 * * Mon' = 9 AM Mondays, '*/5 * * * *' = every 5 minutes"
+                    "description": "Cron expression (required for add). 7-field format: 'SEC MIN HOUR DAY MONTH WEEKDAY YEAR'. Examples: '0 0 9 * * * *' = 9 AM daily, '0 0 */6 * * * *' = every 6 hours, '0 */5 * * * * *' = every 5 minutes"
                 },
                 "message": {
                     "type": "string",
@@ -69,7 +70,7 @@ impl Tool for CronTool {
                 },
                 "job_id": {
                     "type": "string",
-                    "description": "Job ID to remove (required for remove). Get this from the 'add' action response"
+                    "description": "Job ID (required for remove; optional for refresh_next_run to target a specific job; omit to refresh all jobs). Get this from the 'add' action response"
                 }
             },
             "required": ["action"]
@@ -108,23 +109,11 @@ impl Tool for CronTool {
                     ToolError::InvalidArguments("'message' is required for action 'add'. This is the text that will be sent at the scheduled time".to_string())
                 })?;
 
-                // Normalize cron expression: the `cron` crate requires 7 fields
-                // (sec min hour dom month dow year), but users typically provide 5-field
-                // standard cron. Auto-prepend seconds (0) and append wildcard year (*).
-                let normalized = {
-                    let parts: Vec<&str> = cron.split_whitespace().collect();
-                    match parts.len() {
-                        5 => format!("0 {} *", cron), // 5-field → prepend 0 (sec), append * (year)
-                        6 => format!("0 {}", cron),   // 6-field → prepend 0 (sec)
-                        7 => cron.clone(),            // already 7-field
-                        _ => cron.clone(),            // let parser produce the error
-                    }
-                };
-
-                let _: cron::Schedule = normalized.parse().map_err(|e| {
+                let _: cron::Schedule = cron.parse().map_err(|e| {
                     ToolError::InvalidArguments(format!(
-                        "Invalid cron expression '{}'. Expected format: 'MIN HOUR DAY MONTH WEEKDAY'. \
-                         Examples: '0 9 * * *' (9 AM daily), '0 9 * * Mon' (9 AM Mondays), '*/5 * * * *' (every 5 min). Error: {}",
+                        "Invalid cron expression '{}'. \
+                         Requires 7-field format: 'SEC MIN HOUR DAY MONTH WEEKDAY YEAR'. \
+                         Examples: '0 0 9 * * * *' (9 AM daily), '0 0 */6 * * * *' (every 6 hours). Error: {}",
                         cron, e
                     ))
                 })?;
@@ -205,6 +194,32 @@ impl Tool for CronTool {
                     report.loaded, report.updated, report.removed, report.errors
                 ))
             }
+            "refresh_next_run" => {
+                let results = self
+                    .service
+                    .refresh_next_run(args.job_id.as_deref())
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!(
+                            "Failed to refresh next run times: {}",
+                            e
+                        ))
+                    })?;
+
+                if results.is_empty() {
+                    return Ok("No cron jobs to refresh.".to_string());
+                }
+
+                let mut output = format!("✓ Refreshed next run times ({} jobs)\n\n", results.len());
+                for (id, name, next_run) in &results {
+                    let next = next_run
+                        .map_or("N/A".to_string(), |t| {
+                            t.format("%Y-%m-%d %H:%M UTC").to_string()
+                        });
+                    output.push_str(&format!("• {} ({}): {}\n", name, id, next));
+                }
+                Ok(output)
+            }
             _ => Err(ToolError::InvalidArguments(format!(
                 "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove', 'refresh'",
                 args.action
@@ -240,7 +255,7 @@ mod tests {
 
         let args = json!({
             "action": "add",
-            "cron": "0 9 * * *",
+            "cron": "0 0 9 * * * *",
             "message": "Test"
         });
 
@@ -289,7 +304,7 @@ mod tests {
         let args = json!({
             "action": "add",
             "name": "Test Job",
-            "cron": "0 9 * * *",
+            "cron": "0 0 9 * * * *",
             "message": "Test message"
         });
 
@@ -322,7 +337,7 @@ mod tests {
         let args = json!({
             "action": "add",
             "name": "Consistency Test",
-            "cron": "0 9 * * *",
+            "cron": "0 0 9 * * * *",
             "message": "Test"
         });
 

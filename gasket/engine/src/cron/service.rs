@@ -137,17 +137,7 @@ impl CronJob {
     /// Parse cron expression and calculate next run time.
     /// Returns (parsed_schedule, next_run_time).
     fn parse_schedule(cron_expr: &str) -> (Option<Schedule>, Option<DateTime<Utc>>) {
-        // Normalize: the `cron` crate requires 7 fields (sec min hour dom month dow year),
-        // but users typically provide 5-field standard cron.
-        let normalized = {
-            let parts: Vec<&str> = cron_expr.split_whitespace().collect();
-            match parts.len() {
-                5 => format!("0 {} *", cron_expr),
-                6 => format!("0 {}", cron_expr),
-                _ => cron_expr.to_string(),
-            }
-        };
-        let schedule: Schedule = match normalized.parse() {
+        let schedule: Schedule = match cron_expr.parse() {
             Ok(s) => s,
             Err(_) => return (None, None),
         };
@@ -456,7 +446,16 @@ impl CronService {
         }
         if let Some(ref args) = job.tool_args {
             let args_yaml = serde_yaml::to_string(args)?;
-            frontmatter_lines.push(format!("tool_args: {}", args_yaml.trim()));
+            // Indent each line to produce valid nested YAML block mapping:
+            //   tool_args:
+            //     action: sync
+            let indented: String = args_yaml
+                .trim()
+                .lines()
+                .map(|l| format!("  {}", l))
+                .collect::<Vec<_>>()
+                .join("\n");
+            frontmatter_lines.push(format!("tool_args:\n{}", indented));
         }
 
         let content = format!(
@@ -469,7 +468,23 @@ impl CronService {
 
         // IMMEDIATELY update in-memory state for read-after-write consistency
         let job_id = job.id.clone();
+        let next_run = job.next_run;
         self.jobs.write().insert(job_id.clone(), job);
+
+        // Persist initial execution state to database so all jobs have state
+        // immediately after creation (not just after first tick or restart).
+        if let Some(next_run) = next_run {
+            if let Err(e) = self
+                .db
+                .upsert_cron_state(&job_id, None, Some(&next_run.to_rfc3339()))
+                .await
+            {
+                warn!(
+                    "Failed to persist initial cron state for {}: {}",
+                    job_id, e
+                );
+            }
+        }
 
         info!("Added cron job: {} ({})", job_id, job_id);
         Ok(())
@@ -601,6 +616,74 @@ impl CronService {
         Ok((now, next_run))
     }
 
+    /// Refresh next_run time for jobs based on current time.
+    ///
+    /// When `job_id` is `Some`, only that job is refreshed.
+    /// When `job_id` is `None`, all jobs are refreshed.
+    ///
+    /// Returns a list of `(job_id, job_name, next_run)` tuples.
+    #[instrument(name = "cron.refresh_next_run", skip_all)]
+    pub async fn refresh_next_run(
+        &self,
+        job_id: Option<&str>,
+    ) -> anyhow::Result<Vec<(String, String, Option<DateTime<Utc>>)>> {
+        let mut results = Vec::new();
+
+        if let Some(id) = job_id {
+            let (name, last_run_str, next_run) = {
+                let mut jobs = self.jobs.write();
+                let job = jobs
+                    .get_mut(id)
+                    .ok_or_else(|| anyhow::anyhow!("Job not found: {}", id))?;
+                job.update_next_run();
+                (
+                    job.name.clone(),
+                    job.last_run.map(|t| t.to_rfc3339()),
+                    job.next_run,
+                )
+            };
+
+            if let Some(nr) = &next_run {
+                self.db
+                    .upsert_cron_state(id, last_run_str.as_deref(), Some(&nr.to_rfc3339()))
+                    .await?;
+            }
+
+            results.push((id.to_string(), name, next_run));
+        } else {
+            let job_ids: Vec<String> = self.jobs.read().keys().cloned().collect();
+            for id in job_ids {
+                let (name, last_run_str, next_run) = {
+                    let mut jobs = self.jobs.write();
+                    if let Some(job) = jobs.get_mut(&id) {
+                        job.update_next_run();
+                        (
+                            job.name.clone(),
+                            job.last_run.map(|t| t.to_rfc3339()),
+                            job.next_run,
+                        )
+                    } else {
+                        continue;
+                    }
+                };
+
+                if let Some(nr) = &next_run {
+                    if let Err(e) = self
+                        .db
+                        .upsert_cron_state(&id, last_run_str.as_deref(), Some(&nr.to_rfc3339()))
+                        .await
+                    {
+                        warn!("Failed to persist refreshed next_run for {}: {}", id, e);
+                    }
+                }
+
+                results.push((id, name, next_run));
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Check if a job has missed ticks (next_run is in the past).
     ///
     /// Used on startup to detect and compensate for downtime.
@@ -623,21 +706,21 @@ impl CronService {
             (
                 "system-memory-decay",
                 "Memory Decay",
-                "0 0 */6 * * *", // every 6 hours
+                "0 0 */6 * * * *", // every 6 hours
                 Some("memory_decay".to_string()),
                 None,
             ),
             (
                 "system-memory-refresh",
                 "Memory Refresh",
-                "0 0 */3 * * *", // every 3 hours
+                "0 0 */3 * * * *", // every 3 hours
                 Some("memory_refresh".to_string()),
                 Some(serde_json::json!({"action": "sync"})),
             ),
             (
                 "system-cron-refresh",
                 "Cron Reload",
-                "0 0 * * * *", // every hour
+                "0 0 * * * * *", // every hour
                 Some("cron".to_string()),
                 Some(serde_json::json!({"action": "refresh"})),
             ),
@@ -726,7 +809,7 @@ More content"#;
     fn test_parse_markdown_complete() {
         let content = r#"---
 name: My Job
-cron: "0 9 * * Mon"
+cron: "0 0 9 * * Mon *"
 channel: telegram
 to: "12345"
 enabled: true
@@ -738,7 +821,7 @@ Send daily report"#;
         let job = parse_markdown(content, path).unwrap();
 
         assert_eq!(job.name, "My Job");
-        assert_eq!(job.cron, "0 9 * * Mon");
+        assert_eq!(job.cron, "0 0 9 * * Mon *");
         assert_eq!(job.channel, Some("telegram".to_string()));
         assert_eq!(job.chat_id, Some("12345".to_string()));
         assert!(job.enabled);
@@ -748,15 +831,15 @@ Send daily report"#;
     #[test]
     fn test_cron_job_parse_schedule() {
         // Test valid cron expression (every minute)
-        let (schedule, next_run) = CronJob::parse_schedule("0 * * * * *");
+        let (schedule, next_run) = CronJob::parse_schedule("0 * * * * * *");
         // Should have a parsed schedule and next_run calculated
         assert!(
             schedule.is_some(),
-            "Valid cron '0 * * * * *' should parse into a Schedule"
+            "Valid cron '0 * * * * * *' should parse into a Schedule"
         );
         assert!(
             next_run.is_some(),
-            "Valid cron '0 * * * * *' should calculate next_run"
+            "Valid cron '0 * * * * * *' should calculate next_run"
         );
 
         if let Some(next) = next_run {
