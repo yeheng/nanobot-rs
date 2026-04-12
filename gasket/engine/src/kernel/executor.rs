@@ -208,7 +208,7 @@ impl<'a> RequestHandler<'a> {
                         "Provider error (retryable): {}. Retrying {}/{}",
                         e, retries, MAX_RETRIES
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries))).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries).min(15))).await;
                 }
             }
         }
@@ -568,48 +568,58 @@ impl<'a> AgentExecutor<'a> {
             ctx
         };
 
+        // 并发执行工具调用，每个工具独立发送事件
         let futures: Vec<_> = response
             .tool_calls
             .iter()
-            .map(|tc| {
-                let ctx = &ctx;
+            .enumerate()
+            .map(|(idx, tc)| {
+                let tool_call = tc.clone();
+                let ctx = ctx.clone();
+                let tx = event_tx.cloned();
                 async move {
+                    let tool_name = tool_call.function.name.clone();
+                    let tool_args = tool_call.function.arguments.to_string();
+
+                    // 发送 tool_start 事件
+                    if let Some(ref sender) = tx {
+                        let _ = sender
+                            .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
+                            .await;
+                    }
+
                     let start = std::time::Instant::now();
-                    let result = executor.execute_one(tc, ctx).await;
-                    (tc, result, start.elapsed())
+                    let result = executor.execute_one(&tool_call, &ctx).await;
+                    let duration = start.elapsed();
+
+                    debug!(
+                        "[Kernel] Tool {} -> done ({}ms)",
+                        tool_name,
+                        duration.as_millis()
+                    );
+
+                    // 发送 tool_end 事件
+                    if let Some(ref sender) = tx {
+                        let _ = sender
+                            .send(StreamEvent::tool_end(&tool_name, Some(result.output.clone())))
+                            .await;
+                    }
+
+                    (idx, tool_call.id, tool_name, result.output)
                 }
             })
             .collect();
 
-        let results = futures::future::join_all(futures).await;
+        let mut results = futures::future::join_all(futures).await;
+        // 按原始顺序排序，确保消息顺序一致
+        results.sort_by_key(|(idx, _, _, _)| *idx);
 
-        for (tool_call, result, duration) in results {
-            let tool_name = tool_call.function.name.clone();
-            let tool_args = tool_call.function.arguments.to_string();
-
-            debug!(
-                "[Kernel] Tool {} -> done ({}ms)",
-                tool_name,
-                duration.as_millis()
-            );
-
-            if let Some(tx) = event_tx {
-                let _ = tx
-                    .send(StreamEvent::tool_start(&tool_name, Some(tool_args.clone())))
-                    .await;
-                let _ = tx
-                    .send(StreamEvent::tool_end(
-                        &tool_name,
-                        Some(result.output.clone()),
-                    ))
-                    .await;
-            }
-
+        for (_, tool_call_id, tool_name, output) in results {
             state.tools_used.push(tool_name.clone());
             state.messages.push(ChatMessage::tool_result(
-                tool_call.id.clone(),
+                tool_call_id,
                 tool_name,
-                result.output,
+                output,
             ));
         }
     }

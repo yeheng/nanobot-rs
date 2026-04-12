@@ -3,8 +3,6 @@
 //! Provides streaming event types and native async Stream support.
 //! Uses the unified `StreamEvent` from `gasket_types` - no local event type.
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 use futures::stream::Stream;
 use futures::StreamExt;
@@ -15,7 +13,7 @@ pub use gasket_types::StreamEvent;
 
 /// Accumulates streamed tool-call deltas into complete `ToolCall` objects.
 pub struct ToolCallAccumulator {
-    pending: HashMap<usize, PartialToolCall>,
+    pending: Vec<Option<PartialToolCall>>,
 }
 
 struct PartialToolCall {
@@ -27,19 +25,20 @@ struct PartialToolCall {
 impl ToolCallAccumulator {
     pub fn new() -> Self {
         Self {
-            pending: HashMap::new(),
+            pending: Vec::new(),
         }
     }
 
     pub fn feed(&mut self, delta: &ToolCallDelta) {
-        let entry = self
-            .pending
-            .entry(delta.index)
-            .or_insert_with(|| PartialToolCall {
-                id: String::new(),
-                name: String::new(),
-                arguments: String::new(),
-            });
+        if delta.index >= self.pending.len() {
+            self.pending.resize_with(delta.index + 1, || None);
+        }
+
+        let entry = self.pending[delta.index].get_or_insert_with(|| PartialToolCall {
+            id: String::new(),
+            name: String::new(),
+            arguments: String::new(),
+        });
 
         if let Some(ref id) = delta.id {
             entry.id = id.clone();
@@ -53,11 +52,10 @@ impl ToolCallAccumulator {
     }
 
     pub fn finalize(self) -> Vec<ToolCall> {
-        let mut entries: Vec<_> = self.pending.into_iter().collect();
-        entries.sort_by_key(|(idx, _)| *idx);
-        entries
+        self.pending
             .into_iter()
-            .map(|(_, partial)| {
+            .flatten()
+            .map(|partial| {
                 let arguments = parse_json_args(&partial.arguments);
                 ToolCall::new(partial.id, partial.name, arguments)
             })
@@ -162,7 +160,7 @@ pub fn stream_events(
                     if let Some(ref text) = chunk.delta.content {
                         if !text.is_empty() {
                             content.push_str(text);
-                            if tx.try_send(StreamEvent::content(text.clone())).is_err() {
+                            if tx.send(StreamEvent::content(text.clone())).await.is_err() {
                                 debug!(
                                     "[StreamEvents] Channel closed, aborting after {} chunks",
                                     chunk_count
@@ -186,7 +184,8 @@ pub fn stream_events(
                         if !reasoning.is_empty() {
                             reasoning_content.push_str(reasoning);
                             if tx
-                                .try_send(StreamEvent::thinking(reasoning.clone()))
+                                .send(StreamEvent::thinking(reasoning.clone()))
+                                .await
                                 .is_err()
                             {
                                 debug!("[StreamEvents] Channel closed during reasoning");
