@@ -212,16 +212,15 @@ impl Tool for CronTool {
 
                 let mut output = format!("✓ Refreshed next run times ({} jobs)\n\n", results.len());
                 for (id, name, next_run) in &results {
-                    let next = next_run
-                        .map_or("N/A".to_string(), |t| {
-                            t.format("%Y-%m-%d %H:%M UTC").to_string()
-                        });
+                    let next = next_run.map_or("N/A".to_string(), |t| {
+                        t.format("%Y-%m-%d %H:%M UTC").to_string()
+                    });
                     output.push_str(&format!("• {} ({}): {}\n", name, id, next));
                 }
                 Ok(output)
             }
             _ => Err(ToolError::InvalidArguments(format!(
-                "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove', 'refresh'",
+                "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove', 'refresh', 'refresh_next_run'",
                 args.action
             ))),
         }

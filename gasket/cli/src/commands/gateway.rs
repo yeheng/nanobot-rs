@@ -725,8 +725,9 @@ fn start_cron_checker(
                             match tools.execute(tool_name, args, &ctx).await {
                                 Ok(result) => {
                                     tracing::info!(
-                                        "Cron job '{}' completed successfully",
-                                        job.name
+                                        "Cron job '{}' completed successfully. {}",
+                                        job.name,
+                                        result
                                     );
                                     // Send result to output channel
                                     let out_msg = gasket_engine::bus::events::OutboundMessage::new(

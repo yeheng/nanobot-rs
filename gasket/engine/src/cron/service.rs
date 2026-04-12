@@ -88,6 +88,9 @@ pub struct RefreshReport {
     pub errors: usize,
 }
 
+/// Entry returned by refresh_next_run: (job_id, job_name, next_run)
+pub type RefreshNextRunEntry = (String, String, Option<DateTime<Utc>>);
+
 /// Cron service for scheduled tasks.
 ///
 /// **Hybrid Architecture**:
@@ -479,10 +482,7 @@ impl CronService {
                 .upsert_cron_state(&job_id, None, Some(&next_run.to_rfc3339()))
                 .await
             {
-                warn!(
-                    "Failed to persist initial cron state for {}: {}",
-                    job_id, e
-                );
+                warn!("Failed to persist initial cron state for {}: {}", job_id, e);
             }
         }
 
@@ -626,7 +626,7 @@ impl CronService {
     pub async fn refresh_next_run(
         &self,
         job_id: Option<&str>,
-    ) -> anyhow::Result<Vec<(String, String, Option<DateTime<Utc>>)>> {
+    ) -> anyhow::Result<Vec<RefreshNextRunEntry>> {
         let mut results = Vec::new();
 
         if let Some(id) = job_id {
