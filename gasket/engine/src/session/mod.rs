@@ -181,11 +181,10 @@ pub struct AgentSession {
     compactor: Option<Arc<ContextCompactor>>,
     memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
-    /// Pending finalization tasks — tracked for graceful shutdown.
-    /// Each oneshot receiver resolves when its corresponding spawned task
-    /// completes `finalize_response`. On shutdown, `graceful_shutdown()`
-    /// awaits all of these to prevent data loss.
-    pending_done: std::sync::Mutex<Vec<tokio::sync::oneshot::Receiver<()>>>,
+    /// Task tracker for graceful shutdown of spawned finalization tasks.
+    /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
+    /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
+    pending_done: tokio_util::task::TaskTracker,
 }
 
 impl AgentSession {
@@ -288,7 +287,7 @@ impl AgentSession {
             compactor: Some(compactor),
             memory_manager,
             indexing_service: Some(indexing_service),
-            pending_done: std::sync::Mutex::new(Vec::new()),
+            pending_done: tokio_util::task::TaskTracker::new(),
         })
     }
 
@@ -370,20 +369,15 @@ impl AgentSession {
             }
         }
 
-        // Await all pending finalization tasks
-        let receivers: Vec<_> = self.pending_done.lock().unwrap().drain(..).collect();
-        if !receivers.is_empty() {
+        // Close the tracker (no new tasks accepted) and await all in-flight work.
+        self.pending_done.close();
+        if !self.pending_done.is_empty() {
             info!(
                 "Graceful shutdown: awaiting {} pending finalization task(s)",
-                receivers.len()
+                self.pending_done.len()
             );
-            for rx in receivers {
-                // Each receiver resolves when its finalize_response completes.
-                // Ignore errors (task may have panicked or been cancelled).
-                let _ = rx.await;
-            }
-            info!("All finalization tasks completed");
         }
+        self.pending_done.wait().await;
     }
 
     /// Process a message and return response.
@@ -450,19 +444,13 @@ impl AgentSession {
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
 
-        // Create a completion tracker so graceful shutdown can await this task.
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-        self.pending_done.lock().unwrap().push(done_rx);
-
-        let result_handle = tokio::spawn(async move {
+        // Spawn via TaskTracker so graceful shutdown can await this task.
+        let result_handle = self.pending_done.spawn(async move {
             let result = kernel::execute_streaming(&runtime_ctx, messages, event_tx).await?;
 
             let response =
                 finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref())
                     .await;
-
-            // Signal completion for graceful shutdown tracking
-            let _ = done_tx.send(());
 
             Ok(response)
         });

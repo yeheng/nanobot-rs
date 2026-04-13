@@ -143,15 +143,15 @@ pub struct TokenTracker {
     request_count: std::sync::atomic::AtomicUsize,
     /// Optional budget limit (0 = unlimited)
     budget_limit: std::sync::atomic::AtomicU64,
-    /// Currency for cost display
-    currency: std::sync::Mutex<String>,
+    /// Currency for cost display (immutable after construction)
+    currency: String,
 }
 
 impl TokenTracker {
     /// Create a new token tracker with optional budget limit.
     pub fn new(currency: &str, budget_limit: Option<f64>) -> Self {
         Self {
-            currency: std::sync::Mutex::new(currency.to_string()),
+            currency: currency.to_string(),
             budget_limit: std::sync::atomic::AtomicU64::new(
                 budget_limit.map(|b| b.to_bits()).unwrap_or(0),
             ),
@@ -228,11 +228,8 @@ impl TokenTracker {
     }
 
     /// Get currency
-    pub fn currency(&self) -> String {
-        self.currency
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| "USD".to_string())
+    pub fn currency(&self) -> &str {
+        &self.currency
     }
 
     /// Format a summary string for display
@@ -273,7 +270,7 @@ impl TokenTracker {
             total_output_tokens: self.output_tokens(),
             total_cost: self.total_cost(),
             request_count: self.request_count(),
-            currency: self.currency(),
+            currency: self.currency().to_string(),
         }
     }
 }

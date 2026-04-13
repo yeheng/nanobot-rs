@@ -26,13 +26,10 @@ use crate::error::ConfigValidationError;
 use crate::token_tracker::ModelPricing;
 use crate::vault::contains_placeholders;
 use crate::vault::VaultStore;
-#[cfg(test)]
 use crate::vault::{replace_placeholders, scan_placeholders};
 
-#[cfg(test)]
 use std::env;
-#[cfg(test)]
-use tracing::debug;
+use tracing::{debug, warn};
 
 // Re-export channel config types
 pub use gasket_channels::ChannelsConfig;
@@ -245,10 +242,11 @@ impl Config {
 /// 1. **VaultStore** — if the vault file exists and is unlocked
 /// 2. **Environment variable** — key uppercased (e.g. `zhipu_api_key` → `ZHIPU_API_KEY`)
 ///
-/// Returns the YAML text with resolved values, or the original text if no
-/// placeholders are found. Returns an error if any placeholder cannot be
-/// resolved (the YAML would fail to parse anyway due to unquoted `{{}}`).
-#[cfg(test)]
+/// Unresolved placeholders are left as-is in the text and a warning is logged.
+/// This prevents accidental `{{vault:...}}` patterns in system prompt text or
+/// other non-critical fields from crashing config loading. Critical fields
+/// (e.g. `api_key`) are resolved again at JIT time via `ProviderRegistry`.
+#[allow(dead_code)] // Available for eager resolution; production uses JIT via ProviderRegistry
 fn resolve_config_placeholders(content: &str) -> anyhow::Result<String> {
     let placeholders = scan_placeholders(content);
     if placeholders.is_empty() {
@@ -303,19 +301,16 @@ fn resolve_config_placeholders(content: &str) -> anyhow::Result<String> {
     }
 
     if !unresolved.is_empty() {
-        // Build helpful error message
-        let keys: Vec<String> = unresolved
-            .iter()
-            .map(|k| {
-                let env_hint = format!("{}=<value>", k.to_uppercase());
-                format!("  - {} (env: {})", k, env_hint)
-            })
-            .collect();
-        anyhow::bail!(
-            "Cannot resolve vault placeholder(s) in config.yaml:\n{}\n\
-             Either unlock the vault (`gasket vault unlock`) or set the environment variable.",
-            keys.join("\n")
-        );
+        // Non-fatal: warn and leave unresolved placeholders as-is.
+        // Critical fields (api_key) are resolved again at JIT time.
+        for key in &unresolved {
+            warn!(
+                "[Config] Unresolved vault placeholder '{{{{vault:{}}}}}' — \
+                 left as-is. Set env {} or unlock vault to resolve.",
+                key,
+                key.to_uppercase()
+            );
+        }
     }
 
     Ok(replace_placeholders(content, &replacements))
@@ -596,15 +591,30 @@ mod tests {
         assert_eq!(result, "a: val-a\nb: val-b");
     }
 
-    /// Unresolved placeholders produce an error with helpful message.
+    /// Unresolved placeholders no longer produce an error — they are left as-is.
     #[test]
-    fn test_resolve_config_unresolved_error() {
-        // Use a key that is very unlikely to have an env var
+    fn test_resolve_config_unresolved_warns_not_fails() {
         let yaml = "api_key: {{vault:nonexistent_gasket_test_key_xyz}}";
-        let result = resolve_config_placeholders(yaml);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("nonexistent_gasket_test_key_xyz"));
-        assert!(err.contains("Cannot resolve"));
+        let result = resolve_config_placeholders(yaml).unwrap();
+        // Placeholder is left unchanged, not stripped or replaced
+        assert!(result.contains("{{vault:nonexistent_gasket_test_key_xyz}}"));
+    }
+
+    /// Placeholders in non-critical fields (e.g. system prompt text) should not
+    /// crash config loading — they are simply left as literal text.
+    #[test]
+    fn test_resolve_config_placeholders_in_prompt_text_resilient() {
+        let yaml = r#"
+system_prompt: |
+  You can reference {{vault:some_key}} but it won't crash if missing.
+  This is just documentation text with {{vault:another_missing_key}}.
+api_key: "sk-real-key"
+"#;
+        let result = resolve_config_placeholders(yaml).unwrap();
+        // Both unresolved placeholders preserved as literal text
+        assert!(result.contains("{{vault:some_key}}"));
+        assert!(result.contains("{{vault:another_missing_key}}"));
+        // Non-placeholder content is untouched
+        assert!(result.contains("sk-real-key"));
     }
 }

@@ -84,18 +84,16 @@ impl SimpleRateLimiter {
     /// Check if a message from the given sender is allowed.
     /// Returns true if allowed, false if rate limited.
     ///
-    /// Stale sender keys (all timestamps expired) are pruned to prevent
-    /// unbounded HashMap growth in long-running processes.
+    /// Only cleans the current sender's timestamp deque — O(1) regardless of
+    /// total user count. Use [`Self::prune_stale`] from a background task to
+    /// reclaim memory from idle senders.
     pub fn check(&self, sender_id: &str) -> bool {
         let mut map = self.timestamps.lock().unwrap();
         let now = Instant::now();
 
-        // Opportunistically prune all stale senders
-        map.retain(|_, ts| ts.iter().any(|t| now.duration_since(*t) <= self.window));
-
         let ts = map.entry(sender_id.to_string()).or_default();
 
-        // Evict expired entries for this sender
+        // Evict expired entries for this sender only
         while let Some(&front) = ts.front() {
             if now.duration_since(front) > self.window {
                 ts.pop_front();
@@ -110,6 +108,17 @@ impl SimpleRateLimiter {
         } else {
             false
         }
+    }
+
+    /// Prune all senders whose timestamps have fully expired.
+    ///
+    /// Intended to be called periodically (e.g. every 5 minutes) from a
+    /// background tokio task alongside other housekeeping work. This keeps
+    /// the HashMap bounded without penalizing the hot-path `check()`.
+    pub fn prune_stale(&self) {
+        let mut map = self.timestamps.lock().unwrap();
+        let now = Instant::now();
+        map.retain(|_, ts| ts.iter().any(|t| now.duration_since(*t) <= self.window));
     }
 
     /// Check and return appropriate result, logging if rate limited.
@@ -345,10 +354,15 @@ mod tests {
         // Wait for timestamps to expire
         std::thread::sleep(std::time::Duration::from_millis(60));
 
-        // A check for user2 triggers prune of stale senders
+        // A check for user2 does NOT prune user1 (O(1) hot path)
         assert!(rl.check("user2"));
+        {
+            let map = rl.timestamps.lock().unwrap();
+            assert!(map.contains_key("user1")); // still present
+        }
 
-        // user1's entry should be pruned — map should only contain user2
+        // Explicit prune removes stale senders
+        rl.prune_stale();
         let map = rl.timestamps.lock().unwrap();
         assert!(!map.contains_key("user1"));
         assert!(map.contains_key("user2"));

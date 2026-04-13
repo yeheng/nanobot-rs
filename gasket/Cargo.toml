@@ -34,7 +34,7 @@ tokio = { version = "1", features = [
     "rt-multi-thread", "macros", "sync", "time",
     "fs", "io-util", "net", "process", "signal",
 ] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = "0.1"
 futures-util = "0.3.32"
 
