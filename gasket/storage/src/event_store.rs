@@ -212,10 +212,12 @@ impl EventStore {
     }
 
     async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+        let (channel, chat_id) = parse_session_key(session_key);
         let max_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
         )
-        .bind(session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
@@ -297,11 +299,13 @@ impl EventStore {
         .await?;
 
         let branch_name = event.metadata.branch.as_deref().unwrap_or("main");
-        let current_branches: Option<String> =
-            sqlx::query_scalar("SELECT branches FROM sessions_v2 WHERE key = ?")
-                .bind(&event.session_key)
-                .fetch_one(&mut *tx)
-                .await?;
+        let current_branches: Option<String> = sqlx::query_scalar(
+            "SELECT branches FROM sessions_v2 WHERE channel = ? AND chat_id = ?",
+        )
+        .bind(&channel)
+        .bind(&chat_id)
+        .fetch_one(&mut *tx)
+        .await?;
 
         let mut branches: Value = current_branches
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -314,11 +318,12 @@ impl EventStore {
         let branches_str = serde_json::to_string(&branches)?;
 
         sqlx::query(
-            "UPDATE sessions_v2 SET updated_at = ?, total_events = total_events + 1, branches = ? WHERE key = ?",
+            "UPDATE sessions_v2 SET updated_at = ?, total_events = total_events + 1, branches = ? WHERE channel = ? AND chat_id = ?",
         )
         .bind(&now)
         .bind(&branches_str)
-        .bind(&event.session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .execute(&mut *tx)
         .await?;
 
@@ -340,14 +345,16 @@ impl EventStore {
         session_key: &str,
         branch: &str,
     ) -> Result<Vec<SessionEvent>, StoreError> {
+        let (channel, chat_id) = parse_session_key(session_key);
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE session_key = ? AND branch = ?
+            WHERE channel = ? AND chat_id = ? AND branch = ?
             ORDER BY created_at ASC
             "#,
         )
-        .bind(session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .bind(branch)
         .fetch_all(&self.pool)
         .await?;
@@ -365,14 +372,16 @@ impl EventStore {
         session_key: &str,
         after_sequence: i64,
     ) -> Result<Vec<SessionEvent>, StoreError> {
+        let (channel, chat_id) = parse_session_key(session_key);
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE session_key = ? AND sequence > ?
+            WHERE channel = ? AND chat_id = ? AND sequence > ?
             ORDER BY sequence ASC
             "#,
         )
-        .bind(session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .bind(after_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -390,14 +399,16 @@ impl EventStore {
         session_key: &str,
         target_sequence: i64,
     ) -> Result<Vec<SessionEvent>, StoreError> {
+        let (channel, chat_id) = parse_session_key(session_key);
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE session_key = ? AND sequence <= ? AND event_type != 'summary'
+            WHERE channel = ? AND chat_id = ? AND sequence <= ? AND event_type != 'summary'
             ORDER BY sequence ASC
             "#,
         )
-        .bind(session_key)
+        .bind(&channel)
+        .bind(&chat_id)
         .bind(target_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -414,14 +425,15 @@ impl EventStore {
             return Ok(vec![]);
         }
 
+        let (channel, chat_id) = parse_session_key(session_key);
         let placeholders: String = event_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT * FROM session_events WHERE session_key = ? AND id IN ({}) ORDER BY created_at ASC",
+            "SELECT * FROM session_events WHERE channel = ? AND chat_id = ? AND id IN ({}) ORDER BY created_at ASC",
             placeholders
         );
 
         let mut sql_query = sqlx::query_as::<_, EventRow>(&query);
-        sql_query = sql_query.bind(session_key);
+        sql_query = sql_query.bind(&channel).bind(&chat_id);
         for id in event_ids {
             sql_query = sql_query.bind(id.to_string());
         }
@@ -431,13 +443,16 @@ impl EventStore {
     }
 
     pub async fn clear_session(&self, session_key: &str) -> Result<(), StoreError> {
+        let (channel, chat_id) = parse_session_key(session_key);
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM session_events WHERE session_key = ?")
-            .bind(session_key)
+        sqlx::query("DELETE FROM session_events WHERE channel = ? AND chat_id = ?")
+            .bind(&channel)
+            .bind(&chat_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM sessions_v2 WHERE key = ?")
-            .bind(session_key)
+        sqlx::query("DELETE FROM sessions_v2 WHERE channel = ? AND chat_id = ?")
+            .bind(&channel)
+            .bind(&chat_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -450,7 +465,7 @@ impl EventStore {
     /// pipeline to determine the current high-water mark.
     pub async fn get_max_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
         let max_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_key = ?",
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
         )
         .bind(session_key)
         .fetch_one(&self.pool)
@@ -469,12 +484,15 @@ impl EventStore {
         session_key: &str,
         target_sequence: i64,
     ) -> Result<u64, StoreError> {
-        let result =
-            sqlx::query("DELETE FROM session_events WHERE session_key = ? AND sequence <= ?")
-                .bind(session_key)
-                .bind(target_sequence)
-                .execute(&self.pool)
-                .await?;
+        let (channel, chat_id) = parse_session_key(session_key);
+        let result = sqlx::query(
+            "DELETE FROM session_events WHERE channel = ? AND chat_id = ? AND sequence <= ?",
+        )
+        .bind(&channel)
+        .bind(&chat_id)
+        .bind(target_sequence)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected())
     }
 
@@ -721,6 +739,20 @@ mod tests {
                 sequence INTEGER NOT NULL DEFAULT 0
             )
             "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_channel_chat ON session_events(channel, chat_id)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_v2_channel_chat ON sessions_v2(channel, chat_id)",
         )
         .execute(&pool)
         .await

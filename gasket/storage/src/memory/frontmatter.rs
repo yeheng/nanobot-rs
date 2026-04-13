@@ -110,6 +110,31 @@ pub fn parse_frontmatter(content: &str) -> Result<MemoryMeta> {
     Ok(meta)
 }
 
+/// Parse YAML frontmatter leniently — returns defaults on failure instead of
+/// crashing.
+///
+/// Unlike `parse_frontmatter`, this function never returns an error. If the
+/// YAML is malformed or frontmatter delimiters are missing/invalid, it logs a
+/// warning and returns `None`. If individual fields are missing, serde's
+/// `#[serde(default)]` annotations on `MemoryMeta` provide safe defaults.
+///
+/// Use this when scanning files that may have been manually edited by humans.
+pub fn parse_frontmatter_lenient(content: &str) -> Option<MemoryMeta> {
+    match extract_frontmatter_raw(content) {
+        Ok((yaml_str, _)) => match serde_yaml::from_str::<MemoryMeta>(&yaml_str) {
+            Ok(meta) => Some(meta),
+            Err(e) => {
+                tracing::warn!("Lenient parse: YAML frontmatter invalid, skipping: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Lenient parse: frontmatter format invalid: {}", e);
+            None
+        }
+    }
+}
+
 /// Extract the body content (everything after the closing `---`).
 ///
 /// If no frontmatter delimiters are found, returns the entire content.

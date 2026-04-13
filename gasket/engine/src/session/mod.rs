@@ -14,7 +14,7 @@ pub mod store;
 pub use compactor::ContextCompactor;
 pub use config::AgentConfig;
 pub use context::{AgentContext, PersistentContext};
-pub use memory::{MemoryContext, MemoryManager, PhaseBreakdown};
+pub use memory::{MemoryContext, MemoryManager};
 pub use store::{MemoryProvider, MemoryStore};
 
 use std::path::{Path, PathBuf};

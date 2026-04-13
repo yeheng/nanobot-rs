@@ -34,7 +34,7 @@ pub mod vault;
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
     AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryManager,
-    MemoryProvider, MemoryStore, PersistentContext, PhaseBreakdown,
+    MemoryProvider, MemoryStore, PersistentContext,
 };
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;

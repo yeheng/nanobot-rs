@@ -64,4 +64,4 @@ serde_yaml = "0.9"
 # macOS-specific dependencies
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Windows-specific dependencies (none - UnsafeDirectExecution uses std::process::Command)
+# Windows-specific dependencies (none - HostExecutor uses std::process::Command)
