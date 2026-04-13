@@ -1,9 +1,13 @@
-//! Windows unsafe direct execution backend (NOT a sandbox)
+//! Windows host execution backend (NOT a sandbox)
 //!
 //! **CRITICAL WARNING**: This backend provides ZERO isolation. Commands run
 //! with the same privileges as the parent process — no sandboxing, no resource
 //! limits, no filesystem restrictions. For proper sandboxing on Windows, use
 //! WSL2 with bwrap.
+//!
+//! This is intentionally named `HostExecutor` to make the lack of sandboxing
+//! obvious at every call site. It is NOT a `SandboxBackend` in any meaningful
+//! sense — it simply delegates to `cmd.exe` with no restrictions.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,26 +20,26 @@ use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
-/// Unsafe direct execution backend — runs commands via cmd.exe with NO isolation.
+/// Host execution backend — runs commands via cmd.exe with NO isolation.
 ///
 /// This backend does **not** sandbox commands. It exists only so that Windows
 /// users can still execute tools, but every command runs with full user
-/// privileges. The name is deliberately chosen to make the lack of safety
-/// obvious at every call site.
+/// privileges. The name `HostExecutor` deliberately communicates that this
+/// executes directly on the host, NOT inside any sandbox.
 ///
 /// For proper sandboxing on Windows, consider using WSL2 with bwrap.
-pub struct UnsafeDirectExecution {
+pub struct HostExecutor {
     // No isolation mechanism — this is intentional
 }
 
-impl UnsafeDirectExecution {
-    /// Create a new unsafe direct execution backend.
+impl HostExecutor {
+    /// Create a new host executor backend.
     ///
     /// Logs a **warning** on every construction to remind operators that
     /// commands will run without any isolation.
     pub fn new() -> Self {
         warn!(
-            "UnsafeDirectExecution: Commands will run WITHOUT isolation or \
+            "HostExecutor: Commands will run WITHOUT isolation or \
              resource limits. For proper sandboxing, use WSL2 with bwrap."
         );
         Self {}
@@ -59,16 +63,16 @@ impl UnsafeDirectExecution {
     }
 }
 
-impl Default for UnsafeDirectExecution {
+impl Default for HostExecutor {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl SandboxBackend for UnsafeDirectExecution {
+impl SandboxBackend for HostExecutor {
     fn name(&self) -> &str {
-        "unsafe-direct" // Name reflects reality: no sandboxing at all
+        "host-executor" // Name reflects reality: no sandboxing, just host execution
     }
 
     async fn is_available(&self) -> bool {
@@ -146,13 +150,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_availability() {
-        let backend = UnsafeDirectExecution::new();
+        let backend = HostExecutor::new();
         assert!(backend.is_available().await);
     }
 
     #[test]
     fn test_build_command() {
-        let backend = UnsafeDirectExecution::new();
+        let backend = HostExecutor::new();
         let config = SandboxConfig::default();
         let cmd = backend.build_command("echo hello", Path::new("C:\\"), &config);
         assert!(cmd.is_ok());

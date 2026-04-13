@@ -134,8 +134,8 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         #[cfg(target_os = "macos")]
         "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
         #[cfg(target_os = "windows")]
-        "job-objects" | "windows-fallback" | "unsafe-direct" => {
-            Box::new(UnsafeDirectExecution::new())
+        "job-objects" | "windows-fallback" | "host-executor" | "unsafe-direct" => {
+            Box::new(HostExecutor::new())
         }
         name if KNOWN_BACKENDS.contains(&name) => {
             tracing::warn!(
@@ -149,7 +149,7 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
                 #[cfg(target_os = "macos")]
                 Platform::MacOS => Box::new(MacOsSandboxBackend::new()),
                 #[cfg(target_os = "windows")]
-                Platform::Windows => Box::new(UnsafeDirectExecution::new()),
+                Platform::Windows => Box::new(HostExecutor::new()),
                 _ => Box::new(FallbackBackend::new()),
             }
         }

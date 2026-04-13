@@ -63,6 +63,17 @@ impl EmbeddingStore {
         Ok(())
     }
 
+    /// Delete all embeddings — used by destructive reindex to wipe the cache.
+    ///
+    /// Since SQLite is a volatile cache (filesystem is SSOT), clearing all
+    /// embeddings and rebuilding from disk is safe and idempotent.
+    pub async fn delete_all(&self) -> Result<()> {
+        sqlx::query("DELETE FROM memory_embeddings")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Search by tag matching using `json_each` for accurate array-element lookup.
     ///
     /// Returns all entries whose tags JSON array contains any of the query tags.
