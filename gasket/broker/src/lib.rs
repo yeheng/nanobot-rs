@@ -21,5 +21,5 @@ pub use error::BrokerError;
 pub use types::{AckResult, DeliveryMode, Envelope, Topic};
 
 // Implemented in later tasks — uncomment as each is completed:
-// pub use memory::MemoryBroker;
+pub use memory::MemoryBroker;
 // pub use session::SessionManager;
