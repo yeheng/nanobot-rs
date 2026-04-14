@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use super::{Tool, ToolContext, ToolError, ToolResult, ToolRegistry};
+use super::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
 use gasket_providers::LlmProvider;
 
 pub use dispatcher::{build_dispatcher, DispatcherContext, RpcDispatcher};
@@ -169,7 +169,8 @@ impl Tool for ScriptTool {
                 output.insert("result".to_string(), script_result.output);
 
                 // Attach stderr as _debug_stderr field in JSON-RPC mode
-                if self.manifest.protocol == ScriptProtocol::JsonRpc && !script_result.stderr.is_empty()
+                if self.manifest.protocol == ScriptProtocol::JsonRpc
+                    && !script_result.stderr.is_empty()
                 {
                     output.insert("_debug_stderr".to_string(), script_result.stderr.into());
                 }
@@ -181,8 +182,9 @@ impl Tool for ScriptTool {
                 );
 
                 // Serialize to JSON string
-                serde_json::to_string(&Value::Object(output))
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize result: {}", e)))
+                serde_json::to_string(&Value::Object(output)).map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to serialize result: {}", e))
+                })
             }
             Err(e) => match e {
                 ScriptError::SpawnFailed(msg) => Err(ToolError::ExecutionError(format!(
@@ -261,10 +263,7 @@ pub fn discover_scripts_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<ScriptT
         // Load manifest
         match load_manifest(&path) {
             Ok(manifest) => {
-                info!(
-                    "Discovered script tool '{}' from {:?}",
-                    manifest.name, path
-                );
+                info!("Discovered script tool '{}' from {:?}", manifest.name, path);
                 let tool = ScriptTool::new(manifest, scripts_dir.to_path_buf());
                 tools.push(tool);
             }
@@ -347,9 +346,8 @@ fn load_manifest(path: &Path) -> anyhow::Result<ScriptManifest> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read manifest file {:?}: {}", path, e))?;
 
-    let manifest: ScriptManifest = serde_yaml::from_str(&content).map_err(|e| {
-        anyhow::anyhow!("Failed to parse manifest YAML from {:?}: {}", path, e)
-    })?;
+    let manifest: ScriptManifest = serde_yaml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse manifest YAML from {:?}: {}", path, e))?;
 
     // Validate manifest
     if manifest.name.is_empty() {
