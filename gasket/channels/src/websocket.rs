@@ -13,6 +13,12 @@ use tracing::{debug, error, info, warn};
 use crate::events::ChannelType::WebSocket as WebSocketChannel;
 use crate::events::{InboundMessage, OutboundMessage};
 
+/// Internal sender mode for inbound messages.
+enum InboundSenderKind {
+    Direct(mpsc::Sender<InboundMessage>),
+    Broker(Arc<dyn gasket_broker::MessageBroker>),
+}
+
 type ConnectionId = String;
 type UserId = String;
 
@@ -93,7 +99,7 @@ pub struct WebSocketManager {
     user_connections: DashMap<UserId, ConnectionId>,
 
     /// Sender to the message bus for inbound messages
-    inbound_tx: mpsc::Sender<InboundMessage>,
+    inbound_tx: InboundSenderKind,
 
     /// Optional authentication token validator (can be set via set_auth_validator)
     auth_validator: std::sync::RwLock<Option<AuthValidator>>,
@@ -104,8 +110,30 @@ impl WebSocketManager {
         Self {
             connections: DashMap::new(),
             user_connections: DashMap::new(),
-            inbound_tx,
+            inbound_tx: InboundSenderKind::Direct(inbound_tx),
             auth_validator: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Create a WebSocketManager backed by the message broker.
+    pub fn new_with_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+        Self {
+            connections: DashMap::new(),
+            user_connections: DashMap::new(),
+            inbound_tx: InboundSenderKind::Broker(broker),
+            auth_validator: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Send an inbound message through the appropriate channel.
+    async fn send_inbound(&self, inbound: InboundMessage) -> Result<(), String> {
+        match &self.inbound_tx {
+            InboundSenderKind::Direct(tx) => tx.send(inbound).await.map_err(|e| e.to_string()),
+            InboundSenderKind::Broker(broker) => {
+                let envelope =
+                    gasket_broker::Envelope::new(gasket_broker::Topic::Inbound, &inbound);
+                broker.publish(envelope).await.map_err(|e| e.to_string())
+            }
         }
     }
 
@@ -285,7 +313,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                             trace_id: None,
                         };
 
-                        if let Err(e) = manager.inbound_tx.send(inbound).await {
+                        if let Err(e) = manager.send_inbound(inbound).await {
                             error!("Failed to forward inbound message: {}", e);
                             break;
                         }
