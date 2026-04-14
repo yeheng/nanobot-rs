@@ -123,10 +123,7 @@ pub use vault::{
 
 // ── Facade re-exports (merged from gasket-core) ─────────────
 
-// Bus
-pub mod bus;
-
-// Broker (new — coexists with bus during migration)
+// Broker (topic-based message broker)
 pub mod broker {
     pub use gasket_broker::*;
 }
