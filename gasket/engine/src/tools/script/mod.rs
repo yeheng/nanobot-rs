@@ -19,9 +19,9 @@ use tracing::{info, warn};
 use super::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
 use gasket_providers::LlmProvider;
 
-pub use dispatcher::{build_dispatcher, DispatcherContext, RpcDispatcher};
+pub use dispatcher::{build_dispatcher, DispatcherContext, EngineHandle, RpcDispatcher};
 pub use manifest::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol};
-pub use runner::{run_jsonrpc, run_simple, ScriptError};
+pub use runner::{run_jsonrpc, run_simple, ScriptError, ScriptResult};
 
 /// Script tool that implements the Tool trait for external scripts.
 ///
@@ -93,13 +93,39 @@ impl ScriptTool {
     /// Extracts the relevant fields from ToolContext and constructs
     /// a DispatcherContext for JSON-RPC handler execution.
     fn make_dispatch_ctx(&self, ctx: &ToolContext) -> DispatcherContext {
+        use dispatcher::EngineHandle;
+
+        // Get required engine components - all must be present for JSON-RPC mode
+        let tool_registry = self
+            .tool_registry
+            .clone()
+            .expect("ScriptTool missing tool_registry - call with_engine_refs()");
+        let provider = self
+            .provider
+            .clone()
+            .expect("ScriptTool missing provider - call with_engine_refs()");
+
         DispatcherContext {
-            session_key: ctx.session_key.clone(),
-            outbound_tx: ctx.outbound_tx.clone(),
-            spawner: ctx.spawner.clone(),
-            token_tracker: ctx.token_tracker.clone(),
-            tool_registry: self.tool_registry.clone(),
-            provider: self.provider.clone(),
+            engine: Arc::new(EngineHandle {
+                session_key: ctx
+                    .session_key
+                    .clone()
+                    .expect("session_key required for JSON-RPC mode"),
+                outbound_tx: ctx
+                    .outbound_tx
+                    .clone()
+                    .expect("outbound_tx required for JSON-RPC mode"),
+                spawner: ctx
+                    .spawner
+                    .clone()
+                    .expect("spawner required for JSON-RPC mode"),
+                token_tracker: ctx
+                    .token_tracker
+                    .clone()
+                    .expect("token_tracker required for JSON-RPC mode"),
+                tool_registry,
+                provider,
+            }),
         }
     }
 }

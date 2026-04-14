@@ -55,32 +55,39 @@ pub trait RpcHandler: Send + Sync {
     async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError>;
 }
 
-/// Context provided to RPC handlers during execution.
+/// Unified handle to engine capabilities.
 ///
-/// Contains references to engine capabilities that handlers may need.
-/// All fields are optional to allow flexible handler registration.
-#[derive(Clone, Default)]
-pub struct DispatcherContext {
+/// Wraps all engine resources that RPC handlers may need.
+/// Using a single struct eliminates Option 泛滥 in DispatcherContext.
+#[derive(Clone)]
+pub struct EngineHandle {
     /// Session identifier for the current session
-    pub session_key: Option<gasket_types::events::SessionKey>,
+    pub session_key: gasket_types::events::SessionKey,
 
     /// Channel for sending outbound messages
-    pub outbound_tx: Option<tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage>>,
+    pub outbound_tx: tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage>,
 
     /// Subagent spawner for delegating to specialized agents
-    pub spawner: Option<Arc<dyn gasket_types::SubagentSpawner>>,
+    pub spawner: Arc<dyn gasket_types::SubagentSpawner>,
 
     /// Token usage tracker for LLM calls
-    pub token_tracker: Option<Arc<gasket_types::token_tracker::TokenTracker>>,
+    pub token_tracker: Arc<gasket_types::token_tracker::TokenTracker>,
 
     /// Tool registry for executing engine tools
-    pub tool_registry: Option<Arc<ToolRegistry>>,
+    pub tool_registry: Arc<ToolRegistry>,
 
     /// LLM provider for direct chat completions
-    pub provider: Option<Arc<dyn LlmProvider>>,
+    pub provider: Arc<dyn LlmProvider>,
 }
 
-// Manual Default implementation - Arc<dyn Trait> cannot derive Default
+/// Context provided to RPC handlers during execution.
+///
+/// Contains a handle to engine capabilities.
+/// Handlers use this to access engine resources.
+pub struct DispatcherContext {
+    /// Engine capabilities handle
+    pub engine: Arc<EngineHandle>,
+}
 
 /// RPC dispatcher that routes method calls to handlers with permission checks.
 ///
@@ -214,9 +221,76 @@ pub fn build_dispatcher() -> RpcDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolRegistry;
+    use gasket_types::events::{SessionKey};
+    use gasket_types::{SubagentResult, SubagentSpawner};
     use serde_json::json;
+    use std::sync::Arc;
 
-    /// Mock handler for testing that echoes back the params.
+    struct MockSpawner;
+    #[async_trait::async_trait]
+    impl SubagentSpawner for MockSpawner {
+        async fn spawn(
+            &self,
+            _task: String,
+            _model_id: Option<String>,
+        ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
+            Ok(SubagentResult {
+                id: "mock".to_string(),
+                task: "mock".to_string(),
+                response: gasket_types::SubagentResponse {
+                    content: "mock".to_string(),
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: None,
+                    token_usage: None,
+                    cost: 0.0,
+                },
+                model: None,
+            })
+        }
+    }
+
+    pub struct MockProvider;
+    #[async_trait::async_trait]
+    impl gasket_providers::LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn default_model(&self) -> &str {
+            "mock-model"
+        }
+        async fn chat(
+            &self,
+            _request: gasket_providers::ChatRequest,
+        ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError> {
+            Ok(gasket_providers::ChatResponse {
+                content: Some("Test response".to_string()),
+                tool_calls: vec![],
+                reasoning_content: None,
+                usage: Some(gasket_providers::Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    total_tokens: 15,
+                }),
+            })
+        }
+    }
+
+    fn create_test_ctx() -> DispatcherContext {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        DispatcherContext {
+            engine: Arc::new(EngineHandle {
+                session_key: SessionKey::new(gasket_types::events::ChannelType::Telegram, "test-chat"),
+                outbound_tx: tx,
+                spawner: Arc::new(MockSpawner),
+                token_tracker: Arc::new(gasket_types::token_tracker::TokenTracker::unlimited("USD")),
+                tool_registry: Arc::new(ToolRegistry::new()),
+                provider: Arc::new(MockProvider),
+            }),
+        }
+    }
+
     struct EchoHandler {
         method: String,
         permission: Permission,
@@ -254,7 +328,7 @@ mod tests {
         };
 
         let permissions = vec![Permission::LlmChat];
-        let ctx = DispatcherContext::default();
+        let ctx = create_test_ctx();
         let response = dispatcher.dispatch(request, &permissions, &ctx).await;
 
         assert_eq!(response.id, json!(1));
@@ -282,9 +356,8 @@ mod tests {
             params: Some(json!({"test": "data"})),
         };
 
-        // Empty permissions = deny all
         let permissions = vec![];
-        let ctx = DispatcherContext::default();
+        let ctx = create_test_ctx();
         let response = dispatcher.dispatch(request, &permissions, &ctx).await;
 
         assert_eq!(response.id, json!(2));
@@ -298,16 +371,14 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_method_not_found() {
         let dispatcher = RpcDispatcher::new();
-
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(3)),
             method: "unknown/method".to_string(),
             params: None,
         };
-
         let permissions = vec![Permission::LlmChat];
-        let ctx = DispatcherContext::default();
+        let ctx = create_test_ctx();
         let response = dispatcher.dispatch(request, &permissions, &ctx).await;
 
         assert_eq!(response.id, json!(3));
@@ -327,7 +398,6 @@ mod tests {
         });
         dispatcher.register(handler);
 
-        // Notification: no id field
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),
             id: None,
@@ -336,10 +406,9 @@ mod tests {
         };
 
         let permissions = vec![Permission::MemorySearch];
-        let ctx = DispatcherContext::default();
+        let ctx = create_test_ctx();
         let response = dispatcher.dispatch(request, &permissions, &ctx).await;
 
-        // Notifications should get Value::Null as response id
         assert_eq!(response.id, Value::Null);
         assert!(response.result.is_some());
         assert!(response.error.is_none());

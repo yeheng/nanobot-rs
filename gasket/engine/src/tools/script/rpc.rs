@@ -166,6 +166,17 @@ impl RpcError {
     }
 }
 
+impl From<gasket_types::ToolError> for RpcError {
+    fn from(err: gasket_types::ToolError) -> Self {
+        match err {
+            gasket_types::ToolError::InvalidArguments(msg) => RpcError::invalid_params(msg),
+            gasket_types::ToolError::ExecutionError(msg) => RpcError::internal_error(msg),
+            gasket_types::ToolError::PermissionDenied(msg) => RpcError::permission_denied(msg),
+            gasket_types::ToolError::NotFound(msg) => RpcError::method_not_found(msg),
+        }
+    }
+}
+
 /// Encode a JSON-RPC message as a newline-terminated JSON string.
 ///
 /// # Arguments
