@@ -41,4 +41,3 @@ impl RpcHandler for MemoryDecayHandler {
         Ok(serde_json::json!({"output": output}))
     }
 }
-

@@ -1,7 +1,7 @@
 # In-Process Message Broker (gasket-mq) Design Spec
 
 **Date:** 2026-04-15
-**Status:** Approved
+**Status:** Approved (Rev.2 — post spec-review fixes)
 **Scope:** Replace existing Bus + Actor pipeline with a unified Topic-based Message Broker
 
 ---
@@ -25,7 +25,7 @@ The current `MessageBus` (`engine/src/bus/`) is a fixed two-channel Inbound/Outb
 | Topic granularity | Fine-grained with parameters | e.g., `ToolCall(String)` routes to specific tool |
 | Channel primitive | `async-channel` (P2P) + `tokio::broadcast` (fanout) | Matches actual delivery semantics per topic |
 | Backpressure | Dual-mode API | `publish().await` (blocking) + `try_publish()` (non-blocking) |
-| ACK semantics | Optional per-message | `oneshot` callback via `Envelope.reply_to`; default is fire-and-forget |
+| ACK semantics | Optional per-message | Broker-managed side-channel (`DashMap<Uuid, oneshot::Sender>`); Envelope stays pure data, fully `Clone`-safe |
 | Crate location | New `gasket-mq` crate | Clean dependency boundary; engine re-exports |
 
 ## 3. Message Contract Layer
@@ -35,9 +35,10 @@ The current `MessageBus` (`engine/src/bus/`) is a fixed two-channel Inbound/Outb
 Strong-typed enum. Rejects stringly-typed routing.
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum Topic {
     // External channel messages
+    #[default]
     Inbound,
     Outbound,
 
@@ -47,9 +48,12 @@ pub enum Topic {
     LlmRequest,
     Stream(String),       // session_key as parameter
     CronTrigger,
+    Heartbeat,            // Dedicated topic — no longer competes with user messages
     Custom(String),
 }
 ```
+
+**Validation:** `ToolCall("")` and `Custom("")` are rejected at construction time via a `Topic::tool_call(name)` / `Topic::custom(name)` constructor that returns `Result<Topic, BrokerError>` on empty strings. Direct enum construction is still possible but discouraged.
 
 ### 3.2 Delivery Mode
 
@@ -67,29 +71,31 @@ pub enum DeliveryMode {
 impl Topic {
     pub fn delivery_mode(&self) -> DeliveryMode {
         match self {
-            Topic::SystemEvent | Topic::Stream(_) => DeliveryMode::Broadcast,
+            Topic::SystemEvent => DeliveryMode::Broadcast,
             _ => DeliveryMode::PointToPoint,
         }
     }
 }
 ```
 
-**Rationale:** `SystemEvent` and `Stream` need all observers to receive the message. All other topics (Inbound, Outbound, ToolCall, etc.) are point-to-point where one consumer handles the message.
+**Rationale:** Only `SystemEvent` needs broadcast (multiple components observe system lifecycle). `Stream(session_key)` is PointToPoint — each streaming session has exactly one WebSocket consumer. All other topics are point-to-point where one consumer handles the message.
 
 ### 3.3 Envelope
 
+**Design constraint:** `Envelope` must implement `Clone` (required by `tokio::broadcast`). Therefore, the ACK callback (`oneshot::Sender`) CANNOT live inside the Envelope — it is managed by the Broker as a side-channel.
+
 ```rust
+/// Pure data envelope — no callbacks, no channels, fully Clone-safe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub id: uuid::Uuid,
     pub timestamp: u64,            // Unix epoch milliseconds
-    #[serde(skip)]
-    pub topic: Topic,
+    #[serde(skip, default)]
+    pub topic: Topic,              // Topic implements Default (→ Inbound)
     pub payload: serde_json::Value,
-    #[serde(skip)]
-    pub reply_to: Option<oneshot::Sender<AckResult>>,
 }
 
+/// ACK result — only used in the Broker's side-channel, never serialized.
 #[derive(Debug)]
 pub enum AckResult {
     Ack,
@@ -100,14 +106,18 @@ pub enum AckResult {
 Builder API:
 ```rust
 impl Envelope {
+    /// Quick construction — auto-generates ID and timestamp
     pub fn new(topic: Topic, payload: impl Serialize) -> Self { ... }
-    pub fn with_ack(mut self) -> (Self, oneshot::Receiver<AckResult>) { ... }
 }
 ```
+
+**ACK mechanism** is on the Broker, not the Envelope (see §4.1).
 
 ## 4. Broker Core Abstraction
 
 ### 4.1 MessageBroker Trait
+
+> **Note on `async_trait`:** Rust 1.75+ supports native `async fn in trait`. However, our trait needs `dyn MessageBroker` (object-safety), which requires `#[async_trait]` or the `trait_variant` crate. We use `#[async_trait]` for now; migration to native async is a future optimization.
 
 ```rust
 #[async_trait]
@@ -117,6 +127,19 @@ pub trait MessageBroker: Send + Sync {
 
     /// Non-blocking publish — returns QueueFull immediately
     fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError>;
+
+    /// Publish with ACK — returns a receiver for the consumer's acknowledgment.
+    /// The Broker stores the oneshot::Sender in a side-channel keyed by envelope.id.
+    /// Consumer calls broker.ack(id) or broker.nack(id, reason) after processing.
+    /// Only meaningful for PointToPoint topics (broadcast topics ignore ACK).
+    async fn publish_with_ack(&self, envelope: Envelope)
+        -> Result<tokio::sync::oneshot::Receiver<AckResult>, BrokerError>;
+
+    /// Acknowledge a message by ID (consumer-side).
+    fn ack(&self, id: uuid::Uuid) -> Result<(), BrokerError>;
+
+    /// Negatively acknowledge a message by ID (consumer-side).
+    fn nack(&self, id: uuid::Uuid, reason: String) -> Result<(), BrokerError>;
 
     /// Subscribe to a topic. Returns a unified Subscriber.
     /// - PointToPoint: multiple subscribers share one queue (work-stealing)

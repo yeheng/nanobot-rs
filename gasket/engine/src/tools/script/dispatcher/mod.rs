@@ -222,7 +222,7 @@ pub fn build_dispatcher() -> RpcDispatcher {
 mod tests {
     use super::*;
     use crate::tools::ToolRegistry;
-    use gasket_types::events::{SessionKey};
+    use gasket_types::events::SessionKey;
     use gasket_types::{SubagentResult, SubagentSpawner};
     use serde_json::json;
     use std::sync::Arc;
@@ -281,10 +281,15 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         DispatcherContext {
             engine: Arc::new(EngineHandle {
-                session_key: SessionKey::new(gasket_types::events::ChannelType::Telegram, "test-chat"),
+                session_key: SessionKey::new(
+                    gasket_types::events::ChannelType::Telegram,
+                    "test-chat",
+                ),
                 outbound_tx: tx,
                 spawner: Arc::new(MockSpawner),
-                token_tracker: Arc::new(gasket_types::token_tracker::TokenTracker::unlimited("USD")),
+                token_tracker: Arc::new(gasket_types::token_tracker::TokenTracker::unlimited(
+                    "USD",
+                )),
                 tool_registry: Arc::new(ToolRegistry::new()),
                 provider: Arc::new(MockProvider),
             }),

@@ -82,4 +82,3 @@ impl RpcHandler for LlmChatHandler {
         Ok(Value::Object(response_obj))
     }
 }
-

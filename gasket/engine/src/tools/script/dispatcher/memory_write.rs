@@ -41,4 +41,3 @@ impl RpcHandler for MemoryWriteHandler {
         Ok(serde_json::json!({"output": output}))
     }
 }
-

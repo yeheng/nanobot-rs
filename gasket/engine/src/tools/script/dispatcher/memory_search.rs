@@ -43,4 +43,3 @@ impl RpcHandler for MemorySearchHandler {
         Ok(serde_json::json!({"output": output}))
     }
 }
-
