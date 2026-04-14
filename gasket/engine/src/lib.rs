@@ -123,6 +123,11 @@ pub use vault::{
 // Bus
 pub mod bus;
 
+// Broker (new — coexists with bus during migration)
+pub mod broker {
+    pub use gasket_broker::*;
+}
+
 // Channels
 pub mod channels {
     #[cfg(feature = "dingtalk")]
