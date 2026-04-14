@@ -16,6 +16,9 @@ use gasket_providers::LlmProvider;
 use super::manifest::Permission;
 use super::rpc::{RpcError, RpcRequest, RpcResponse};
 
+mod llm_chat;
+use llm_chat::LlmChatHandler;
+
 /// Trait for RPC method handlers.
 ///
 /// Handlers are registered with the dispatcher and invoked when matching
@@ -181,12 +184,17 @@ impl Default for RpcDispatcher {
     }
 }
 
-/// Build and return an empty RPC dispatcher.
+/// Build and return an RPC dispatcher with default handlers.
 ///
-/// This is a placeholder function that will be expanded in future tasks
-/// to register default handlers (llm/chat, memory/search, etc.).
+/// Registers all built-in callback handlers for script tool RPC methods:
+/// - `llm/chat` - LLM chat completions
+///
+/// Additional handlers (memory/search, agent/spawn, etc.) will be added
+/// in future tasks.
 pub fn build_dispatcher() -> RpcDispatcher {
-    RpcDispatcher::new()
+    let mut d = RpcDispatcher::new();
+    d.register(Arc::new(LlmChatHandler));
+    d
 }
 
 #[cfg(test)]
