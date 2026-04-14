@@ -1,5 +1,7 @@
 //! Message tool for sending messages to specific channels
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,20 +12,34 @@ use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::bus::events::ChannelType;
 use crate::bus::events::OutboundMessage;
 
+/// Internal dispatch mode for outbound messages.
+enum MessageToolMode {
+    Direct(mpsc::Sender<OutboundMessage>),
+    Broker(Arc<dyn gasket_broker::MessageBroker>),
+}
+
 /// Message tool for sending messages to specific channels.
 ///
-/// Routes through the Outbound Actor via `mpsc::Sender<OutboundMessage>`
-/// instead of calling `send_outbound()` directly. This decouples the tool
-/// from blocking network I/O — the message is enqueued instantly and
-/// the Outbound Actor handles delivery concurrently.
+/// Routes through either the Outbound Actor (via mpsc) or the broker
+/// (via Topic::Outbound). This decouples the tool from blocking network I/O —
+/// the message is enqueued instantly and delivery happens concurrently.
 pub struct MessageTool {
-    outbound_tx: mpsc::Sender<OutboundMessage>,
+    mode: MessageToolMode,
 }
 
 impl MessageTool {
-    /// Create a new message tool that routes through the outbound channel.
+    /// Create a new message tool that routes through the outbound mpsc channel.
     pub fn new(outbound_tx: mpsc::Sender<OutboundMessage>) -> Self {
-        Self { outbound_tx }
+        Self {
+            mode: MessageToolMode::Direct(outbound_tx),
+        }
+    }
+
+    /// Create a new message tool backed by the message broker.
+    pub fn new_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+        Self {
+            mode: MessageToolMode::Broker(broker),
+        }
     }
 }
 
@@ -87,11 +103,21 @@ impl Tool for MessageTool {
             ws_message: None,
         };
 
-        // Route through Outbound Actor — enqueue instantly, no network wait.
-        self.outbound_tx
-            .send(message)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Outbound channel closed: {}", e)))?;
+        // Route through Outbound Actor or broker — enqueue instantly, no network wait.
+        match &self.mode {
+            MessageToolMode::Direct(tx) => {
+                tx.send(message)
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Outbound channel closed: {}", e)))?;
+            }
+            MessageToolMode::Broker(broker) => {
+                let envelope = gasket_broker::Envelope::new(gasket_broker::Topic::Outbound, &message);
+                broker
+                    .publish(envelope)
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Broker publish failed: {}", e)))?;
+            }
+        }
 
         Ok(format!(
             "Message sent successfully to {}:{}",
