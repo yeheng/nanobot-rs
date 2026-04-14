@@ -88,14 +88,17 @@ impl From<tokio::io::Error> for ScriptError {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use gasket_engine::tools::script::runner::{run_simple, ScriptError};
+/// use gasket_engine::tools::script::ScriptManifest;
 /// use serde_json::json;
+/// use std::path::Path;
 ///
 /// # async fn example() -> Result<(), ScriptError> {
-/// let manifest = /* ... */;
+/// # let manifest: ScriptManifest = unimplemented!();
 /// let args = json!({"input": "value"});
-/// let result = run_simple(&manifest, "/path/to/manifest/dir", &args, 30).await?;
+/// let manifest_dir = Path::new("/path/to/manifest/dir");
+/// let result = run_simple(&manifest, manifest_dir, &args, 30).await?;
 /// println!("Output: {}", result.output);
 /// # Ok(())
 /// # }
@@ -219,15 +222,18 @@ pub async fn run_simple(
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use gasket_engine::tools::script::runner::run_jsonrpc;
+/// use gasket_engine::tools::script::{ScriptManifest, dispatcher::RpcDispatcher, dispatcher::DispatcherContext};
 /// use serde_json::json;
+/// use std::path::Path;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let manifest = /* ... */;
-/// let dispatcher = /* ... */;
-/// let ctx = /* ... */;
-/// let result = run_jsonrpc(&manifest, "/path", &json!({}), 30, &[], &dispatcher, &ctx).await?;
+/// # let manifest: ScriptManifest = unimplemented!();
+/// # let dispatcher: RpcDispatcher = unimplemented!();
+/// # let ctx: DispatcherContext = unimplemented!();
+/// let manifest_dir = Path::new("/path");
+/// let result = run_jsonrpc(&manifest, manifest_dir, &json!({}), 30, &[], &dispatcher, &ctx).await?;
 /// # Ok(())
 /// # }
 /// ```

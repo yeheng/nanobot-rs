@@ -22,7 +22,7 @@ mod memory_refresh;
 mod memory_search;
 mod message;
 mod registry;
-mod script;
+pub mod script;
 mod shell;
 mod spawn;
 mod spawn_parallel;
