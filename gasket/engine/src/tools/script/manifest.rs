@@ -217,8 +217,14 @@ permissions:
         assert_eq!(manifest.runtime.working_dir, "./scripts");
         assert_eq!(manifest.runtime.timeout_secs, 300);
         assert_eq!(manifest.runtime.env.len(), 2);
-        assert_eq!(manifest.runtime.env.get("NODE_ENV"), Some(&"production".to_string()));
-        assert_eq!(manifest.runtime.env.get("API_KEY"), Some(&"test-key".to_string()));
+        assert_eq!(
+            manifest.runtime.env.get("NODE_ENV"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(
+            manifest.runtime.env.get("API_KEY"),
+            Some(&"test-key".to_string())
+        );
         assert_eq!(manifest.permissions.len(), 3);
         assert!(manifest.permissions.contains(&Permission::LlmChat));
         assert!(manifest.permissions.contains(&Permission::MemorySearch));
@@ -264,8 +270,7 @@ parameters:
 
         // Test serialization
         let yaml = serde_yaml::to_string(&permissions).expect("Failed to serialize");
-        let parsed: Vec<Permission> =
-            serde_yaml::from_str(&yaml).expect("Failed to deserialize");
+        let parsed: Vec<Permission> = serde_yaml::from_str(&yaml).expect("Failed to deserialize");
 
         // Verify all permissions survived roundtrip
         assert_eq!(parsed.len(), 5);
