@@ -202,24 +202,53 @@ pub fn log_outbound(channel: &str, chat_id: &str, content_len: usize) {
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
-/// A wrapper around `Sender<InboundMessage>` that applies auth and rate-limit
-/// checks before forwarding messages to the bus.
+/// Internal dispatch mode for InboundSender.
+enum SenderType {
+    /// Direct mpsc channel (legacy bus mode).
+    Direct(Sender<InboundMessage>),
+    /// Broker-based publish (new topic-based mode).
+    Broker(Arc<dyn gasket_broker::MessageBroker>),
+}
+
+/// A wrapper that applies auth and rate-limit checks before forwarding
+/// messages to either a direct mpsc channel or the message broker.
 ///
 /// This ensures that **all** channels — including webhook-driven ones — go
 /// through the same middleware pipeline (auth + rate-limit) before reaching
-/// the Router Actor.
-#[derive(Clone)]
+/// the Router Actor or broker's Topic::Inbound.
 pub struct InboundSender {
-    inner: Sender<InboundMessage>,
+    inner: SenderType,
     rate_limiter: Option<Arc<SimpleRateLimiter>>,
     auth_checker: Option<Arc<SimpleAuthChecker>>,
 }
 
+impl Clone for InboundSender {
+    fn clone(&self) -> Self {
+        Self {
+            inner: match &self.inner {
+                SenderType::Direct(tx) => SenderType::Direct(tx.clone()),
+                SenderType::Broker(b) => SenderType::Broker(b.clone()),
+            },
+            rate_limiter: self.rate_limiter.clone(),
+            auth_checker: self.auth_checker.clone(),
+        }
+    }
+}
+
 impl InboundSender {
-    /// Create a new `InboundSender` wrapping a raw mpsc sender.
+    /// Create a new `InboundSender` wrapping a raw mpsc sender (legacy bus mode).
     pub fn new(inner: Sender<InboundMessage>) -> Self {
         Self {
-            inner,
+            inner: SenderType::Direct(inner),
+            rate_limiter: None,
+            auth_checker: None,
+        }
+    }
+
+    /// Create a new `InboundSender` backed by the message broker.
+    pub fn new_with_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+        Self {
+            inner: SenderType::Broker(broker),
             rate_limiter: None,
             auth_checker: None,
         }
@@ -241,10 +270,7 @@ impl InboundSender {
     ///
     /// Returns `Ok(())` even when the message is silently dropped by auth/rate-limit
     /// checks — the caller should not retry rejected messages.
-    pub async fn send(
-        &self,
-        msg: InboundMessage,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<InboundMessage>> {
+    pub async fn send(&self, msg: InboundMessage) -> anyhow::Result<()> {
         log_inbound(&msg);
 
         if let Some(ref auth) = self.auth_checker {
@@ -259,12 +285,31 @@ impl InboundSender {
             }
         }
 
-        self.inner.send(msg).await
+        match &self.inner {
+            SenderType::Direct(tx) => tx
+                .send(msg)
+                .await
+                .map_err(|e| anyhow::anyhow!("mpsc send failed: {}", e)),
+            SenderType::Broker(broker) => {
+                let envelope = gasket_broker::Envelope::new(gasket_broker::Topic::Inbound, &msg);
+                broker
+                    .publish(envelope)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("broker publish failed: {}", e))
+            }
+        }
     }
 
     /// Get a clone of the inner raw sender (for channels not yet migrated to InboundSender).
+    ///
+    /// Panics if called in broker mode.
     pub fn raw_sender(&self) -> Sender<InboundMessage> {
-        self.inner.clone()
+        match &self.inner {
+            SenderType::Direct(tx) => tx.clone(),
+            SenderType::Broker(_) => {
+                panic!("raw_sender() not available in broker mode — use send() instead")
+            }
+        }
     }
 }
 
