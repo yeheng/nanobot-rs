@@ -274,9 +274,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph 输入
-        A[上下文
-        用户消息
-        可用工具]
+        A[上下文 用户消息 可用工具]
     end
     
     subgraph Kernel
@@ -284,14 +282,11 @@ flowchart LR
     end
     
     subgraph 输出
-        C[AI回复
-        工具调用]
+        C[AI回复 工具调用]
     end
-    
+
     A --> B --> C
-    
-    Note over B: 无副作用
-    Note over B: 相同输入=相同输出
+
 ```
 
 **好处**：

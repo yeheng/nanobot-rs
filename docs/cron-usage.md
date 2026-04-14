@@ -31,10 +31,19 @@ enabled: true
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | No | (filename) | Human-readable job name |
-| `cron` | string | **Yes** | - | Cron expression (5 or 6 fields) |
-| `channel` | string | No | `websocket` | Target channel (e.g., `telegram`). If not specified, broadcasts to all WebSocket clients |
-| `to` | string | No | - | Target chat/user ID |
+| `cron` | string | **Yes** | - | Cron expression (6 fields: sec min hour day month weekday) |
+| `channel` | string | No | (context default) | Target channel: `websocket`, `telegram`, `discord`, `cli`, etc. |
+| `to` | string | No | (context default) | Target user/chat ID. For WebSocket, this is the `user_id` query parameter |
 | `enabled` | boolean | No | `true` | Whether the job is active |
+
+**Supported Channels:**
+- `websocket` - WebSocket clients (default for gateway)
+- `telegram` - Telegram bot
+- `discord` - Discord bot
+- `cli` - Command-line interface
+- Custom channels as configured
+
+**Note:** If `channel` and `to` are not specified, the job will use the channel context from when it was created (for API/tool usage) or broadcast to all connected WebSocket clients (for file-based jobs).
 
 **Important:** The message content goes in the **markdown body** (after `---`), NOT in the YAML frontmatter header. Do NOT add `message` field to the YAML frontmatter.
 
@@ -98,6 +107,90 @@ gasket cron disable <job-id>
 
 ```bash
 gasket cron remove <job-id>
+```
+
+## Examples
+
+### Example 1: WebSocket Reminder
+
+Create a cron job that sends a reminder to a specific WebSocket user every hour:
+
+```markdown
+---
+name: hourly-reminder
+cron: "0 0 * * * *"
+channel: websocket
+to: user-123
+enabled: true
+---
+
+记得休息一下，起来活动活动！
+```
+
+### Example 2: Telegram Daily Report
+
+Send a daily report to a Telegram chat every morning at 9 AM:
+
+```markdown
+---
+name: daily-report
+cron: "0 0 9 * * *"
+channel: telegram
+to: "8281248569"
+enabled: true
+---
+
+请生成今日工作总结
+```
+
+### Example 3: Direct Tool Execution
+
+Execute a system maintenance tool without using LLM (zero token cost):
+
+```markdown
+---
+name: memory-decay
+cron: "0 0 */6 * * * *"
+channel: websocket
+to: admin
+enabled: true
+tool: memory_decay
+---
+```
+
+### Example 4: Broadcast to All WebSocket Clients
+
+Omit the `to` field to broadcast to all connected WebSocket clients:
+
+```markdown
+---
+name: system-announcement
+cron: "0 0 12 * * *"
+channel: websocket
+enabled: true
+---
+
+系统即将进行维护，请保存您的工作。
+```
+
+## Via Agent (Tool Usage)
+
+You can also create cron jobs through the agent using the `cron` tool:
+
+```
+请创建一个 cron 任务，每小时通过 websocket 给用户 test-user 发送提醒
+```
+
+The agent will call the `cron` tool with:
+```json
+{
+  "action": "add",
+  "name": "Hourly Reminder",
+  "cron": "0 0 * * * *",
+  "message": "记得休息一下",
+  "channel": "websocket",
+  "to": "test-user"
+}
 ```
 
 ## Hot Reload

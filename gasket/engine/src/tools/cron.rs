@@ -68,6 +68,14 @@ impl Tool for CronTool {
                     "type": "string",
                     "description": "Message to send at scheduled time (required for add)"
                 },
+                "channel": {
+                    "type": "string",
+                    "description": "Target channel (optional, defaults to current context channel). Examples: 'websocket', 'telegram', 'discord', 'cli'"
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Target chat/user ID (optional, defaults to current context chat_id). For WebSocket, this is the user_id parameter"
+                },
                 "job_id": {
                     "type": "string",
                     "description": "Job ID (required for remove; optional for refresh_next_run to target a specific job; omit to refresh all jobs). Get this from the 'add' action response"
@@ -86,6 +94,8 @@ impl Tool for CronTool {
             cron: Option<String>,
             message: Option<String>,
             job_id: Option<String>,
+            channel: Option<String>,
+            to: Option<String>,
         }
 
         let args: Args =
@@ -119,12 +129,16 @@ impl Tool for CronTool {
                 })?;
 
                 let id = Uuid::new_v4().to_string();
-                let channel = self.channel.read().clone();
-                let chat_id = self.chat_id.read().clone();
+                // Use explicitly provided channel/to if available, otherwise fall back to context
+                let channel = args.channel.or_else(|| self.channel.read().clone());
+                let chat_id = args.to.or_else(|| self.chat_id.read().clone());
 
                 let mut job = crate::cron::CronJob::new(&id, &name, &cron, &message);
                 job.channel = channel;
                 job.chat_id = chat_id;
+
+                let channel_display = job.channel.as_deref().unwrap_or("cli").to_string();
+                let chat_id_display = job.chat_id.as_deref().unwrap_or("").to_string();
 
                 self.service.add_job(job).await.map_err(|e| {
                     ToolError::ExecutionError(format!(
@@ -134,8 +148,8 @@ impl Tool for CronTool {
                 })?;
 
                 Ok(format!(
-                    "✓ Scheduled job '{}'\n\nJob ID: {}\nCron: {}\n\nUse this Job ID with action 'remove' to delete this job later.",
-                    name, id, cron
+                    "✓ Scheduled job '{}'\n\nJob ID: {}\nCron: {}\nChannel: {}\nTo: {}\n\nUse this Job ID with action 'remove' to delete this job later.",
+                    name, id, cron, channel_display, chat_id_display
                 ))
             }
             "list" => {
