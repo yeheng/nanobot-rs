@@ -47,7 +47,7 @@ pub trait RpcHandler: Send + Sync {
 ///
 /// Contains references to engine capabilities that handlers may need.
 /// All fields are optional to allow flexible handler registration.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DispatcherContext {
     /// Session identifier for the current session
     pub session_key: Option<gasket_types::events::SessionKey>,
@@ -69,18 +69,6 @@ pub struct DispatcherContext {
 }
 
 // Manual Default implementation - Arc<dyn Trait> cannot derive Default
-impl Default for DispatcherContext {
-    fn default() -> Self {
-        Self {
-            session_key: None,
-            outbound_tx: None,
-            spawner: None,
-            token_tracker: None,
-            tool_registry: None,
-            provider: None,
-        }
-    }
-}
 
 /// RPC dispatcher that routes method calls to handlers with permission checks.
 ///
@@ -250,7 +238,10 @@ mod tests {
         assert_eq!(response.id, json!(1));
         assert!(response.result.is_some());
         assert!(response.error.is_none());
-        assert_eq!(response.result.unwrap(), json!({"echo": {"hello": "world"}}));
+        assert_eq!(
+            response.result.unwrap(),
+            json!({"echo": {"hello": "world"}})
+        );
     }
 
     #[tokio::test]
