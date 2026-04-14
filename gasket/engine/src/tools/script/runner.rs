@@ -19,7 +19,7 @@ use tokio::time::timeout;
 
 use super::dispatcher::{DispatcherContext, RpcDispatcher};
 use super::manifest::ScriptManifest;
-use super::rpc::{encode, decode, RpcMessage, RpcRequest, RpcResponse};
+use super::rpc::{decode, encode, RpcMessage, RpcRequest, RpcResponse};
 
 /// Result of a successful script execution.
 #[derive(Debug, Clone)]
@@ -112,9 +112,10 @@ pub async fn run_simple(
     let mut child = spawn_process(manifest, manifest_dir)?;
 
     // Write args to stdin and close it
-    let stdin = child.stdin.as_mut().ok_or_else(|| {
-        ScriptError::Io("Failed to open stdin".to_string())
-    })?;
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| ScriptError::Io("Failed to open stdin".to_string()))?;
 
     let args_json = serde_json::to_string(args)
         .map_err(|e| ScriptError::Io(format!("Failed to serialize args: {}", e)))?;
@@ -132,9 +133,17 @@ pub async fn run_simple(
     let timeout_duration = Duration::from_secs(timeout_secs);
     let result = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(exit_status)) => exit_status,
-        Ok(Err(e)) => return Err(ScriptError::Io(format!("Failed to wait for process: {}", e))),
+        Ok(Err(e)) => {
+            return Err(ScriptError::Io(format!(
+                "Failed to wait for process: {}",
+                e
+            )))
+        }
         Err(_) => {
-            child.kill().await.map_err(|e| ScriptError::Io(format!("Failed to kill timed-out process: {}", e)))?;
+            child
+                .kill()
+                .await
+                .map_err(|e| ScriptError::Io(format!("Failed to kill timed-out process: {}", e)))?;
             return Err(ScriptError::Timeout(timeout_secs));
         }
     };
@@ -145,13 +154,13 @@ pub async fn run_simple(
     }
 
     // Collect stdout and stderr
-    let stdout = child.stdout.ok_or_else(|| {
-        ScriptError::Io("Stdout not captured".to_string())
-    })?;
+    let stdout = child
+        .stdout
+        .ok_or_else(|| ScriptError::Io("Stdout not captured".to_string()))?;
 
-    let stderr = child.stderr.ok_or_else(|| {
-        ScriptError::Io("Stderr not captured".to_string())
-    })?;
+    let stderr = child
+        .stderr
+        .ok_or_else(|| ScriptError::Io("Stderr not captured".to_string()))?;
 
     // Read stdout as JSON
     let mut stdout_reader = BufReader::new(stdout);
@@ -240,14 +249,16 @@ pub async fn run_jsonrpc(
     let stderr_collector = StderrCollector::new(child.stderr.take());
 
     // Split stdin/stdout for concurrent access
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        ScriptError::Io("Failed to open stdin".to_string())
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        ScriptError::Io("Failed to open stdout".to_string())
-    })?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ScriptError::Io("Failed to open stdin".to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ScriptError::Io("Failed to open stdout".to_string()))?;
 
-    let mut stdout_reader = BufReader::new(stdout);
+    let stdout_reader = BufReader::new(stdout);
     let mut reader_lines = stdout_reader.lines();
 
     // Channel for response writer (buffer size 16)
@@ -355,7 +366,9 @@ pub async fn run_jsonrpc(
     }
 
     // Wait for child exit
-    let exit_status = child.wait().await
+    let exit_status = child
+        .wait()
+        .await
         .map_err(|e| ScriptError::Io(format!("Failed to wait for process: {}", e)))?;
 
     if !exit_status.success() {
@@ -397,10 +410,7 @@ pub async fn run_jsonrpc(
 /// - Environment vars from `manifest.runtime.env`
 /// - Pipes: stdin/stdout/stderr
 /// - Kill-on-drop: true (auto-terminate on timeout/error)
-fn spawn_process(
-    manifest: &ScriptManifest,
-    manifest_dir: &Path,
-) -> Result<Child, ScriptError> {
+fn spawn_process(manifest: &ScriptManifest, manifest_dir: &Path) -> Result<Child, ScriptError> {
     // Resolve working directory
     let working_dir = if manifest.runtime.working_dir == "." {
         manifest_dir.to_path_buf()
@@ -423,10 +433,12 @@ fn spawn_process(
     }
 
     // Spawn process
-    cmd.spawn().map_err(|e| ScriptError::SpawnFailed(format!(
-        "Failed to spawn '{}': {}",
-        manifest.runtime.command, e
-    )))
+    cmd.spawn().map_err(|e| {
+        ScriptError::SpawnFailed(format!(
+            "Failed to spawn '{}': {}",
+            manifest.runtime.command, e
+        ))
+    })
 }
 
 /// Background stderr collector to prevent pipe deadlock.
@@ -446,23 +458,20 @@ impl StderrCollector {
     ///
     /// * `stderr` - Optional stderr stream (None → no collection)
     fn new(stderr: Option<tokio::process::ChildStderr>) -> Self {
-        let handle = match stderr {
-            Some(stream) => {
-                Some(tokio::spawn(async move {
-                    let mut reader = BufReader::new(stream);
-                    let mut buffer = String::new();
-                    let result = reader.read_to_string(&mut buffer).await;
-                    match result {
-                        Ok(_) => buffer,
-                        Err(e) => {
-                            tracing::warn!("Failed to read stderr: {}", e);
-                            String::new()
-                        }
+        let handle = stderr.map(|stream| {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stream);
+                let mut buffer = String::new();
+                let result = reader.read_to_string(&mut buffer).await;
+                match result {
+                    Ok(_) => buffer,
+                    Err(e) => {
+                        tracing::warn!("Failed to read stderr: {}", e);
+                        String::new()
                     }
-                }))
-            }
-            None => None,
-        };
+                }
+            })
+        });
 
         Self { handle }
     }
@@ -470,7 +479,7 @@ impl StderrCollector {
     /// Wait for the background task to complete and return the collected stderr.
     ///
     /// # Returns
-///
+    ///
     /// Collected stderr text (empty if no stderr stream or task failed)
     async fn collect(mut self) -> String {
         match self.handle.take() {
@@ -550,8 +559,7 @@ mod tests {
         let timeout_secs = 1; // Timeout after 1 second
 
         // Should timeout
-        let result = run_simple(&manifest, dir.path(), &args, timeout_secs)
-            .await;
+        let result = run_simple(&manifest, dir.path(), &args, timeout_secs).await;
 
         match result {
             Err(ScriptError::Timeout(t)) => {
