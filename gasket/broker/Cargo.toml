@@ -18,3 +18,4 @@ gasket-types = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+chrono.workspace = true
