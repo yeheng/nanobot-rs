@@ -17,7 +17,16 @@ use super::manifest::Permission;
 use super::rpc::{RpcError, RpcRequest, RpcResponse};
 
 mod llm_chat;
+mod memory_decay;
+mod memory_search;
+mod memory_write;
+mod subagent;
+
 use llm_chat::LlmChatHandler;
+use memory_decay::MemoryDecayHandler;
+use memory_search::MemorySearchHandler;
+use memory_write::MemoryWriteHandler;
+use subagent::SubagentSpawnHandler;
 
 /// Trait for RPC method handlers.
 ///
@@ -188,12 +197,17 @@ impl Default for RpcDispatcher {
 ///
 /// Registers all built-in callback handlers for script tool RPC methods:
 /// - `llm/chat` - LLM chat completions
-///
-/// Additional handlers (memory/search, agent/spawn, etc.) will be added
-/// in future tasks.
+/// - `memory/search` - Memory search
+/// - `memory/write` - Memory write (memorize)
+/// - `memory/decay` - Memory decay
+/// - `subagent/spawn` - Subagent spawning
 pub fn build_dispatcher() -> RpcDispatcher {
     let mut d = RpcDispatcher::new();
     d.register(Arc::new(LlmChatHandler));
+    d.register(Arc::new(MemorySearchHandler));
+    d.register(Arc::new(MemoryWriteHandler));
+    d.register(Arc::new(MemoryDecayHandler));
+    d.register(Arc::new(SubagentSpawnHandler));
     d
 }
 

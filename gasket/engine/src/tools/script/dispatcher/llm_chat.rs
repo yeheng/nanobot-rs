@@ -26,11 +26,7 @@ impl RpcHandler for LlmChatHandler {
         Permission::LlmChat
     }
 
-    async fn handle(
-        &self,
-        params: Value,
-        ctx: &DispatcherContext,
-    ) -> Result<Value, RpcError> {
+    async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
         // Get the LLM provider from context
         let provider = ctx
             .provider
@@ -38,15 +34,14 @@ impl RpcHandler for LlmChatHandler {
             .ok_or_else(|| RpcError::internal_error("No LLM provider available"))?;
 
         // Deserialize params into ChatRequest
-        let request: gasket_providers::ChatRequest =
-            serde_json::from_value(params).map_err(|e| {
-                RpcError::invalid_params(format!("Failed to parse ChatRequest: {}", e))
-            })?;
+        let request: gasket_providers::ChatRequest = serde_json::from_value(params)
+            .map_err(|e| RpcError::invalid_params(format!("Failed to parse ChatRequest: {}", e)))?;
 
         // Call the provider's chat method
-        let response = provider.chat(request).await.map_err(|e| {
-            RpcError::internal_error(format!("LLM provider error: {}", e))
-        })?;
+        let response = provider
+            .chat(request)
+            .await
+            .map_err(|e| RpcError::internal_error(format!("LLM provider error: {}", e)))?;
 
         // Track token usage if tracker is available
         if let Some(tracker) = &ctx.token_tracker {
@@ -68,17 +63,26 @@ impl RpcHandler for LlmChatHandler {
             response_obj.insert("content".to_string(), serde_json::json!(content));
         }
         if let Some(reasoning) = &response.reasoning_content {
-            response_obj.insert("reasoning_content".to_string(), serde_json::json!(reasoning));
+            response_obj.insert(
+                "reasoning_content".to_string(),
+                serde_json::json!(reasoning),
+            );
         }
         if !response.tool_calls.is_empty() {
-            response_obj.insert("tool_calls".to_string(), serde_json::json!(response.tool_calls));
+            response_obj.insert(
+                "tool_calls".to_string(),
+                serde_json::json!(response.tool_calls),
+            );
         }
         if let Some(usage) = &response.usage {
-            response_obj.insert("usage".to_string(), serde_json::json!({
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "total_tokens": usage.total_tokens,
-            }));
+            response_obj.insert(
+                "usage".to_string(),
+                serde_json::json!({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.total_tokens,
+                }),
+            );
         }
 
         Ok(Value::Object(response_obj))
@@ -214,9 +218,9 @@ mod tests {
         // Create context with provider and tracker
         let mut ctx = DispatcherContext::default();
         ctx.provider = Some(Arc::new(MockProvider));
-        ctx.token_tracker = Some(Arc::new(gasket_types::token_tracker::TokenTracker::unlimited(
-            "USD",
-        )));
+        ctx.token_tracker = Some(Arc::new(
+            gasket_types::token_tracker::TokenTracker::unlimited("USD"),
+        ));
 
         // Execute handler
         let result = handler.handle(params, &ctx).await;
