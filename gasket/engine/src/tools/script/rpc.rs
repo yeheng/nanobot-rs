@@ -251,11 +251,7 @@ pub fn decode(line: &str) -> Option<RpcMessage> {
         Ok(msg) => Some(msg),
         Err(e) => {
             // Invalid JSON is silently discarded (just logged)
-            warn!(
-                "[script stdout non-JSON] {} - input: {:.100}",
-                e,
-                trimmed
-            );
+            warn!("[script stdout non-JSON] {} - input: {:.100}", e, trimmed);
             None
         }
     }
@@ -322,7 +318,8 @@ mod tests {
 
     #[test]
     fn test_decode_response_with_error() {
-        let line = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let msg = decode(line).expect("failed to decode valid error response");
 
         match msg {
@@ -419,7 +416,10 @@ mod tests {
     fn test_decode_empty_line() {
         assert!(decode("").is_none(), "empty string should return None");
         assert!(decode("   ").is_none(), "whitespace should return None");
-        assert!(decode("\t\n\r").is_none(), "newline chars should return None");
+        assert!(
+            decode("\t\n\r").is_none(),
+            "newline chars should return None"
+        );
     }
 
     #[test]
@@ -440,7 +440,10 @@ mod tests {
         // Parse and verify id field is absent
         let parsed: Value = serde_json::from_str(&encoded.trim()).unwrap();
         assert_eq!(parsed["jsonrpc"], "2.0");
-        assert!(parsed.get("id").is_none(), "notifications should not have id field");
+        assert!(
+            parsed.get("id").is_none(),
+            "notifications should not have id field"
+        );
         assert_eq!(parsed["method"], "notify");
     }
 }

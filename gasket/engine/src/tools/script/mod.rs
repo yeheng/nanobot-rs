@@ -6,7 +6,8 @@
 
 pub mod manifest;
 pub mod rpc;
+pub mod dispatcher;
 
 // Re-export primary types for convenience
 pub use manifest::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol};
-pub use rpc::{decode, encode, RpcError, RpcMessage, RpcRequest, RpcResponse};
+pub use dispatcher::{build_dispatcher, DispatcherContext, RpcDispatcher, RpcHandler};
