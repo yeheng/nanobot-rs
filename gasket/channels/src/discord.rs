@@ -3,12 +3,12 @@
 use async_trait::async_trait;
 use serenity::all::{GatewayIntents, Message as DiscordMessage};
 use serenity::prelude::*;
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use crate::events::ChannelType;
 use crate::events::InboundMessage;
+use crate::middleware::InboundSender;
 
 /// Discord channel configuration
 #[derive(Debug, Clone)]
@@ -19,15 +19,15 @@ pub struct DiscordConfig {
 
 /// Discord channel.
 ///
-/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
+/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
 pub struct DiscordChannel {
     config: DiscordConfig,
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
 }
 
 impl DiscordChannel {
     /// Create a new Discord channel with an inbound message sender.
-    pub fn new(config: DiscordConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn new(config: DiscordConfig, inbound_sender: InboundSender) -> Self {
         Self {
             config,
             inbound_sender,
@@ -99,7 +99,7 @@ pub async fn send_message_stateless(
 
 /// Discord event handler
 struct DiscordHandler {
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
     allow_from: Vec<String>,
 }
 

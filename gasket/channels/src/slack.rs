@@ -3,12 +3,12 @@
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use crate::events::ChannelType;
 use crate::events::InboundMessage;
+use crate::middleware::InboundSender;
 
 /// Slack channel configuration
 #[derive(Debug, Clone)]
@@ -37,15 +37,15 @@ struct SlackMessage {
 
 /// Slack channel using Socket Mode.
 ///
-/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
+/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
 pub struct SlackChannel {
     config: SlackConfig,
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
 }
 
 impl SlackChannel {
     /// Create a new Slack channel with an inbound message sender.
-    pub fn new(config: SlackConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn new(config: SlackConfig, inbound_sender: InboundSender) -> Self {
         Self {
             config,
             inbound_sender,
@@ -125,7 +125,7 @@ impl SlackChannel {
     async fn handle_event<W>(
         event: &serde_json::Value,
         write: &mut W,
-        inbound_sender: &Sender<InboundMessage>,
+        inbound_sender: &InboundSender,
         group_policy: &Option<String>,
     ) where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,

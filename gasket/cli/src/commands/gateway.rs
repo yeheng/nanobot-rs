@@ -491,7 +491,7 @@ fn start_telegram_channel(
 
     let mut telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
         telegram_cfg,
-        inbound_processor.raw_sender(),
+        inbound_processor.clone(),
     );
 
     tasks.push(tokio::spawn(async move {
@@ -522,7 +522,7 @@ fn start_discord_channel(
 
     let mut discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
         discord_cfg,
-        inbound_processor.raw_sender(),
+        inbound_processor.clone(),
     );
 
     tasks.push(tokio::spawn(async move {
@@ -556,7 +556,7 @@ fn start_slack_channel(
 
     let mut slack_channel = gasket_engine::channels::slack::SlackChannel::new(
         slack_cfg,
-        inbound_processor.raw_sender(),
+        inbound_processor.clone(),
     );
 
     tasks.push(tokio::spawn(async move {
