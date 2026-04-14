@@ -62,6 +62,9 @@ pub use session::history::indexing::{IndexingQueue, IndexingService, Priority, Q
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
 
+// ── Broker Outbound Dispatcher ─────────────────────────────
+pub use broker_outbound::OutboundDispatcher;
+
 // ── Session ────────────────────────────────────────────────
 pub use session::AgentSession;
 
@@ -120,8 +123,13 @@ pub use vault::{
 
 // ── Facade re-exports (merged from gasket-core) ─────────────
 
-// Bus
-pub mod bus;
+// Broker (topic-based message broker)
+pub mod broker {
+    pub use gasket_broker::*;
+}
+
+// OutboundDispatcher (in engine, not broker — needs OutboundSenderRegistry)
+pub mod broker_outbound;
 
 // Channels
 pub mod channels {

@@ -13,6 +13,7 @@ resolver = "2"
 members = [
     "types",
     "storage",
+    "broker",
     "engine",
     "cli",
     "providers",
@@ -92,7 +93,11 @@ gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }
 gasket-bus = { path = "bus" }
+gasket-broker = { path = "broker" }
 gasket-engine = { path = "engine" }
+
+# Async channel primitives
+async-channel = "2"
 
 # Markdown rendering
 termimad = "0.34.1"

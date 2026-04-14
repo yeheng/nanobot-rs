@@ -24,6 +24,9 @@ use gasket_engine::tools::MemoryRefreshTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
 
+use gasket_engine::broker::{MemoryBroker, SessionManager};
+use gasket_engine::OutboundDispatcher;
+
 use super::registry::CliModelResolver;
 use crate::provider::setup_vault;
 
@@ -72,10 +75,10 @@ pub async fn cmd_gateway() -> Result<()> {
 
     println!("🐈 Starting gateway...\n");
 
-    // Create message bus — receivers are split out at creation time, no Mutex needed
-    // Increased buffer size from 100 to 512 to handle burst traffic from parallel subagents
-    let (bus, inbound_rx, outbound_rx) = gasket_engine::bus::MessageBus::new(512);
-    let bus = Arc::new(bus);
+    // Create message broker (replaces MessageBus)
+    // P2P capacity 1024, broadcast capacity 256
+    let broker: Arc<dyn gasket_engine::broker::MessageBroker> =
+        Arc::new(MemoryBroker::new(1024, 256));
 
     // MemoryStore provides the underlying SqliteStore for session management
     let memory_store = Arc::new(MemoryStore::new().await);
@@ -173,7 +176,7 @@ pub async fn cmd_gateway() -> Result<()> {
             subagent_spawner: Some(subagent_spawner.clone()),
             extra_tools: {
                 let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
-                    Box::new(MessageTool::new(bus.outbound_sender()))
+                    Box::new(MessageTool::new_broker(broker.clone()))
                         as Box<dyn gasket_engine::tools::Tool>,
                     ToolMetadata {
                         display_name: "Send Message".to_string(),
@@ -261,8 +264,8 @@ pub async fn cmd_gateway() -> Result<()> {
     #[allow(unused_mut)]
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // Build InboundSender with auth/rate-limit middleware applied.
-    let inbound_sender = gasket_engine::channels::InboundSender::new(bus.inbound_sender());
+    // Build InboundSender with broker mode (replaces bus.inbound_sender()).
+    let inbound_sender = gasket_engine::channels::InboundSender::new_with_broker(broker.clone());
     // TODO: wire up rate_limiter and auth_checker from config if needed
     #[allow(unused_variables)]
     let inbound_processor = inbound_sender.clone();
@@ -278,10 +281,9 @@ pub async fn cmd_gateway() -> Result<()> {
 
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
-        let inbound_tx = bus.inbound_sender();
-        Arc::new(gasket_engine::channels::websocket::WebSocketManager::new(
-            inbound_tx,
-        ))
+        Arc::new(
+            gasket_engine::channels::websocket::WebSocketManager::new_with_broker(broker.clone()),
+        )
     };
 
     #[cfg(feature = "all-channels")]
@@ -312,34 +314,35 @@ pub async fn cmd_gateway() -> Result<()> {
         }));
     }
 
-    // Prepare ws_manager for router actor (only needed with all-channels)
+    // --- Broker Pipeline (replaces old Router/Session/Outbound actors) ---
+
+    // 1. Start OutboundDispatcher (subscribes to Topic::Outbound, routes to channels)
     #[cfg(feature = "all-channels")]
-    let ws_manager_for_router = Some(websocket_manager.clone());
-
-    tasks.push(tokio::spawn(gasket_engine::bus::run_outbound_actor(
-        outbound_rx,
+    let outbound_dispatcher = OutboundDispatcher::with_websocket(
+        broker.clone(),
         outbound_registry,
-        #[cfg(feature = "all-channels")]
-        ws_manager_for_router,
-    )));
+        websocket_manager.clone(),
+    );
+    #[cfg(not(feature = "all-channels"))]
+    let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), outbound_registry);
+    tasks.push(tokio::spawn(outbound_dispatcher.run()));
 
-    // 2. Start Router Actor (dispatches inbound to per-session channels)
+    // 2. Start SessionManager (subscribes to Topic::Inbound, dispatches to per-session tasks)
     {
-        let outbound_tx = bus.outbound_sender();
-        // EngineHandler adapts AgentSession to the MessageHandler trait
         let handler = Arc::new(EngineHandler::new(agent));
-        tasks.push(tokio::spawn(gasket_engine::bus::run_router_actor(
-            inbound_rx,
-            outbound_tx,
+        let session_mgr = SessionManager::new(
+            broker.clone(),
             handler,
-        )));
+            std::time::Duration::from_secs(3600),
+        );
+        tasks.push(tokio::spawn(session_mgr.run()));
     }
 
     // --- Background services ---
-    start_heartbeat_service(&bus, &workspace, &mut tasks);
+    start_heartbeat_service(&broker, &workspace, &mut tasks);
     start_cron_checker(
         &cron_service,
-        &bus,
+        &broker,
         tools.clone(),
         subagent_spawner.clone(),
         &mut tasks,
@@ -491,7 +494,7 @@ fn start_telegram_channel(
 
     let mut telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
         telegram_cfg,
-        inbound_processor.raw_sender(),
+        inbound_processor.clone(),
     );
 
     tasks.push(tokio::spawn(async move {
@@ -522,7 +525,7 @@ fn start_discord_channel(
 
     let mut discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
         discord_cfg,
-        inbound_processor.raw_sender(),
+        inbound_processor.clone(),
     );
 
     tasks.push(tokio::spawn(async move {
@@ -554,10 +557,8 @@ fn start_slack_channel(
         allow_from: slack_config.allow_from.clone(),
     };
 
-    let mut slack_channel = gasket_engine::channels::slack::SlackChannel::new(
-        slack_cfg,
-        inbound_processor.raw_sender(),
-    );
+    let mut slack_channel =
+        gasket_engine::channels::slack::SlackChannel::new(slack_cfg, inbound_processor.clone());
 
     tasks.push(tokio::spawn(async move {
         use gasket_engine::channels::Channel;
@@ -650,19 +651,19 @@ fn start_dingtalk_channel(
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(
-    bus: &Arc<gasket_engine::bus::MessageBus>,
+    broker: &Arc<dyn gasket_engine::broker::MessageBroker>,
     workspace: &Path,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let heartbeat = gasket_engine::heartbeat::HeartbeatService::new(workspace.to_path_buf());
-    let bus_for_heartbeat = bus.clone();
+    let broker_for_heartbeat = broker.clone();
     tasks.push(tokio::spawn(async move {
         heartbeat
             .run(|task_text| {
-                let bus_inner = bus_for_heartbeat.clone();
+                let broker_inner = broker_for_heartbeat.clone();
                 async move {
-                    let inbound = gasket_engine::bus::events::InboundMessage {
-                        channel: gasket_engine::bus::ChannelType::Cli,
+                    let inbound = gasket_engine::channels::InboundMessage {
+                        channel: gasket_engine::channels::ChannelType::Cli,
                         sender_id: "heartbeat".to_string(),
                         chat_id: "heartbeat".to_string(),
                         content: task_text,
@@ -671,7 +672,11 @@ fn start_heartbeat_service(
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
                     };
-                    bus_inner.publish_inbound(inbound).await;
+                    let envelope = gasket_engine::broker::Envelope::new(
+                        gasket_engine::broker::Topic::Inbound,
+                        &inbound,
+                    );
+                    let _ = broker_inner.publish(envelope).await;
                 }
             })
             .await;
@@ -682,13 +687,13 @@ fn start_heartbeat_service(
 /// Supports direct tool execution (bypassing LLM) for zero-token system tasks.
 fn start_cron_checker(
     cron_service: &Arc<CronService>,
-    bus: &Arc<gasket_engine::bus::MessageBus>,
+    broker: &Arc<dyn gasket_engine::broker::MessageBroker>,
     tools: Arc<ToolRegistry>,
     spawner: Arc<dyn SubagentSpawner>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let cron_svc = cron_service.clone();
-    let bus_for_cron = bus.clone();
+    let broker_for_cron = broker.clone();
     tasks.push(tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -702,7 +707,7 @@ fn start_cron_checker(
                             .channel
                             .as_deref()
                             .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                            .unwrap_or(gasket_engine::bus::ChannelType::Cli);
+                            .unwrap_or(gasket_engine::channels::ChannelType::Cli);
                         let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
 
                         // Check if this is a direct tool execution job (bypass LLM)
@@ -714,9 +719,25 @@ fn start_cron_checker(
                                 tool_name
                             );
 
-                            // Build ToolContext with necessary dependencies
+                            // Build ToolContext with broker-based outbound
                             let ctx = gasket_engine::tools::ToolContext::default()
-                                .outbound_tx(bus_for_cron.outbound_sender())
+                                .outbound_tx({
+                                    // Create a temporary mpsc channel for tool output,
+                                    // then forward to broker. This preserves the
+                                    // ToolContext API while using broker underneath.
+                                    let (tx, mut rx) = tokio::sync::mpsc::channel::<gasket_engine::channels::OutboundMessage>(16);
+                                    let b = broker_for_cron.clone();
+                                    tokio::spawn(async move {
+                                        while let Some(msg) = rx.recv().await {
+                                            let envelope = gasket_engine::broker::Envelope::new(
+                                                gasket_engine::broker::Topic::Outbound,
+                                                &msg,
+                                            );
+                                            let _ = b.publish(envelope).await;
+                                        }
+                                    });
+                                    tx
+                                })
                                 .spawner(spawner.clone());
 
                             let args = job.tool_args.clone().unwrap_or(serde_json::json!({}));
@@ -730,24 +751,32 @@ fn start_cron_checker(
                                     );
                                     tracing::info!("{}", result);
                                     // Send result to output channel
-                                    let out_msg = gasket_engine::bus::events::OutboundMessage::new(
+                                    let out_msg = gasket_engine::channels::OutboundMessage::new(
                                         channel, &chat_id, result,
                                     );
-                                    bus_for_cron.publish_outbound(out_msg).await;
+                                    let envelope = gasket_engine::broker::Envelope::new(
+                                        gasket_engine::broker::Topic::Outbound,
+                                        &out_msg,
+                                    );
+                                    let _ = broker_for_cron.publish(envelope).await;
                                 }
                                 Err(e) => {
                                     tracing::error!("Cron job '{}' failed: {}", job.name, e);
                                     // Send error to output channel
                                     let error_msg = format!("Cron job error: {}", e);
-                                    let out_msg = gasket_engine::bus::events::OutboundMessage::new(
+                                    let out_msg = gasket_engine::channels::OutboundMessage::new(
                                         channel, &chat_id, error_msg,
                                     );
-                                    bus_for_cron.publish_outbound(out_msg).await;
+                                    let envelope = gasket_engine::broker::Envelope::new(
+                                        gasket_engine::broker::Topic::Outbound,
+                                        &out_msg,
+                                    );
+                                    let _ = broker_for_cron.publish(envelope).await;
                                 }
                             }
                         } else {
                             // Traditional LLM-based path
-                            let inbound = gasket_engine::bus::events::InboundMessage {
+                            let inbound = gasket_engine::channels::InboundMessage {
                                 channel,
                                 sender_id: "cron".to_string(),
                                 chat_id,
@@ -757,7 +786,11 @@ fn start_cron_checker(
                                 timestamp: chrono::Utc::now(),
                                 trace_id: None,
                             };
-                            bus_for_cron.publish_inbound(inbound).await;
+                            let envelope = gasket_engine::broker::Envelope::new(
+                                gasket_engine::broker::Topic::Inbound,
+                                &inbound,
+                            );
+                            let _ = broker_for_cron.publish(envelope).await;
                         }
 
                         // Advance job tick and persist state to database

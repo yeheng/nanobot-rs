@@ -3,12 +3,12 @@
 use async_trait::async_trait;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use crate::events::ChannelType;
 use crate::events::InboundMessage;
+use crate::middleware::InboundSender;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]
@@ -19,15 +19,15 @@ pub struct TelegramConfig {
 
 /// Telegram channel.
 ///
-/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
+/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
 pub struct TelegramChannel {
     config: TelegramConfig,
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
 }
 
 impl TelegramChannel {
     /// Create a new Telegram channel with an inbound message sender.
-    pub fn new(config: TelegramConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn new(config: TelegramConfig, inbound_sender: InboundSender) -> Self {
         Self {
             config,
             inbound_sender,

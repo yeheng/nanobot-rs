@@ -1,12 +1,16 @@
-//! Adapter for integrating with gasket-bus
+//! Adapter for integrating with gasket-broker.
+//!
+//! Implements the broker's `MessageHandler` trait for `EngineHandler`,
+//! bridging AgentSession to the broker-based pipeline.
 
-use crate::bus::MessageHandler;
-use crate::session::AgentSession;
-use async_trait::async_trait;
-use gasket_types::SessionKey;
 use std::sync::Arc;
 
-/// Engine handler for bus integration.
+use async_trait::async_trait;
+use gasket_types::SessionKey;
+
+use crate::session::AgentSession;
+
+/// Engine handler for broker integration.
 pub struct EngineHandler {
     session: Arc<AgentSession>,
 }
@@ -24,7 +28,7 @@ impl EngineHandler {
 }
 
 #[async_trait]
-impl MessageHandler for EngineHandler {
+impl gasket_broker::session::MessageHandler for EngineHandler {
     async fn handle_message(
         &self,
         session_key: &SessionKey,
@@ -44,19 +48,18 @@ impl MessageHandler for EngineHandler {
         session_key: &SessionKey,
     ) -> Result<
         (
-            tokio::sync::mpsc::Receiver<crate::bus::StreamEvent>,
+            tokio::sync::mpsc::Receiver<gasket_broker::session::StreamEvent>,
             tokio::sync::oneshot::Receiver<
-                Result<gasket_types::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+                Result<
+                    gasket_types::events::OutboundMessage,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
             >,
         ),
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        use tokio::sync::mpsc;
+        use gasket_broker::session::StreamEvent as BrokerEvent;
 
-        let (event_tx, event_rx) = mpsc::channel(32);
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-
-        // Clone session_key for the spawned task
         let session_key_owned = session_key.clone();
 
         // Get the streaming result from AgentSession
@@ -66,9 +69,9 @@ impl MessageHandler for EngineHandler {
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-        // Spawn a task to convert kernel StreamEvents to gasket_bus StreamEvents
+        // Spawn a task to convert kernel StreamEvents to broker StreamEvents
+        let (broker_tx, broker_rx) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
-            use crate::bus::StreamEvent as BusStreamEvent;
             use gasket_types::StreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
@@ -77,20 +80,20 @@ impl MessageHandler for EngineHandler {
                     continue;
                 }
 
-                let bus_event = match event {
+                let broker_event = match event {
                     StreamEvent::Content {
                         agent_id: _,
                         content,
-                    } => BusStreamEvent::Content(content),
+                    } => BrokerEvent::Content(content),
                     StreamEvent::Thinking {
                         agent_id: _,
                         content,
-                    } => BusStreamEvent::Reasoning(content),
+                    } => BrokerEvent::Reasoning(content),
                     StreamEvent::ToolStart {
                         agent_id: _,
                         name,
                         arguments,
-                    } => BusStreamEvent::ToolStart {
+                    } => BrokerEvent::ToolStart {
                         name,
                         arguments: arguments.unwrap_or_default(),
                     },
@@ -98,17 +101,17 @@ impl MessageHandler for EngineHandler {
                         agent_id: _,
                         name,
                         output,
-                    } => BusStreamEvent::ToolEnd {
+                    } => BrokerEvent::ToolEnd {
                         name,
                         output: output.unwrap_or_default(),
                     },
-                    StreamEvent::Done { agent_id: _ } => BusStreamEvent::Done,
+                    StreamEvent::Done { agent_id: _ } => BrokerEvent::Done,
                     StreamEvent::TokenStats {
                         input_tokens,
                         output_tokens,
                         total_tokens,
                         ..
-                    } => BusStreamEvent::TokenStats {
+                    } => BrokerEvent::TokenStats {
                         prompt: input_tokens,
                         completion: output_tokens,
                         total: total_tokens,
@@ -117,19 +120,19 @@ impl MessageHandler for EngineHandler {
                     _ => continue,
                 };
 
-                if event_tx.send(bus_event).await.is_err() {
+                if broker_tx.send(broker_event).await.is_err() {
                     break;
                 }
             }
         });
 
         // Spawn a task to wrap the final result
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             match result_handle.await {
                 Ok(Ok(response)) => {
-                    // Create an OutboundMessage from the response
-                    let outbound_msg = gasket_types::OutboundMessage {
-                        channel: gasket_types::ChannelType::Cli,
+                    let outbound_msg = gasket_types::events::OutboundMessage {
+                        channel: gasket_types::events::ChannelType::Cli,
                         chat_id: session_key_owned.to_string(),
                         content: response.content,
                         metadata: None,
@@ -149,6 +152,6 @@ impl MessageHandler for EngineHandler {
             }
         });
 
-        Ok((event_rx, result_rx))
+        Ok((broker_rx, result_rx))
     }
 }
