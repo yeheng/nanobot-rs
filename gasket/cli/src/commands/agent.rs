@@ -8,7 +8,7 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
-use gasket_engine::bus::events::SessionKey;
+use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::kernel::StreamEvent;
 use gasket_engine::memory::MemoryStore;
@@ -161,7 +161,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             // Single message mode
             info!("Processing message: {}", msg);
             let session_key =
-                SessionKey::new(gasket_engine::bus::events::ChannelType::Cli, "direct");
+                SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
             if use_streaming {
                 // Use channel-based streaming API
                 let (mut event_rx, result_handle) = agent
@@ -223,7 +223,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
 
             let interactive_session =
-                SessionKey::new(gasket_engine::bus::events::ChannelType::Cli, "interactive");
+                SessionKey::new(gasket_engine::channels::ChannelType::Cli, "interactive");
 
             loop {
                 match line_editor.read_line(&prompt) {

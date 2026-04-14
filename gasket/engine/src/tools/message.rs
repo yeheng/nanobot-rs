@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::bus::events::ChannelType;
-use crate::bus::events::OutboundMessage;
+use crate::channels::ChannelType;
+use crate::channels::OutboundMessage;
 
 /// Internal dispatch mode for outbound messages.
 enum MessageToolMode {
@@ -106,16 +106,16 @@ impl Tool for MessageTool {
         // Route through Outbound Actor or broker — enqueue instantly, no network wait.
         match &self.mode {
             MessageToolMode::Direct(tx) => {
-                tx.send(message)
-                    .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Outbound channel closed: {}", e)))?;
+                tx.send(message).await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Outbound channel closed: {}", e))
+                })?;
             }
             MessageToolMode::Broker(broker) => {
-                let envelope = gasket_broker::Envelope::new(gasket_broker::Topic::Outbound, &message);
-                broker
-                    .publish(envelope)
-                    .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Broker publish failed: {}", e)))?;
+                let envelope =
+                    gasket_broker::Envelope::new(gasket_broker::Topic::Outbound, &message);
+                broker.publish(envelope).await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Broker publish failed: {}", e))
+                })?;
             }
         }
 
