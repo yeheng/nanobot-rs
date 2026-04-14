@@ -11,6 +11,7 @@
 //! - `cron`: Scheduled tasks
 //! - `spawn`: Spawn sub-agents
 //! - `spawn_parallel`: Parallel sub-agent spawning
+//! - `script`: External script tools with YAML manifests
 
 mod base;
 mod cron;
@@ -21,6 +22,7 @@ mod memory_refresh;
 mod memory_search;
 mod message;
 mod registry;
+pub mod script;
 mod shell;
 mod spawn;
 mod spawn_parallel;
@@ -47,6 +49,9 @@ pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
+
+// Re-export script tool types
+pub use script::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol, ScriptTool};
 
 // Re-export sandbox types from gasket-sandbox for backward compatibility
 pub use gasket_sandbox::ProcessManager;

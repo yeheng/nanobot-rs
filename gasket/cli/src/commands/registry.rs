@@ -346,5 +346,10 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         tools.register_with_metadata(tool, metadata);
     }
 
+    // Discover external script tools from ~/.gasket/scripts/
+    if let Err(e) = gasket_engine::tools::script::discover_scripts(&mut tools, None, None) {
+        tracing::warn!("Failed to discover script tools: {}", e);
+    }
+
     tools
 }

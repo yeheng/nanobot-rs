@@ -38,7 +38,7 @@ pub trait LlmProvider: Send + Sync {
 }
 
 /// Chat completion request
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     /// Model to use
     pub model: String,
