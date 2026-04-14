@@ -1,6 +1,8 @@
 //! Broker trait, Subscriber enum, and QueueMetrics.
 
 use async_trait::async_trait;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::Receiver;
 
 use crate::error::BrokerError;
 use crate::types::{AckResult, Envelope, Topic};
@@ -16,7 +18,7 @@ pub struct QueueMetrics {
 /// Unified receiver that hides the underlying channel type.
 pub enum Subscriber {
     PointToPoint(async_channel::Receiver<Envelope>),
-    Broadcast(tokio::sync::broadcast::Receiver<Envelope>),
+    Broadcast(Receiver<Envelope>),
 }
 
 impl Subscriber {
@@ -24,8 +26,8 @@ impl Subscriber {
         match self {
             Subscriber::PointToPoint(rx) => rx.recv().await.map_err(|_| BrokerError::ChannelClosed),
             Subscriber::Broadcast(rx) => rx.recv().await.map_err(|e| match e {
-                tokio::sync::broadcast::error::RecvError::Closed => BrokerError::ChannelClosed,
-                tokio::sync::broadcast::error::RecvError::Lagged(n) => BrokerError::Lagged(n),
+                RecvError::Closed => BrokerError::ChannelClosed,
+                RecvError::Lagged(n) => BrokerError::Lagged(n),
             }),
         }
     }

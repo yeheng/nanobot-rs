@@ -160,8 +160,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let session_key =
-                SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
+            let session_key = SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
             if use_streaming {
                 // Use channel-based streaming API
                 let (mut event_rx, result_handle) = agent

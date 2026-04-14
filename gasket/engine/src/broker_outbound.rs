@@ -63,7 +63,8 @@ impl OutboundDispatcher {
         };
 
         while let Ok(envelope) = sub.recv().await {
-            match serde_json::from_value::<gasket_types::events::OutboundMessage>(envelope.payload) {
+            match serde_json::from_value::<gasket_types::events::OutboundMessage>(envelope.payload)
+            {
                 Ok(msg) => {
                     // WebSocket messages go through WebSocketManager, not the registry
                     #[cfg(feature = "webhook")]
@@ -88,7 +89,10 @@ impl OutboundDispatcher {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!("OutboundDispatcher: failed to deserialize OutboundMessage: {}", e);
+                    tracing::warn!(
+                        "OutboundDispatcher: failed to deserialize OutboundMessage: {}",
+                        e
+                    );
                 }
             }
         }

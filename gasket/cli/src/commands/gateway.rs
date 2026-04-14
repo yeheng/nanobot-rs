@@ -265,8 +265,7 @@ pub async fn cmd_gateway() -> Result<()> {
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     // Build InboundSender with broker mode (replaces bus.inbound_sender()).
-    let inbound_sender =
-        gasket_engine::channels::InboundSender::new_with_broker(broker.clone());
+    let inbound_sender = gasket_engine::channels::InboundSender::new_with_broker(broker.clone());
     // TODO: wire up rate_limiter and auth_checker from config if needed
     #[allow(unused_variables)]
     let inbound_processor = inbound_sender.clone();
@@ -282,9 +281,9 @@ pub async fn cmd_gateway() -> Result<()> {
 
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
-        Arc::new(gasket_engine::channels::websocket::WebSocketManager::new_with_broker(
-            broker.clone(),
-        ))
+        Arc::new(
+            gasket_engine::channels::websocket::WebSocketManager::new_with_broker(broker.clone()),
+        )
     };
 
     #[cfg(feature = "all-channels")]
@@ -331,8 +330,11 @@ pub async fn cmd_gateway() -> Result<()> {
     // 2. Start SessionManager (subscribes to Topic::Inbound, dispatches to per-session tasks)
     {
         let handler = Arc::new(EngineHandler::new(agent));
-        let session_mgr =
-            SessionManager::new(broker.clone(), handler, std::time::Duration::from_secs(3600));
+        let session_mgr = SessionManager::new(
+            broker.clone(),
+            handler,
+            std::time::Duration::from_secs(3600),
+        );
         tasks.push(tokio::spawn(session_mgr.run()));
     }
 

@@ -126,7 +126,9 @@ impl MessageBroker for MemoryBroker {
         let mut cq = self
             .queues
             .get_mut(&envelope.topic)
-            .ok_or(BrokerError::Internal("queue just created but not found".into()))?;
+            .ok_or(BrokerError::Internal(
+                "queue just created but not found".into(),
+            ))?;
 
         match cq.value_mut() {
             QueueInner::PointToPoint { tx, stats, .. } => {
@@ -149,7 +151,9 @@ impl MessageBroker for MemoryBroker {
         let cq = self
             .queues
             .get(&envelope.topic)
-            .ok_or(BrokerError::Internal("queue just created but not found".into()))?;
+            .ok_or(BrokerError::Internal(
+                "queue just created but not found".into(),
+            ))?;
 
         match cq.value() {
             QueueInner::PointToPoint { tx, stats, .. } => {
@@ -189,10 +193,9 @@ impl MessageBroker for MemoryBroker {
     async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
         self.ensure_queue(topic);
 
-        let mut cq = self
-            .queues
-            .get_mut(topic)
-            .ok_or(BrokerError::Internal("queue just created but not found".into()))?;
+        let mut cq = self.queues.get_mut(topic).ok_or(BrokerError::Internal(
+            "queue just created but not found".into(),
+        ))?;
 
         match cq.value_mut() {
             QueueInner::PointToPoint { rx, .. } => Ok(Subscriber::PointToPoint(rx.clone())),
@@ -244,14 +247,15 @@ mod tests {
         let broker = MemoryBroker::new(10, 10);
         let _sub = broker.subscribe(&Topic::Inbound).await.unwrap();
         for i in 0..10 {
-            assert!(
-                broker
-                    .try_publish(Envelope::new(Topic::Inbound, serde_json::json!(i)))
-                    .is_ok()
-            );
+            assert!(broker
+                .try_publish(Envelope::new(Topic::Inbound, serde_json::json!(i)))
+                .is_ok());
         }
         let env = Envelope::new(Topic::Inbound, serde_json::json!("overflow"));
-        assert!(matches!(broker.try_publish(env), Err(BrokerError::QueueFull)));
+        assert!(matches!(
+            broker.try_publish(env),
+            Err(BrokerError::QueueFull)
+        ));
     }
 
     #[tokio::test]

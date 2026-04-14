@@ -50,7 +50,10 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         (
             tokio::sync::mpsc::Receiver<gasket_broker::session::StreamEvent>,
             tokio::sync::oneshot::Receiver<
-                Result<gasket_types::events::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+                Result<
+                    gasket_types::events::OutboundMessage,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
             >,
         ),
         Box<dyn std::error::Error + Send + Sync>,

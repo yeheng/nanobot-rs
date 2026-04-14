@@ -86,11 +86,7 @@ impl<H: MessageHandler + 'static> Clone for SessionManager<H> {
 }
 
 impl<H: MessageHandler + 'static> SessionManager<H> {
-    pub fn new(
-        broker: Arc<dyn MessageBroker>,
-        handler: Arc<H>,
-        idle_timeout: Duration,
-    ) -> Self {
+    pub fn new(broker: Arc<dyn MessageBroker>, handler: Arc<H>, idle_timeout: Duration) -> Self {
         Self {
             broker,
             handler,
@@ -228,7 +224,9 @@ async fn process_regular<H: MessageHandler + 'static>(
         trace_id: msg.trace_id,
         ws_message: None,
     };
-    broker.publish(Envelope::new(Topic::Outbound, &outbound)).await?;
+    broker
+        .publish(Envelope::new(Topic::Outbound, &outbound))
+        .await?;
     Ok(())
 }
 
@@ -248,7 +246,9 @@ async fn process_streaming<H: MessageHandler + 'static>(
         if let Some(ws_msg) = stream_event_to_ws_message(event) {
             let outbound =
                 OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
-            broker.publish(Envelope::new(Topic::Outbound, &outbound)).await?;
+            broker
+                .publish(Envelope::new(Topic::Outbound, &outbound))
+                .await?;
         }
     }
     let _response = result_handle.await??;
