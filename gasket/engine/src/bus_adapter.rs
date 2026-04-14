@@ -152,3 +152,75 @@ impl MessageHandler for EngineHandler {
         Ok((event_rx, result_rx))
     }
 }
+
+// ── Broker MessageHandler bridge ────────────────────────────
+
+/// Implement the broker's `MessageHandler` for `EngineHandler`.
+///
+/// Bridges `bus::StreamEvent` → `broker::session::StreamEvent` by spawning
+/// a conversion task that forwards events between the two.
+#[async_trait]
+impl gasket_broker::session::MessageHandler for EngineHandler {
+    async fn handle_message(
+        &self,
+        session_key: &SessionKey,
+        message: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        <Self as crate::bus::actors::MessageHandler>::handle_message(self, session_key, message).await
+    }
+
+    async fn handle_streaming_message(
+        &self,
+        message: &str,
+        session_key: &SessionKey,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Receiver<gasket_broker::session::StreamEvent>,
+            tokio::sync::oneshot::Receiver<
+                Result<gasket_types::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+            >,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        use gasket_broker::session::StreamEvent as BrokerEvent;
+
+        let (bus_rx, result_rx) =
+            <Self as crate::bus::actors::MessageHandler>::handle_streaming_message(
+                self, message, session_key,
+            )
+            .await?;
+
+        // Spawn a conversion task: bus StreamEvent → broker StreamEvent
+        let (broker_tx, broker_rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut rx = bus_rx;
+            while let Some(e) = rx.recv().await {
+                let broker_event = match e {
+                    crate::bus::actors::StreamEvent::Content(c) => BrokerEvent::Content(c),
+                    crate::bus::actors::StreamEvent::Reasoning(c) => BrokerEvent::Reasoning(c),
+                    crate::bus::actors::StreamEvent::ToolStart { name, arguments } => {
+                        BrokerEvent::ToolStart { name, arguments }
+                    }
+                    crate::bus::actors::StreamEvent::ToolEnd { name, output } => {
+                        BrokerEvent::ToolEnd { name, output }
+                    }
+                    crate::bus::actors::StreamEvent::Done => BrokerEvent::Done,
+                    crate::bus::actors::StreamEvent::TokenStats {
+                        prompt,
+                        completion,
+                        total,
+                    } => BrokerEvent::TokenStats {
+                        prompt,
+                        completion,
+                        total,
+                    },
+                };
+                if broker_tx.send(broker_event).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok((broker_rx, result_rx))
+    }
+}
