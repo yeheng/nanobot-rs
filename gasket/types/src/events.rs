@@ -289,7 +289,7 @@ pub struct OutboundMessage {
 
     /// Structured WebSocket message (for real-time streaming)
     /// When set, this takes precedence over `content` for WebSocket channels
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ws_message: Option<WebSocketMessage>,
 }
 

@@ -182,6 +182,25 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Get frequency and access_count for a specific entry.
+    pub async fn get_frequency_and_access_count(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+    ) -> Result<Option<(Frequency, u64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT frequency, access_count FROM memory_metadata WHERE scenario = ? AND path = ?",
+        )
+        .bind(scenario.dir_name())
+        .bind(filename)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(freq_str, access_count)| {
+            (Frequency::from_str_lossy(&freq_str), access_count as u64)
+        }))
+    }
+
     /// Mark a memory entry as having its embedding successfully computed.
     pub async fn mark_embedding_done(&self, scenario: Scenario, filename: &str) -> Result<()> {
         sqlx::query(

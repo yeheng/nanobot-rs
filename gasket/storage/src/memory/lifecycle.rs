@@ -286,13 +286,16 @@ impl FrequencyManager {
             let latest_timestamp = access_entries.iter().map(|e| e.timestamp).max().unwrap();
             let access_count_increment = access_entries.len() as u64;
 
-            // Calculate promotion (using access count as proxy for recent accesses)
-            // Start from current frequency — we read it from the candidate if available.
-            // For flush, we don't know current frequency without a DB read, so we use
-            // a reasonable default: any access from cold promotes to warm, 3+ from warm
-            // promotes to hot.
-            let new_freq =
-                Self::calculate_promotion(Frequency::Cold, access_count_increment as u32);
+            // Look up current frequency to calculate promotion correctly.
+            let current_freq = match metadata_store
+                .get_frequency_and_access_count(scenario, &filename)
+                .await
+            {
+                Ok(Some((freq, _))) => freq,
+                _ => Frequency::Cold, // Default if not found
+            };
+
+            let new_freq = Self::calculate_promotion(current_freq, access_count_increment as u32);
 
             match metadata_store
                 .update_runtime_state(

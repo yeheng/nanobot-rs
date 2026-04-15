@@ -251,7 +251,13 @@ async fn process_streaming<H: MessageHandler + 'static>(
                 .await?;
         }
     }
+
     let _response = result_handle.await??;
+    // let done_outbound = OutboundMessage::new(channel.clone(), chat_id.clone(), response.content);
+    // broker
+    //     .publish(Envelope::new(Topic::Outbound, &done_outbound))
+    //     .await?;
+
     Ok(())
 }
 
