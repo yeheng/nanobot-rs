@@ -1,6 +1,12 @@
 use gasket_engine::tools::script::discover_scripts_in_dir;
-use gasket_engine::tools::{Tool, ToolContext};
+use gasket_engine::tools::{Tool, ToolContext, ToolRegistry};
+use gasket_providers::LlmProvider;
+use gasket_types::{
+    ChannelType, OutboundMessage, SessionKey, SubagentResult, SubagentSpawner,
+    token_tracker::TokenTracker,
+};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn test_scripts_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -10,6 +16,59 @@ fn test_scripts_dir() -> PathBuf {
         .unwrap()
         .join("tests")
         .join("scripts")
+}
+
+struct MockSpawner;
+#[async_trait::async_trait]
+impl SubagentSpawner for MockSpawner {
+    async fn spawn(
+        &self,
+        _task: String,
+        _model_id: Option<String>,
+    ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
+        Ok(SubagentResult {
+            id: "mock".to_string(),
+            task: "mock".to_string(),
+            response: gasket_types::SubagentResponse {
+                content: "mock".to_string(),
+                reasoning_content: None,
+                tools_used: vec![],
+                model: None,
+                token_usage: None,
+                cost: 0.0,
+            },
+            model: None,
+        })
+    }
+}
+
+struct FailingMockProvider;
+#[async_trait::async_trait]
+impl LlmProvider for FailingMockProvider {
+    fn name(&self) -> &str {
+        "mock"
+    }
+    fn default_model(&self) -> &str {
+        "mock-model"
+    }
+    async fn chat(
+        &self,
+        _request: gasket_providers::ChatRequest,
+    ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError> {
+        Err(gasket_providers::ProviderError::ApiError {
+            status_code: 500,
+            message: "mock failure".to_string(),
+        })
+    }
+}
+
+fn make_test_ctx() -> ToolContext {
+    let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
+    ToolContext::default()
+        .session_key(SessionKey::new(ChannelType::Telegram, "test-chat"))
+        .outbound_tx(tx)
+        .spawner(Arc::new(MockSpawner))
+        .token_tracker(Arc::new(TokenTracker::unlimited("USD")))
 }
 
 #[tokio::test]
@@ -31,11 +90,12 @@ async fn test_simple_echo_tool() {
 async fn test_jsonrpc_ping_tool() {
     let tools = discover_scripts_in_dir(&test_scripts_dir()).unwrap();
     let ping_tool = tools
-        .iter()
+        .into_iter()
         .find(|t| t.name() == "test_ping")
-        .expect("test_ping not found");
+        .expect("test_ping not found")
+        .with_engine_refs(Arc::new(ToolRegistry::new()), Arc::new(FailingMockProvider));
     let args = serde_json::json!({"name": "Alice"});
-    let result = ping_tool.execute(args, &ToolContext::default()).await;
+    let result = ping_tool.execute(args, &make_test_ctx()).await;
     assert!(result.is_ok(), "JsonRpc ping failed: {:?}", result);
     let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
     assert_eq!(parsed["result"]["greeting"], "Hello, Alice!");

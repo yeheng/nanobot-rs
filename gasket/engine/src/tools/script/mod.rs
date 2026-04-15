@@ -512,11 +512,97 @@ parameters:
 
     #[test]
     fn test_script_tool_make_dispatch_ctx() {
-        let (manifest, dir) = test_manifest("cat");
-        let tool = ScriptTool::new(manifest, dir.path().to_path_buf());
+        use gasket_providers::LlmProvider;
+        use gasket_types::{
+            ChannelType, OutboundMessage, SessionKey, SubagentResult, SubagentSpawner,
+            token_tracker::TokenTracker,
+        };
+        use std::sync::Arc;
 
-        let ctx = ToolContext::default();
-        // Just verify it doesn't crash
+        struct MockSpawner;
+        #[async_trait::async_trait]
+        impl SubagentSpawner for MockSpawner {
+            async fn spawn(
+                &self,
+                _task: String,
+                _model_id: Option<String>,
+            ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
+                Ok(SubagentResult {
+                    id: "mock".to_string(),
+                    task: "mock".to_string(),
+                    response: gasket_types::SubagentResponse {
+                        content: "mock".to_string(),
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        model: None,
+                        token_usage: None,
+                        cost: 0.0,
+                    },
+                    model: None,
+                })
+            }
+        }
+
+        struct MockProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for MockProvider {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            fn default_model(&self) -> &str {
+                "mock-model"
+            }
+            async fn chat(
+                &self,
+                _request: gasket_providers::ChatRequest,
+            ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError> {
+                Ok(gasket_providers::ChatResponse {
+                    content: Some("Test response".to_string()),
+                    tool_calls: vec![],
+                    reasoning_content: None,
+                    usage: Some(gasket_providers::Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                })
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let manifest = ScriptManifest {
+            name: "test_tool".to_string(),
+            description: "Test tool".to_string(),
+            version: "1.0.0".to_string(),
+            runtime: RuntimeConfig {
+                command: "cat".to_string(),
+                args: vec![],
+                working_dir: ".".to_string(),
+                timeout_secs: 120,
+                env: Default::default(),
+            },
+            protocol: ScriptProtocol::JsonRpc,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string" }
+                },
+                "required": ["input"]
+            }),
+            permissions: vec![],
+        };
+
+        let tool = ScriptTool::new(manifest, dir.path().to_path_buf())
+            .with_engine_refs(Arc::new(ToolRegistry::new()), Arc::new(MockProvider));
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
+        let ctx = ToolContext::default()
+            .session_key(SessionKey::new(ChannelType::Telegram, "test-chat"))
+            .outbound_tx(tx)
+            .spawner(Arc::new(MockSpawner))
+            .token_tracker(Arc::new(TokenTracker::unlimited("USD")));
+
+        // Just verify it doesn't crash when all required refs are present
         let _dispatch_ctx = tool.make_dispatch_ctx(&ctx);
     }
 }
