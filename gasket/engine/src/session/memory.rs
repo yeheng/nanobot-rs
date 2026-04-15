@@ -69,7 +69,7 @@ impl MemoryManager {
         let budget = TokenBudget::default();
 
         let (access_tx, shutdown_tx, access_task) =
-            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+            Self::spawn_access_worker(metadata_store.clone());
 
         Ok(Self {
             store,
@@ -102,7 +102,7 @@ impl MemoryManager {
         );
 
         let (access_tx, shutdown_tx, access_task) =
-            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+            Self::spawn_access_worker(metadata_store.clone());
 
         Ok(Self {
             store,
@@ -129,7 +129,7 @@ impl MemoryManager {
         budget: TokenBudget,
     ) -> Self {
         let (access_tx, shutdown_tx, access_task) =
-            Self::spawn_access_worker(store.clone(), metadata_store.clone());
+            Self::spawn_access_worker(metadata_store.clone());
 
         Self {
             store,
@@ -151,7 +151,6 @@ impl MemoryManager {
     /// channel for shutdown signaling. The worker batches entries in memory
     /// and flushes to disk when the threshold is reached.
     fn spawn_access_worker(
-        store: FileMemoryStore,
         metadata_store: MetadataStore,
     ) -> (
         tokio::sync::mpsc::UnboundedSender<AccessEntry>,
@@ -164,7 +163,6 @@ impl MemoryManager {
         let handle = tokio::spawn(access_log_worker(
             access_rx,
             shutdown_rx,
-            store,
             metadata_store,
         ));
 
@@ -400,6 +398,7 @@ impl MemoryManager {
             updated: meta.updated.clone(),
             scenario,
             last_accessed: meta.last_accessed.clone(),
+            access_count: meta.access_count,
             file_mtime,
             file_size,
             needs_embedding: true,
@@ -672,7 +671,6 @@ impl ScoredCandidate {
 async fn access_log_worker(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AccessEntry>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    store: FileMemoryStore,
     metadata_store: MetadataStore,
 ) {
     let mut log = AccessLog::default_threshold();
@@ -685,7 +683,7 @@ async fn access_log_worker(
                         log.record(entry.scenario, &entry.filename);
                         if log.should_flush() {
                             match FrequencyManager::flush_access_log(
-                                &mut log, &store, &metadata_store,
+                                &mut log, &metadata_store,
                             )
                             .await
                             {
@@ -713,7 +711,7 @@ async fn access_log_worker(
             "Flushing {} remaining access log entries on shutdown",
             log.len()
         );
-        if let Err(e) = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store).await
+        if let Err(e) = FrequencyManager::flush_access_log(&mut log, &metadata_store).await
         {
             warn!("Shutdown flush failed: {}", e);
         }
@@ -838,7 +836,17 @@ mod tests {
         };
 
         let content = format!("# {}\n\nTest content for {}", title, title);
-        let file_content = serialize_memory_file(&meta, &content);
+        let mut file_content = serialize_memory_file(&meta, &content);
+
+        // Re-inject frequency into YAML frontmatter.
+        // serialize_memory_file skips it (SQLite-only in production),
+        // but parse_frontmatter can still read it — this lets scan_entries
+        // pick up the correct frequency for test files.
+        let freq_str = format!("{:?}", meta.frequency).to_lowercase();
+        file_content = file_content.replace(
+            "auto_expire:",
+            &format!("frequency: {}\nauto_expire:", freq_str),
+        );
 
         tokio::fs::write(dir.join(filename), file_content).await?;
         Ok(())

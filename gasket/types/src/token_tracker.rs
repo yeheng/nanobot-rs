@@ -165,13 +165,30 @@ impl TokenTracker {
     }
 
     /// Accumulate token usage from a single request.
+    ///
+    /// Uses a CAS (Compare-And-Swap) loop for atomic float addition.
+    /// `fetch_add` on `f64::to_bits()` would perform integer addition on IEEE 754
+    /// bit patterns, producing garbage results (e.g., 1.0 + 1.0 → ~1.8e308).
     pub fn accumulate(&self, usage: &TokenUsage, cost: f64) {
         self.total_input_tokens
             .fetch_add(usage.input_tokens, std::sync::atomic::Ordering::Relaxed);
         self.total_output_tokens
             .fetch_add(usage.output_tokens, std::sync::atomic::Ordering::Relaxed);
-        self.total_cost
-            .fetch_add(cost.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        // CAS loop: correctly add floating-point values atomically
+        loop {
+            let current_bits = self.total_cost.load(std::sync::atomic::Ordering::Relaxed);
+            let current_cost = f64::from_bits(current_bits);
+            let new_bits = (current_cost + cost).to_bits();
+            match self.total_cost.compare_exchange_weak(
+                current_bits,
+                new_bits,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue, // another thread modified it, retry
+            }
+        }
         self.request_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }

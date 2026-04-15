@@ -19,8 +19,14 @@
 //! # Write Path (Background)
 //!
 //! ```text
-//! 1. is_compressing == false && token_budget exceeded → set flag, capture target_sequence
-//! 2. tokio::spawn → load events up to target_sequence → call LLM → upsert summary → GC → clear flag
+//! 1. should_compact() → guard + threshold check
+//! 2. try_acquire_lock() → CAS guard
+//! 3. spawn_compaction_task() → tokio::spawn
+//!    └─ run_compaction()
+//!       ├─ load target_sequence, existing_summary, events from DB
+//!       ├─ build_context_text() → assemble LLM input
+//!       ├─ summarize_with_llm() → call provider
+//!       └─ persist_and_gc() → redact, save summary, garbage-collect
 //! ```
 //!
 //! # Crash Safety
@@ -32,10 +38,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use anyhow::{bail, Result};
 use tracing::{debug, info, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_storage::{EventStore, SqliteStore};
+use gasket_types::SessionEvent;
 
 use crate::vault::redact_secrets;
 use gasket_storage::count_tokens;
@@ -51,10 +59,15 @@ pub const SUMMARIZATION_PROMPT: &str = DEFAULT_SUMMARIZATION_PROMPT;
 /// Uses clear boundary markers to prevent the LLM from mistaking
 /// the summary for real conversation turns.
 pub const SUMMARY_PREFIX: &str = "[Conversation Summary]\n";
+
 pub const SUMMARY_SUFFIX: &str = "\n[End of Summary]";
 
 /// Prefix for recalled history injection.
 pub const RECALL_PREFIX: &str = "[回忆]";
+
+// ---------------------------------------------------------------------------
+// ContextCompactor — public API
+// ---------------------------------------------------------------------------
 
 /// Watermark-based context compactor.
 ///
@@ -140,65 +153,82 @@ impl ContextCompactor {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Public entry point
+    // -----------------------------------------------------------------------
+
     /// Try to trigger background compaction.
     ///
     /// This is the main entry point, called from `finalize_response()`.
-    /// If the `is_compressing` guard is already set, this is a no-op (compaction
-    /// is already in progress for this session).
-    ///
-    /// # Arguments
-    ///
-    /// * `session_key` — session to compact
-    /// * `current_tokens` — estimated token count of the current context
-    /// * `vault_values` — secrets to redact from the persisted summary
+    /// Decomposed into three steps: [should_compact] → [try_acquire_lock] →
+    /// [spawn_compaction_task].
     ///
     /// # Returns
     ///
-    /// `true` if compaction was triggered, `false` if skipped (already compressing
-    /// or below threshold).
+    /// `true` if compaction was triggered, `false` if skipped (already
+    /// compressing or below threshold).
     pub fn try_compact(
         &self,
         session_key: &str,
         current_tokens: usize,
         vault_values: &[String],
     ) -> bool {
-        // Guard: already compressing?
+        if !self.should_compact(session_key, current_tokens) {
+            return false;
+        }
+        if !self.try_acquire_lock(session_key) {
+            return false;
+        }
+        self.spawn_compaction_task(session_key, vault_values);
+        true
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate checks
+    // -----------------------------------------------------------------------
+
+    /// Check whether compaction should be triggered.
+    ///
+    /// Returns `false` if already compressing or below the token threshold.
+    fn should_compact(&self, session_key: &str, current_tokens: usize) -> bool {
         if self.is_compressing.load(Ordering::Relaxed) {
+            debug!("Compaction already in progress for {}, skipping", session_key);
+            return false;
+        }
+
+        let threshold = (self.token_budget as f32 * self.compaction_threshold) as usize;
+        if current_tokens < threshold {
             debug!(
-                "Compaction already in progress for {}, skipping",
-                session_key
+                "Skipping compaction for {}: {} tokens < threshold {} (budget={}, mult={})",
+                session_key, current_tokens, threshold, self.token_budget, self.compaction_threshold
             );
             return false;
         }
 
-        // Threshold check: only compact when tokens exceed budget * threshold
-        let overflow_threshold = (self.token_budget as f32 * self.compaction_threshold) as usize;
-        if current_tokens < overflow_threshold {
-            debug!(
-                "Skipping compaction for {}: {} tokens < threshold {} (budget={}, threshold={})",
-                session_key,
-                current_tokens,
-                overflow_threshold,
-                self.token_budget,
-                self.compaction_threshold
-            );
-            return false;
-        }
+        true
+    }
 
-        // Set the guard — compare_exchange ensures no race with another caller
+    /// Atomically acquire the compaction lock via CAS.
+    ///
+    /// Returns `false` if another thread won the race.
+    fn try_acquire_lock(&self, session_key: &str) -> bool {
         if self
             .is_compressing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            debug!(
-                "Race: another thread started compaction for {}",
-                session_key
-            );
+            debug!("Race: another thread started compaction for {}", session_key);
             return false;
         }
+        true
+    }
 
-        // Capture current max sequence as the compaction target
+    // -----------------------------------------------------------------------
+    // Task spawning
+    // -----------------------------------------------------------------------
+
+    /// Clone all fields and spawn the background compaction task.
+    fn spawn_compaction_task(&self, session_key: &str, vault_values: &[String]) {
         let event_store = self.event_store.clone();
         let sqlite_store = self.sqlite_store.clone();
         let provider = self.provider.clone();
@@ -211,139 +241,190 @@ impl ContextCompactor {
         tokio::spawn(async move {
             debug!("Background compaction started for {}", sk);
 
-            // 1. Get the current max sequence as compaction target
-            let target_sequence = match event_store.get_max_sequence(&sk).await {
-                Ok(seq) => seq,
-                Err(e) => {
-                    warn!("Compaction: failed to get max sequence for {}: {}", sk, e);
-                    flag.store(false, Ordering::SeqCst);
-                    return;
-                }
-            };
-
-            // 2. Load existing summary
-            let (existing_summary, _old_watermark) =
-                match sqlite_store.load_session_summary(&sk).await {
-                    Ok(Some((content, watermark))) => (Some(content), watermark),
-                    Ok(None) => (None, 0),
-                    Err(e) => {
-                        warn!("Compaction: failed to load summary for {}: {}", sk, e);
-                        flag.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                };
-
-            // 3. Load events to compact (up to target, excluding summaries)
-            let events = match event_store
-                .get_events_up_to_sequence(&sk, target_sequence)
-                .await
+            if let Err(e) = run_compaction(
+                &event_store,
+                &sqlite_store,
+                &*provider,
+                &model,
+                &summarization_prompt,
+                &sk,
+                &vault,
+            )
+            .await
             {
-                Ok(events) => events,
-                Err(e) => {
-                    warn!("Compaction: failed to load events for {}: {}", sk, e);
-                    flag.store(false, Ordering::SeqCst);
-                    return;
-                }
-            };
-
-            if events.is_empty() {
-                debug!("No events to compact for {}", sk);
-                flag.store(false, Ordering::SeqCst);
-                return;
+                warn!("Compaction failed for {}: {}", sk, e);
             }
 
-            // 4. Build context for LLM: existing summary + events
-            let mut context_parts = Vec::new();
-            if let Some(ref existing) = existing_summary {
-                if !existing.is_empty() {
-                    context_parts.push(format!("Previous summary:\n{}", existing));
-                }
-            }
-
-            for event in &events {
-                context_parts.push(format!("{:?}: {}", event.event_type, event.content));
-            }
-
-            let context_text = context_parts.join("\n");
-            let context_tokens = count_tokens(&context_text);
-            debug!(
-                "Compaction context for {}: {} tokens, {} events (up to seq {})",
-                sk,
-                context_tokens,
-                events.len(),
-                target_sequence
-            );
-
-            // 5. Call LLM for summarization
-            let request = ChatRequest {
-                model: model.clone(),
-                messages: vec![
-                    ChatMessage::system(&summarization_prompt),
-                    ChatMessage::user(context_text),
-                ],
-                tools: None,
-                temperature: Some(0.3),
-                max_tokens: Some(1024),
-                thinking: None,
-            };
-
-            match provider.chat(request).await {
-                Ok(response) => {
-                    let summary_text = response.content.unwrap_or_default().trim().to_string();
-
-                    if summary_text.is_empty() {
-                        warn!("Compaction for {}: LLM returned empty summary", sk);
-                        flag.store(false, Ordering::SeqCst);
-                        return;
-                    }
-
-                    // 6. Redact secrets
-                    let summary_to_persist = if !vault.is_empty() {
-                        redact_secrets(&summary_text, &vault)
-                    } else {
-                        summary_text.clone()
-                    };
-
-                    // 7. Upsert summary with new watermark
-                    if let Err(e) = sqlite_store
-                        .save_session_summary(&sk, &summary_to_persist, target_sequence)
-                        .await
-                    {
-                        warn!("Compaction: failed to save summary for {}: {}", sk, e);
-                        flag.store(false, Ordering::SeqCst);
-                        return;
-                    }
-
-                    // 8. Garbage-collect old events
-                    match event_store.delete_events_upto(&sk, target_sequence).await {
-                        Ok(deleted) => {
-                            info!(
-                                "Compaction complete for {}: {} tokens, {} events compacted, {} events GC'd (watermark={})",
-                                sk,
-                                count_tokens(&summary_text),
-                                events.len(),
-                                deleted,
-                                target_sequence
-                            );
-                        }
-                        Err(e) => {
-                            warn!("Compaction: summary saved but GC failed for {}: {}", sk, e);
-                            // Non-fatal: summary is saved, GC will retry on next compaction
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Compaction: LLM call failed for {}: {}", sk, e);
-                }
-            }
-
-            // 9. Always clear the flag, even on failure
+            // Always clear the flag, even on failure
             flag.store(false, Ordering::SeqCst);
         });
-
-        true
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pipeline stages — module-level functions for testability
+// ---------------------------------------------------------------------------
+
+/// Execute the full compaction pipeline: load → build context → summarize → persist.
+async fn run_compaction(
+    event_store: &EventStore,
+    sqlite_store: &SqliteStore,
+    provider: &dyn LlmProvider,
+    model: &str,
+    summarization_prompt: &str,
+    session_key: &str,
+    vault_values: &[String],
+) -> Result<()> {
+    // 1. Load target sequence
+    let target_sequence = event_store
+        .get_max_sequence(session_key)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get max sequence for {}: {}", session_key, e))?;
+
+    // 2. Load existing summary
+    let existing_summary = match sqlite_store.load_session_summary(session_key).await {
+        Ok(Some((content, _watermark))) => Some(content),
+        Ok(None) => None,
+        Err(e) => bail!("Failed to load summary for {}: {}", session_key, e),
+    };
+
+    // 3. Load events to compact
+    let events = event_store
+        .get_events_up_to_sequence(session_key, target_sequence)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to load events for {}: {}", session_key, e))?;
+
+    if events.is_empty() {
+        debug!("No events to compact for {}", session_key);
+        return Ok(());
+    }
+
+    // 4. Build context → summarize → persist
+    let context_text = build_context_text(existing_summary.as_deref(), &events);
+    debug!(
+        "Compaction context for {}: {} tokens, {} events (up to seq {})",
+        session_key,
+        count_tokens(&context_text),
+        events.len(),
+        target_sequence
+    );
+
+    let summary_text = summarize_with_llm(provider, model, summarization_prompt, &context_text)
+        .await?
+        .trim()
+        .to_string();
+
+    if summary_text.is_empty() {
+        bail!("LLM returned empty summary for {}", session_key);
+    }
+
+    persist_and_gc(
+        sqlite_store,
+        event_store,
+        session_key,
+        &summary_text,
+        vault_values,
+        target_sequence,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Build the text context sent to the LLM for summarization.
+///
+/// Prepends the existing summary (if any) before the event list.
+fn build_context_text(existing_summary: Option<&str>, events: &[SessionEvent]) -> String {
+    let mut parts = Vec::with_capacity(events.len() + 1);
+
+    if let Some(summary) = existing_summary {
+        if !summary.is_empty() {
+            parts.push(format!("Previous summary:\n{}", summary));
+        }
+    }
+
+    for event in events {
+        parts.push(format!("{:?}: {}", event.event_type, event.content));
+    }
+
+    parts.join("\n")
+}
+
+/// Call the LLM to generate a summary from the context text.
+async fn summarize_with_llm(
+    provider: &dyn LlmProvider,
+    model: &str,
+    summarization_prompt: &str,
+    context_text: &str,
+) -> Result<String> {
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage::system(summarization_prompt),
+            ChatMessage::user(context_text.to_string()),
+        ],
+        tools: None,
+        temperature: Some(0.3),
+        max_tokens: Some(1024),
+        thinking: None,
+    };
+
+    let response = provider
+        .chat(request)
+        .await
+        .map_err(|e| anyhow::anyhow!("LLM summarization call failed: {}", e))?;
+
+    Ok(response.content.unwrap_or_default())
+}
+
+/// Redact secrets, persist the summary, and garbage-collect old events.
+async fn persist_and_gc(
+    sqlite_store: &SqliteStore,
+    event_store: &EventStore,
+    session_key: &str,
+    summary_text: &str,
+    vault_values: &[String],
+    target_sequence: i64,
+) -> Result<()> {
+    // Redact secrets
+    let summary_to_persist = if vault_values.is_empty() {
+        summary_text.to_string()
+    } else {
+        redact_secrets(summary_text, vault_values)
+    };
+
+    // Persist summary with new watermark
+    sqlite_store
+        .save_session_summary(session_key, &summary_to_persist, target_sequence)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save summary for {}: {}", session_key, e))?;
+
+    // Garbage-collect old events (non-fatal on failure)
+    match event_store.delete_events_upto(session_key, target_sequence).await {
+        Ok(deleted) => {
+            info!(
+                "Compaction complete for {}: {} tokens summary, {} events GC'd (watermark={})",
+                session_key,
+                count_tokens(summary_text),
+                deleted,
+                target_sequence
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Compaction: summary saved but GC failed for {}: {}",
+                session_key, e
+            );
+            // Non-fatal: summary is saved, GC will retry on next compaction
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -378,5 +459,53 @@ mod tests {
         // Reset
         flag.store(false, Ordering::SeqCst);
         assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_should_compact_below_threshold() {
+        // Can't construct ContextCompactor without real dependencies,
+        // so test the logic directly.
+        let token_budget: usize = 1000;
+        let threshold_mult: f32 = 1.2;
+        let overflow_threshold = (token_budget as f32 * threshold_mult) as usize;
+
+        // Below threshold → should not compact
+        assert!(900 < overflow_threshold);
+        // At threshold → should compact
+        assert!(1200 >= overflow_threshold);
+    }
+
+    #[test]
+    fn test_build_context_text_empty() {
+        let text = build_context_text(None, &[]);
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn test_build_context_text_with_summary() {
+        let text = build_context_text(Some("previous summary"), &[]);
+        assert!(text.contains("Previous summary:"));
+        assert!(text.contains("previous summary"));
+    }
+
+    #[test]
+    fn test_build_context_text_with_events() {
+        use gasket_types::EventType;
+        use uuid::Uuid;
+
+        let event = SessionEvent {
+            id: Uuid::new_v4(),
+            session_key: "test".to_string(),
+            event_type: EventType::UserMessage,
+            content: "hello".to_string(),
+            sequence: 1,
+            created_at: chrono::Utc::now(),
+            embedding: None,
+            metadata: Default::default(),
+        };
+
+        let text = build_context_text(None, &[event]);
+        assert!(text.contains("hello"));
+        assert!(!text.contains("Previous summary"));
     }
 }

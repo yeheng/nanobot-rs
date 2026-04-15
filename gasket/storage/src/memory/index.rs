@@ -27,6 +27,8 @@ pub struct MemoryIndexEntry {
     pub updated: String,
     pub scenario: Scenario,
     pub last_accessed: String,
+    /// Number of times this memory has been accessed (SQLite-only runtime state)
+    pub access_count: u64,
     pub file_mtime: u64,
     /// File size in bytes, used for cache invalidation alongside mtime
     pub file_size: u64,
@@ -119,6 +121,7 @@ impl FileIndexManager {
                                 updated: meta.updated,
                                 scenario,
                                 last_accessed: meta.last_accessed,
+                                access_count: meta.access_count,
                                 file_mtime,
                                 file_size,
                                 needs_embedding: true,

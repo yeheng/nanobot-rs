@@ -498,6 +498,7 @@ impl SqliteStore {
                 tokens      INTEGER NOT NULL DEFAULT 0,
                 updated     TEXT NOT NULL DEFAULT '',
                 last_accessed TEXT NOT NULL DEFAULT '',
+                access_count BIGINT NOT NULL DEFAULT 0,
                 file_mtime  BIGINT NOT NULL DEFAULT 0,
                 file_size   BIGINT NOT NULL DEFAULT 0,
                 needs_embedding INTEGER NOT NULL DEFAULT 1,
@@ -674,6 +675,24 @@ impl SqliteStore {
         if !has_needs_embedding {
             sqlx::query(
                 "ALTER TABLE memory_metadata ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Add access_count column to memory_metadata if it doesn't exist.
+        // This column stores the machine runtime state (access tracking) that was
+        // previously written to Markdown frontmatter. Now SQLite is the sole source of truth.
+        let has_access_count: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('memory_metadata') WHERE name = 'access_count'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        if !has_access_count {
+            sqlx::query(
+                "ALTER TABLE memory_metadata ADD COLUMN access_count BIGINT NOT NULL DEFAULT 0",
             )
             .execute(&self.pool)
             .await?;

@@ -119,6 +119,7 @@ pub fn parse_frontmatter(content: &str) -> Result<MemoryMeta> {
 /// `#[serde(default)]` annotations on `MemoryMeta` provide safe defaults.
 ///
 /// Use this when scanning files that may have been manually edited by humans.
+#[allow(dead_code)]
 pub fn parse_frontmatter_lenient(content: &str) -> Option<MemoryMeta> {
     match extract_frontmatter_raw(content) {
         Ok((yaml_str, _)) => match serde_yaml::from_str::<MemoryMeta>(&yaml_str) {
@@ -366,12 +367,17 @@ This is the body.
         // Parse it back
         let (parsed_meta, parsed_body) = parse_memory_file(&serialized).unwrap();
 
-        // Verify metadata matches
+        // Verify knowledge-state metadata matches (id, title, scenario, tags)
         assert_eq!(parsed_meta.id, meta.id);
         assert_eq!(parsed_meta.title, meta.title);
         assert_eq!(parsed_meta.scenario, meta.scenario);
         assert_eq!(parsed_meta.tags, meta.tags);
-        assert_eq!(parsed_meta.frequency, meta.frequency);
+
+        // Runtime state (frequency, access_count, last_accessed) is NOT serialized
+        // These fields use #[serde(skip_serializing)] — they live in SQLite only
+        assert_eq!(parsed_meta.frequency, Frequency::Archived); // default
+        assert_eq!(parsed_meta.access_count, 0); // default
+        assert_eq!(parsed_meta.last_accessed, ""); // default
 
         // Verify body matches (trimmed)
         assert_eq!(parsed_body, body.trim());
@@ -437,18 +443,20 @@ This is the body.
     }
 
     #[test]
-    fn serialize_preserves_all_fields() {
+    fn serialize_preserves_knowledge_fields() {
         let meta = make_test_meta();
         let serialized = serialize_memory_file(&meta, "body");
 
-        // Verify key fields are in the serialized output
+        // Knowledge-state fields are in the serialized output
         assert!(serialized.contains(&format!("id: {}", meta.id)));
         assert!(serialized.contains(&format!("title: {}", meta.title)));
         assert!(serialized.contains(&format!("scenario: {}", meta.scenario)));
         assert!(serialized.contains("important"));
         assert!(serialized.contains("reference"));
-        assert!(serialized.contains("frequency: hot"));
-        assert!(serialized.contains("access_count: 5"));
+
+        // Runtime state fields are NOT serialized (they live in SQLite)
+        assert!(!serialized.contains("frequency: hot"));
+        assert!(!serialized.contains("access_count: 5"));
     }
 
     #[test]

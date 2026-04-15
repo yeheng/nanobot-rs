@@ -22,7 +22,7 @@ pub struct MetadataStore {
 /// Columns selected from memory_metadata — kept as a constant to avoid
 /// drift between SELECT and INSERT statements.
 const META_COLUMNS: &str =
-    "id, path, scenario, title, memory_type, frequency, tags, tokens, updated, last_accessed, file_mtime, file_size, needs_embedding";
+    "id, path, scenario, title, memory_type, frequency, tags, tokens, updated, last_accessed, access_count, file_mtime, file_size, needs_embedding";
 
 /// A decay candidate returned by `get_decay_candidates`.
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl MetadataStore {
             sqlx::query(&format!(
                 "INSERT INTO memory_metadata
                  ({META_COLUMNS})
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ))
             .bind(&entry.id)
             .bind(&entry.filename)
@@ -69,6 +69,7 @@ impl MetadataStore {
             .bind(entry.tokens as i64)
             .bind(&entry.updated)
             .bind(&entry.last_accessed)
+            .bind(entry.access_count as i64)
             .bind(entry.file_mtime as i64)
             .bind(entry.file_size as i64)
             .bind(entry.needs_embedding as i64)
@@ -85,7 +86,7 @@ impl MetadataStore {
         sqlx::query(&format!(
             "INSERT OR REPLACE INTO memory_metadata
              ({META_COLUMNS})
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&entry.id)
         .bind(&entry.filename)
@@ -97,6 +98,7 @@ impl MetadataStore {
         .bind(entry.tokens as i64)
         .bind(&entry.updated)
         .bind(&entry.last_accessed)
+        .bind(entry.access_count as i64)
         .bind(entry.file_mtime as i64)
         .bind(entry.file_size as i64)
         .bind(entry.needs_embedding as i64)
@@ -104,6 +106,37 @@ impl MetadataStore {
         .await?;
 
         Ok(())
+    }
+
+    /// Update runtime state (frequency, last_accessed, access_count) in SQLite only.
+    ///
+    /// This is the sole mutation path for machine-generated state — Markdown files
+    /// are never touched by background lifecycle operations.
+    ///
+    /// Uses `access_count = access_count + ?` for atomic increment.
+    /// Returns `true` if a row was actually updated.
+    pub async fn update_runtime_state(
+        &self,
+        scenario: Scenario,
+        filename: &str,
+        frequency: Frequency,
+        last_accessed: &str,
+        access_count_delta: u64,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE memory_metadata
+             SET frequency = ?, last_accessed = ?, access_count = access_count + ?
+             WHERE scenario = ? AND path = ?",
+        )
+        .bind(frequency.to_string())
+        .bind(last_accessed)
+        .bind(access_count_delta as i64)
+        .bind(scenario.dir_name())
+        .bind(filename)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     /// Get file_mtime and file_size for a specific entry by scenario and filename.
@@ -369,6 +402,7 @@ impl MetadataStore {
                 let freq_str: String = row.get("frequency");
                 let scen_str: String = row.get("scenario");
                 let last_accessed: String = row.try_get("last_accessed").unwrap_or_default();
+                let access_count: i64 = row.try_get("access_count").unwrap_or(0);
                 let file_mtime: i64 = row.try_get("file_mtime").unwrap_or(0);
                 let file_size: i64 = row.try_get("file_size").unwrap_or(0);
                 let needs_embedding: i64 = row.try_get("needs_embedding").unwrap_or(1);
@@ -384,6 +418,7 @@ impl MetadataStore {
                     updated: row.get("updated"),
                     scenario: Scenario::from_dir_name(&scen_str).unwrap_or(Scenario::Knowledge),
                     last_accessed,
+                    access_count: access_count as u64,
                     file_mtime: file_mtime as u64,
                     file_size: file_size as u64,
                     needs_embedding: needs_embedding != 0,
@@ -425,6 +460,7 @@ mod tests {
             updated: "2026-04-06".into(),
             scenario,
             last_accessed: last_accessed.into(),
+            access_count: 0,
             file_mtime: 0,
             file_size: 0,
             needs_embedding: false,

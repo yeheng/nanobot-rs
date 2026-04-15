@@ -135,21 +135,15 @@ impl ResourceLimits {
 
     /// Truncate output to `max_output_bytes`, appending a marker if truncated.
     ///
-    /// SAFETY: This function correctly handles UTF-8 character boundaries.
-    /// If `max_output_bytes` falls in the middle of a multi-byte character,
-    /// we walk back to the nearest safe boundary.
+    /// Uses `str::floor_char_boundary` to safely handle UTF-8 character
+    /// boundaries — if `max_output_bytes` falls in the middle of a multi-byte
+    /// character, it snaps back to the nearest valid boundary.
     pub fn truncate_output(&self, output: &str) -> String {
         if output.len() <= self.max_output_bytes {
             return output.to_string();
         }
 
-        // Find a safe UTF-8 boundary by walking backwards from max_output_bytes.
-        // Rust strings are UTF-8 encoded, so slicing at arbitrary byte offsets
-        // can panic if we split a multi-byte character.
-        let mut end = self.max_output_bytes;
-        while end > 0 && !output.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = output.floor_char_boundary(self.max_output_bytes);
 
         let mut truncated = output[..end].to_string();
         truncated.push_str(&format!(

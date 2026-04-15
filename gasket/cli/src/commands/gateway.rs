@@ -52,17 +52,10 @@ pub async fn cmd_gateway() -> Result<()> {
         .join(".gasket");
 
     // Check if any channels are configured
-    let has_telegram = config.channels.telegram.as_ref().is_some_and(|c| c.enabled);
-    let has_discord = config.channels.discord.as_ref().is_some_and(|c| c.enabled);
-    let has_slack = config.channels.slack.as_ref().is_some_and(|c| c.enabled);
-    let has_feishu = config.channels.feishu.as_ref().is_some_and(|c| c.enabled);
-    let has_dingtalk = config.channels.dingtalk.as_ref().is_some_and(|c| c.enabled);
-
-    // WebSocket is enabled by feature flag
+    let has_channels = config.channels.enabled_count() > 0;
     let has_websocket = cfg!(feature = "all-channels");
 
-    if !has_telegram && !has_discord && !has_slack && !has_feishu && !has_dingtalk && !has_websocket
-    {
+    if !has_channels && !has_websocket {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
         println!("\n  channels:");
@@ -349,8 +342,13 @@ pub async fn cmd_gateway() -> Result<()> {
     );
     cron_service.ensure_system_cron_jobs().await;
 
-    // --- Start all configured channels using unified initializer ---
-    let channel_errors = start_channels(&config, vault.as_deref(), &inbound_processor, &mut tasks);
+    // --- Start all configured channels using factory pattern ---
+    let registry = super::channel_factory::ChannelRegistry::from_config(
+        &config.channels,
+        vault.as_deref(),
+    );
+    let (channel_tasks, channel_errors) = registry.spawn_all(&inbound_processor);
+    tasks.extend(channel_tasks);
     if !channel_errors.is_empty() {
         println!(
             "{}",
@@ -381,273 +379,6 @@ pub async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
-/// Unified channel initializer
-///
-/// This function encapsulates the pattern of:
-/// 1. Checking if a channel is enabled in config
-/// 2. Validating channel configuration
-/// 3. Creating the channel instance
-/// 4. Spawning a task to run it
-/// 5. Adding the task to the tasks list
-///
-/// Returns a list of initialization errors for channels that failed to start.
-#[allow(unused_variables, clippy::ptr_arg)]
-fn start_channels(
-    config: &gasket_engine::Config,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Vec<String> {
-    #[allow(unused_mut)]
-    let mut errors = Vec::new();
-
-    // Start Telegram if configured
-    #[cfg(feature = "telegram")]
-    if let Some(telegram_config) = &config.channels.telegram {
-        if telegram_config.enabled {
-            if let Err(e) = start_telegram_channel(telegram_config, vault, inbound_processor, tasks)
-            {
-                errors.push(format!("Telegram: {}", e));
-            }
-        }
-    }
-
-    // Start Discord if configured
-    #[cfg(feature = "discord")]
-    if let Some(discord_config) = &config.channels.discord {
-        if discord_config.enabled {
-            if let Err(e) = start_discord_channel(discord_config, vault, inbound_processor, tasks) {
-                errors.push(format!("Discord: {}", e));
-            }
-        }
-    }
-
-    // Start Slack if configured
-    #[cfg(feature = "slack")]
-    if let Some(slack_config) = &config.channels.slack {
-        if slack_config.enabled {
-            if let Err(e) = start_slack_channel(slack_config, vault, inbound_processor, tasks) {
-                errors.push(format!("Slack: {}", e));
-            }
-        }
-    }
-
-    // Start Feishu if configured
-    #[cfg(feature = "feishu")]
-    if let Some(feishu_config) = &config.channels.feishu {
-        if feishu_config.enabled {
-            if let Err(e) = start_feishu_channel(feishu_config, vault, inbound_processor, tasks) {
-                errors.push(format!("Feishu: {}", e));
-            }
-        }
-    }
-
-    // Start DingTalk if configured
-    #[cfg(feature = "dingtalk")]
-    if let Some(dingtalk_config) = &config.channels.dingtalk {
-        if dingtalk_config.enabled {
-            if let Err(e) = start_dingtalk_channel(dingtalk_config, vault, inbound_processor, tasks)
-            {
-                errors.push(format!("DingTalk: {}", e));
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        tracing::warn!("{} channel(s) failed to initialize", errors.len());
-    }
-
-    errors
-}
-
-/// Resolve a secret string through vault (JIT).
-/// Returns the original string if no vault is available or no placeholders found.
-#[allow(dead_code)]
-fn resolve_channel_secret(raw: &str, vault: Option<&gasket_engine::vault::VaultStore>) -> String {
-    match vault {
-        Some(v) => v.resolve_text(raw).unwrap_or_else(|e| {
-            tracing::warn!(
-                "Failed to resolve vault placeholder: {}. Using raw value.",
-                e
-            );
-            raw.to_string()
-        }),
-        None => raw.to_string(),
-    }
-}
-
-/// Start a single Telegram channel
-#[cfg(feature = "telegram")]
-fn start_telegram_channel(
-    telegram_config: &gasket_engine::config::TelegramConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} Telegram channel", "✓".green());
-
-    let resolved_token = resolve_channel_secret(&telegram_config.token, vault);
-    let telegram_cfg = gasket_engine::channels::telegram::TelegramConfig {
-        token: resolved_token,
-        allow_from: telegram_config.allow_from.clone(),
-    };
-
-    let mut telegram_channel = gasket_engine::channels::telegram::TelegramChannel::new(
-        telegram_cfg,
-        inbound_processor.clone(),
-    );
-
-    tasks.push(tokio::spawn(async move {
-        use gasket_engine::channels::Channel;
-        if let Err(e) = telegram_channel.start().await {
-            tracing::error!("Telegram channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
-
-/// Start a single Discord channel
-#[cfg(feature = "discord")]
-fn start_discord_channel(
-    discord_config: &gasket_engine::config::DiscordConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} Discord channel", "✓".green());
-
-    let resolved_token = resolve_channel_secret(&discord_config.token, vault);
-    let discord_cfg = gasket_engine::channels::discord::DiscordConfig {
-        token: resolved_token,
-        allow_from: discord_config.allow_from.clone(),
-    };
-
-    let mut discord_channel = gasket_engine::channels::discord::DiscordChannel::new(
-        discord_cfg,
-        inbound_processor.clone(),
-    );
-
-    tasks.push(tokio::spawn(async move {
-        use gasket_engine::channels::Channel;
-        if let Err(e) = discord_channel.start().await {
-            tracing::error!("Discord channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
-
-/// Start a single Slack channel
-#[cfg(feature = "slack")]
-fn start_slack_channel(
-    slack_config: &gasket_engine::config::SlackConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} Slack channel", "✓".green());
-
-    let resolved_bot_token = resolve_channel_secret(&slack_config.bot_token, vault);
-    let resolved_app_token = resolve_channel_secret(&slack_config.app_token, vault);
-    let slack_cfg = gasket_engine::channels::slack::SlackConfig {
-        bot_token: resolved_bot_token,
-        app_token: resolved_app_token,
-        group_policy: slack_config.group_policy.clone(),
-        allow_from: slack_config.allow_from.clone(),
-    };
-
-    let mut slack_channel =
-        gasket_engine::channels::slack::SlackChannel::new(slack_cfg, inbound_processor.clone());
-
-    tasks.push(tokio::spawn(async move {
-        use gasket_engine::channels::Channel;
-        if let Err(e) = slack_channel.start().await {
-            tracing::error!("Slack channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
-
-/// Start a single Feishu channel
-#[cfg(feature = "feishu")]
-fn start_feishu_channel(
-    feishu_config: &gasket_engine::config::FeishuConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} Feishu channel", "✓".green());
-
-    let feishu_cfg = gasket_engine::channels::feishu::FeishuConfig {
-        app_id: resolve_channel_secret(&feishu_config.app_id, vault),
-        app_secret: resolve_channel_secret(&feishu_config.app_secret, vault),
-        verification_token: feishu_config
-            .verification_token
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-            .then(|| {
-                resolve_channel_secret(feishu_config.verification_token.as_ref().unwrap(), vault)
-            }),
-        encrypt_key: feishu_config
-            .encrypt_key
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-            .then(|| resolve_channel_secret(feishu_config.encrypt_key.as_ref().unwrap(), vault)),
-        allow_from: feishu_config.allow_from.clone(),
-    };
-
-    let mut feishu_channel =
-        gasket_engine::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
-
-    tasks.push(tokio::spawn(async move {
-        if let Err(e) = feishu_channel.start().await {
-            tracing::error!("Feishu channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
-
-/// Start a single DingTalk channel
-#[cfg(feature = "dingtalk")]
-fn start_dingtalk_channel(
-    dingtalk_config: &gasket_engine::config::DingTalkConfig,
-    vault: Option<&gasket_engine::vault::VaultStore>,
-    inbound_processor: &gasket_engine::channels::InboundSender,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<(), String> {
-    println!("{} DingTalk channel", "✓".green());
-
-    let dingtalk_cfg = gasket_engine::channels::dingtalk::DingTalkConfig {
-        webhook_url: resolve_channel_secret(&dingtalk_config.webhook_url, vault),
-        secret: dingtalk_config
-            .secret
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-            .then(|| resolve_channel_secret(dingtalk_config.secret.as_ref().unwrap(), vault)),
-        access_token: dingtalk_config
-            .access_token
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-            .then(|| resolve_channel_secret(dingtalk_config.access_token.as_ref().unwrap(), vault)),
-        allow_from: dingtalk_config.allow_from.clone(),
-    };
-
-    let mut dingtalk_channel = gasket_engine::channels::dingtalk::DingTalkChannel::new(
-        dingtalk_cfg,
-        inbound_processor.clone(),
-    );
-
-    tasks.push(tokio::spawn(async move {
-        if let Err(e) = dingtalk_channel.start().await {
-            tracing::error!("DingTalk channel error: {}", e);
-        }
-    }));
-
-    Ok(())
-}
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(

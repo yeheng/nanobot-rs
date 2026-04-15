@@ -4,6 +4,7 @@
 
 mod agent;
 mod auth;
+mod channel_factory;
 mod channels;
 mod cron;
 mod gateway;

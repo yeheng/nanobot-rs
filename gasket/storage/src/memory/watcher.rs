@@ -242,6 +242,7 @@ impl AutoIndexHandler {
                     updated: meta.updated,
                     scenario,
                     last_accessed: meta.last_accessed.clone(),
+                    access_count: meta.access_count,
                     file_mtime: disk_mtime,
                     file_size: disk_size,
                     needs_embedding: true,

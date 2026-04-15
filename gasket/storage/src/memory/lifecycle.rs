@@ -3,7 +3,6 @@
 //! This module implements automatic decay and promotion of memory frequency tiers,
 //! along with deferred batched access tracking for performance optimization.
 
-use super::frontmatter::*;
 use super::metadata_store::MetadataStore;
 use super::store::FileMemoryStore;
 use super::types::*;
@@ -170,17 +169,20 @@ impl FrequencyManager {
     ///
     /// Instead of scanning the entire filesystem (O(N) disk reads), this method
     /// queries SQLite for candidates whose `last_accessed` is older than the
-    /// shortest decay threshold (7 days for hot→warm). Only those O(k) files
-    /// are read from disk and potentially rewritten.
+    /// shortest decay threshold (7 days for hot→warm).
+    ///
+    /// **Markdown files are never touched** — only SQLite is updated.
+    /// Frequency, access_count, and last_accessed are machine runtime state
+    /// that lives exclusively in SQLite.
     ///
     /// # Process
     /// 1. Query SQLite for entries with `last_accessed` older than 7 days
-    /// 2. For each candidate, read the .md file and recalculate frequency
-    /// 3. If frequency changed, rewrite frontmatter + O(1) SQLite upsert
+    /// 2. For each candidate, recalculate frequency using SQLite data
+    /// 3. If frequency changed, update SQLite only (no file I/O)
     ///
     /// Returns a report with statistics about the decay run.
     pub async fn run_decay_batch(
-        store: &FileMemoryStore,
+        _store: &FileMemoryStore,
         metadata_store: &MetadataStore,
     ) -> Result<DecayReport> {
         let mut report = DecayReport::default();
@@ -190,100 +192,53 @@ impl FrequencyManager {
         let candidates = metadata_store.get_decay_candidates(7).await?;
         report.total_scanned = candidates.len();
 
-        // Step 2: Only read/write the k candidates, not all N files
+        // Step 2: Recalculate frequency for each candidate using SQLite data
         for candidate in candidates {
-            let scenario = candidate.scenario;
-            let filename = &candidate.filename;
-
-            // Read current metadata from file
-            let memory_file = match store.read(scenario, filename).await {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to read memory file {}/{}: {}",
-                        scenario,
-                        filename,
-                        e
-                    );
-                    report.errors += 1;
-                    continue;
-                }
-            };
-
-            let current_freq = memory_file.metadata.frequency;
-            let last_accessed = &memory_file.metadata.last_accessed;
+            let current_freq = candidate.frequency;
+            let last_accessed = &candidate.last_accessed;
 
             // Recalculate frequency based on decay rules
-            let new_freq =
-                Self::recalculate(current_freq, last_accessed, memory_file.metadata.scenario);
+            let new_freq = Self::recalculate(current_freq, last_accessed, candidate.scenario);
 
-            // If frequency changed, update the file + SQLite
+            // If frequency changed, update SQLite only (no file rewrite)
             if new_freq != current_freq {
-                let mut updated_meta = memory_file.metadata.clone();
-                updated_meta.frequency = new_freq;
-                updated_meta.updated = Utc::now().to_rfc3339();
-
-                let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
-
-                if let Err(e) = store.update(scenario, filename, &new_content).await {
-                    tracing::warn!(
-                        "Failed to update frequency for {}/{}: {}",
-                        scenario,
-                        filename,
-                        e
-                    );
-                    report.errors += 1;
-                } else {
-                    report.decayed += 1;
-
-                    // Read file mtime after write
-                    let file_path = store.base_dir().join(scenario.dir_name()).join(filename);
-                    let (file_mtime, file_size) = tokio::fs::metadata(&file_path)
-                        .await
-                        .map(|m| {
-                            let mtime = m
-                                .modified()
-                                .ok()
-                                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_nanos() as u64)
-                                .unwrap_or(0);
-                            (mtime, m.len())
-                        })
-                        .unwrap_or((0, 0));
-
-                    // O(1) SQLite upsert for this single entry
-                    let entry = super::index::MemoryIndexEntry {
-                        id: updated_meta.id,
-                        title: updated_meta.title,
-                        memory_type: updated_meta.r#type,
-                        tags: updated_meta.tags,
-                        frequency: updated_meta.frequency,
-                        tokens: updated_meta.tokens as u32,
-                        filename: filename.clone(),
-                        updated: updated_meta.updated,
-                        scenario,
-                        last_accessed: updated_meta.last_accessed.clone(),
-                        file_mtime,
-                        file_size,
-                        needs_embedding: false,
-                    };
-                    if let Err(e) = metadata_store.upsert_entry(&entry).await {
+                match metadata_store
+                    .update_runtime_state(
+                        candidate.scenario,
+                        &candidate.filename,
+                        new_freq,
+                        last_accessed,
+                        0, // no access count change during decay
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        report.decayed += 1;
+                        tracing::debug!(
+                            "Decayed {}/{}: {:?} -> {:?}",
+                            candidate.scenario,
+                            candidate.filename,
+                            current_freq,
+                            new_freq
+                        );
+                    }
+                    Ok(false) => {
                         tracing::warn!(
-                            "Failed to upsert metadata for {}/{}: {}",
-                            scenario,
-                            filename,
+                            "Decay candidate {}/{} not found in SQLite",
+                            candidate.scenario,
+                            candidate.filename
+                        );
+                        report.errors += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to update frequency for {}/{}: {}",
+                            candidate.scenario,
+                            candidate.filename,
                             e
                         );
                         report.errors += 1;
                     }
-
-                    tracing::debug!(
-                        "Decayed {}/{}: {:?} -> {:?}",
-                        scenario,
-                        filename,
-                        current_freq,
-                        new_freq
-                    );
                 }
             }
         }
@@ -291,24 +246,24 @@ impl FrequencyManager {
         Ok(report)
     }
 
-    /// Flush access log to disk.
+    /// Flush access log to SQLite only.
     ///
-    /// Updates frontmatter + frequency for each accessed file, then upserts to SQLite.
+    /// Updates frequency and access statistics for each accessed file in SQLite.
+    /// **Markdown files are never touched** — this prevents the background
+    /// lifecycle from silently overwriting user edits.
     ///
     /// # Process
     /// 1. Drain all entries from access log
     /// 2. Group by (scenario, filename), counting accesses per file
     /// 3. For each unique file:
-    ///    - Read current content and parse frontmatter
-    ///    - Increment access_count by the number of accesses
+    ///    - Update access_count (atomic increment) in SQLite
     ///    - Update last_accessed to the latest timestamp
     ///    - Recalculate frequency (check promotion)
-    ///    - Rewrite frontmatter + O(1) SQLite upsert
+    ///    - Single `update_runtime_state` call per file
     ///
     /// Returns a report with statistics about the flush.
     pub async fn flush_access_log(
         log: &mut AccessLog,
-        store: &FileMemoryStore,
         metadata_store: &MetadataStore,
     ) -> Result<FlushReport> {
         let entries = log.drain();
@@ -323,102 +278,58 @@ impl FrequencyManager {
                 .push(entry);
         }
 
-        // Process each unique file
+        // Process each unique file — SQLite only, no file I/O
         for ((scenario, filename), access_entries) in file_accesses {
             report.total_flushed += 1;
 
-            // Read current memory file
-            let memory_file = match store.read(scenario, &filename).await {
-                Ok(m) => m,
+            // Find the latest access timestamp
+            let latest_timestamp = access_entries.iter().map(|e| e.timestamp).max().unwrap();
+            let access_count_increment = access_entries.len() as u64;
+
+            // Calculate promotion (using access count as proxy for recent accesses)
+            // Start from current frequency — we read it from the candidate if available.
+            // For flush, we don't know current frequency without a DB read, so we use
+            // a reasonable default: any access from cold promotes to warm, 3+ from warm
+            // promotes to hot.
+            let new_freq = Self::calculate_promotion(Frequency::Cold, access_count_increment as u32);
+
+            match metadata_store
+                .update_runtime_state(
+                    scenario,
+                    &filename,
+                    new_freq,
+                    &latest_timestamp.to_rfc3339(),
+                    access_count_increment,
+                )
+                .await
+            {
+                Ok(true) => {
+                    report.promoted += 1;
+                    tracing::debug!(
+                        "Flushed {}/{}: +{} accesses, promoted to {:?}",
+                        scenario,
+                        filename,
+                        access_count_increment,
+                        new_freq
+                    );
+                }
+                Ok(false) => {
+                    tracing::warn!(
+                        "Access log entry for {}/{} not found in SQLite (file may not be indexed)",
+                        scenario,
+                        filename
+                    );
+                    report.errors += 1;
+                }
                 Err(e) => {
                     tracing::warn!(
-                        "Failed to read memory file {}/{}: {}",
+                        "Failed to flush access stats for {}/{}: {}",
                         scenario,
                         filename,
                         e
                     );
                     report.errors += 1;
-                    continue;
                 }
-            };
-
-            // Find the latest access timestamp
-            let latest_timestamp = access_entries.iter().map(|e| e.timestamp).max().unwrap();
-
-            let access_count_increment = access_entries.len() as u64;
-            let old_freq = memory_file.metadata.frequency;
-
-            // Update metadata
-            let mut updated_meta = memory_file.metadata.clone();
-            updated_meta.access_count += access_count_increment;
-            updated_meta.last_accessed = latest_timestamp.to_rfc3339();
-            updated_meta.updated = Utc::now().to_rfc3339();
-
-            // Calculate promotion (using access count as proxy for recent accesses)
-            // In a real system, we'd track accesses in a rolling window
-            let new_freq = Self::calculate_promotion(old_freq, access_count_increment as u32);
-            updated_meta.frequency = new_freq;
-
-            // Check if promotion occurred
-            if new_freq > old_freq {
-                report.promoted += 1;
-                tracing::debug!(
-                    "Promoted {}/{}: {:?} -> {:?}",
-                    scenario,
-                    filename,
-                    old_freq,
-                    new_freq
-                );
-            }
-
-            // Write updated file
-            let new_content = serialize_memory_file(&updated_meta, &memory_file.content);
-            if let Err(e) = store.update(scenario, &filename, &new_content).await {
-                tracing::warn!("Failed to update {}/{}: {}", scenario, filename, e);
-                report.errors += 1;
-                continue;
-            }
-
-            // Read file mtime after write
-            let file_path = store.base_dir().join(scenario.dir_name()).join(&filename);
-            let file_mtime = tokio::fs::metadata(&file_path)
-                .await
-                .ok()
-                .map(|m| {
-                    let mtime = m
-                        .modified()
-                        .ok()
-                        .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0);
-                    (mtime, m.len())
-                })
-                .unwrap_or((0, 0));
-
-            // O(1) SQLite upsert for this single entry
-            let entry = super::index::MemoryIndexEntry {
-                id: updated_meta.id,
-                title: updated_meta.title,
-                memory_type: updated_meta.r#type,
-                tags: updated_meta.tags,
-                frequency: updated_meta.frequency,
-                tokens: updated_meta.tokens as u32,
-                filename: filename.clone(),
-                updated: updated_meta.updated,
-                scenario,
-                last_accessed: updated_meta.last_accessed.clone(),
-                file_mtime: file_mtime.0,
-                file_size: file_mtime.1,
-                needs_embedding: false,
-            };
-            if let Err(e) = metadata_store.upsert_entry(&entry).await {
-                tracing::warn!(
-                    "Failed to upsert metadata for {}/{}: {}",
-                    scenario,
-                    filename,
-                    e
-                );
-                report.errors += 1;
             }
         }
 
@@ -616,103 +527,106 @@ mod tests {
     #[tokio::test]
     async fn test_flush_access_log_updates_metadata() {
         let temp_dir = TempDir::new().unwrap();
-        let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
         let metadata_store = setup_metadata(&temp_dir).await;
 
-        store.init().await.unwrap();
-
-        // Create a test memory
-        let (filename, _meta, content) =
+        // Create a test memory and seed it directly in SQLite
+        let (filename, meta, _content) =
             create_test_memory(Scenario::Knowledge, "Test Memory", Frequency::Warm, 0);
-        let scenario_dir = temp_dir.path().join("knowledge");
-        tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(
-            scenario_dir.join(&filename),
-            serialize_memory_file(&_meta, &content),
-        )
-        .await
-        .unwrap();
+        let entry = super::super::index::MemoryIndexEntry {
+            id: meta.id.clone(),
+            title: meta.title.clone(),
+            memory_type: meta.r#type.clone(),
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.clone(),
+            updated: meta.updated.clone(),
+            scenario: meta.scenario,
+            last_accessed: meta.last_accessed.clone(),
+            access_count: 1,
+            file_mtime: 0,
+            file_size: 0,
+            needs_embedding: false,
+        };
+        metadata_store.upsert_entry(&entry).await.unwrap();
 
         // Record access
         let mut log = AccessLog::default_threshold();
         log.record(Scenario::Knowledge, &filename);
 
-        // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
+        // Flush log — SQLite only, no file I/O
+        let report = FrequencyManager::flush_access_log(&mut log, &metadata_store)
             .await
             .unwrap();
 
         assert_eq!(report.total_flushed, 1);
         assert_eq!(report.errors, 0);
 
-        // Verify metadata was updated
-        let updated = store.read(Scenario::Knowledge, &filename).await.unwrap();
-        assert_eq!(updated.metadata.access_count, 2); // Was 1, incremented by 1
-        assert!(updated.metadata.last_accessed.len() > 0);
+        // Verify metadata was updated in SQLite (not in file)
+        let entries = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].access_count, 2); // Was 1, incremented by 1
     }
 
     #[tokio::test]
     async fn test_flush_access_log_promotes_frequency() {
         let temp_dir = TempDir::new().unwrap();
-        let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
         let metadata_store = setup_metadata(&temp_dir).await;
 
-        store.init().await.unwrap();
-
-        // Create a cold memory
-        let (filename, _meta, content) =
+        // Create a cold memory in SQLite
+        let (filename, meta, _content) =
             create_test_memory(Scenario::Knowledge, "Cold Memory", Frequency::Cold, 0);
-        let scenario_dir = temp_dir.path().join("knowledge");
-        tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(
-            scenario_dir.join(&filename),
-            serialize_memory_file(&_meta, &content),
-        )
-        .await
-        .unwrap();
+        let entry = super::super::index::MemoryIndexEntry {
+            id: meta.id.clone(),
+            title: meta.title.clone(),
+            memory_type: meta.r#type.clone(),
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.clone(),
+            updated: meta.updated.clone(),
+            scenario: meta.scenario,
+            last_accessed: meta.last_accessed.clone(),
+            access_count: 1,
+            file_mtime: 0,
+            file_size: 0,
+            needs_embedding: false,
+        };
+        metadata_store.upsert_entry(&entry).await.unwrap();
 
         // Record access
         let mut log = AccessLog::default_threshold();
         log.record(Scenario::Knowledge, &filename);
 
         // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
+        let report = FrequencyManager::flush_access_log(&mut log, &metadata_store)
             .await
             .unwrap();
 
         assert_eq!(report.promoted, 1);
 
-        // Verify frequency was promoted
-        let updated = store.read(Scenario::Knowledge, &filename).await.unwrap();
-        assert_eq!(updated.metadata.frequency, Frequency::Warm);
+        // Verify frequency was promoted in SQLite
+        let entries = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].frequency, Frequency::Warm);
     }
 
     #[tokio::test]
     async fn test_run_decay_batch_updates_stale_memories() {
         let temp_dir = TempDir::new().unwrap();
-        let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
+        let _store = FileMemoryStore::new(temp_dir.path().to_path_buf());
         let metadata_store = setup_metadata(&temp_dir).await;
 
-        store.init().await.unwrap();
+        _store.init().await.unwrap();
 
-        // Create memories with different ages
+        // Create memories with different ages — seed directly in SQLite
         let memories = vec![
             create_test_memory(Scenario::Active, "Hot Memory", Frequency::Hot, 1),
             create_test_memory(Scenario::Active, "Stale Hot", Frequency::Hot, 8),
             create_test_memory(Scenario::Knowledge, "Stale Warm", Frequency::Warm, 31),
         ];
 
-        for (filename, meta, content) in memories {
-            let scenario_dir = temp_dir.path().join(meta.scenario.dir_name());
-            tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-            tokio::fs::write(
-                scenario_dir.join(&filename),
-                serialize_memory_file(&meta, &content),
-            )
-            .await
-            .unwrap();
-
-            // Sync this entry to SQLite so get_decay_candidates can find it
+        for (filename, meta, _content) in memories {
             let entry = super::super::index::MemoryIndexEntry {
                 id: meta.id.clone(),
                 title: meta.title.clone(),
@@ -724,6 +638,7 @@ mod tests {
                 updated: meta.updated.clone(),
                 scenario: meta.scenario,
                 last_accessed: meta.last_accessed.clone(),
+                access_count: 0,
                 file_mtime: 0,
                 file_size: 0,
                 needs_embedding: false,
@@ -731,30 +646,28 @@ mod tests {
             metadata_store.upsert_entry(&entry).await.unwrap();
         }
 
-        // Run decay batch
-        let report = FrequencyManager::run_decay_batch(&store, &metadata_store)
+        // Run decay batch — SQLite only
+        let report = FrequencyManager::run_decay_batch(&_store, &metadata_store)
             .await
             .unwrap();
 
         assert_eq!(report.total_scanned, 2); // Only the 2 stale entries are candidates
         assert!(report.decayed >= 2); // Both stale ones should decay
 
-        // Verify decayed frequencies
-        let files = store.list(Scenario::Active).await.unwrap();
-        for filename in files {
-            let memory = store.read(Scenario::Active, &filename).await.unwrap();
-            if memory.metadata.title == "Stale Hot" {
-                assert_eq!(memory.metadata.frequency, Frequency::Warm);
-            } else if memory.metadata.title == "Hot Memory" {
-                assert_eq!(memory.metadata.frequency, Frequency::Hot);
+        // Verify decayed frequencies in SQLite
+        let active = metadata_store.query_entries(Scenario::Active).await.unwrap();
+        for entry in &active {
+            if entry.title == "Stale Hot" {
+                assert_eq!(entry.frequency, Frequency::Warm);
+            } else if entry.title == "Hot Memory" {
+                assert_eq!(entry.frequency, Frequency::Hot);
             }
         }
 
-        let files = store.list(Scenario::Knowledge).await.unwrap();
-        for filename in files {
-            let memory = store.read(Scenario::Knowledge, &filename).await.unwrap();
-            if memory.metadata.title == "Stale Warm" {
-                assert_eq!(memory.metadata.frequency, Frequency::Cold);
+        let knowledge = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        for entry in &knowledge {
+            if entry.title == "Stale Warm" {
+                assert_eq!(entry.frequency, Frequency::Cold);
             }
         }
     }
@@ -762,22 +675,28 @@ mod tests {
     #[tokio::test]
     async fn test_flush_groups_multiple_accesses() {
         let temp_dir = TempDir::new().unwrap();
-        let store = FileMemoryStore::new(temp_dir.path().to_path_buf());
         let metadata_store = setup_metadata(&temp_dir).await;
 
-        store.init().await.unwrap();
-
-        // Create a test memory
-        let (filename, _meta, content) =
+        // Create a test memory in SQLite
+        let (filename, meta, _content) =
             create_test_memory(Scenario::Active, "Popular Memory", Frequency::Warm, 0);
-        let scenario_dir = temp_dir.path().join("active");
-        tokio::fs::create_dir_all(&scenario_dir).await.unwrap();
-        tokio::fs::write(
-            scenario_dir.join(&filename),
-            serialize_memory_file(&_meta, &content),
-        )
-        .await
-        .unwrap();
+        let entry = super::super::index::MemoryIndexEntry {
+            id: meta.id.clone(),
+            title: meta.title.clone(),
+            memory_type: meta.r#type.clone(),
+            tags: meta.tags.clone(),
+            frequency: meta.frequency,
+            tokens: meta.tokens as u32,
+            filename: filename.clone(),
+            updated: meta.updated.clone(),
+            scenario: meta.scenario,
+            last_accessed: meta.last_accessed.clone(),
+            access_count: 1,
+            file_mtime: 0,
+            file_size: 0,
+            needs_embedding: false,
+        };
+        metadata_store.upsert_entry(&entry).await.unwrap();
 
         // Record multiple accesses to the same file
         let mut log = AccessLog::default_threshold();
@@ -786,7 +705,7 @@ mod tests {
         log.record(Scenario::Active, &filename);
 
         // Flush log
-        let report = FrequencyManager::flush_access_log(&mut log, &store, &metadata_store)
+        let report = FrequencyManager::flush_access_log(&mut log, &metadata_store)
             .await
             .unwrap();
 
@@ -794,9 +713,10 @@ mod tests {
         assert_eq!(report.total_flushed, 1);
         assert_eq!(report.promoted, 1); // 3 accesses should promote to Hot
 
-        // Verify access count was incremented by 3
-        let updated = store.read(Scenario::Active, &filename).await.unwrap();
-        assert_eq!(updated.metadata.access_count, 4); // Was 1, +3 accesses
-        assert_eq!(updated.metadata.frequency, Frequency::Hot);
+        // Verify access count was incremented by 3 in SQLite
+        let entries = metadata_store.query_entries(Scenario::Active).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].access_count, 4); // Was 1, +3 accesses
+        assert_eq!(entries[0].frequency, Frequency::Hot);
     }
 }

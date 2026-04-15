@@ -214,12 +214,18 @@ pub struct MemoryMeta {
     #[serde(default)]
     pub tags: Vec<String>,
 
-    /// Access frequency classification
-    #[serde(default)]
+    /// Access frequency classification.
+    ///
+    /// **Machine runtime state** — stored exclusively in SQLite, never written
+    /// to Markdown frontmatter. Read from YAML for backward compatibility with
+    /// existing files, but new writes omit this field.
+    #[serde(default, skip_serializing)]
     pub frequency: Frequency,
 
-    /// Number of times this memory has been accessed
-    #[serde(default)]
+    /// Number of times this memory has been accessed.
+    ///
+    /// **Machine runtime state** — stored exclusively in SQLite.
+    #[serde(default, skip_serializing)]
     pub access_count: u64,
 
     /// Creation timestamp
@@ -228,8 +234,10 @@ pub struct MemoryMeta {
     /// Last update timestamp
     pub updated: String,
 
-    /// Last access timestamp
-    #[serde(default)]
+    /// Last access timestamp.
+    ///
+    /// **Machine runtime state** — stored exclusively in SQLite.
+    #[serde(default, skip_serializing)]
     pub last_accessed: String,
 
     /// Whether this memory auto-expires (for time-sensitive data)
