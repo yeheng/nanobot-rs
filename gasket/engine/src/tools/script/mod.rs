@@ -514,8 +514,8 @@ parameters:
     fn test_script_tool_make_dispatch_ctx() {
         use gasket_providers::LlmProvider;
         use gasket_types::{
-            ChannelType, OutboundMessage, SessionKey, SubagentResult, SubagentSpawner,
-            token_tracker::TokenTracker,
+            token_tracker::TokenTracker, ChannelType, OutboundMessage, SessionKey, SubagentResult,
+            SubagentSpawner,
         };
         use std::sync::Arc;
 
@@ -555,7 +555,8 @@ parameters:
             async fn chat(
                 &self,
                 _request: gasket_providers::ChatRequest,
-            ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError> {
+            ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError>
+            {
                 Ok(gasket_providers::ChatResponse {
                     content: Some("Test response".to_string()),
                     tool_calls: vec![],
