@@ -160,11 +160,7 @@ impl MemoryManager {
         let (access_tx, access_rx) = tokio::sync::mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        let handle = tokio::spawn(access_log_worker(
-            access_rx,
-            shutdown_rx,
-            metadata_store,
-        ));
+        let handle = tokio::spawn(access_log_worker(access_rx, shutdown_rx, metadata_store));
 
         (access_tx, shutdown_tx, Some(handle))
     }
@@ -711,8 +707,7 @@ async fn access_log_worker(
             "Flushing {} remaining access log entries on shutdown",
             log.len()
         );
-        if let Err(e) = FrequencyManager::flush_access_log(&mut log, &metadata_store).await
-        {
+        if let Err(e) = FrequencyManager::flush_access_log(&mut log, &metadata_store).await {
             warn!("Shutdown flush failed: {}", e);
         }
     }

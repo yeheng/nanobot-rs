@@ -343,10 +343,8 @@ pub async fn cmd_gateway() -> Result<()> {
     cron_service.ensure_system_cron_jobs().await;
 
     // --- Start all configured channels using factory pattern ---
-    let registry = super::channel_factory::ChannelRegistry::from_config(
-        &config.channels,
-        vault.as_deref(),
-    );
+    let registry =
+        super::channel_factory::ChannelRegistry::from_config(&config.channels, vault.as_deref());
     let (channel_tasks, channel_errors) = registry.spawn_all(&inbound_processor);
     tasks.extend(channel_tasks);
     if !channel_errors.is_empty() {
@@ -378,7 +376,6 @@ pub async fn cmd_gateway() -> Result<()> {
 
     Ok(())
 }
-
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(

@@ -44,7 +44,10 @@ pub trait ChannelFactory: Send + Sync {
 fn resolve_secret(raw: &str, vault: Option<&gasket_engine::vault::VaultStore>) -> String {
     match vault {
         Some(v) => v.resolve_text(raw).unwrap_or_else(|e| {
-            tracing::warn!("Failed to resolve vault placeholder: {}. Using raw value.", e);
+            tracing::warn!(
+                "Failed to resolve vault placeholder: {}. Using raw value.",
+                e
+            );
             raw.to_string()
         }),
         None => raw.to_string(),
@@ -57,7 +60,8 @@ fn resolve_optional_secret(
     raw: Option<&String>,
     vault: Option<&gasket_engine::vault::VaultStore>,
 ) -> Option<String> {
-    raw.filter(|s| !s.is_empty()).map(|s| resolve_secret(s, vault))
+    raw.filter(|s| !s.is_empty())
+        .map(|s| resolve_secret(s, vault))
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +100,9 @@ impl ChannelFactory for TelegramFactory {
         };
         Ok(SpawnableChannel {
             name: self.name().into(),
-            channel: Box::new(
-                gasket_engine::channels::telegram::TelegramChannel::new(cfg, inbound),
-            ),
+            channel: Box::new(gasket_engine::channels::telegram::TelegramChannel::new(
+                cfg, inbound,
+            )),
         })
     }
 }
@@ -139,9 +143,9 @@ impl ChannelFactory for DiscordFactory {
         };
         Ok(SpawnableChannel {
             name: self.name().into(),
-            channel: Box::new(
-                gasket_engine::channels::discord::DiscordChannel::new(cfg, inbound),
-            ),
+            channel: Box::new(gasket_engine::channels::discord::DiscordChannel::new(
+                cfg, inbound,
+            )),
         })
     }
 }
@@ -188,7 +192,9 @@ impl ChannelFactory for SlackFactory {
         };
         Ok(SpawnableChannel {
             name: self.name().into(),
-            channel: Box::new(gasket_engine::channels::slack::SlackChannel::new(cfg, inbound)),
+            channel: Box::new(gasket_engine::channels::slack::SlackChannel::new(
+                cfg, inbound,
+            )),
         })
     }
 }
@@ -238,7 +244,9 @@ impl ChannelFactory for FeishuFactory {
         };
         Ok(SpawnableChannel {
             name: self.name().into(),
-            channel: Box::new(gasket_engine::channels::feishu::FeishuChannel::new(cfg, inbound)),
+            channel: Box::new(gasket_engine::channels::feishu::FeishuChannel::new(
+                cfg, inbound,
+            )),
         })
     }
 }
@@ -285,9 +293,9 @@ impl ChannelFactory for DingTalkFactory {
         };
         Ok(SpawnableChannel {
             name: self.name().into(),
-            channel: Box::new(
-                gasket_engine::channels::dingtalk::DingTalkChannel::new(cfg, inbound),
-            ),
+            channel: Box::new(gasket_engine::channels::dingtalk::DingTalkChannel::new(
+                cfg, inbound,
+            )),
         })
     }
 }

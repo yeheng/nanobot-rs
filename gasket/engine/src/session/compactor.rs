@@ -192,7 +192,10 @@ impl ContextCompactor {
     /// Returns `false` if already compressing or below the token threshold.
     fn should_compact(&self, session_key: &str, current_tokens: usize) -> bool {
         if self.is_compressing.load(Ordering::Relaxed) {
-            debug!("Compaction already in progress for {}, skipping", session_key);
+            debug!(
+                "Compaction already in progress for {}, skipping",
+                session_key
+            );
             return false;
         }
 
@@ -200,7 +203,11 @@ impl ContextCompactor {
         if current_tokens < threshold {
             debug!(
                 "Skipping compaction for {}: {} tokens < threshold {} (budget={}, mult={})",
-                session_key, current_tokens, threshold, self.token_budget, self.compaction_threshold
+                session_key,
+                current_tokens,
+                threshold,
+                self.token_budget,
+                self.compaction_threshold
             );
             return false;
         }
@@ -217,7 +224,10 @@ impl ContextCompactor {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            debug!("Race: another thread started compaction for {}", session_key);
+            debug!(
+                "Race: another thread started compaction for {}",
+                session_key
+            );
             return false;
         }
         true
@@ -400,7 +410,10 @@ async fn persist_and_gc(
         .map_err(|e| anyhow::anyhow!("Failed to save summary for {}: {}", session_key, e))?;
 
     // Garbage-collect old events (non-fatal on failure)
-    match event_store.delete_events_upto(session_key, target_sequence).await {
+    match event_store
+        .delete_events_upto(session_key, target_sequence)
+        .await
+    {
         Ok(deleted) => {
             info!(
                 "Compaction complete for {}: {} tokens summary, {} events GC'd (watermark={})",

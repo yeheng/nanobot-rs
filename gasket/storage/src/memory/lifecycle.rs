@@ -291,7 +291,8 @@ impl FrequencyManager {
             // For flush, we don't know current frequency without a DB read, so we use
             // a reasonable default: any access from cold promotes to warm, 3+ from warm
             // promotes to hot.
-            let new_freq = Self::calculate_promotion(Frequency::Cold, access_count_increment as u32);
+            let new_freq =
+                Self::calculate_promotion(Frequency::Cold, access_count_increment as u32);
 
             match metadata_store
                 .update_runtime_state(
@@ -563,7 +564,10 @@ mod tests {
         assert_eq!(report.errors, 0);
 
         // Verify metadata was updated in SQLite (not in file)
-        let entries = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        let entries = metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].access_count, 2); // Was 1, incremented by 1
     }
@@ -606,7 +610,10 @@ mod tests {
         assert_eq!(report.promoted, 1);
 
         // Verify frequency was promoted in SQLite
-        let entries = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        let entries = metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].frequency, Frequency::Warm);
     }
@@ -655,7 +662,10 @@ mod tests {
         assert!(report.decayed >= 2); // Both stale ones should decay
 
         // Verify decayed frequencies in SQLite
-        let active = metadata_store.query_entries(Scenario::Active).await.unwrap();
+        let active = metadata_store
+            .query_entries(Scenario::Active)
+            .await
+            .unwrap();
         for entry in &active {
             if entry.title == "Stale Hot" {
                 assert_eq!(entry.frequency, Frequency::Warm);
@@ -664,7 +674,10 @@ mod tests {
             }
         }
 
-        let knowledge = metadata_store.query_entries(Scenario::Knowledge).await.unwrap();
+        let knowledge = metadata_store
+            .query_entries(Scenario::Knowledge)
+            .await
+            .unwrap();
         for entry in &knowledge {
             if entry.title == "Stale Warm" {
                 assert_eq!(entry.frequency, Frequency::Cold);
@@ -714,7 +727,10 @@ mod tests {
         assert_eq!(report.promoted, 1); // 3 accesses should promote to Hot
 
         // Verify access count was incremented by 3 in SQLite
-        let entries = metadata_store.query_entries(Scenario::Active).await.unwrap();
+        let entries = metadata_store
+            .query_entries(Scenario::Active)
+            .await
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].access_count, 4); // Was 1, +3 accesses
         assert_eq!(entries[0].frequency, Frequency::Hot);
