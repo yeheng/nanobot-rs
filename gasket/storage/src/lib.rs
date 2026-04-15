@@ -27,6 +27,7 @@ mod vector_math;
 
 use std::path::PathBuf;
 
+use gasket_types::SessionKey;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
@@ -133,15 +134,16 @@ impl SqliteStore {
     /// can be safely garbage-collected.
     pub async fn save_session_summary(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         content: &str,
         covered_upto_sequence: i64,
     ) -> anyhow::Result<()> {
+        let key_str = session_key.to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT OR REPLACE INTO session_summaries (session_key, content, covered_upto_sequence, created_at) VALUES ($1, $2, $3, $4)",
         )
-        .bind(session_key)
+        .bind(&key_str)
         .bind(content)
         .bind(covered_upto_sequence)
         .bind(&created_at)
@@ -160,21 +162,23 @@ impl SqliteStore {
     /// or `None` if no summary has been generated for this session yet.
     pub async fn load_session_summary(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
     ) -> anyhow::Result<Option<(String, i64)>> {
+        let key_str = session_key.to_string();
         let row: Option<(String, i64)> = sqlx::query_as(
             "SELECT content, covered_upto_sequence FROM session_summaries WHERE session_key = $1",
         )
-        .bind(session_key)
+        .bind(&key_str)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
     }
 
     /// Delete a session summary.
-    pub async fn delete_session_summary(&self, session_key: &str) -> anyhow::Result<bool> {
+    pub async fn delete_session_summary(&self, session_key: &SessionKey) -> anyhow::Result<bool> {
+        let key_str = session_key.to_string();
         let result = sqlx::query("DELETE FROM session_summaries WHERE session_key = $1")
-            .bind(session_key)
+            .bind(&key_str)
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
@@ -759,19 +763,16 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_session_summary_save_and_load() {
         let store = temp_store().await;
+        let key = SessionKey::new(gasket_types::ChannelType::Cli, "test:123");
 
-        assert!(store
-            .load_session_summary("test:123")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(store.load_session_summary(&key).await.unwrap().is_none());
 
         store
-            .save_session_summary("test:123", "This is a summary of the conversation.", 42)
+            .save_session_summary(&key, "This is a summary of the conversation.", 42)
             .await
             .unwrap();
 
-        let summary = store.load_session_summary("test:123").await.unwrap();
+        let summary = store.load_session_summary(&key).await.unwrap();
         assert_eq!(
             summary,
             Some(("This is a summary of the conversation.".to_string(), 42))
@@ -781,30 +782,32 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_session_summary_upsert() {
         let store = temp_store().await;
+        let key = SessionKey::new(gasket_types::ChannelType::Cli, "key1");
 
         store
-            .save_session_summary("key1", "Summary v1", 10)
+            .save_session_summary(&key, "Summary v1", 10)
             .await
             .unwrap();
         store
-            .save_session_summary("key1", "Summary v2", 20)
+            .save_session_summary(&key, "Summary v2", 20)
             .await
             .unwrap();
 
-        let summary = store.load_session_summary("key1").await.unwrap();
+        let summary = store.load_session_summary(&key).await.unwrap();
         assert_eq!(summary, Some(("Summary v2".to_string(), 20)));
     }
 
     #[tokio::test]
     async fn test_sqlite_session_summary_delete() {
         let store = temp_store().await;
+        let key = SessionKey::new(gasket_types::ChannelType::Cli, "key1");
 
         store
-            .save_session_summary("key1", "Summary", 5)
+            .save_session_summary(&key, "Summary", 5)
             .await
             .unwrap();
-        assert!(store.delete_session_summary("key1").await.unwrap());
-        assert!(!store.delete_session_summary("key1").await.unwrap());
-        assert!(store.load_session_summary("key1").await.unwrap().is_none());
+        assert!(store.delete_session_summary(&key).await.unwrap());
+        assert!(!store.delete_session_summary(&key).await.unwrap());
+        assert!(store.load_session_summary(&key).await.unwrap().is_none());
     }
 }

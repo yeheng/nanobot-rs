@@ -4,9 +4,11 @@
 //! - `run_simple()`: One-shot execution with JSON input/output via stdin/stdout
 //! - `run_jsonrpc()`: Bidirectional JSON-RPC 2.0 communication
 
+mod daemon;
 mod jsonrpc;
 mod simple;
 
+pub use daemon::JsonRpcDaemon;
 pub use jsonrpc::run_jsonrpc;
 pub use simple::run_simple;
 

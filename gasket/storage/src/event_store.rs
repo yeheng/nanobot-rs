@@ -3,24 +3,12 @@
 use crate::processor::count_tokens;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use gasket_types::{EventMetadata, EventType, SessionEvent, TokenUsage};
+use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
-
-/// Parse a session_key string into (channel, chat_id) components.
-///
-/// Uses `splitn(2, ':')` to handle session keys in the format "channel:chat_id".
-/// Returns empty strings if parsing fails.
-fn parse_session_key(session_key: &str) -> (String, String) {
-    let parts: Vec<&str> = session_key.splitn(2, ':').collect();
-    match parts.as_slice() {
-        [channel, chat_id] => (channel.to_string(), chat_id.to_string()),
-        _ => (String::new(), String::new()),
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -167,7 +155,7 @@ fn event_type_tag(et: &EventType) -> &'static str {
 /// Filter for querying events from the store.
 #[derive(Debug, Default)]
 pub struct EventFilter {
-    pub session_key: Option<String>,
+    pub session_key: Option<SessionKey>,
     pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     pub event_types: Option<Vec<EventType>>,
     pub event_ids: Option<Vec<Uuid>>,
@@ -195,7 +183,7 @@ pub trait EventStoreTrait: Send + Sync {
     /// Get the latest summary event for a session.
     async fn get_latest_summary(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError>;
 }
@@ -212,12 +200,15 @@ impl EventStore {
     }
 
     async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+        let key = SessionKey::parse(session_key)
+            .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, session_key));
+        let channel = key.channel.to_string();
+        let chat_id = &key.chat_id;
         let max_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
@@ -242,7 +233,10 @@ impl EventStore {
         let extra = serde_json::to_string(&event.metadata.extra)?;
 
         // Parse session_key into channel/chat_id
-        let (channel, chat_id) = parse_session_key(&event.session_key);
+        let key = SessionKey::parse(&event.session_key)
+            .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, &event.session_key));
+        let channel = key.channel.to_string();
+        let chat_id = &key.chat_id;
 
         let mut tx = self.pool.begin().await?;
 
@@ -252,7 +246,7 @@ impl EventStore {
         )
         .bind(&event.session_key)
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -278,7 +272,7 @@ impl EventStore {
         .bind(event.id.to_string())
         .bind(&event.session_key)
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(event_type_tag)
         .bind(&event.content)
         .bind(
@@ -303,7 +297,7 @@ impl EventStore {
             "SELECT branches FROM sessions_v2 WHERE channel = ? AND chat_id = ?",
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -323,7 +317,7 @@ impl EventStore {
         .bind(&now)
         .bind(&branches_str)
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .execute(&mut *tx)
         .await?;
 
@@ -342,10 +336,11 @@ impl EventStore {
 
     pub async fn get_branch_history(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         branch: &str,
     ) -> Result<Vec<SessionEvent>, StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
@@ -354,7 +349,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(branch)
         .fetch_all(&self.pool)
         .await?;
@@ -369,10 +364,11 @@ impl EventStore {
     /// using the composite index on (session_key, sequence) for efficient lookup.
     pub async fn get_events_after_sequence(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         after_sequence: i64,
     ) -> Result<Vec<SessionEvent>, StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
@@ -381,7 +377,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(after_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -396,10 +392,11 @@ impl EventStore {
     /// for LLM summarization.
     pub async fn get_events_up_to_sequence(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         target_sequence: i64,
     ) -> Result<Vec<SessionEvent>, StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
@@ -408,7 +405,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(target_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -418,14 +415,15 @@ impl EventStore {
 
     pub async fn get_events_by_ids(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         event_ids: &[Uuid],
     ) -> Result<Vec<SessionEvent>, StoreError> {
         if event_ids.is_empty() {
             return Ok(vec![]);
         }
 
-        let (channel, chat_id) = parse_session_key(session_key);
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let placeholders: String = event_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
             "SELECT * FROM session_events WHERE channel = ? AND chat_id = ? AND id IN ({}) ORDER BY created_at ASC",
@@ -433,7 +431,7 @@ impl EventStore {
         );
 
         let mut sql_query = sqlx::query_as::<_, EventRow>(&query);
-        sql_query = sql_query.bind(&channel).bind(&chat_id);
+        sql_query = sql_query.bind(&channel).bind(chat_id);
         for id in event_ids {
             sql_query = sql_query.bind(id.to_string());
         }
@@ -442,17 +440,18 @@ impl EventStore {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
-    pub async fn clear_session(&self, session_key: &str) -> Result<(), StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+    pub async fn clear_session(&self, session_key: &SessionKey) -> Result<(), StoreError> {
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM session_events WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(&chat_id)
+            .bind(chat_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM sessions_v2 WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(&chat_id)
+            .bind(chat_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -463,11 +462,12 @@ impl EventStore {
     ///
     /// Returns 0 if the session has no events. Used by the compaction
     /// pipeline to determine the current high-water mark.
-    pub async fn get_max_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+    pub async fn get_max_sequence(&self, session_key: &SessionKey) -> Result<i64, StoreError> {
         let max_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
         )
-        .bind(session_key)
+        .bind(session_key.channel.to_string())
+        .bind(&session_key.chat_id)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
@@ -481,15 +481,16 @@ impl EventStore {
     /// `covered_upto_sequence` watermark guarantees these events are covered.
     pub async fn delete_events_upto(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         target_sequence: i64,
     ) -> Result<u64, StoreError> {
-        let (channel, chat_id) = parse_session_key(session_key);
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let result = sqlx::query(
             "DELETE FROM session_events WHERE channel = ? AND chat_id = ? AND sequence <= ?",
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(target_sequence)
         .execute(&self.pool)
         .await?;
@@ -503,9 +504,10 @@ impl EventStore {
     /// pipeline to load the existing summary before generating a new one.
     pub async fn get_latest_summary(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError> {
+        let session_key_str = session_key.to_string();
         let row = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
@@ -514,7 +516,7 @@ impl EventStore {
             LIMIT 1
             "#,
         )
-        .bind(session_key)
+        .bind(&session_key_str)
         .bind(branch)
         .fetch_optional(&self.pool)
         .await?;
@@ -603,7 +605,7 @@ impl EventStoreTrait for EventStore {
 
     async fn get_latest_summary(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError> {
         self.get_latest_summary(session_key, branch).await
@@ -808,7 +810,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history("test:session", "main")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -847,7 +849,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history("test:session", "main")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -890,7 +892,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history("test:session", "main")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -1046,7 +1048,7 @@ mod tests {
         store.append_event(&e2).await.unwrap();
 
         let history = store
-            .get_branch_history("test:session", "main")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
             .await
             .unwrap();
         assert_eq!(history.len(), 2);
@@ -1060,7 +1062,7 @@ mod tests {
         let store = EventStore::new(pool);
 
         let history = store
-            .get_branch_history("nonexistent:session", "main")
+            .get_branch_history(&SessionKey::parse("nonexistent:session").unwrap(), "main")
             .await
             .unwrap();
         assert!(history.is_empty());
@@ -1102,14 +1104,14 @@ mod tests {
         store.append_event(&feature_event).await.unwrap();
 
         let main_history = store
-            .get_branch_history("test:session", "main")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
             .await
             .unwrap();
         assert_eq!(main_history.len(), 1);
         assert_eq!(main_history[0].content, "Main branch");
 
         let feature_history = store
-            .get_branch_history("test:session", "feature")
+            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "feature")
             .await
             .unwrap();
         assert_eq!(feature_history.len(), 1);
@@ -1157,8 +1159,9 @@ mod tests {
         };
         store.append_event(&e3).await.unwrap();
 
+        let key = SessionKey::parse("test:session").unwrap();
         let events = store
-            .get_events_by_ids("test:session", &[e1.id, e3.id])
+            .get_events_by_ids(&key, &[e1.id, e3.id])
             .await
             .unwrap();
         assert_eq!(events.len(), 2);
@@ -1166,12 +1169,12 @@ mod tests {
         assert_eq!(events[1].content, "Event 3");
 
         let events = store
-            .get_events_by_ids("test:session", &[Uuid::now_v7()])
+            .get_events_by_ids(&key, &[Uuid::now_v7()])
             .await
             .unwrap();
         assert!(events.is_empty());
 
-        let events = store.get_events_by_ids("test:session", &[]).await.unwrap();
+        let events = store.get_events_by_ids(&key, &[]).await.unwrap();
         assert!(events.is_empty());
     }
 
@@ -1216,7 +1219,10 @@ mod tests {
             .unwrap();
         assert_eq!(session_count.0, 1);
 
-        store.clear_session("test:session").await.unwrap();
+        store
+            .clear_session(&SessionKey::parse("test:session").unwrap())
+            .await
+            .unwrap();
 
         let count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM session_events")
             .fetch_one(&pool)

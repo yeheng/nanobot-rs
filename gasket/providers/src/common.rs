@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 
 /// Errors that can occur when creating or using a provider.
 #[derive(Debug, Error)]
@@ -246,13 +246,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: false,
         };
 
-        tracing::trace!(
-            "[{}] POST {} | request body:\n{}",
-            self.config.name,
-            url,
-            serde_json::to_string(&openai_request)
-                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
-        );
+        info!("[{}] POST {} ", self.config.name, url);
 
         let mut req = self
             .client
@@ -276,9 +270,9 @@ impl LlmProvider for OpenAICompatibleProvider {
         let body = response.text().await.map_err(|e| {
             crate::ProviderError::NetworkError(format!("Failed to read response: {}", e))
         })?;
-        info!("[{}] response body:\n{}", self.config.name, body);
 
         if !status.is_success() {
+            error!("[{}] response body:\n{}", self.config.name, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),
@@ -339,13 +333,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: true,
         };
 
-        tracing::trace!(
-            "[{}] POST {} (stream) | request body:\n{}",
-            self.config.name,
-            url,
-            serde_json::to_string(&openai_request)
-                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
-        );
+        info!("[{}] POST {}", self.config.name, url);
 
         let mut req = self
             .client
@@ -369,6 +357,8 @@ impl LlmProvider for OpenAICompatibleProvider {
             let body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
+
+            error!("[{}] POST {} response: {}", self.config.name, url, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: body,

@@ -6,12 +6,16 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec};
 
 use crate::tools::script::dispatcher::{DispatcherContext, RpcDispatcher};
 use crate::tools::script::manifest::{Permission, ScriptManifest};
-use crate::tools::script::rpc::{decode, encode, RpcMessage, RpcRequest, RpcResponse};
+use crate::tools::script::rpc::{
+    decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE,
+};
 use crate::tools::script::runner::{ScriptError, ScriptResult};
 
 /// Background stderr collector to prevent pipe deadlock.
@@ -101,8 +105,8 @@ pub async fn run_jsonrpc(
         .take()
         .ok_or_else(|| ScriptError::Io("Failed to open stdout".to_string()))?;
 
-    let stdout_reader = BufReader::new(stdout);
-    let mut reader_lines = stdout_reader.lines();
+    let mut reader_lines =
+        FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_MESSAGE_SIZE));
 
     // Channel for response writer (buffer size 16)
     let (response_tx, mut response_rx) = mpsc::channel::<RpcResponse>(16);
@@ -139,9 +143,9 @@ pub async fn run_jsonrpc(
     loop {
         tokio::select! {
             // Reader branch: read stdout and handle messages
-            line_result = reader_lines.next_line() => {
+            line_result = reader_lines.next() => {
                 match line_result {
-                    Ok(Some(line)) => {
+                    Some(Ok(line)) => {
                         let msg = decode(&line);
                         let msg = match msg {
                             Some(m) => m,
@@ -169,10 +173,10 @@ pub async fn run_jsonrpc(
                             }
                         }
                     }
-                    Ok(None) => {
+                    None => {
                         return Err(ScriptError::InvalidOutput("Unexpected EOF from script".to_string()));
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         return Err(ScriptError::Io(format!("Failed to read stdout: {}", e)));
                     }
                 }

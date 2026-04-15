@@ -48,6 +48,7 @@ pub struct AgentResponse {
 
 /// Owned snapshot for post-response finalization.
 struct FinalizeContext {
+    session_key: SessionKey,
     session_key_str: String,
     content: String,
     local_vault_values: Vec<String>,
@@ -56,7 +57,10 @@ struct FinalizeContext {
 
 impl FinalizeContext {
     fn from_request(req: &history::builder::ChatRequest) -> Self {
+        let session_key = SessionKey::parse(&req.session_key)
+            .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, &req.session_key));
         Self {
+            session_key,
             session_key_str: req.session_key.clone(),
             content: req.user_content.clone(),
             local_vault_values: req.vault_values.clone(),
@@ -349,7 +353,7 @@ impl AgentSession {
     /// Clear session for the given key.
     pub async fn clear_session(&self, session_key: &SessionKey) {
         if self.context.is_persistent() {
-            match self.context.clear_session(&session_key.to_string()).await {
+            match self.context.clear_session(session_key).await {
                 Ok(_) => info!("Session '{}' cleared", session_key),
                 Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
             }
@@ -599,7 +603,7 @@ async fn finalize_response(
     // Non-blocking compaction
     if ctx.estimated_tokens > 0 {
         if let Some(compactor) = compactor {
-            compactor.try_compact(session_key_str, ctx.estimated_tokens, local_vault_values);
+            compactor.try_compact(&ctx.session_key, ctx.estimated_tokens, local_vault_values);
         }
     }
 

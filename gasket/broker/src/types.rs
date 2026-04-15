@@ -1,7 +1,9 @@
 //! Core message types for the broker.
 
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use gasket_types::events::{InboundMessage, OutboundMessage};
 
 /// Strongly-typed topic enum. Rejects stringly-typed routing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -56,19 +58,25 @@ pub enum DeliveryMode {
     Broadcast,
 }
 
+/// Zero-cost in-process payload. Eliminates serde_json from the hot path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BrokerPayload {
+    Inbound(InboundMessage),
+    Outbound(OutboundMessage),
+}
+
 /// Pure data envelope — no callbacks, no channels, fully Clone-safe.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Envelope {
     pub id: uuid::Uuid,
     pub timestamp: u64,
-    #[serde(skip, default)]
     pub topic: Topic,
-    pub payload: serde_json::Value,
+    pub payload: Arc<BrokerPayload>,
 }
 
 impl Envelope {
     /// Quick construction — auto-generates ID and timestamp.
-    pub fn new(topic: Topic, payload: impl Serialize) -> Self {
+    pub fn new(topic: Topic, payload: BrokerPayload) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             timestamp: SystemTime::now()
@@ -76,7 +84,7 @@ impl Envelope {
                 .unwrap_or_default()
                 .as_millis() as u64,
             topic,
-            payload: serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
+            payload: Arc::new(payload),
         }
     }
 }
@@ -91,6 +99,21 @@ pub enum AckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use gasket_types::events::ChannelType;
+
+    fn dummy_inbound(content: &str) -> InboundMessage {
+        InboundMessage {
+            channel: ChannelType::Cli,
+            sender_id: "test".into(),
+            chat_id: "test".into(),
+            content: content.into(),
+            media: None,
+            metadata: None,
+            timestamp: Utc::now(),
+            trace_id: None,
+        }
+    }
 
     #[test]
     fn topic_default_is_inbound() {
@@ -138,18 +161,30 @@ mod tests {
 
     #[test]
     fn envelope_new_generates_id_and_timestamp() {
-        let env = Envelope::new(Topic::Inbound, serde_json::json!({"text": "hello"}));
+        let env = Envelope::new(
+            Topic::Inbound,
+            BrokerPayload::Inbound(dummy_inbound("hello")),
+        );
         assert!(!env.id.is_nil());
         assert!(env.timestamp > 0);
         assert_eq!(env.topic, Topic::Inbound);
-        assert_eq!(env.payload["text"], "hello");
+        match env.payload.as_ref() {
+            BrokerPayload::Inbound(msg) => assert_eq!(msg.content, "hello"),
+            _ => panic!("expected Inbound payload"),
+        }
     }
 
     #[test]
     fn envelope_is_clone_safe() {
-        let env = Envelope::new(Topic::Outbound, serde_json::json!(42));
+        let env = Envelope::new(
+            Topic::Outbound,
+            BrokerPayload::Outbound(OutboundMessage::new(ChannelType::Cli, "chat1", "hello")),
+        );
         let cloned = env.clone();
         assert_eq!(env.id, cloned.id);
-        assert_eq!(env.payload, cloned.payload);
+        assert!(matches!(
+            cloned.payload.as_ref(),
+            BrokerPayload::Outbound(OutboundMessage { content, .. }) if content == "hello"
+        ));
     }
 }

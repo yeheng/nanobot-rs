@@ -16,7 +16,7 @@ use crate::events::{InboundMessage, OutboundMessage};
 /// Internal sender mode for inbound messages.
 enum InboundSenderKind {
     Direct(mpsc::Sender<InboundMessage>),
-    Broker(Arc<dyn gasket_broker::MessageBroker>),
+    Broker(Arc<gasket_broker::MemoryBroker>),
 }
 
 type ConnectionId = String;
@@ -47,7 +47,7 @@ pub struct WebSocketQuery {
 /// This handles the race where:
 ///   1. User disconnects → guard drop spawns async cleanup
 ///   2. User reconnects → new connection registered
-///   3. Old cleanup task runs → must NOT remove the new connection
+///   3. Old cleanup task runs → must NOT remove the new connection.
 struct ConnectionGuard {
     manager: Arc<WebSocketManager>,
     connection_id: ConnectionId,
@@ -116,7 +116,7 @@ impl WebSocketManager {
     }
 
     /// Create a WebSocketManager backed by the message broker.
-    pub fn new_with_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+    pub fn new_with_broker(broker: Arc<gasket_broker::MemoryBroker>) -> Self {
         Self {
             connections: DashMap::new(),
             user_connections: DashMap::new(),
@@ -130,8 +130,10 @@ impl WebSocketManager {
         match &self.inbound_tx {
             InboundSenderKind::Direct(tx) => tx.send(inbound).await.map_err(|e| e.to_string()),
             InboundSenderKind::Broker(broker) => {
-                let envelope =
-                    gasket_broker::Envelope::new(gasket_broker::Topic::Inbound, &inbound);
+                let envelope = gasket_broker::Envelope::new(
+                    gasket_broker::Topic::Inbound,
+                    gasket_broker::BrokerPayload::Inbound(inbound),
+                );
                 broker.publish(envelope).await.map_err(|e| e.to_string())
             }
         }

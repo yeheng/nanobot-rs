@@ -3,11 +3,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::sync::oneshot;
 
-use crate::broker::{MessageBroker, QueueMetrics, Subscriber};
+use crate::broker::{QueueMetrics, Subscriber};
 use crate::error::BrokerError;
 use crate::types::{AckResult, DeliveryMode, Envelope, Topic};
 
@@ -116,11 +115,9 @@ impl MemoryBroker {
                 }
             });
     }
-}
 
-#[async_trait]
-impl MessageBroker for MemoryBroker {
-    async fn publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
+    /// Blocking publish — awaits when queue is full (natural backpressure).
+    pub async fn publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
         self.ensure_queue(&envelope.topic);
 
         let mut cq = self
@@ -145,7 +142,8 @@ impl MessageBroker for MemoryBroker {
         Ok(())
     }
 
-    fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
+    /// Non-blocking publish — returns QueueFull immediately.
+    pub fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
         self.ensure_queue(&envelope.topic);
 
         let cq = self
@@ -171,7 +169,8 @@ impl MessageBroker for MemoryBroker {
         Ok(())
     }
 
-    async fn publish_with_ack(
+    /// Publish with ACK — returns a receiver for the consumer's acknowledgment.
+    pub async fn publish_with_ack(
         &self,
         envelope: Envelope,
     ) -> Result<oneshot::Receiver<AckResult>, BrokerError> {
@@ -182,15 +181,18 @@ impl MessageBroker for MemoryBroker {
         Ok(ack_rx)
     }
 
-    fn ack(&self, id: uuid::Uuid) -> Result<(), BrokerError> {
+    /// Acknowledge a message by ID (consumer-side).
+    pub fn ack(&self, id: uuid::Uuid) -> Result<(), BrokerError> {
         self.ack_tracker.resolve(id, AckResult::Ack)
     }
 
-    fn nack(&self, id: uuid::Uuid, reason: String) -> Result<(), BrokerError> {
+    /// Negatively acknowledge a message by ID (consumer-side).
+    pub fn nack(&self, id: uuid::Uuid, reason: String) -> Result<(), BrokerError> {
         self.ack_tracker.resolve(id, AckResult::Nack(reason))
     }
 
-    async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
+    /// Subscribe to a topic.
+    pub async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
         self.ensure_queue(topic);
 
         let mut cq = self.queues.get_mut(topic).ok_or(BrokerError::Internal(
@@ -203,12 +205,14 @@ impl MessageBroker for MemoryBroker {
         }
     }
 
-    async fn close_topic(&self, topic: &Topic) -> Result<(), BrokerError> {
+    /// Close a topic's queue (graceful shutdown).
+    pub async fn close_topic(&self, topic: &Topic) -> Result<(), BrokerError> {
         self.queues.remove(topic);
         Ok(())
     }
 
-    fn metrics(&self, topic: &Topic) -> Option<QueueMetrics> {
+    /// Queue metrics snapshot.
+    pub fn metrics(&self, topic: &Topic) -> Option<QueueMetrics> {
         self.queues.get(topic).map(|cq| match cq.value() {
             QueueInner::PointToPoint { tx, stats, .. } => QueueMetrics {
                 depth: tx.len(),
@@ -229,17 +233,38 @@ impl MessageBroker for MemoryBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use gasket_types::events::{ChannelType, InboundMessage, OutboundMessage};
     use std::time::Duration;
+
+    fn dummy_inbound(content: &str) -> InboundMessage {
+        InboundMessage {
+            channel: ChannelType::Cli,
+            sender_id: "test".into(),
+            chat_id: "test".into(),
+            content: content.into(),
+            media: None,
+            metadata: None,
+            timestamp: Utc::now(),
+            trace_id: None,
+        }
+    }
 
     #[tokio::test]
     async fn test_p2p_publish_and_subscribe() {
         let broker = MemoryBroker::default();
         let mut sub = broker.subscribe(&Topic::Inbound).await.unwrap();
-        let env = Envelope::new(Topic::Inbound, serde_json::json!({"msg": "hello"}));
+        let env = Envelope::new(
+            Topic::Inbound,
+            crate::types::BrokerPayload::Inbound(dummy_inbound("hello")),
+        );
         broker.publish(env).await.unwrap();
         let received = tokio::time::timeout(Duration::from_secs(1), sub.recv()).await;
         assert!(received.is_ok());
-        assert_eq!(received.unwrap().unwrap().payload["msg"], "hello");
+        assert!(matches!(
+            received.unwrap().unwrap().payload.as_ref(),
+            crate::types::BrokerPayload::Inbound(InboundMessage { content, .. }) if content == "hello"
+        ));
     }
 
     #[tokio::test]
@@ -247,11 +272,18 @@ mod tests {
         let broker = MemoryBroker::new(10, 10);
         let _sub = broker.subscribe(&Topic::Inbound).await.unwrap();
         for i in 0..10 {
+            let msg = dummy_inbound(&i.to_string());
             assert!(broker
-                .try_publish(Envelope::new(Topic::Inbound, serde_json::json!(i)))
+                .try_publish(Envelope::new(
+                    Topic::Inbound,
+                    crate::types::BrokerPayload::Inbound(msg)
+                ))
                 .is_ok());
         }
-        let env = Envelope::new(Topic::Inbound, serde_json::json!("overflow"));
+        let env = Envelope::new(
+            Topic::Inbound,
+            crate::types::BrokerPayload::Inbound(dummy_inbound("overflow")),
+        );
         assert!(matches!(
             broker.try_publish(env),
             Err(BrokerError::QueueFull)
@@ -265,7 +297,10 @@ mod tests {
         let mut sub2 = broker.subscribe(&Topic::Inbound).await.unwrap();
         for i in 0..10 {
             broker
-                .publish(Envelope::new(Topic::Inbound, serde_json::json!(i)))
+                .publish(Envelope::new(
+                    Topic::Inbound,
+                    crate::types::BrokerPayload::Inbound(dummy_inbound(&i.to_string())),
+                ))
                 .await
                 .unwrap();
         }
@@ -290,7 +325,11 @@ mod tests {
         broker
             .publish(Envelope::new(
                 Topic::SystemEvent,
-                serde_json::json!("alert"),
+                crate::types::BrokerPayload::Outbound(OutboundMessage::new(
+                    ChannelType::Cli,
+                    "broadcast",
+                    "alert",
+                )),
             ))
             .await
             .unwrap();
@@ -302,7 +341,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(r1.payload, r2.payload);
+        assert_eq!(r1.payload.as_ref(), r2.payload.as_ref());
     }
 
     #[tokio::test]
@@ -313,7 +352,14 @@ mod tests {
 
         for i in 0..5 {
             broker
-                .publish(Envelope::new(Topic::SystemEvent, serde_json::json!(i)))
+                .publish(Envelope::new(
+                    Topic::SystemEvent,
+                    crate::types::BrokerPayload::Outbound(OutboundMessage::new(
+                        ChannelType::Cli,
+                        "lag",
+                        i.to_string(),
+                    )),
+                ))
                 .await
                 .unwrap();
         }
@@ -332,7 +378,10 @@ mod tests {
     async fn test_ack_round_trip() {
         let broker = MemoryBroker::default();
         let mut sub = broker.subscribe(&Topic::Inbound).await.unwrap();
-        let env = Envelope::new(Topic::Inbound, serde_json::json!("important"));
+        let env = Envelope::new(
+            Topic::Inbound,
+            crate::types::BrokerPayload::Inbound(dummy_inbound("important")),
+        );
         let mut ack_rx = broker.publish_with_ack(env).await.unwrap();
         let received = sub.recv().await.unwrap();
         broker.ack(received.id).unwrap();
@@ -347,7 +396,10 @@ mod tests {
     async fn test_nack_round_trip() {
         let broker = MemoryBroker::default();
         let mut sub = broker.subscribe(&Topic::Inbound).await.unwrap();
-        let env = Envelope::new(Topic::Inbound, serde_json::json!("fail"));
+        let env = Envelope::new(
+            Topic::Inbound,
+            crate::types::BrokerPayload::Inbound(dummy_inbound("fail")),
+        );
         let mut ack_rx = broker.publish_with_ack(env).await.unwrap();
         let received = sub.recv().await.unwrap();
         broker
@@ -366,7 +418,10 @@ mod tests {
         let _sub = broker.subscribe(&Topic::Inbound).await.unwrap();
         for i in 0..5 {
             broker
-                .publish(Envelope::new(Topic::Inbound, serde_json::json!(i)))
+                .publish(Envelope::new(
+                    Topic::Inbound,
+                    crate::types::BrokerPayload::Inbound(dummy_inbound(&i.to_string())),
+                ))
                 .await
                 .unwrap();
         }

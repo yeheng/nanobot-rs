@@ -15,8 +15,8 @@ use tokio::time::{timeout, Duration};
 
 use gasket_types::events::{InboundMessage, OutboundMessage, SessionKey};
 
-use crate::broker::MessageBroker;
-use crate::types::{Envelope, Topic};
+use crate::memory::MemoryBroker;
+use crate::types::{BrokerPayload, Envelope, Topic};
 
 /// Message handler trait — decoupled from AgentLoop.
 #[async_trait]
@@ -68,7 +68,7 @@ pub enum StreamEvent {
 /// Subscribes to `Topic::Inbound` via the broker and dispatches
 /// each message to the appropriate session task.
 pub struct SessionManager<H: MessageHandler> {
-    broker: Arc<dyn MessageBroker>,
+    broker: Arc<MemoryBroker>,
     handler: Arc<H>,
     sessions: DashMap<SessionKey, mpsc::Sender<InboundMessage>>,
     idle_timeout: Duration,
@@ -86,7 +86,7 @@ impl<H: MessageHandler + 'static> Clone for SessionManager<H> {
 }
 
 impl<H: MessageHandler + 'static> SessionManager<H> {
-    pub fn new(broker: Arc<dyn MessageBroker>, handler: Arc<H>, idle_timeout: Duration) -> Self {
+    pub fn new(broker: Arc<MemoryBroker>, handler: Arc<H>, idle_timeout: Duration) -> Self {
         Self {
             broker,
             handler,
@@ -112,10 +112,12 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
                 result = sub.recv() => {
                     match result {
                         Ok(envelope) => {
-                            match serde_json::from_value::<InboundMessage>(envelope.payload) {
-                                Ok(msg) => self.dispatch_to_session(msg).await,
-                                Err(_) => {
-                                    tracing::warn!("SessionManager: failed to deserialize InboundMessage");
+                            match envelope.payload.as_ref() {
+                                BrokerPayload::Inbound(msg) => {
+                                    self.dispatch_to_session(msg.clone()).await;
+                                }
+                                other => {
+                                    tracing::warn!("SessionManager: unexpected payload on Inbound topic: {:?}", other);
                                 }
                             }
                         }
@@ -179,7 +181,7 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
 async fn run_session_task<H: MessageHandler + 'static>(
     session_key: SessionKey,
     mut rx: mpsc::Receiver<InboundMessage>,
-    broker: Arc<dyn MessageBroker>,
+    broker: Arc<MemoryBroker>,
     handler: Arc<H>,
     idle_timeout: Duration,
 ) {
@@ -213,7 +215,7 @@ async fn process_regular<H: MessageHandler + 'static>(
     session_key: &SessionKey,
     msg: InboundMessage,
     handler: &Arc<H>,
-    broker: &Arc<dyn MessageBroker>,
+    broker: &Arc<MemoryBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content = handler.handle_message(session_key, &msg.content).await?;
     let outbound = OutboundMessage {
@@ -225,7 +227,10 @@ async fn process_regular<H: MessageHandler + 'static>(
         ws_message: None,
     };
     broker
-        .publish(Envelope::new(Topic::Outbound, &outbound))
+        .publish(Envelope::new(
+            Topic::Outbound,
+            BrokerPayload::Outbound(outbound),
+        ))
         .await?;
     Ok(())
 }
@@ -234,7 +239,7 @@ async fn process_streaming<H: MessageHandler + 'static>(
     session_key: &SessionKey,
     msg: InboundMessage,
     handler: &Arc<H>,
-    broker: &Arc<dyn MessageBroker>,
+    broker: &Arc<MemoryBroker>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel = msg.channel.clone();
     let chat_id = msg.chat_id.clone();
@@ -247,16 +252,15 @@ async fn process_streaming<H: MessageHandler + 'static>(
             let outbound =
                 OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
             broker
-                .publish(Envelope::new(Topic::Outbound, &outbound))
+                .publish(Envelope::new(
+                    Topic::Outbound,
+                    BrokerPayload::Outbound(outbound),
+                ))
                 .await?;
         }
     }
 
     let _response = result_handle.await??;
-    // let done_outbound = OutboundMessage::new(channel.clone(), chat_id.clone(), response.content);
-    // broker
-    //     .publish(Envelope::new(Topic::Outbound, &done_outbound))
-    //     .await?;
 
     Ok(())
 }

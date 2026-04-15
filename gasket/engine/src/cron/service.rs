@@ -305,16 +305,6 @@ impl CronService {
     /// when you suspect external file changes may have occurred.
     /// Also performs garbage collection of orphaned database state.
     pub async fn refresh_all_jobs(&self) -> anyhow::Result<RefreshReport> {
-        let cron_dir = self.workspace.join("cron");
-        if !cron_dir.exists() {
-            return Ok(RefreshReport {
-                loaded: 0,
-                updated: 0,
-                removed: 0,
-                errors: 0,
-            });
-        }
-
         let mut report = RefreshReport {
             loaded: 0,
             updated: 0,
@@ -322,79 +312,16 @@ impl CronService {
             errors: 0,
         };
 
-        // Collect current file IDs from disk
+        let (changed, meta_errors) = self.get_changed_files().await;
+        report.errors += meta_errors;
+
         let mut current_ids = std::collections::HashSet::new();
-
-        for entry in std::fs::read_dir(&cron_dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str());
-
-            if ext != Some("md") {
-                continue;
-            }
-
-            // Read file metadata
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                report.errors += 1;
-                continue;
-            };
-
-            let disk_mtime = metadata
-                .modified()
-                .ok()
-                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            let disk_size = metadata.len();
-
-            // Get cached metadata
-            let job_id = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
+        for (path, job_id, metadata) in changed {
             current_ids.insert(job_id.clone());
-
-            let cached = self.file_metadata.read().get(&job_id).cloned();
-
-            // Skip if mtime and size match (no changes)
-            if let Some(cached_meta) = cached {
-                if cached_meta.mtime == disk_mtime && cached_meta.size == disk_size {
-                    debug!("File unchanged: {}", job_id);
-                    continue;
-                }
-            }
-
-            // Parse and update job (with state restoration from DB)
-            match self.parse_markdown_file_with_state(&path).await {
-                Ok(job) => {
-                    if self.jobs.read().contains_key(&job_id) {
-                        report.updated += 1;
-                        debug!("Updated cron job: {}", job_id);
-                    } else {
-                        report.loaded += 1;
-                        debug!("Loaded cron job: {}", job_id);
-                    }
-                    self.jobs.write().insert(job_id.clone(), job);
-
-                    // Cache file metadata
-                    self.file_metadata.write().insert(
-                        job_id,
-                        FileMetadata {
-                            mtime: disk_mtime,
-                            size: disk_size,
-                        },
-                    );
-                }
-                Err(e) => {
-                    report.errors += 1;
-                    warn!("Failed to parse cron job file {:?}: {}", path, e);
-                }
+            match self.sync_job_from_file(&path, &job_id, metadata).await {
+                Ok(true) => report.updated += 1,
+                Ok(false) => report.loaded += 1,
+                Err(_) => report.errors += 1,
             }
         }
 
@@ -414,6 +341,103 @@ impl CronService {
         }
 
         Ok(report)
+    }
+
+    /// Scan the cron directory and return files whose mtime or size changed.
+    ///
+    /// Returns `(changed_files, metadata_read_errors)` where each changed file
+    /// is a tuple of `(path, job_id, disk_metadata)`.
+    async fn get_changed_files(&self) -> (Vec<(PathBuf, String, FileMetadata)>, usize) {
+        let cron_dir = self.workspace.join("cron");
+        if !cron_dir.exists() {
+            return (Vec::new(), 0);
+        }
+
+        let mut changed = Vec::new();
+        let mut errors = 0;
+
+        for entry in std::fs::read_dir(&cron_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str());
+
+            if ext != Some("md") {
+                continue;
+            }
+
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                errors += 1;
+                continue;
+            };
+
+            let disk_mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let disk_size = metadata.len();
+
+            let job_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            let cached = self.file_metadata.read().get(&job_id).cloned();
+
+            if let Some(cached_meta) = cached {
+                if cached_meta.mtime == disk_mtime && cached_meta.size == disk_size {
+                    debug!("File unchanged: {}", job_id);
+                    continue;
+                }
+            }
+
+            changed.push((
+                path,
+                job_id,
+                FileMetadata {
+                    mtime: disk_mtime,
+                    size: disk_size,
+                },
+            ));
+        }
+
+        (changed, errors)
+    }
+
+    /// Parse a single cron job file and sync it into the in-memory registry.
+    ///
+    /// Returns `Ok(true)` if the job was updated, `Ok(false)` if it was newly loaded.
+    async fn sync_job_from_file(
+        &self,
+        path: &Path,
+        job_id: &str,
+        metadata: FileMetadata,
+    ) -> anyhow::Result<bool> {
+        match self.parse_markdown_file_with_state(path).await {
+            Ok(job) => {
+                let is_update = self.jobs.read().contains_key(job_id);
+                if is_update {
+                    debug!("Updated cron job: {}", job_id);
+                } else {
+                    debug!("Loaded cron job: {}", job_id);
+                }
+                self.jobs.write().insert(job_id.to_string(), job);
+                self.file_metadata
+                    .write()
+                    .insert(job_id.to_string(), metadata);
+                Ok(is_update)
+            }
+            Err(e) => {
+                warn!("Failed to parse cron job file {:?}: {}", path, e);
+                Err(e)
+            }
+        }
     }
 
     /// Parse a single markdown cron job file

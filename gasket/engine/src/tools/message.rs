@@ -15,7 +15,7 @@ use crate::channels::OutboundMessage;
 /// Internal dispatch mode for outbound messages.
 enum MessageToolMode {
     Direct(mpsc::Sender<OutboundMessage>),
-    Broker(Arc<dyn gasket_broker::MessageBroker>),
+    Broker(Arc<gasket_broker::MemoryBroker>),
 }
 
 /// Message tool for sending messages to specific channels.
@@ -36,7 +36,7 @@ impl MessageTool {
     }
 
     /// Create a new message tool backed by the message broker.
-    pub fn new_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+    pub fn new_broker(broker: Arc<gasket_broker::MemoryBroker>) -> Self {
         Self {
             mode: MessageToolMode::Broker(broker),
         }
@@ -111,8 +111,10 @@ impl Tool for MessageTool {
                 })?;
             }
             MessageToolMode::Broker(broker) => {
-                let envelope =
-                    gasket_broker::Envelope::new(gasket_broker::Topic::Outbound, &message);
+                let envelope = gasket_broker::Envelope::new(
+                    gasket_broker::Topic::Outbound,
+                    gasket_broker::BrokerPayload::Outbound(message),
+                );
                 broker.publish(envelope).await.map_err(|e| {
                     ToolError::ExecutionError(format!("Broker publish failed: {}", e))
                 })?;

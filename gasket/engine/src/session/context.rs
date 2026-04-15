@@ -129,7 +129,7 @@ impl AgentContext {
     ///
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// For `Stateless` context or if no summary exists, returns `("", 0)`.
-    pub async fn load_summary_with_watermark(&self, session_key: &str) -> (String, i64) {
+    pub async fn load_summary_with_watermark(&self, session_key: &SessionKey) -> (String, i64) {
         match self {
             Self::Persistent(ctx) => {
                 match ctx.sqlite_store.load_session_summary(session_key).await {
@@ -151,7 +151,7 @@ impl AgentContext {
     /// covered by the summary. For `Stateless` context, returns empty vector.
     pub async fn get_events_after_watermark(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         watermark: i64,
     ) -> Vec<SessionEvent> {
         match self {
@@ -192,7 +192,7 @@ impl AgentContext {
             Self::Persistent(ctx) => {
                 let events = ctx
                     .event_store
-                    .get_branch_history(&key.to_string(), "main")
+                    .get_branch_history(key, "main")
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Failed to load session history for '{}': {}", key, e);
@@ -243,7 +243,7 @@ impl AgentContext {
     /// future semantic search support via `HistoryCoordinator`.
     pub async fn recall_history(
         &self,
-        key: &str,
+        key: &SessionKey,
         _query_embedding: &[f32],
         top_k: usize,
     ) -> anyhow::Result<Vec<String>> {
@@ -292,7 +292,7 @@ impl AgentContext {
     /// # Errors
     ///
     /// Returns an error if the session cannot be cleared from the database.
-    pub async fn clear_session(&self, session_key: &str) -> Result<(), AgentError> {
+    pub async fn clear_session(&self, session_key: &SessionKey) -> Result<(), AgentError> {
         match self {
             Self::Persistent(ctx) => {
                 ctx.event_store
@@ -441,7 +441,9 @@ mod tests {
         let context = AgentContext::Stateless;
 
         // Clear session should be a no-op for stateless context
-        let result = context.clear_session("test:session").await;
+        let result = context
+            .clear_session(&SessionKey::parse("test:session").unwrap())
+            .await;
         assert!(result.is_ok());
     }
 }

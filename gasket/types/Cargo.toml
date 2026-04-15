@@ -8,7 +8,7 @@ description = "Shared types and events for gasket"
 
 [dependencies]
 # Serialization
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 
 # Async

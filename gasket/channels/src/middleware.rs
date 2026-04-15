@@ -207,7 +207,7 @@ enum SenderType {
     /// Direct mpsc channel (legacy bus mode).
     Direct(Sender<InboundMessage>),
     /// Broker-based publish (new topic-based mode).
-    Broker(Arc<dyn gasket_broker::MessageBroker>),
+    Broker(Arc<gasket_broker::MemoryBroker>),
 }
 
 /// A wrapper that applies auth and rate-limit checks before forwarding
@@ -246,7 +246,7 @@ impl InboundSender {
     }
 
     /// Create a new `InboundSender` backed by the message broker.
-    pub fn new_with_broker(broker: Arc<dyn gasket_broker::MessageBroker>) -> Self {
+    pub fn new_with_broker(broker: Arc<gasket_broker::MemoryBroker>) -> Self {
         Self {
             inner: SenderType::Broker(broker),
             rate_limiter: None,
@@ -291,7 +291,10 @@ impl InboundSender {
                 .await
                 .map_err(|e| anyhow::anyhow!("mpsc send failed: {}", e)),
             SenderType::Broker(broker) => {
-                let envelope = gasket_broker::Envelope::new(gasket_broker::Topic::Inbound, &msg);
+                let envelope = gasket_broker::Envelope::new(
+                    gasket_broker::Topic::Inbound,
+                    gasket_broker::BrokerPayload::Inbound(msg),
+                );
                 broker
                     .publish(envelope)
                     .await

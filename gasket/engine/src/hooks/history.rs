@@ -89,9 +89,16 @@ impl PipelineHook for HistoryRecallHook {
 
         match self.embedder.embed(query) {
             Ok(query_vec) => {
+                let session_key =
+                    gasket_types::SessionKey::parse(ctx.session_key).unwrap_or_else(|| {
+                        gasket_types::SessionKey::new(
+                            gasket_types::ChannelType::Cli,
+                            ctx.session_key,
+                        )
+                    });
                 match self
                     .context
-                    .recall_history(ctx.session_key, &query_vec, self.k)
+                    .recall_history(&session_key, &query_vec, self.k)
                     .await
                 {
                     Ok(recalled) if !recalled.is_empty() => {

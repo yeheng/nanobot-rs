@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::Arc;
 
 /// Channel type identifier.
 ///
@@ -229,7 +230,7 @@ pub enum SessionKeyParseError {
 // ── InboundMessage ───────────────────────────────────────────
 
 /// Inbound message from a channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InboundMessage {
     /// Source channel
     pub channel: ChannelType,
@@ -268,7 +269,7 @@ impl InboundMessage {
 }
 
 /// Outbound message to a channel
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OutboundMessage {
     /// Target channel
     pub channel: ChannelType,
@@ -333,7 +334,7 @@ impl OutboundMessage {
 }
 
 /// Media attachment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaAttachment {
     /// Media type (image, audio, video, etc.)
     pub media_type: String,
@@ -386,21 +387,21 @@ pub struct MediaAttachment {
 /// // Token statistics (main agent only, typically)
 /// {"type": "token_stats", "agent_id": null, "input_tokens": 1000, "output_tokens": 500, ...}
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// Thinking/reasoning content from the LLM
     Thinking {
         /// Agent ID (`None` for main agent, `Some(uuid)` for subagent)
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         content: String,
     },
 
     /// A tool call has started
     ToolStart {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         name: String,
         #[serde(default)]
         arguments: Option<String>,
@@ -409,7 +410,7 @@ pub enum StreamEvent {
     /// A tool call has completed
     ToolEnd {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         name: String,
         #[serde(default)]
         output: Option<String>,
@@ -418,20 +419,20 @@ pub enum StreamEvent {
     /// Streaming content chunk
     Content {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         content: String,
     },
 
     /// Stream has completed for this iteration
     Done {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
     },
 
     /// Token usage statistics
     TokenStats {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         input_tokens: usize,
         output_tokens: usize,
         total_tokens: usize,
@@ -465,7 +466,7 @@ pub enum StreamEvent {
     /// Plain text message (legacy support for non-streaming channels)
     Text {
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<String>,
+        agent_id: Option<Arc<str>>,
         content: String,
     },
 }
@@ -549,7 +550,7 @@ impl StreamEvent {
     /// Create a thinking message for a subagent
     pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::Thinking {
-            agent_id: Some(id.into()),
+            agent_id: Some(Arc::from(id.into())),
             content: content.into(),
         }
     }
@@ -561,7 +562,7 @@ impl StreamEvent {
         arguments: Option<String>,
     ) -> Self {
         Self::ToolStart {
-            agent_id: Some(id.into()),
+            agent_id: Some(Arc::from(id.into())),
             name: name.into(),
             arguments,
         }
@@ -574,7 +575,7 @@ impl StreamEvent {
         output: Option<String>,
     ) -> Self {
         Self::ToolEnd {
-            agent_id: Some(id.into()),
+            agent_id: Some(Arc::from(id.into())),
             name: name.into(),
             output,
         }
@@ -583,7 +584,7 @@ impl StreamEvent {
     /// Create a content message for a subagent
     pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::Content {
-            agent_id: Some(id.into()),
+            agent_id: Some(Arc::from(id.into())),
             content: content.into(),
         }
     }

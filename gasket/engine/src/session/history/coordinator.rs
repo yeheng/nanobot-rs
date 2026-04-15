@@ -104,10 +104,13 @@ impl HistoryCoordinator {
                 session_key,
                 token_budget,
             } => {
+                let key = gasket_types::SessionKey::parse(&session_key).unwrap_or_else(|| {
+                    gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, &session_key)
+                });
                 let events = self
                     .event_store
                     .query_events(&EventFilter {
-                        session_key: Some(session_key),
+                        session_key: Some(key),
                         branch: Some("main".to_string()),
                         ..Default::default()
                     })
@@ -133,9 +136,12 @@ impl HistoryCoordinator {
             }
             HistoryQuery::LatestSummary { session_key } => {
                 // Use the dedicated session_summaries table (watermark-based)
+                let key = gasket_types::SessionKey::parse(&session_key).unwrap_or_else(|| {
+                    gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, &session_key)
+                });
                 let summary = self
                     .sqlite_store
-                    .load_session_summary(&session_key)
+                    .load_session_summary(&key)
                     .await
                     .map_err(|e| anyhow::anyhow!("sqlite store error: {}", e))?;
                 Ok(HistoryResult::Summary(summary))
@@ -159,10 +165,13 @@ impl HistoryCoordinator {
                 start,
                 end,
             } => {
+                let key = gasket_types::SessionKey::parse(&session_key).unwrap_or_else(|| {
+                    gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, &session_key)
+                });
                 let events = self
                     .event_store
                     .query_events(&EventFilter {
-                        session_key: Some(session_key),
+                        session_key: Some(key),
                         branch: Some("main".to_string()),
                         time_range: Some((start, end)),
                         ..Default::default()

@@ -43,7 +43,7 @@ use tracing::{debug, info, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_storage::{EventStore, SqliteStore};
-use gasket_types::SessionEvent;
+use gasket_types::{SessionEvent, SessionKey};
 
 use crate::vault::redact_secrets;
 use gasket_storage::count_tokens;
@@ -142,7 +142,7 @@ impl ContextCompactor {
     ///
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// If no summary exists, returns `("", 0)`.
-    pub async fn load_summary_with_watermark(&self, session_key: &str) -> (String, i64) {
+    pub async fn load_summary_with_watermark(&self, session_key: &SessionKey) -> (String, i64) {
         match self.sqlite_store.load_session_summary(session_key).await {
             Ok(Some((content, watermark))) => (content, watermark),
             Ok(None) => (String::new(), 0),
@@ -169,14 +169,15 @@ impl ContextCompactor {
     /// compressing or below threshold).
     pub fn try_compact(
         &self,
-        session_key: &str,
+        session_key: &SessionKey,
         current_tokens: usize,
         vault_values: &[String],
     ) -> bool {
-        if !self.should_compact(session_key, current_tokens) {
+        let sk = session_key.to_string();
+        if !self.should_compact(&sk, current_tokens) {
             return false;
         }
-        if !self.try_acquire_lock(session_key) {
+        if !self.try_acquire_lock(&sk) {
             return false;
         }
         self.spawn_compaction_task(session_key, vault_values);
@@ -238,13 +239,13 @@ impl ContextCompactor {
     // -----------------------------------------------------------------------
 
     /// Clone all fields and spawn the background compaction task.
-    fn spawn_compaction_task(&self, session_key: &str, vault_values: &[String]) {
+    fn spawn_compaction_task(&self, session_key: &SessionKey, vault_values: &[String]) {
         let event_store = self.event_store.clone();
         let sqlite_store = self.sqlite_store.clone();
         let provider = self.provider.clone();
         let model = self.model.clone();
         let summarization_prompt = self.summarization_prompt.clone();
-        let sk = session_key.to_string();
+        let sk = session_key.clone();
         let vault = vault_values.to_vec();
         let flag = self.is_compressing.clone();
 
@@ -282,7 +283,7 @@ async fn run_compaction(
     provider: &dyn LlmProvider,
     model: &str,
     summarization_prompt: &str,
-    session_key: &str,
+    session_key: &SessionKey,
     vault_values: &[String],
 ) -> Result<()> {
     // 1. Load target sequence
@@ -391,7 +392,7 @@ async fn summarize_with_llm(
 async fn persist_and_gc(
     sqlite_store: &SqliteStore,
     event_store: &EventStore,
-    session_key: &str,
+    session_key: &SessionKey,
     summary_text: &str,
     vault_values: &[String],
     target_sequence: i64,

@@ -21,7 +21,7 @@ use gasket_providers::LlmProvider;
 
 pub use dispatcher::{build_dispatcher, DispatcherContext, EngineHandle, RpcDispatcher};
 pub use manifest::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol};
-pub use runner::{run_jsonrpc, run_simple, ScriptError, ScriptResult};
+pub use runner::{run_jsonrpc, run_simple, JsonRpcDaemon, ScriptError, ScriptResult};
 
 /// Script tool that implements the Tool trait for external scripts.
 ///
@@ -39,6 +39,8 @@ pub struct ScriptTool {
     tool_registry: Option<Arc<ToolRegistry>>,
     /// LLM provider for chat completions (injected post-construction)
     provider: Option<Arc<dyn LlmProvider>>,
+    /// Persistent JSON-RPC daemon (lazy-initialized, JSON-RPC mode only)
+    daemon: Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>,
 }
 
 impl ScriptTool {
@@ -61,6 +63,7 @@ impl ScriptTool {
             dispatcher,
             tool_registry: None,
             provider: None,
+            daemon: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -173,16 +176,62 @@ impl Tool for ScriptTool {
             }
             ScriptProtocol::JsonRpc => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx);
-                run_jsonrpc(
-                    &self.manifest,
-                    &self.manifest_dir,
-                    &args,
-                    self.manifest.runtime.timeout_secs,
-                    &self.manifest.permissions,
-                    &self.dispatcher,
-                    &dispatch_ctx,
-                )
-                .await
+
+                // Fast path: read-check daemon
+                let daemon = {
+                    let guard = self.daemon.read().await;
+                    guard.as_ref().and_then(|d| {
+                        if d.is_idle_expired() {
+                            None
+                        } else {
+                            Some(d.clone())
+                        }
+                    })
+                };
+
+                let daemon = match daemon {
+                    Some(d) => d,
+                    None => {
+                        let mut guard = self.daemon.write().await;
+                        if let Some(d) = guard.as_ref() {
+                            if !d.is_idle_expired() {
+                                d.clone()
+                            } else {
+                                let new_daemon = Arc::new(
+                                    JsonRpcDaemon::spawn(
+                                        &self.manifest,
+                                        &self.manifest_dir,
+                                        self.manifest.runtime.timeout_secs,
+                                        &self.manifest.permissions,
+                                        &self.dispatcher,
+                                        &dispatch_ctx,
+                                    )
+                                    .await
+                                    .map_err(|e| ToolError::ExecutionError(e.to_string()))?,
+                                );
+                                *guard = Some(new_daemon.clone());
+                                new_daemon
+                            }
+                        } else {
+                            let new_daemon = Arc::new(
+                                JsonRpcDaemon::spawn(
+                                    &self.manifest,
+                                    &self.manifest_dir,
+                                    self.manifest.runtime.timeout_secs,
+                                    &self.manifest.permissions,
+                                    &self.dispatcher,
+                                    &dispatch_ctx,
+                                )
+                                .await
+                                .map_err(|e| ToolError::ExecutionError(e.to_string()))?,
+                            );
+                            *guard = Some(new_daemon.clone());
+                            new_daemon
+                        }
+                    }
+                };
+
+                daemon.call("initialize", Some(args)).await
             }
         };
 

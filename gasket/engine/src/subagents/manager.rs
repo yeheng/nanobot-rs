@@ -258,12 +258,13 @@ async fn execute_with_streaming(
 ///
 /// This transforms a main agent event into a subagent event by setting agent_id.
 fn inject_agent_id(event: StreamEvent, subagent_id: &str) -> StreamEvent {
+    let id: std::sync::Arc<str> = subagent_id.into();
     match event {
         StreamEvent::Thinking {
             agent_id: _,
             content,
         } => StreamEvent::Thinking {
-            agent_id: Some(subagent_id.to_string()),
+            agent_id: Some(id),
             content,
         },
         StreamEvent::ToolStart {
@@ -271,7 +272,7 @@ fn inject_agent_id(event: StreamEvent, subagent_id: &str) -> StreamEvent {
             name,
             arguments,
         } => StreamEvent::ToolStart {
-            agent_id: Some(subagent_id.to_string()),
+            agent_id: Some(id),
             name,
             arguments,
         },
@@ -280,7 +281,7 @@ fn inject_agent_id(event: StreamEvent, subagent_id: &str) -> StreamEvent {
             name,
             output,
         } => StreamEvent::ToolEnd {
-            agent_id: Some(subagent_id.to_string()),
+            agent_id: Some(id),
             name,
             output,
         },
@@ -288,12 +289,10 @@ fn inject_agent_id(event: StreamEvent, subagent_id: &str) -> StreamEvent {
             agent_id: _,
             content,
         } => StreamEvent::Content {
-            agent_id: Some(subagent_id.to_string()),
+            agent_id: Some(id),
             content,
         },
-        StreamEvent::Done { agent_id: _ } => StreamEvent::Done {
-            agent_id: Some(subagent_id.to_string()),
-        },
+        StreamEvent::Done { agent_id: _ } => StreamEvent::Done { agent_id: Some(id) },
         // TokenStats and lifecycle events are passed through as-is
         _ => event,
     }

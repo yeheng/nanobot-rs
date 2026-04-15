@@ -24,7 +24,7 @@ use gasket_engine::tools::MemoryRefreshTool;
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
 
-use gasket_engine::broker::{MemoryBroker, SessionManager};
+use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
 use gasket_engine::OutboundDispatcher;
 
 use super::registry::CliModelResolver;
@@ -70,8 +70,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Create message broker (replaces MessageBus)
     // P2P capacity 1024, broadcast capacity 256
-    let broker: Arc<dyn gasket_engine::broker::MessageBroker> =
-        Arc::new(MemoryBroker::new(1024, 256));
+    let broker: Arc<MemoryBroker> = Arc::new(MemoryBroker::new(1024, 256));
 
     // MemoryStore provides the underlying SqliteStore for session management
     let memory_store = Arc::new(MemoryStore::new().await);
@@ -379,7 +378,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(
-    broker: &Arc<dyn gasket_engine::broker::MessageBroker>,
+    broker: &Arc<MemoryBroker>,
     workspace: &Path,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
@@ -402,7 +401,7 @@ fn start_heartbeat_service(
                     };
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Inbound,
-                        &inbound,
+                        BrokerPayload::Inbound(inbound),
                     );
                     let _ = broker_inner.publish(envelope).await;
                 }
@@ -415,7 +414,7 @@ fn start_heartbeat_service(
 /// Supports direct tool execution (bypassing LLM) for zero-token system tasks.
 fn start_cron_checker(
     cron_service: &Arc<CronService>,
-    broker: &Arc<dyn gasket_engine::broker::MessageBroker>,
+    broker: &Arc<MemoryBroker>,
     tools: Arc<ToolRegistry>,
     spawner: Arc<dyn SubagentSpawner>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
@@ -459,7 +458,7 @@ fn start_cron_checker(
                                         while let Some(msg) = rx.recv().await {
                                             let envelope = gasket_engine::broker::Envelope::new(
                                                 gasket_engine::broker::Topic::Outbound,
-                                                &msg,
+                                                BrokerPayload::Outbound(msg),
                                             );
                                             let _ = b.publish(envelope).await;
                                         }
@@ -484,7 +483,7 @@ fn start_cron_checker(
                                     );
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
-                                        &out_msg,
+                                        BrokerPayload::Outbound(out_msg),
                                     );
                                     let _ = broker_for_cron.publish(envelope).await;
                                 }
@@ -497,7 +496,7 @@ fn start_cron_checker(
                                     );
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
-                                        &out_msg,
+                                        BrokerPayload::Outbound(out_msg),
                                     );
                                     let _ = broker_for_cron.publish(envelope).await;
                                 }
@@ -516,7 +515,7 @@ fn start_cron_checker(
                             };
                             let envelope = gasket_engine::broker::Envelope::new(
                                 gasket_engine::broker::Topic::Inbound,
-                                &inbound,
+                                BrokerPayload::Inbound(inbound),
                             );
                             let _ = broker_for_cron.publish(envelope).await;
                         }

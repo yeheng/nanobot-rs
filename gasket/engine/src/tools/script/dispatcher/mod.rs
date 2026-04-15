@@ -84,6 +84,7 @@ pub struct EngineHandle {
 ///
 /// Contains a handle to engine capabilities.
 /// Handlers use this to access engine resources.
+#[derive(Clone)]
 pub struct DispatcherContext {
     /// Engine capabilities handle
     pub engine: Arc<EngineHandle>,
@@ -95,6 +96,7 @@ pub struct DispatcherContext {
 /// - Method registration and lookup
 /// - Permission validation before execution
 /// - Standard error responses for common failures
+#[derive(Clone)]
 pub struct RpcDispatcher {
     /// Registered handlers indexed by method name
     handlers: HashMap<String, Arc<dyn RpcHandler>>,

@@ -7,11 +7,14 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec};
 
 use crate::tools::script::manifest::ScriptManifest;
+use crate::tools::script::rpc::MAX_MESSAGE_SIZE;
 use crate::tools::script::runner::{ScriptError, ScriptResult};
 
 /// Run a script in simple mode (one-shot JSON input/output).
@@ -93,13 +96,19 @@ pub async fn run_simple(
         .stderr
         .ok_or_else(|| ScriptError::Io("Stderr not captured".to_string()))?;
 
-    // Read stdout as JSON
-    let mut stdout_reader = BufReader::new(stdout);
-    let mut stdout_line = String::new();
-    stdout_reader
-        .read_line(&mut stdout_line)
-        .await
-        .map_err(|e| ScriptError::Io(format!("Failed to read stdout: {}", e)))?;
+    // Read stdout as JSON (with bounded line length to prevent OOM)
+    let mut reader = FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_MESSAGE_SIZE));
+    let stdout_line = match reader.next().await {
+        Some(Ok(line)) => line,
+        Some(Err(e)) => {
+            return Err(ScriptError::Io(format!("Failed to read stdout: {}", e)));
+        }
+        None => {
+            return Err(ScriptError::InvalidOutput(
+                "Empty output from script".to_string(),
+            ));
+        }
+    };
 
     let output: Value = serde_json::from_str(&stdout_line)
         .map_err(|e| ScriptError::InvalidOutput(format!("JSON parse error: {}", e)))?;
