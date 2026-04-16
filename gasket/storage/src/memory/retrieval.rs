@@ -1,31 +1,18 @@
-//! Retrieval engine combining tag and embedding search with frequency-boosted scoring.
+//! Retrieval engine combining tag and embedding search with explicit ordering.
 //!
-//! Scoring strategy (no magic numbers):
+//! Strategy:
 //! 1. **Tags as hard filter**: If the query has tags, results must match at least one.
 //! 2. **Embedding similarity as primary score**: Raw cosine similarity (0.0–1.0).
-//! 3. **Frequency as bonus multiplier**: Hot = 1.2x, Warm = 1.1x, Cold = 1.0x.
+//! 3. **Frequency as explicit sort key**: Hot > Warm > Cold.
 //!
-//! Final score = embedding_similarity × frequency_bonus
+//! Results are sorted by `(frequency desc, score desc)` using tuple comparison.
+//! This eliminates magic-number multipliers and NaN-prone float comparisons.
 
 use super::embedding_store::EmbeddingStore;
 use super::metadata_store::MetadataStore;
 use super::types::*;
 use anyhow::Result;
-
-/// Frequency bonus multipliers for scoring.
-///
-/// Hot items get a 20% boost, Warm get 10%, Cold items get no bonus.
-/// Archived items are excluded from search entirely.
-impl Frequency {
-    pub fn bonus(self) -> f32 {
-        match self {
-            Frequency::Hot => 1.2,
-            Frequency::Warm => 1.1,
-            Frequency::Cold => 1.0,
-            Frequency::Archived => 0.0, // excluded
-        }
-    }
-}
+use std::cmp::Ordering;
 
 /// A search result with combined scoring.
 #[derive(Debug, Clone)]
@@ -71,7 +58,7 @@ impl RetrievalEngine {
             .query_by_tags(query_tags, scenario, limit)
             .await?;
 
-        let results: Vec<SearchResult> = entries
+        let mut results: Vec<SearchResult> = entries
             .into_iter()
             .filter(|e| !matches!(e.scenario, Scenario::Active | Scenario::Profile))
             .map(|entry| {
@@ -81,7 +68,6 @@ impl RetrievalEngine {
                     .filter(|t| query_tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)))
                     .count();
                 let tag_score = matching as f32 / query_tags.len().max(1) as f32;
-                let final_score = tag_score * entry.frequency.bonus();
 
                 SearchResult {
                     memory_path: entry.filename,
@@ -89,7 +75,7 @@ impl RetrievalEngine {
                     title: entry.title,
                     tags: entry.tags,
                     frequency: entry.frequency,
-                    score: final_score,
+                    score: tag_score,
                     tag_score,
                     embedding_score: 0.0,
                     tokens: entry.tokens,
@@ -97,6 +83,13 @@ impl RetrievalEngine {
                 }
             })
             .collect();
+
+        // Sort by frequency desc, then score desc
+        results.sort_by(|a, b| {
+            b.frequency
+                .cmp(&a.frequency)
+                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
+        });
 
         Ok(results)
     }
@@ -114,14 +107,13 @@ impl RetrievalEngine {
             .search_by_similarity(query_embedding, scenario, limit)
             .await?;
 
-        let results: Vec<SearchResult> = hits
+        let mut results: Vec<SearchResult> = hits
             .into_iter()
             .map(|hit| {
                 let emb_score = (hit.similarity + 1.0) / 2.0; // normalize [-1,1] → [0,1]
                 let scenario =
                     Scenario::from_dir_name(&hit.scenario).unwrap_or(Scenario::Knowledge);
                 let frequency = Frequency::from_str_lossy(&hit.frequency);
-                let final_score = emb_score * frequency.bonus();
 
                 SearchResult {
                     memory_path: hit.memory_path,
@@ -129,7 +121,7 @@ impl RetrievalEngine {
                     title: String::new(), // not stored in embedding table
                     tags: hit.tags,
                     frequency,
-                    score: final_score,
+                    score: emb_score,
                     tag_score: 0.0,
                     embedding_score: emb_score,
                     tokens: hit.token_count,
@@ -137,6 +129,13 @@ impl RetrievalEngine {
                 }
             })
             .collect();
+
+        // Sort by frequency desc, then score desc
+        results.sort_by(|a, b| {
+            b.frequency
+                .cmp(&a.frequency)
+                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
+        });
 
         Ok(results)
     }
@@ -333,7 +332,7 @@ tokens: 50
             .unwrap();
         assert_eq!(emb_results[0].tag_score, 0.0);
         assert!((emb_results[0].embedding_score - 1.0).abs() < 0.001);
-        assert!((emb_results[0].score - 1.1).abs() < 0.001); // 1.0 * 1.1 (Warm bonus)
+        assert!((emb_results[0].score - 1.0).abs() < 0.001); // raw score, no frequency multiplier
     }
 
     #[tokio::test]
@@ -455,8 +454,7 @@ tokens: 50
         assert_eq!(1, results.len());
         assert_eq!(results[0].memory_path, "test.md");
         assert!(results[0].embedding_score > 0.0);
-        // Combined score: embedding primary × frequency bonus
-        let expected = results[0].embedding_score * results[0].frequency.bonus();
-        assert!((results[0].score - expected).abs() < 0.001);
+        // Score is raw embedding similarity; sorting uses explicit (frequency, score) tuple
+        assert!((results[0].score - results[0].embedding_score).abs() < 0.001);
     }
 }

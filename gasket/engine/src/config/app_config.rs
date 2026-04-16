@@ -258,38 +258,14 @@ fn resolve_config_placeholders(content: &str) -> anyhow::Result<String> {
         placeholders.len()
     );
 
-    // Try to open vault store (may fail if file doesn't exist or is locked)
-    let mut vault_store = VaultStore::new().ok();
-
-    // Auto-unlock vault using master password from environment
-    if vault_store.as_ref().is_some_and(|s| s.is_locked()) {
-        if let Ok(password) = env::var("GASKET_MASTER_PASSWORD") {
-            if let Some(ref mut store) = vault_store {
-                match store.unlock(&password) {
-                    Ok(()) => debug!("[Config] Vault auto-unlocked via GASKET_MASTER_PASSWORD"),
-                    Err(e) => debug!("[Config] Failed to unlock vault: {}", e),
-                }
-            }
-        }
-    }
-
-    // Build replacement map
+    // Build replacement map from environment variables only.
+    // Vault resolution is intentionally removed from config parsing to avoid
+    // triggering expensive Argon2id KDF operations during load_config().
+    // Critical fields (api_key) are resolved at JIT time via ProviderRegistry.
     let mut replacements = HashMap::new();
     let mut unresolved = Vec::new();
 
     for p in &placeholders {
-        // 1. Try vault store
-        if let Some(ref store) = vault_store {
-            if !store.is_locked() {
-                if let Some(value) = store.get(&p.key) {
-                    replacements.insert(p.key.clone(), value);
-                    debug!("[Config] Resolved '{}' from vault store", p.key);
-                    continue;
-                }
-            }
-        }
-
-        // 2. Fall back to environment variable
         let env_key = p.key.to_uppercase();
         if let Ok(value) = env::var(&env_key) {
             replacements.insert(p.key.clone(), value);

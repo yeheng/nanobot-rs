@@ -110,22 +110,10 @@ impl ScriptTool {
 
         DispatcherContext {
             engine: Arc::new(EngineHandle {
-                session_key: ctx
-                    .session_key
-                    .clone()
-                    .expect("session_key required for JSON-RPC mode"),
-                outbound_tx: ctx
-                    .outbound_tx
-                    .clone()
-                    .expect("outbound_tx required for JSON-RPC mode"),
-                spawner: ctx
-                    .spawner
-                    .clone()
-                    .expect("spawner required for JSON-RPC mode"),
-                token_tracker: ctx
-                    .token_tracker
-                    .clone()
-                    .expect("token_tracker required for JSON-RPC mode"),
+                session_key: ctx.session_key.clone(),
+                outbound_tx: ctx.outbound_tx.clone(),
+                spawner: ctx.spawner.clone(),
+                token_tracker: ctx.token_tracker.clone(),
                 tool_registry,
                 provider,
             }),

@@ -121,10 +121,8 @@ impl Tool for SpawnParallelTool {
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Get spawner from context
-        let spawner = ctx.spawner.as_ref().ok_or_else(|| {
-            ToolError::ExecutionError("No spawner available in ToolContext".to_string())
-        })?;
+        // Get spawner from context (always present, may be NoopSpawner)
+        let spawner = &ctx.spawner;
 
         // Normalize tasks to TaskSpec format
         let task_specs: Vec<TaskSpec> = match args.tasks {
@@ -277,7 +275,7 @@ mod tests {
 
         let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No spawner"));
+        assert!(result.unwrap_err().to_string().contains("not available"));
     }
 
     #[test]

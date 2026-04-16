@@ -1,15 +1,15 @@
-//! Memory manager facade with unified relevance scoring for context injection.
+//! Memory manager facade with multi-criteria relevance sorting for context injection.
 //!
 //! The MemoryManager orchestrates storage-layer components (FileMemoryStore,
-//! FileIndexManager, MetadataStore, RetrievalEngine) to load memories via a
-//! unified scoring algorithm:
+//! FileIndexManager, MetadataStore, RetrievalEngine) to load memories via
+//! deterministic Ord-based sorting (no f32 arithmetic):
 //!
-//! - **Exempt scenarios** (Profile, Decisions, Reference): score = ∞ (always loaded)
-//! - **Frequency coefficient**: Hot 1.5×, Warm 1.0×, Cold 0.5×, Archived 0.0
-//! - **Similarity base**: vector search score (0–1), or 0.5 default
-//! - **Final score** = similarity_base × frequency_coefficient
+//! - **Sort key**: `(is_exempt, frequency, similarity)` tuple comparison
+//! - **Exempt scenarios** (Profile, Decisions, Reference): always sorted first
+//! - **Frequency**: Hot > Warm > Cold (uses `Frequency::Ord` rank-based ordering)
+//! - **Similarity**: embedding score when available, None sorts after Some
 //!
-//! Candidates are sorted by score and truncated by the hard token cap.
+//! Candidates are sorted by Ord and truncated by the hard token cap.
 //!
 //! # Write-Through Consistency
 //!
@@ -21,6 +21,7 @@ use anyhow::Result;
 use chrono::Utc;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
@@ -516,15 +517,10 @@ impl MemoryManager {
         false
     }
 
-    /// Load memories for context injection using unified relevance scoring.
+    /// Load memories for context injection using Ord-based multi-criteria sorting.
     ///
-    /// Replaces the former three-phase loading with a single scoring pass:
-    /// - Exempt scenarios (Profile, Decisions, Reference): score = ∞
-    /// - Frequency coefficient: Hot 1.5×, Warm 1.0×, Cold 0.5×, Archived 0.0
-    /// - Similarity base: vector search score (0–1), or 0.5 default
-    /// - Final score = similarity_base × frequency_coefficient
-    ///
-    /// Candidates are sorted by score and truncated by the hard token cap.
+    /// Candidates are ranked by `(is_exempt, frequency, similarity)` tuple
+    /// comparison via `ScoredCandidate::Ord`, then truncated by token cap.
     pub async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext> {
         let scenario = query.scenario.unwrap_or(Scenario::Knowledge);
         let mut seen = HashSet::new();
@@ -540,14 +536,15 @@ impl MemoryManager {
         for entry in &entries {
             let key = format!("{}/{}", entry.scenario.dir_name(), entry.filename);
             if seen.insert(key) {
-                let score = ScoredCandidate::compute(entry.scenario, entry.frequency, None);
-                if score > 0.0 {
-                    candidates.push(ScoredCandidate {
-                        scenario: entry.scenario,
-                        filename: entry.filename.clone(),
-                        tokens: entry.tokens,
-                        score,
-                    });
+                let candidate = ScoredCandidate {
+                    scenario: entry.scenario,
+                    filename: entry.filename.clone(),
+                    tokens: entry.tokens,
+                    frequency: entry.frequency,
+                    similarity: None,
+                };
+                if candidate.is_relevant() {
+                    candidates.push(candidate);
                 }
             }
         }
@@ -558,30 +555,23 @@ impl MemoryManager {
                 for result in &results {
                     let key = format!("{}/{}", result.scenario.dir_name(), result.memory_path);
                     if seen.insert(key) {
-                        let score = ScoredCandidate::compute(
-                            result.scenario,
-                            result.frequency,
-                            Some(result.score),
-                        );
-                        if score > 0.0 {
-                            candidates.push(ScoredCandidate {
-                                scenario: result.scenario,
-                                filename: result.memory_path.clone(),
-                                tokens: result.tokens,
-                                score,
-                            });
+                        let candidate = ScoredCandidate {
+                            scenario: result.scenario,
+                            filename: result.memory_path.clone(),
+                            tokens: result.tokens,
+                            frequency: result.frequency,
+                            similarity: Some(result.score),
+                        };
+                        if candidate.is_relevant() {
+                            candidates.push(candidate);
                         }
                     }
                 }
             }
         }
 
-        // 3. Sort by score descending (exempt ∞ items first, then by score)
-        candidates.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // 3. Sort by Ord (exempt first, then frequency desc, then similarity desc)
+        candidates.sort();
 
         // 4. Load files within token budget
         let mut memories = Vec::new();
@@ -625,35 +615,63 @@ impl MemoryManager {
     }
 }
 
-/// A candidate memory with computed relevance score for unified ranking.
+/// A candidate for context loading, sorted by multi-criteria relevance.
+///
+/// Sort order (via `Ord`):
+/// 1. Exempt scenarios (Profile, Decisions, Reference) always first
+/// 2. Higher frequency (Hot > Warm > Cold)
+/// 3. Higher similarity (when available, None sorts after Some)
+///
+/// This replaces the former f32 `score = similarity × coefficient` approach,
+/// eliminating magic numbers and NaN-prone float comparisons.
+#[derive(Debug, Clone)]
 struct ScoredCandidate {
     scenario: Scenario,
     filename: String,
     tokens: u32,
-    score: f32,
+    frequency: Frequency,
+    similarity: Option<f32>,
 }
 
+impl PartialEq for ScoredCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.scenario == other.scenario && self.filename == other.filename
+    }
+}
+
+impl Eq for ScoredCandidate {}
+
 impl ScoredCandidate {
-    /// Compute relevance score for a memory candidate.
-    ///
-    /// Scoring formula: `similarity_base × frequency_coefficient`
-    /// - Exempt scenarios (profile, decisions, reference): ∞ (always first)
-    /// - Archived frequency: 0.0 (excluded)
-    fn compute(scenario: Scenario, frequency: Frequency, similarity: Option<f32>) -> f32 {
-        if scenario.is_exempt_from_decay() {
-            return f32::INFINITY;
-        }
-        if matches!(frequency, Frequency::Archived) {
-            return 0.0;
-        }
-        let base = similarity.unwrap_or(0.5);
-        let coeff = match frequency {
-            Frequency::Hot => 1.5,
-            Frequency::Warm => 1.0,
-            Frequency::Cold => 0.5,
-            Frequency::Archived => 0.0,
-        };
-        base * coeff
+    /// Whether this candidate is relevant for context loading.
+    /// Archived items are always excluded.
+    fn is_relevant(&self) -> bool {
+        self.frequency != Frequency::Archived
+    }
+}
+
+impl Ord for ScoredCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_exempt = self.scenario.is_exempt_from_decay();
+        let other_exempt = other.scenario.is_exempt_from_decay();
+
+        // 1. Exempt scenarios first
+        other_exempt
+            .cmp(&self_exempt)
+            // 2. Higher frequency first (uses Frequency::Ord rank-based ordering)
+            .then_with(|| other.frequency.cmp(&self.frequency))
+            // 3. Higher similarity first; known similarity outranks None
+            .then_with(|| match (self.similarity, other.similarity) {
+                (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            })
+    }
+}
+
+impl PartialOrd for ScoredCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

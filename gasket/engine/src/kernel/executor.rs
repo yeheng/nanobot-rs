@@ -555,19 +555,13 @@ impl<'a> AgentExecutor<'a> {
             response.tool_calls.clone(),
         ));
 
-        let ctx = if let Some(ref spawner) = self.spawner {
-            let mut ctx = ToolContext::default().spawner(spawner.clone());
-            if let Some(ref tracker) = options.token_tracker {
-                ctx = ctx.token_tracker(tracker.clone());
-            }
-            ctx
-        } else {
-            let mut ctx = ToolContext::default();
-            if let Some(ref tracker) = options.token_tracker {
-                ctx = ctx.token_tracker(tracker.clone());
-            }
-            ctx
-        };
+        let mut ctx = ToolContext::default();
+        if let Some(ref spawner) = self.spawner {
+            ctx = ctx.spawner(spawner.clone());
+        }
+        if let Some(ref tracker) = options.token_tracker {
+            ctx = ctx.token_tracker(tracker.clone());
+        }
 
         // 并发执行工具调用，每个工具独立发送事件
         let futures: Vec<_> = response

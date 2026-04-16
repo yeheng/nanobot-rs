@@ -10,7 +10,7 @@ use tracing::{info, Level};
 
 use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
-use gasket_engine::kernel::StreamEvent;
+use gasket_engine::channels::ChatEvent;
 use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
@@ -171,33 +171,13 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 let forward_handle = tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
                         match event {
-                            StreamEvent::Content {
-                                agent_id: _,
-                                content,
-                            } => print!("{}", content),
-                            StreamEvent::Thinking {
-                                agent_id: _,
-                                content,
-                            } => {
+                            ChatEvent::Content { content } => print!("{}", content),
+                            ChatEvent::Thinking { content } => {
                                 eprint!("{}", content.dimmed().italic());
                                 std::io::stderr().flush().ok();
                             }
-                            StreamEvent::TokenStats {
-                                input_tokens,
-                                output_tokens,
-                                total_tokens,
-                                cost,
-                                currency,
-                                agent_id: _,
-                            } => {
-                                let symbol = if currency == "CNY" { "¥" } else { "$" };
-                                eprintln!(
-                                    "\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                    input_tokens, output_tokens, total_tokens, symbol, cost
-                                );
-                            }
-                            StreamEvent::Done { agent_id: _ } => println!(),
-                            // Skip subagent events in CLI output
+                            ChatEvent::Done => println!(),
+                            // TokenStats are handled internally; skip other non-user events
                             _ => {}
                         }
                     }
@@ -272,35 +252,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                     let forward_handle = tokio::spawn(async move {
                                         while let Some(event) = event_rx.recv().await {
                                             match event {
-                                                StreamEvent::Content {
-                                                    agent_id: _,
-                                                    content,
-                                                } => {
+                                                ChatEvent::Content { content } => {
                                                     print!("{}", content);
                                                     std::io::stdout().flush().ok();
                                                 }
-                                                StreamEvent::Thinking {
-                                                    agent_id: _,
-                                                    content,
-                                                } => {
+                                                ChatEvent::Thinking { content } => {
                                                     eprint!("{}", content.dimmed().italic());
                                                     std::io::stderr().flush().ok();
                                                 }
-                                                StreamEvent::TokenStats {
-                                                    input_tokens,
-                                                    output_tokens,
-                                                    total_tokens,
-                                                    cost,
-                                                    currency,
-                                                    agent_id: _,
-                                                } => {
-                                                    let symbol =
-                                                        if currency == "CNY" { "¥" } else { "$" };
-                                                    eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                                        input_tokens, output_tokens, total_tokens, symbol, cost);
-                                                }
-                                                StreamEvent::Done { agent_id: _ } => {}
-                                                // Skip subagent events in CLI output
+                                                ChatEvent::Done => {}
                                                 _ => {}
                                             }
                                         }

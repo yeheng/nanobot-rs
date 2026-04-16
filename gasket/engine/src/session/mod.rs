@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::error::AgentError;
 use crate::hooks::{HookPoint, HookRegistry, MutableContext};
 use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
+use gasket_types::events::ChatEvent;
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
@@ -404,13 +405,17 @@ impl AgentSession {
     }
 
     /// Process a message with streaming.
+    ///
+    /// Returns a receiver of `ChatEvent` (user-facing data-plane events) and a
+    /// join handle for the final response. System events (`TokenStats`, subagent
+    /// lifecycle) are consumed internally and do not flow to the returned channel.
     pub async fn process_direct_streaming_with_channel(
         &self,
         content: &str,
         session_key: &SessionKey,
     ) -> Result<
         (
-            tokio::sync::mpsc::Receiver<StreamEvent>,
+            tokio::sync::mpsc::Receiver<ChatEvent>,
             tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
         ),
         AgentError,
@@ -446,11 +451,25 @@ impl AgentSession {
         let model = self.config.model.clone();
         let compactor = self.compactor.clone();
 
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
+        let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
+        let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
+
+        // Translate kernel StreamEvents into clean ChatEvents for consumers.
+        // System events (TokenStats, subagent lifecycle) are dropped here;
+        // TokenStats are already handled by the kernel's TokenTracker.
+        tokio::spawn(async move {
+            while let Some(event) = kernel_rx.recv().await {
+                if let Some(chat) = event.to_chat_event() {
+                    if chat_tx.send(chat).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
 
         // Spawn via TaskTracker so graceful shutdown can await this task.
         let result_handle = self.pending_done.spawn(async move {
-            let result = kernel::execute_streaming(&runtime_ctx, messages, event_tx).await?;
+            let result = kernel::execute_streaming(&runtime_ctx, messages, kernel_tx).await?;
 
             let response =
                 finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref())
@@ -459,7 +478,7 @@ impl AgentSession {
             Ok(response)
         });
 
-        Ok((event_rx, result_handle))
+        Ok((chat_rx, result_handle))
     }
 
     /// Common pre-processing pipeline.

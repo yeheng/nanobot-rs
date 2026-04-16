@@ -25,7 +25,7 @@ impl session::MessageHandler for EchoHandler {
         _: &SessionKey,
     ) -> Result<
         (
-            tokio::sync::mpsc::Receiver<session::StreamEvent>,
+            tokio::sync::mpsc::Receiver<ChatEvent>,
             tokio::sync::oneshot::Receiver<
                 Result<OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
             >,

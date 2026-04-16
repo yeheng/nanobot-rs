@@ -33,6 +33,27 @@ pub trait SubagentSpawner: Send + Sync {
     ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>>;
 }
 
+/// No-op spawner that always returns an error.
+///
+/// Used as the default `ToolContext::spawner` when no real spawner is available
+/// (e.g., in CLI mode or unit tests). This eliminates `Option` wrapping and
+/// ensures `SpawnTool` gets a clear runtime error instead of a `None` panic.
+pub struct NoopSpawner;
+
+#[async_trait]
+impl SubagentSpawner for NoopSpawner {
+    async fn spawn(
+        &self,
+        _task: String,
+        _model_id: Option<String>,
+    ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Subagent spawning is not available in this context",
+        )))
+    }
+}
+
 /// Subagent execution result.
 ///
 /// This is a minimal result type containing only what tools need.
@@ -69,47 +90,56 @@ pub struct TokenUsage {
 /// This replaces the old pattern of storing session_key in SubagentManager
 /// as a global mutable state. Now each tool execution receives its context
 /// directly, eliminating multi-tenant data leakage risks.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ToolContext {
     /// Session key for WebSocket streaming (identifies the client connection).
-    pub session_key: Option<SessionKey>,
+    pub session_key: SessionKey,
     /// Channel to send outbound WebSocket messages in real-time.
-    pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
+    pub outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
     /// Subagent spawner for tools that need to spawn subagents.
-    /// Uses a trait object to decouple tools from concrete SubagentManager.
-    pub spawner: Option<std::sync::Arc<dyn SubagentSpawner>>,
+    /// Always present — defaults to `NoopSpawner` when spawning is unavailable.
+    pub spawner: std::sync::Arc<dyn SubagentSpawner>,
     /// Token tracker for budget enforcement across parent and subagents.
-    /// Shared via Arc so subagents accumulate to the same tracker.
-    pub token_tracker: Option<std::sync::Arc<crate::token_tracker::TokenTracker>>,
+    /// Always present — defaults to an unlimited tracker when not configured.
+    pub token_tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
+}
+
+impl Default for ToolContext {
+    fn default() -> Self {
+        let (outbound_tx, _rx) = tokio::sync::mpsc::channel(1);
+        Self {
+            session_key: SessionKey::new(crate::events::ChannelType::Cli, "default"),
+            outbound_tx,
+            spawner: std::sync::Arc::new(NoopSpawner),
+            token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
+        }
+    }
 }
 
 impl std::fmt::Debug for ToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
             .field("session_key", &self.session_key)
-            .field("outbound_tx", &self.outbound_tx.is_some())
-            .field("spawner", &self.spawner.as_ref().map(|_| "SubagentSpawner"))
-            .field(
-                "token_tracker",
-                &self.token_tracker.as_ref().map(|_| "TokenTracker"),
-            )
+            .field("outbound_tx", &"Sender<OutboundMessage>")
+            .field("spawner", &"SubagentSpawner")
+            .field("token_tracker", &"TokenTracker")
             .finish()
     }
 }
 
 impl ToolContext {
     pub fn session_key(mut self, key: SessionKey) -> Self {
-        self.session_key = Some(key);
+        self.session_key = key;
         self
     }
 
     pub fn outbound_tx(mut self, tx: tokio::sync::mpsc::Sender<OutboundMessage>) -> Self {
-        self.outbound_tx = Some(tx);
+        self.outbound_tx = tx;
         self
     }
 
     pub fn spawner(mut self, s: std::sync::Arc<dyn SubagentSpawner>) -> Self {
-        self.spawner = Some(s);
+        self.spawner = s;
         self
     }
 
@@ -117,7 +147,7 @@ impl ToolContext {
         mut self,
         tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
     ) -> Self {
-        self.token_tracker = Some(tracker);
+        self.token_tracker = tracker;
         self
     }
 }

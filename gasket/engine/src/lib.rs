@@ -162,6 +162,7 @@ pub mod channels {
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
         WebSocketMessage,
     };
+    pub use gasket_types::events::ChatEvent;
 }
 
 // Providers

@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
-use gasket_types::events::{InboundMessage, OutboundMessage, SessionKey};
+use gasket_types::events::{ChatEvent, InboundMessage, OutboundMessage, SessionKey};
 
 use crate::memory::MemoryBroker;
 use crate::types::{BrokerPayload, Envelope, Topic};
@@ -33,34 +33,13 @@ pub trait MessageHandler: Send + Sync {
         session_key: &SessionKey,
     ) -> Result<
         (
-            mpsc::Receiver<StreamEvent>,
+            mpsc::Receiver<ChatEvent>,
             tokio::sync::oneshot::Receiver<
                 Result<OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
             >,
         ),
         Box<dyn std::error::Error + Send + Sync>,
     >;
-}
-
-/// Stream events — mirrors bus::actors::StreamEvent for broker compatibility.
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    Content(String),
-    Reasoning(String),
-    ToolStart {
-        name: String,
-        arguments: String,
-    },
-    ToolEnd {
-        name: String,
-        output: String,
-    },
-    Done,
-    TokenStats {
-        prompt: usize,
-        completion: usize,
-        total: usize,
-    },
 }
 
 /// Manages per-session processing tasks.
@@ -247,38 +226,19 @@ async fn process_streaming<H: MessageHandler + 'static>(
         .handle_streaming_message(&msg.content, session_key)
         .await?;
 
+    // ChatEvent is already a clean WebSocketMessage — no translation needed.
     while let Some(event) = event_rx.recv().await {
-        if let Some(ws_msg) = stream_event_to_ws_message(event) {
-            let outbound =
-                OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
-            broker
-                .publish(Envelope::new(
-                    Topic::Outbound,
-                    BrokerPayload::Outbound(outbound),
-                ))
-                .await?;
-        }
+        let outbound =
+            OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
+        broker
+            .publish(Envelope::new(
+                Topic::Outbound,
+                BrokerPayload::Outbound(outbound),
+            ))
+            .await?;
     }
 
     let _response = result_handle.await??;
 
     Ok(())
-}
-
-fn stream_event_to_ws_message(
-    event: StreamEvent,
-) -> Option<gasket_types::events::WebSocketMessage> {
-    use gasket_types::events::WebSocketMessage;
-    match event {
-        StreamEvent::Content(c) => Some(WebSocketMessage::content(c)),
-        StreamEvent::Reasoning(c) => Some(WebSocketMessage::thinking(c)),
-        StreamEvent::ToolStart { name, arguments } => {
-            Some(WebSocketMessage::tool_start(name, Some(arguments)))
-        }
-        StreamEvent::ToolEnd { name, output } => {
-            Some(WebSocketMessage::tool_end(name, Some(output)))
-        }
-        StreamEvent::Done => Some(WebSocketMessage::done()),
-        StreamEvent::TokenStats { .. } => None,
-    }
 }

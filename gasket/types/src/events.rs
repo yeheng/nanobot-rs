@@ -471,11 +471,89 @@ pub enum StreamEvent {
     },
 }
 
-/// Legacy alias for backward compatibility.
+/// Clean user-facing event for WebSocket and outbound channels.
 ///
-/// **DEPRECATED**: Use `StreamEvent` directly. This alias will be removed
-/// in a future version.
-pub type WebSocketMessage = StreamEvent;
+/// This is the data-plane event type — it contains only what the end-user
+/// should see. Control-plane events (TokenStats, Subagent lifecycle) are
+/// intentionally excluded and handled internally via `SystemEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatEvent {
+    /// Thinking/reasoning content from the LLM
+    Thinking { content: String },
+
+    /// A tool call has started
+    ToolStart {
+        name: String,
+        #[serde(default)]
+        arguments: Option<String>,
+    },
+
+    /// A tool call has completed
+    ToolEnd {
+        name: String,
+        #[serde(default)]
+        output: Option<String>,
+    },
+
+    /// Streaming content chunk
+    Content { content: String },
+
+    /// Stream has completed for this iteration
+    Done,
+
+    /// Plain text message (legacy support for non-streaming channels)
+    Text { content: String },
+
+    /// Error message
+    Error { message: String },
+}
+
+impl ChatEvent {
+    /// Create a content message
+    pub fn content(content: impl Into<String>) -> Self {
+        Self::Content { content: content.into() }
+    }
+
+    /// Create a thinking message
+    pub fn thinking(content: impl Into<String>) -> Self {
+        Self::Thinking { content: content.into() }
+    }
+
+    /// Create a tool_start message
+    pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
+        Self::ToolStart { name: name.into(), arguments }
+    }
+
+    /// Create a tool_end message
+    pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
+        Self::ToolEnd { name: name.into(), output }
+    }
+
+    /// Create a done message
+    pub fn done() -> Self {
+        Self::Done
+    }
+
+    /// Create a text message
+    pub fn text(content: impl Into<String>) -> Self {
+        Self::Text { content: content.into() }
+    }
+
+    /// Create an error message
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::Error { message: message.into() }
+    }
+
+    /// Serialize to JSON string
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self)
+            .unwrap_or_else(|_| r#"{"type":"text","content":"serialization error"}"#.to_string())
+    }
+}
+
+/// WebSocket message type — a clean alias for `ChatEvent`.
+pub type WebSocketMessage = ChatEvent;
 
 impl StreamEvent {
     // === Main Agent Event Constructors ===
@@ -649,6 +727,32 @@ impl StreamEvent {
     /// Check if this is a main agent event
     pub fn is_main_agent_event(&self) -> bool {
         self.agent_id().is_none()
+    }
+
+    /// Convert to a user-facing `ChatEvent` if this is a main-agent data event.
+    ///
+    /// Returns `None` for system events (`TokenStats`, subagent lifecycle)
+    /// and for subagent events (anything with `agent_id` set).
+    pub fn to_chat_event(&self) -> Option<ChatEvent> {
+        if self.is_subagent_event() {
+            return None;
+        }
+        match self {
+            Self::Thinking { content, .. } => Some(ChatEvent::thinking(content.clone())),
+            Self::ToolStart { name, arguments, .. } => {
+                Some(ChatEvent::tool_start(name.clone(), arguments.clone()))
+            }
+            Self::ToolEnd { name, output, .. } => {
+                Some(ChatEvent::tool_end(name.clone(), output.clone()))
+            }
+            Self::Content { content, .. } => Some(ChatEvent::content(content.clone())),
+            Self::Done { .. } => Some(ChatEvent::done()),
+            Self::Text { content, .. } => Some(ChatEvent::text(content.clone())),
+            Self::TokenStats { .. }
+            | Self::SubagentStarted { .. }
+            | Self::SubagentCompleted { .. }
+            | Self::SubagentError { .. } => None,
+        }
     }
 
     /// Serialize to JSON string
@@ -837,9 +941,9 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_compatibility_websocket_message_alias() {
-        // WebSocketMessage is now an alias for StreamEvent
-        let msg: WebSocketMessage = StreamEvent::thinking("test");
-        assert!(matches!(msg, StreamEvent::Thinking { .. }));
+    fn test_websocket_message_is_chat_event() {
+        // WebSocketMessage is now an alias for ChatEvent
+        let msg: WebSocketMessage = ChatEvent::thinking("test");
+        assert!(matches!(msg, ChatEvent::Thinking { .. }));
     }
 }
