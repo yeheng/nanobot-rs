@@ -7,9 +7,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
-use crate::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use std::sync::Arc;
+
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::middleware::InboundSender;
 
 /// Feishu channel configuration
@@ -35,11 +36,12 @@ pub struct FeishuConfig {
 ///
 /// Sends incoming messages through `InboundSender` which applies auth/rate-limit
 /// checks before forwarding to the message bus.
+#[derive(Clone)]
 pub struct FeishuChannel {
     config: FeishuConfig,
     inbound_sender: InboundSender,
     client: Client,
-    access_token: Option<String>,
+    access_token: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl FeishuChannel {
@@ -49,14 +51,93 @@ impl FeishuChannel {
             config,
             inbound_sender,
             client: Client::new(),
-            access_token: None,
+            access_token: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
+    pub fn from_config(cfg: &crate::config::FeishuConfig, inbound: InboundSender) -> Self {
+        Self::new(
+            FeishuConfig {
+                app_id: cfg.app_id.clone(),
+                app_secret: cfg.app_secret.clone(),
+                verification_token: cfg.verification_token.clone(),
+                encrypt_key: cfg.encrypt_key.clone(),
+                allow_from: cfg.allow_from.clone(),
+            },
+            inbound,
+        )
+    }
+
+    /// Build axum routes for Feishu webhooks.
+    pub fn routes(&self) -> axum::Router {
+        let cloned = self.clone();
+        axum::Router::new().route(
+            "/feishu/events",
+            axum::routing::post(move |body: bytes::Bytes| async move {
+                let json_value: serde_json::Value = match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            format!("Invalid JSON body: {}", e),
+                        );
+                    }
+                };
+
+                // URL verification challenge
+                if let Some("url_verification") = json_value.get("type").and_then(|t| t.as_str()) {
+                    let challenge: FeishuChallenge = match serde_json::from_value(json_value) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                format!("Invalid challenge format: {}", e),
+                            );
+                        }
+                    };
+                    let response = FeishuChallengeResponse {
+                        challenge: challenge.challenge,
+                    };
+                    return (
+                        axum::http::StatusCode::OK,
+                        serde_json::to_string(&response).unwrap_or_default(),
+                    );
+                }
+
+                let event: FeishuEvent = match serde_json::from_value(json_value) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            format!("Invalid event format: {}", e),
+                        );
+                    }
+                };
+
+                match cloned.handle_webhook_event(event).await {
+                    Ok(()) => (
+                        axum::http::StatusCode::OK,
+                        serde_json::json!({"code": 0}).to_string(),
+                    ),
+                    Err(e) => {
+                        tracing::error!("Feishu event processing failed: {}", e);
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            serde_json::json!({"code": -1, "msg": e.to_string()}).to_string(),
+                        )
+                    }
+                }
+            }),
+        )
+    }
+
     /// Get tenant access token
-    async fn get_access_token(&mut self) -> anyhow::Result<&str> {
-        if let Some(ref token) = self.access_token {
-            return Ok(token);
+    async fn get_access_token(&self) -> anyhow::Result<String> {
+        {
+            let guard = self.access_token.lock().await;
+            if let Some(ref token) = *guard {
+                return Ok(token.clone());
+            }
         }
 
         #[derive(Serialize)]
@@ -104,13 +185,11 @@ impl FeishuChannel {
             anyhow::anyhow!("Feishu API returned code=0 but no tenant_access_token")
         })?;
 
-        self.access_token = Some(token);
+        let mut guard = self.access_token.lock().await;
+        *guard = Some(token);
 
         info!("Obtained Feishu tenant access token");
-        Ok(self
-            .access_token
-            .as_ref()
-            .expect("access_token was just set on the line above"))
+        Ok(guard.as_ref().unwrap().clone())
     }
 
     /// Handle incoming webhook event
@@ -204,9 +283,7 @@ impl FeishuChannel {
     /// Send a text message to a chat
     #[instrument(name = "channel.feishu.send_text", skip(self, text), fields(chat_id = %chat_id))]
     pub async fn send_text(&self, chat_id: &str, text: &str) -> anyhow::Result<()> {
-        let token = self.access_token.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("No access token available. Call get_access_token first.")
-        })?;
+        let token = self.get_access_token().await?;
 
         #[derive(Serialize)]
         struct SendMessageRequest {
@@ -262,23 +339,24 @@ impl FeishuChannel {
 }
 
 #[async_trait]
-impl Channel for FeishuChannel {
+impl ImAdapter for FeishuChannel {
     fn name(&self) -> &str {
         "feishu"
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
+    async fn start(&self, _inbound: InboundSender) -> anyhow::Result<()> {
         info!("Starting Feishu channel");
         // Pre-fetch access token
         self.get_access_token().await?;
         Ok(())
     }
 
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping Feishu channel");
-        Ok(())
+    async fn send(&self, msg: &OutboundMessage) -> anyhow::Result<()> {
+        self.send_text(&msg.chat_id, &msg.content).await
     }
 }
+
+pub type FeishuAdapter = FeishuChannel;
 
 // Feishu API types
 

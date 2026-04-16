@@ -349,6 +349,63 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     debug!("WebSocket connection closed: {}", connection_id);
 }
 
+// === WebSocket Adapter =====================================================
+
+use crate::adapter::ImAdapter;
+use crate::middleware::InboundSender;
+use async_trait::async_trait;
+
+/// WebSocket adapter — delegates outbound sends to WebSocketManager.
+///
+/// Inbound messages are handled by the HTTP handler in gateway.rs, so
+/// `start()` is a no-op.
+#[derive(Clone)]
+pub struct WebSocketAdapter {
+    manager: Arc<WebSocketManager>,
+}
+
+impl WebSocketAdapter {
+    pub fn new(manager: Arc<WebSocketManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait]
+impl ImAdapter for WebSocketAdapter {
+    fn name(&self) -> &str {
+        "websocket"
+    }
+
+    async fn start(&self, _inbound: InboundSender) -> anyhow::Result<()> {
+        // Inbound is handled by the axum WebSocket handler in gateway.rs
+        Ok(())
+    }
+
+    async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
+        self.manager.send(msg.clone()).await;
+        Ok(())
+    }
+}
+
+/// CLI adapter — no-op for outbound messages.
+#[derive(Clone, Copy)]
+pub struct CliAdapter;
+
+#[async_trait]
+impl ImAdapter for CliAdapter {
+    fn name(&self) -> &str {
+        "cli"
+    }
+
+    async fn start(&self, _inbound: InboundSender) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn send(&self, _msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

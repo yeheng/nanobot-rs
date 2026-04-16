@@ -111,7 +111,7 @@ impl HistoryCoordinator {
                     .event_store
                     .query_events(&EventFilter {
                         session_key: Some(key),
-                        branch: Some("main".to_string()),
+
                         ..Default::default()
                     })
                     .await
@@ -172,7 +172,7 @@ impl HistoryCoordinator {
                     .event_store
                     .query_events(&EventFilter {
                         session_key: Some(key),
-                        branch: Some("main".to_string()),
+
                         time_range: Some((start, end)),
                         ..Default::default()
                     })

@@ -1,30 +1,29 @@
 //! Messaging channel abstractions and implementations for gasket.
 //!
 //! This crate provides:
-//! - Core channel types (`events`, `config`, `base`, `middleware`, `outbound`)
-//! - Feature-gated channel implementations (Telegram, Discord, Slack, etc.)
+//! - Core channel types (`events`, `config`, `adapter`, `middleware`, `provider`)
+//! - Feature-gated IM adapter implementations (Telegram, Discord, Slack, etc.)
 //! - Platform-specific webhook handlers (DingTalk, Feishu, WeCom)
 //!
 //! # Platform Modules
 //!
-//! Each platform module contains both channel and webhook implementations:
+//! Each platform module contains both adapter and webhook implementations:
 //!
-//! - [`dingtalk`] - DingTalk (钉钉) channel and webhook
-//! - [`feishu`] - Feishu (飞书) channel and webhook
-//! - [`wecom`] - WeCom (企业微信) channel, webhook, and crypto
+//! - [`dingtalk`] - DingTalk (钉钉) adapter and webhook
+//! - [`feishu`] - Feishu (飞书) adapter and webhook
+//! - [`wecom`] - WeCom (企业微信) adapter, webhook, and crypto
 //!
-//! # Webhook Server
+//! # WebSocket & CLI
 //!
-//! The [`webhook`] module provides a generic HTTP server that can be combined
-//! with platform-specific routes.
+//! - [`websocket`] - WebSocket server and `WebSocketAdapter`/`CliAdapter`
 
 // Core types (always compiled)
-pub mod base;
+pub mod adapter;
 pub mod config;
 pub mod error;
 pub mod events;
 pub mod middleware;
-pub mod outbound;
+pub mod provider;
 
 // Webhook HTTP server infrastructure
 // Enabled when any platform that needs webhooks is enabled, or when webhook feature is explicitly enabled
@@ -36,12 +35,11 @@ pub mod outbound;
 ))]
 pub mod webhook;
 
-// Platform channel implementations (feature-gated)
+// Platform adapter implementations (feature-gated)
 #[cfg(feature = "dingtalk")]
 pub mod dingtalk;
 #[cfg(feature = "discord")]
 pub mod discord;
-
 #[cfg(feature = "feishu")]
 pub mod feishu;
 #[cfg(feature = "slack")]
@@ -54,9 +52,10 @@ pub mod websocket;
 pub mod wecom;
 
 // Convenience re-exports
-pub use base::Channel;
+pub use adapter::ImAdapter;
 pub use config::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
+    WeComConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{
@@ -66,4 +65,4 @@ pub use events::{
 pub use middleware::{
     log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
 };
-pub use outbound::{OutboundSender, OutboundSenderRegistry};
+pub use provider::{ImProvider, ImProviders};

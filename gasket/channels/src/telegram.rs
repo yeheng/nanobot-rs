@@ -1,49 +1,58 @@
-//! Telegram channel implementation using teloxide
+//! Telegram adapter using teloxide
 
 use async_trait::async_trait;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
 use tracing::{debug, info, instrument};
 
-use super::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage};
 use crate::middleware::InboundSender;
 
-/// Telegram channel configuration
+/// Telegram adapter configuration (runtime).
+///
+/// Uses the deserialized config directly — no duplicate struct.
 #[derive(Debug, Clone)]
 pub struct TelegramConfig {
     pub token: String,
     pub allow_from: Vec<String>,
 }
 
-/// Telegram channel.
-///
-/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
-pub struct TelegramChannel {
-    config: TelegramConfig,
-    inbound_sender: InboundSender,
-}
-
-impl TelegramChannel {
-    /// Create a new Telegram channel with an inbound message sender.
-    pub fn new(config: TelegramConfig, inbound_sender: InboundSender) -> Self {
+impl From<&crate::config::TelegramConfig> for TelegramConfig {
+    fn from(cfg: &crate::config::TelegramConfig) -> Self {
         Self {
-            config,
-            inbound_sender,
+            token: cfg.token.clone(),
+            allow_from: cfg.allow_from.clone(),
         }
     }
+}
 
-    /// Start the Telegram bot (blocking)
-    #[instrument(name = "channel.telegram.start", skip_all)]
-    pub async fn start_bot(&self) -> anyhow::Result<()> {
-        info!("Starting Telegram bot");
+/// Telegram IM adapter.
+#[derive(Clone)]
+pub struct TelegramAdapter {
+    config: TelegramConfig,
+}
+
+impl TelegramAdapter {
+    pub fn from_config(cfg: &crate::config::TelegramConfig, _inbound: InboundSender) -> Self {
+        Self { config: cfg.into() }
+    }
+}
+
+#[async_trait]
+impl ImAdapter for TelegramAdapter {
+    fn name(&self) -> &str {
+        "telegram"
+    }
+
+    #[instrument(name = "adapter.telegram.start", skip_all)]
+    async fn start(&self, inbound_sender: InboundSender) -> anyhow::Result<()> {
+        info!("Starting Telegram adapter");
 
         let bot = Bot::new(&self.config.token);
-        let inbound_sender = self.inbound_sender.clone();
+        let inbound_sender = inbound_sender.clone();
         let allow_from = self.config.allow_from.clone();
 
-        // Use Dispatcher for proper handling
         let handler = Update::filter_message().branch(dptree::endpoint(move |msg: Message| {
             let inbound_sender = inbound_sender.clone();
             let allow_from = allow_from.clone();
@@ -52,7 +61,6 @@ impl TelegramChannel {
                     let user_id = user.id.0;
                     let user_id_str = user_id.to_string();
 
-                    // Check allowlist
                     if !allow_from.is_empty() && !allow_from.contains(&user_id_str) {
                         debug!("Ignoring message from unauthorized user: {}", user_id);
                         return Ok::<_, teloxide::RequestError>(());
@@ -91,30 +99,11 @@ impl TelegramChannel {
 
         Ok(())
     }
-}
 
-#[async_trait]
-impl Channel for TelegramChannel {
-    fn name(&self) -> &str {
-        "telegram"
-    }
-
-    /// Start the Telegram channel.
-    /// Delegates to the inherent `start_bot` method.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        self.start_bot().await
-    }
-
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping Telegram channel");
+    async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
+        let bot = Bot::new(&self.config.token);
+        let chat_id: i64 = msg.chat_id.parse()?;
+        bot.send_message(ChatId(chat_id), &msg.content).await?;
         Ok(())
     }
-}
-
-/// Stateless send: send a text message to Telegram without needing a `TelegramChannel` instance.
-pub async fn send_text_stateless(token: &str, chat_id: &str, text: &str) -> anyhow::Result<()> {
-    let bot = Bot::new(token);
-    let chat_id: i64 = chat_id.parse()?;
-    bot.send_message(ChatId(chat_id), text).await?;
-    Ok(())
 }

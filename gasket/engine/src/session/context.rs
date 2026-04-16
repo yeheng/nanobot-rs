@@ -159,7 +159,7 @@ impl AgentContext {
                 if watermark == 0 {
                     // No summary exists — load all history
                     ctx.event_store
-                        .get_branch_history(session_key, "main")
+                        .get_session_history(session_key)
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!("Failed to load history for '{}': {}", session_key, e);
@@ -192,7 +192,7 @@ impl AgentContext {
             Self::Persistent(ctx) => {
                 let events = ctx
                     .event_store
-                    .get_branch_history(key, "main")
+                    .get_session_history(key)
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Failed to load session history for '{}': {}", key, e);
@@ -251,7 +251,7 @@ impl AgentContext {
             Self::Persistent(ctx) => {
                 let events = ctx
                     .event_store
-                    .get_branch_history(key, "main")
+                    .get_session_history(key)
                     .await
                     .unwrap_or_else(|e| {
                         tracing::warn!("Failed to load events for recall: {}", e);
@@ -325,8 +325,6 @@ mod tests {
                 key TEXT PRIMARY KEY,
                 channel TEXT NOT NULL DEFAULT '',
                 chat_id TEXT NOT NULL DEFAULT '',
-                current_branch TEXT NOT NULL DEFAULT 'main',
-                branches TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_consolidated_event TEXT,
@@ -349,7 +347,6 @@ mod tests {
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,
-                branch TEXT DEFAULT 'main',
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
                 token_len INTEGER NOT NULL DEFAULT 0,

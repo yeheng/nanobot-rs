@@ -1,16 +1,14 @@
-//! Slack channel implementation using Socket Mode
+//! Slack adapter using Socket Mode
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument};
 
-use super::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage};
 use crate::middleware::InboundSender;
 
-/// Slack channel configuration
 #[derive(Debug, Clone)]
 pub struct SlackConfig {
     pub bot_token: String,
@@ -19,7 +17,17 @@ pub struct SlackConfig {
     pub allow_from: Vec<String>,
 }
 
-/// Slack message event
+impl From<&crate::config::SlackConfig> for SlackConfig {
+    fn from(cfg: &crate::config::SlackConfig) -> Self {
+        Self {
+            bot_token: cfg.bot_token.clone(),
+            app_token: cfg.app_token.clone(),
+            group_policy: cfg.group_policy.clone(),
+            allow_from: cfg.allow_from.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 struct SlackMessage {
@@ -35,67 +43,15 @@ struct SlackMessage {
     thread_ts: Option<String>,
 }
 
-/// Slack channel using Socket Mode.
-///
-/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
-pub struct SlackChannel {
+/// Slack IM adapter.
+#[derive(Clone)]
+pub struct SlackAdapter {
     config: SlackConfig,
-    inbound_sender: InboundSender,
 }
 
-impl SlackChannel {
-    /// Create a new Slack channel with an inbound message sender.
-    pub fn new(config: SlackConfig, inbound_sender: InboundSender) -> Self {
-        Self {
-            config,
-            inbound_sender,
-        }
-    }
-
-    /// Start the Slack bot using WebSocket
-    #[instrument(name = "channel.slack.start", skip_all)]
-    pub async fn start_bot(&self) -> anyhow::Result<()> {
-        info!("Starting Slack bot");
-
-        let ws_url = self.get_socket_url().await?;
-        info!("Connecting to Slack WebSocket: {}", ws_url);
-
-        // Use tokio-tungstenite for WebSocket connection
-        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
-
-        let (ws_stream, _) = connect_async(&ws_url).await?;
-        let (mut write, mut read) = ws_stream.split();
-
-        info!("Slack WebSocket connected");
-
-        let inbound_sender = self.inbound_sender.clone();
-        let group_policy = self.config.group_policy.clone();
-
-        // Handle messages
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(WsMessage::Text(text)) => {
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                        Self::handle_event(&event, &mut write, &inbound_sender, &group_policy)
-                            .await;
-                    }
-                }
-                Ok(WsMessage::Ping(data)) => {
-                    write.send(WsMessage::Pong(data)).await?;
-                }
-                Ok(WsMessage::Close(_)) => {
-                    info!("Slack WebSocket closed");
-                    break;
-                }
-                Err(e) => {
-                    tracing::error!("WebSocket error: {}", e);
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
+impl SlackAdapter {
+    pub fn from_config(cfg: &crate::config::SlackConfig, _inbound: InboundSender) -> Self {
+        Self { config: cfg.into() }
     }
 
     async fn get_socket_url(&self) -> anyhow::Result<String> {
@@ -136,7 +92,6 @@ impl SlackChannel {
 
         if event_type == "events_api" {
             if let Some(envelope_id) = event.get("envelope_id").and_then(|v| v.as_str()) {
-                // Acknowledge the event first
                 let ack = serde_json::json!({
                     "envelope_id": envelope_id
                 });
@@ -149,7 +104,6 @@ impl SlackChannel {
                     let msg_type = event_data["type"].as_str().unwrap_or("");
 
                     if msg_type == "message" {
-                        // Skip bot messages
                         if event_data.get("bot_id").is_some()
                             || event_data["subtype"].as_str() == Some("bot_message")
                         {
@@ -161,14 +115,10 @@ impl SlackChannel {
                             event_data["channel"].as_str(),
                             event_data["user"].as_str(),
                         ) {
-                            // Check group policy for channel messages
                             if channel.starts_with('C') {
                                 match group_policy.as_deref() {
-                                    Some("open") => {
-                                        // Respond to all
-                                    }
+                                    Some("open") => {}
                                     _ => {
-                                        // Default: mention only
                                         if !text.contains("<@") {
                                             debug!("Skipping non-mention message in channel");
                                             return;
@@ -202,25 +152,69 @@ impl SlackChannel {
             }
         }
     }
+}
 
-    /// Send a message to Slack
-    #[instrument(name = "channel.slack.send_message", skip_all, fields(channel = %channel))]
-    pub async fn send_message(
-        &self,
-        channel: &str,
-        text: &str,
-        thread_ts: Option<&str>,
-    ) -> anyhow::Result<()> {
+#[async_trait]
+impl ImAdapter for SlackAdapter {
+    fn name(&self) -> &str {
+        "slack"
+    }
+
+    #[instrument(name = "adapter.slack.start", skip_all)]
+    async fn start(&self, inbound_sender: InboundSender) -> anyhow::Result<()> {
+        info!("Starting Slack adapter");
+
+        let ws_url = self.get_socket_url().await?;
+        info!("Connecting to Slack WebSocket: {}", ws_url);
+
+        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+
+        let (ws_stream, _) = connect_async(&ws_url).await?;
+        let (mut write, mut read) = ws_stream.split();
+
+        info!("Slack WebSocket connected");
+
+        let group_policy = self.config.group_policy.clone();
+
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(WsMessage::Text(text)) => {
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
+                        Self::handle_event(&event, &mut write, &inbound_sender, &group_policy)
+                            .await;
+                    }
+                }
+                Ok(WsMessage::Ping(data)) => {
+                    write.send(WsMessage::Pong(data)).await?;
+                }
+                Ok(WsMessage::Close(_)) => {
+                    info!("Slack WebSocket closed");
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
         let url = "https://slack.com/api/chat.postMessage";
 
         let mut body = serde_json::json!({
-            "channel": channel,
-            "text": text,
+            "channel": msg.chat_id,
+            "text": msg.content,
         });
 
-        if let Some(ts) = thread_ts {
-            body["thread_ts"] = serde_json::json!(ts);
+        if let Some(ref meta) = msg.metadata {
+            if let Some(ts) = meta.get("thread_ts").and_then(|v| v.as_str()) {
+                body["thread_ts"] = serde_json::json!(ts);
+            }
         }
 
         let response = client
@@ -241,58 +235,4 @@ impl SlackChannel {
 
         Ok(())
     }
-}
-
-#[async_trait]
-impl Channel for SlackChannel {
-    fn name(&self) -> &str {
-        "slack"
-    }
-
-    /// Start the Slack channel.
-    /// Delegates to the inherent `start_bot` method.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        self.start_bot().await
-    }
-
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping Slack channel");
-        Ok(())
-    }
-}
-
-/// Stateless send: post a message to Slack without needing a `SlackChannel` instance.
-pub async fn send_message_stateless(
-    bot_token: &str,
-    channel: &str,
-    text: &str,
-    thread_ts: Option<&str>,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let url = "https://slack.com/api/chat.postMessage";
-
-    let mut body = serde_json::json!({
-        "channel": channel,
-        "text": text,
-    });
-    if let Some(ts) = thread_ts {
-        body["thread_ts"] = serde_json::json!(ts);
-    }
-
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", bot_token))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let result: serde_json::Value = response.json().await?;
-    if result["ok"].as_bool() != Some(true) {
-        anyhow::bail!(
-            "Failed to send Slack message: {}",
-            result["error"].as_str().unwrap_or("unknown")
-        );
-    }
-    Ok(())
 }

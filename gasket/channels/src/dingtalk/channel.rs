@@ -9,9 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, instrument};
 
-use crate::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::middleware::InboundSender;
 
 /// DingTalk channel configuration
@@ -33,7 +32,7 @@ pub struct DingTalkConfig {
 /// Send a text message via DingTalk webhook (stateless).
 ///
 /// This function creates a one-off HTTP client and signs the request
-/// if a secret is provided. Used by the OutboundSenderRegistry.
+/// if a secret is provided.
 #[instrument(name = "channel.dingtalk.send_stateless", skip_all)]
 pub async fn send_message_stateless(
     webhook_url: &str,
@@ -105,10 +104,22 @@ pub async fn send_message_stateless(
 ///
 /// Sends incoming messages through `InboundSender` which applies auth/rate-limit
 /// checks before forwarding to the message bus.
+#[derive(Clone)]
 pub struct DingTalkChannel {
     config: DingTalkConfig,
     inbound_sender: InboundSender,
     client: Client,
+}
+
+impl DingTalkConfig {
+    pub fn from_config(cfg: &crate::config::DingTalkConfig) -> Self {
+        Self {
+            webhook_url: cfg.webhook_url.clone(),
+            secret: cfg.secret.clone(),
+            access_token: cfg.access_token.clone(),
+            allow_from: cfg.allow_from.clone(),
+        }
+    }
 }
 
 impl DingTalkChannel {
@@ -119,6 +130,42 @@ impl DingTalkChannel {
             inbound_sender,
             client: Client::new(),
         }
+    }
+
+    pub fn from_config(cfg: &crate::config::DingTalkConfig, inbound: InboundSender) -> Self {
+        Self::new(DingTalkConfig::from_config(cfg), inbound)
+    }
+
+    /// Build axum routes for DingTalk webhooks.
+    pub fn routes(&self) -> axum::Router {
+        let cloned = self.clone();
+        axum::Router::new().route(
+            "/dingtalk/callback",
+            axum::routing::post(move |body: bytes::Bytes| async move {
+                let message: DingTalkCallbackMessage = match serde_json::from_slice(&body) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            format!("Invalid request body: {}", e),
+                        );
+                    }
+                };
+                match cloned.handle_callback_message(message).await {
+                    Ok(()) => (
+                        axum::http::StatusCode::OK,
+                        serde_json::json!({"msg": "success"}).to_string(),
+                    ),
+                    Err(e) => {
+                        tracing::error!("DingTalk callback processing failed: {}", e);
+                        (
+                            axum::http::StatusCode::OK,
+                            serde_json::json!({"msg": "success"}).to_string(),
+                        )
+                    }
+                }
+            }),
+        )
     }
 
     /// Generate signed webhook URL with timestamp and sign
@@ -287,22 +334,24 @@ impl DingTalkChannel {
 }
 
 #[async_trait]
-impl Channel for DingTalkChannel {
+impl ImAdapter for DingTalkChannel {
     fn name(&self) -> &str {
         "dingtalk"
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
+    async fn start(&self, _inbound: InboundSender) -> anyhow::Result<()> {
         info!("Starting DingTalk channel");
         // Note: DingTalk uses webhooks/callbacks, actual event handling is via handle_callback_message
         Ok(())
     }
 
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping DingTalk channel");
-        Ok(())
+    async fn send(&self, msg: &OutboundMessage) -> anyhow::Result<()> {
+        self.send_text(&msg.content).await
     }
 }
+
+/// Type alias for the new adapter name.
+pub type DingTalkAdapter = DingTalkChannel;
 
 // DingTalk API types
 

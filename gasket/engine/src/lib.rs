@@ -129,7 +129,7 @@ pub mod broker {
     pub use gasket_broker::*;
 }
 
-// OutboundDispatcher (in engine, not broker — needs OutboundSenderRegistry)
+// OutboundDispatcher (in engine, not broker — uses ImProviders)
 pub mod broker_outbound;
 
 // Channels
@@ -157,11 +157,11 @@ pub mod channels {
     #[cfg(feature = "wecom")]
     pub use gasket_channels::wecom;
     pub use gasket_channels::{
-        base, log_inbound, middleware, outbound, Channel, ChannelConfigError, ChannelType,
-        ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, InboundMessage, InboundSender,
-        MediaAttachment, OutboundMessage, OutboundSender, OutboundSenderRegistry, SessionKey,
+        adapter, log_inbound, middleware, ChannelConfigError, ChannelType, ChannelsConfig,
+        DingTalkConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider, ImProviders,
+        InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
-        WebSocketMessage,
+        WeComConfig, WebSocketMessage,
     };
     pub use gasket_types::events::ChatEvent;
 }

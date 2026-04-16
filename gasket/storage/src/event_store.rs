@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey, TokenUsage};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -160,7 +160,7 @@ pub struct EventFilter {
     pub event_types: Option<Vec<EventType>>,
     pub event_ids: Option<Vec<Uuid>>,
     pub limit: Option<usize>,
-    pub branch: Option<String>,
+
     /// For checkpoint-based recovery: only return events with sequence > this value.
     pub sequence_after: Option<i64>,
 }
@@ -184,7 +184,6 @@ pub trait EventStoreTrait: Send + Sync {
     async fn get_latest_summary(
         &self,
         session_key: &SessionKey,
-        branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError>;
 }
 
@@ -264,9 +263,9 @@ impl EventStore {
         sqlx::query(
             r#"
             INSERT INTO session_events
-            (id, session_key, channel, chat_id, event_type, content, embedding, branch,
+            (id, session_key, channel, chat_id, event_type, content, embedding,
              tools_used, token_usage, token_len, event_data, extra, created_at, sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())
@@ -281,7 +280,6 @@ impl EventStore {
                 .as_ref()
                 .map(|e| bytemuck::cast_slice(e) as &[u8]),
         )
-        .bind(event.metadata.branch.as_deref().unwrap_or("main"))
         .bind(&tools_used)
         .bind(token_usage.as_deref())
         .bind(token_len)
@@ -292,30 +290,10 @@ impl EventStore {
         .execute(&mut *tx)
         .await?;
 
-        let branch_name = event.metadata.branch.as_deref().unwrap_or("main");
-        let current_branches: Option<String> = sqlx::query_scalar(
-            "SELECT branches FROM sessions_v2 WHERE channel = ? AND chat_id = ?",
-        )
-        .bind(&channel)
-        .bind(chat_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let mut branches: Value = current_branches
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(serde_json::json!({}));
-
-        if let Some(obj) = branches.as_object_mut() {
-            obj.insert(branch_name.to_string(), Value::String(event.id.to_string()));
-        }
-
-        let branches_str = serde_json::to_string(&branches)?;
-
         sqlx::query(
-            "UPDATE sessions_v2 SET updated_at = ?, total_events = total_events + 1, branches = ? WHERE channel = ? AND chat_id = ?",
+            "UPDATE sessions_v2 SET updated_at = ?, total_events = total_events + 1 WHERE channel = ? AND chat_id = ?",
         )
         .bind(&now)
-        .bind(&branches_str)
         .bind(&channel)
         .bind(chat_id)
         .execute(&mut *tx)
@@ -334,23 +312,21 @@ impl EventStore {
         self.append_event_with_sequence(event, sequence).await
     }
 
-    pub async fn get_branch_history(
+    pub async fn get_session_history(
         &self,
         session_key: &SessionKey,
-        branch: &str,
     ) -> Result<Vec<SessionEvent>, StoreError> {
         let channel = session_key.channel.to_string();
         let chat_id = &session_key.chat_id;
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE channel = ? AND chat_id = ? AND branch = ?
+            WHERE channel = ? AND chat_id = ?
             ORDER BY created_at ASC
             "#,
         )
         .bind(&channel)
         .bind(chat_id)
-        .bind(branch)
         .fetch_all(&self.pool)
         .await?;
 
@@ -497,7 +473,7 @@ impl EventStore {
         Ok(result.rows_affected())
     }
 
-    /// Get the most recent summary event for a session branch.
+    /// Get the most recent summary event for a session.
     ///
     /// Returns the latest `EventType::Summary` event, which serves as a
     /// checkpoint for context reconstruction. Used by the compression
@@ -505,19 +481,17 @@ impl EventStore {
     pub async fn get_latest_summary(
         &self,
         session_key: &SessionKey,
-        branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError> {
         let session_key_str = session_key.to_string();
         let row = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE session_key = ? AND branch = ? AND event_type = 'summary'
+            WHERE session_key = ? AND event_type = 'summary'
             ORDER BY created_at DESC
             LIMIT 1
             "#,
         )
         .bind(&session_key_str)
-        .bind(branch)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -564,8 +538,7 @@ impl EventStoreTrait for EventStore {
             Some(k) => k.clone(),
             None => return Ok(vec![]),
         };
-        let branch = filter.branch.as_deref().unwrap_or("main");
-        let mut events = self.get_branch_history(&session_key, branch).await?;
+        let mut events = self.get_session_history(&session_key).await?;
 
         // Apply filters
         if let Some(time_range) = &filter.time_range {
@@ -606,9 +579,8 @@ impl EventStoreTrait for EventStore {
     async fn get_latest_summary(
         &self,
         session_key: &SessionKey,
-        branch: &str,
     ) -> Result<Option<SessionEvent>, StoreError> {
-        self.get_latest_summary(session_key, branch).await
+        self.get_latest_summary(session_key).await
     }
 }
 
@@ -621,7 +593,6 @@ struct EventRow {
     event_type: String,
     content: String,
     embedding: Option<Vec<u8>>,
-    branch: String,
     tools_used: String,
     token_usage: Option<String>,
     token_len: i64,
@@ -672,11 +643,6 @@ impl TryFrom<EventRow> for SessionEvent {
             content: row.content,
             embedding,
             metadata: EventMetadata {
-                branch: if row.branch == "main" {
-                    None
-                } else {
-                    Some(row.branch)
-                },
                 tools_used,
                 token_usage,
                 content_token_len: row.token_len as usize,
@@ -705,8 +671,6 @@ mod tests {
             r#"
             CREATE TABLE sessions_v2 (
                 key TEXT PRIMARY KEY,
-                current_branch TEXT NOT NULL DEFAULT 'main',
-                branches TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_consolidated_event TEXT,
@@ -731,7 +695,6 @@ mod tests {
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,
-                branch TEXT DEFAULT 'main',
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
                 token_len INTEGER NOT NULL DEFAULT 0,
@@ -810,7 +773,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
+            .get_session_history(&SessionKey::parse("test:session").unwrap())
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -849,7 +812,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
+            .get_session_history(&SessionKey::parse("test:session").unwrap())
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -892,7 +855,7 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         let history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
+            .get_session_history(&SessionKey::parse("test:session").unwrap())
             .await
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -944,42 +907,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_branch_tracking() {
-        let pool = setup_test_db().await;
-        let store = EventStore::new(pool);
-
-        let event = SessionEvent {
-            id: Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Test".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("feature".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-
-        store.append_event(&event).await.unwrap();
-
-        let branch: (String,) =
-            sqlx::query_as("SELECT branch FROM session_events WHERE session_key = 'test:session'")
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert_eq!(branch.0, "feature");
-
-        let branches: (String,) =
-            sqlx::query_as("SELECT branches FROM sessions_v2 WHERE key = 'test:session'")
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
-        assert!(branches.0.contains("feature"));
-    }
-
-    #[tokio::test]
     async fn test_append_event_with_embedding() {
         let pool = setup_test_db().await;
         let store = EventStore::new(pool);
@@ -1013,7 +940,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_branch_history() {
+    async fn test_get_session_history() {
         let pool = setup_test_db().await;
         let store = EventStore::new(pool);
 
@@ -1023,10 +950,7 @@ mod tests {
             event_type: EventType::UserMessage,
             content: "Hello".into(),
             embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
+            metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
         };
@@ -1038,17 +962,14 @@ mod tests {
             event_type: EventType::AssistantMessage,
             content: "Hi!".into(),
             embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
+            metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
         };
         store.append_event(&e2).await.unwrap();
 
         let history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
+            .get_session_history(&SessionKey::parse("test:session").unwrap())
             .await
             .unwrap();
         assert_eq!(history.len(), 2);
@@ -1057,65 +978,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_branch_history_empty() {
+    async fn test_get_session_history_empty() {
         let pool = setup_test_db().await;
         let store = EventStore::new(pool);
 
         let history = store
-            .get_branch_history(&SessionKey::parse("nonexistent:session").unwrap(), "main")
+            .get_session_history(&SessionKey::parse("nonexistent:session").unwrap())
             .await
             .unwrap();
         assert!(history.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_get_branch_history_different_branches() {
-        let pool = setup_test_db().await;
-        let store = EventStore::new(pool);
-
-        let main_event = SessionEvent {
-            id: Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Main branch".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("main".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        store.append_event(&main_event).await.unwrap();
-
-        let feature_event = SessionEvent {
-            id: Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Feature branch".into(),
-            embedding: None,
-            metadata: EventMetadata {
-                branch: Some("feature".into()),
-                ..Default::default()
-            },
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-        store.append_event(&feature_event).await.unwrap();
-
-        let main_history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "main")
-            .await
-            .unwrap();
-        assert_eq!(main_history.len(), 1);
-        assert_eq!(main_history[0].content, "Main branch");
-
-        let feature_history = store
-            .get_branch_history(&SessionKey::parse("test:session").unwrap(), "feature")
-            .await
-            .unwrap();
-        assert_eq!(feature_history.len(), 1);
-        assert_eq!(feature_history[0].content, "Feature branch");
     }
 
     #[tokio::test]

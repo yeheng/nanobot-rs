@@ -1,103 +1,80 @@
-//! Discord channel implementation using serenity
+//! Discord adapter using serenity
 
 use async_trait::async_trait;
 use serenity::all::{GatewayIntents, Message as DiscordMessage};
 use serenity::prelude::*;
 use tracing::{debug, info, instrument};
 
-use super::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage};
 use crate::middleware::InboundSender;
 
-/// Discord channel configuration
 #[derive(Debug, Clone)]
 pub struct DiscordConfig {
     pub token: String,
     pub allow_from: Vec<String>,
 }
 
-/// Discord channel.
-///
-/// Sends incoming messages via `InboundSender` (supports both mpsc and broker modes).
-pub struct DiscordChannel {
-    config: DiscordConfig,
-    inbound_sender: InboundSender,
-}
-
-impl DiscordChannel {
-    /// Create a new Discord channel with an inbound message sender.
-    pub fn new(config: DiscordConfig, inbound_sender: InboundSender) -> Self {
+impl From<&crate::config::DiscordConfig> for DiscordConfig {
+    fn from(cfg: &crate::config::DiscordConfig) -> Self {
         Self {
-            config,
-            inbound_sender,
+            token: cfg.token.clone(),
+            allow_from: cfg.allow_from.clone(),
         }
     }
+}
 
-    /// Start the Discord bot
-    #[instrument(name = "channel.discord.start", skip_all)]
-    pub async fn start_bot(&self) -> anyhow::Result<()> {
-        info!("Starting Discord bot");
+/// Discord IM adapter.
+#[derive(Clone)]
+pub struct DiscordAdapter {
+    config: DiscordConfig,
+}
+
+impl DiscordAdapter {
+    pub fn from_config(cfg: &crate::config::DiscordConfig, _inbound: InboundSender) -> Self {
+        Self { config: cfg.into() }
+    }
+}
+
+#[async_trait]
+impl ImAdapter for DiscordAdapter {
+    fn name(&self) -> &str {
+        "discord"
+    }
+
+    #[instrument(name = "adapter.discord.start", skip_all)]
+    async fn start(&self, inbound_sender: InboundSender) -> anyhow::Result<()> {
+        info!("Starting Discord adapter");
 
         let intents = GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
-        let token = self.config.token.clone();
-        let inbound_sender = self.inbound_sender.clone();
-        let allow_from = self.config.allow_from.clone();
-
         let handler = DiscordHandler {
             inbound_sender,
-            allow_from,
+            allow_from: self.config.allow_from.clone(),
         };
 
-        let mut client = Client::builder(&token, intents)
+        let mut client = Client::builder(&self.config.token, intents)
             .event_handler(handler)
             .await?;
 
         client.start().await?;
+        Ok(())
+    }
 
+    async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
+        use serenity::http::Http;
+        use serenity::model::id::ChannelId;
+
+        let http = Http::new(&self.config.token);
+        let channel_id: u64 = msg.chat_id.parse()?;
+        let channel = ChannelId::new(channel_id);
+        channel.say(&http, &msg.content).await?;
         Ok(())
     }
 }
 
-#[async_trait]
-impl Channel for DiscordChannel {
-    fn name(&self) -> &str {
-        "discord"
-    }
-
-    /// Start the Discord channel.
-    /// Delegates to the inherent `start_bot` method.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        self.start_bot().await
-    }
-
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping Discord channel");
-        Ok(())
-    }
-}
-
-/// Stateless send: send a message to Discord without needing a `DiscordChannel` instance.
-pub async fn send_message_stateless(
-    token: &str,
-    channel_id: &str,
-    content: &str,
-) -> anyhow::Result<()> {
-    use serenity::http::Http;
-    use serenity::model::id::ChannelId;
-
-    let http = Http::new(token);
-    let channel_id: u64 = channel_id.parse()?;
-    let channel = ChannelId::new(channel_id);
-
-    channel.say(&http, content).await?;
-    Ok(())
-}
-
-/// Discord event handler
 struct DiscordHandler {
     inbound_sender: InboundSender,
     allow_from: Vec<String>,
@@ -106,14 +83,12 @@ struct DiscordHandler {
 #[serenity::async_trait]
 impl EventHandler for DiscordHandler {
     async fn message(&self, _ctx: Context, msg: DiscordMessage) {
-        // Ignore bot messages
         if msg.author.bot {
             return;
         }
 
         let user_id = msg.author.id.to_string();
 
-        // Check allowlist
         if !self.allow_from.is_empty() && !self.allow_from.contains(&user_id) {
             debug!("Ignoring message from unauthorized user: {}", user_id);
             return;

@@ -14,9 +14,6 @@ pub struct HistoryQuery {
     /// 会话标识
     pub session_key: String,
 
-    /// 分支过滤 (None = 当前分支)
-    pub branch: Option<String>,
-
     /// 时间范围
     pub time_range: Option<TimeRange>,
 
@@ -57,11 +54,6 @@ impl HistoryQueryBuilder {
                 ..Default::default()
             },
         }
-    }
-
-    pub fn branch(mut self, branch: impl Into<String>) -> Self {
-        self.query.branch = Some(branch.into());
-        self
     }
 
     pub fn time_range(mut self, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
@@ -150,14 +142,12 @@ mod tests {
     #[test]
     fn test_query_builder() {
         let query = HistoryQuery::builder("test:session")
-            .branch("explore")
             .limit(10)
             .offset(5)
             .order(QueryOrder::ReverseChronological)
             .build();
 
         assert_eq!(query.session_key, "test:session");
-        assert_eq!(query.branch, Some("explore".into()));
         assert_eq!(query.limit, 10);
         assert_eq!(query.offset, 5);
     }

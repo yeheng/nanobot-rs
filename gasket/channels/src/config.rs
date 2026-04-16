@@ -27,6 +27,10 @@ pub struct ChannelsConfig {
     /// DingTalk channel
     #[serde(default)]
     pub dingtalk: Option<DingTalkConfig>,
+
+    /// WeCom channel
+    #[serde(default)]
+    pub wecom: Option<WeComConfig>,
 }
 
 // ── Telegram ─────────────────────────────────────────────────────────────
@@ -209,6 +213,55 @@ impl std::fmt::Debug for DingTalkConfig {
     }
 }
 
+// ── WeCom ─────────────────────────────────────────────────────────────────
+
+/// WeCom channel configuration
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WeComConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Corp ID
+    pub corpid: String,
+
+    /// Corp Secret
+    pub corpsecret: String,
+
+    /// Agent ID for the bot application
+    #[serde(alias = "agentId")]
+    pub agent_id: i64,
+
+    /// Token for callback verification (optional)
+    #[serde(default, alias = "token")]
+    pub token: Option<String>,
+
+    /// EncodingAESKey for callback message encryption/decryption (optional, 43 chars)
+    #[serde(default, alias = "encodingAesKey")]
+    pub encoding_aes_key: Option<String>,
+
+    /// Allowed users (empty = allow all)
+    #[serde(default, alias = "allowFrom")]
+    pub allow_from: Vec<String>,
+}
+
+impl std::fmt::Debug for WeComConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WeComConfig")
+            .field("enabled", &self.enabled)
+            .field("corpid", &self.corpid)
+            .field("corpsecret", &"***REDACTED***")
+            .field("agent_id", &self.agent_id)
+            .field("token", &self.token.as_ref().map(|_| "***REDACTED***"))
+            .field(
+                "encoding_aes_key",
+                &self.encoding_aes_key.as_ref().map(|_| "***REDACTED***"),
+            )
+            .field("allow_from", &self.allow_from)
+            .finish()
+    }
+}
+
 // ── Default Functions ─────────────────────────────────────────────────────
 
 fn default_true() -> bool {
@@ -254,6 +307,9 @@ impl ChannelsConfig {
             count += 1;
         }
         if self.dingtalk.as_ref().is_some_and(|c| c.enabled) {
+            count += 1;
+        }
+        if self.wecom.as_ref().is_some_and(|c| c.enabled) {
             count += 1;
         }
         count

@@ -107,9 +107,6 @@ pub enum SummaryType {
 /// Event metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventMetadata {
-    /// Branch name (None means main branch)
-    pub branch: Option<String>,
-
     /// List of tools used
     #[serde(default)]
     pub tools_used: Vec<String>,

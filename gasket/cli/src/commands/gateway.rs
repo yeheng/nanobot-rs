@@ -8,9 +8,7 @@ use colored::Colorize;
 use tracing::info;
 
 use gasket_engine::bus_adapter::EngineHandler;
-#[allow(unused_imports)]
-use gasket_engine::channels::Channel;
-use gasket_engine::channels::OutboundSenderRegistry;
+
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::cron::CronService;
 use gasket_engine::memory::MemoryStore;
@@ -267,9 +265,9 @@ pub async fn cmd_gateway() -> Result<()> {
     // Session Actors serialize per-session processing via dedicated mpsc channels.
     // Outbound Actor decouples network I/O from the agent loop.
 
-    // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
-    // Create registry from config - supports custom channels via register_custom()
-    let outbound_registry = Arc::new(OutboundSenderRegistry::from_config(&config.channels));
+    // Build IM providers (replaces OutboundSenderRegistry + ChannelRegistry)
+    let mut providers =
+        gasket_engine::channels::ImProviders::from_config(&config.channels, inbound_sender.clone());
 
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
@@ -280,9 +278,20 @@ pub async fn cmd_gateway() -> Result<()> {
 
     #[cfg(feature = "all-channels")]
     {
+        providers.push(gasket_engine::channels::ImProvider::WebSocket(
+            gasket_engine::channels::websocket::WebSocketAdapter::new(websocket_manager.clone()),
+        ));
+    }
+
+    let providers = Arc::new(providers);
+
+    // Start HTTP server (WebSocket + webhooks on port 3000)
+    #[cfg(feature = "all-channels")]
+    {
         let manager = websocket_manager.clone();
+        let providers_for_http = providers.clone();
         tasks.push(tokio::spawn(async move {
-            let app = axum::Router::new()
+            let mut app = axum::Router::new()
                 .route(
                     "/ws",
                     axum::routing::get(
@@ -291,16 +300,23 @@ pub async fn cmd_gateway() -> Result<()> {
                 )
                 .with_state(manager);
 
+            // Merge webhook routes from enabled providers
+            for provider in providers_for_http.iter() {
+                if let Some(router) = provider.routes() {
+                    app = app.merge(router);
+                }
+            }
+
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-            tracing::info!("WebSocket server listening on {}", addr);
+            tracing::info!("HTTP server listening on {}", addr);
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
                     if let Err(e) = axum::serve(listener, app).await {
-                        tracing::error!("WebSocket server error: {}", e);
+                        tracing::error!("HTTP server error: {}", e);
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Failed to bind WebSocket server port 3000: {}", e);
+                    tracing::error!("Failed to bind HTTP server port 3000: {}", e);
                 }
             }
         }));
@@ -308,15 +324,15 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // --- Broker Pipeline (replaces old Router/Session/Outbound actors) ---
 
-    // 1. Start OutboundDispatcher (subscribes to Topic::Outbound, routes to channels)
+    // 1. Start OutboundDispatcher (subscribes to Topic::Outbound, routes to providers)
     #[cfg(feature = "all-channels")]
     let outbound_dispatcher = OutboundDispatcher::with_websocket(
         broker.clone(),
-        outbound_registry,
+        providers.clone(),
         websocket_manager.clone(),
     );
     #[cfg(not(feature = "all-channels"))]
-    let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), outbound_registry);
+    let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), providers.clone());
     tasks.push(tokio::spawn(outbound_dispatcher.run()));
 
     // 2. Start SessionManager (subscribes to Topic::Inbound, dispatches to per-session tasks)
@@ -344,20 +360,9 @@ pub async fn cmd_gateway() -> Result<()> {
         &mut tasks,
     );
 
-    // --- Start all configured channels using factory pattern ---
-    let registry =
-        super::channel_factory::ChannelRegistry::from_config(&config.channels, vault.as_deref());
-    let (channel_tasks, channel_errors) = registry.spawn_all(&inbound_processor);
-    tasks.extend(channel_tasks);
-    if !channel_errors.is_empty() {
-        println!(
-            "{}",
-            "Warning: Some channels failed to initialize:".yellow()
-        );
-        for error in &channel_errors {
-            println!("  - {}", error);
-        }
-    }
+    // --- Start all configured adapters ---
+    let adapter_tasks = providers.spawn_all(&inbound_processor);
+    tasks.extend(adapter_tasks);
 
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
 

@@ -479,15 +479,13 @@ impl SqliteStore {
 
         // === Event sourcing new tables ===
 
-        // Session metadata table (v2 with branch support)
+        // Session metadata table
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS sessions_v2 (
                 key             TEXT PRIMARY KEY,
                 channel         TEXT NOT NULL DEFAULT '',
                 chat_id         TEXT NOT NULL DEFAULT '',
-                current_branch  TEXT NOT NULL DEFAULT 'main',
-                branches        TEXT NOT NULL DEFAULT '{}',
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL,
                 last_consolidated_event TEXT,
@@ -510,7 +508,6 @@ impl SqliteStore {
                 event_type      TEXT NOT NULL,
                 content         TEXT NOT NULL,
                 embedding       BLOB,
-                branch          TEXT DEFAULT 'main',
                 tools_used      TEXT DEFAULT '[]',
                 token_usage     TEXT,
                 token_len       INTEGER NOT NULL DEFAULT 0,
@@ -526,11 +523,6 @@ impl SqliteStore {
         .await?;
 
         // Indexes for session_events
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_session_branch ON session_events(session_key, branch)",
-        )
-        .execute(&self.pool)
-        .await?;
 
         // Indexes for channel/chat_id queries
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)")
@@ -560,7 +552,7 @@ impl SqliteStore {
         // Covering index for get_latest_summary: single seek, no table scan
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_events_session_type_created \
-             ON session_events(session_key, branch, event_type, created_at DESC)",
+             ON session_events(session_key, event_type, created_at DESC)",
         )
         .execute(&self.pool)
         .await?;

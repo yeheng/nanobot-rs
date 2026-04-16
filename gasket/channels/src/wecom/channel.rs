@@ -13,9 +13,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use super::crypto::{compute_signature, decode_aes_key, decrypt_message};
-use crate::base::Channel;
-use crate::events::ChannelType;
-use crate::events::InboundMessage;
+use std::sync::Arc;
+
+use axum::extract::Query;
+
+use crate::adapter::ImAdapter;
+use crate::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::middleware::InboundSender;
 
 // ── Configuration ────────────────────────────────────────────
@@ -115,11 +118,12 @@ struct WeComApiResponse {
 ///
 /// Sends incoming messages through `InboundSender` which applies auth/rate-limit
 /// checks before forwarding to the message bus.
+#[derive(Clone)]
 pub struct WeComChannel {
     config: WeComConfig,
     inbound_sender: InboundSender,
     client: Client,
-    access_token: Option<String>,
+    access_token: Arc<tokio::sync::Mutex<Option<String>>>,
     /// Cached decoded AES key (32 bytes), derived from `encoding_aes_key`.
     aes_key: Option<Vec<u8>>,
 }
@@ -127,13 +131,72 @@ pub struct WeComChannel {
 impl WeComChannel {
     /// Create a new WeCom bot channel with an inbound message sender.
     pub fn new(config: WeComConfig, inbound_sender: InboundSender) -> Self {
+        let aes_key = config
+            .encoding_aes_key
+            .as_ref()
+            .and_then(|k| decode_aes_key(k).ok());
         Self {
             config,
             inbound_sender,
             client: Client::new(),
-            access_token: None,
-            aes_key: None,
+            access_token: Arc::new(tokio::sync::Mutex::new(None)),
+            aes_key,
         }
+    }
+
+    pub fn from_config(cfg: &crate::config::WeComConfig, inbound: InboundSender) -> Self {
+        Self::new(
+            WeComConfig {
+                corpid: cfg.corpid.clone(),
+                corpsecret: cfg.corpsecret.clone(),
+                agent_id: cfg.agent_id,
+                token: cfg.token.clone(),
+                encoding_aes_key: cfg.encoding_aes_key.clone(),
+                allow_from: cfg.allow_from.clone(),
+            },
+            inbound,
+        )
+    }
+
+    /// Build axum routes for WeCom webhooks.
+    pub fn routes(&self) -> axum::Router {
+        let get_cloned = self.clone();
+        let post_cloned = self.clone();
+        axum::Router::new().route(
+            "/wecom/callback",
+            axum::routing::get(move |Query(query): Query<WeComCallbackQuery>| async move {
+                match get_cloned.verify_url(&query) {
+                    Ok(echostr) => (axum::http::StatusCode::OK, echostr),
+                    Err(e) => (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!("Verification failed: {}", e),
+                    ),
+                }
+            })
+            .post(
+                move |Query(query): Query<WeComCallbackQuery>, body: bytes::Bytes| async move {
+                    let callback_body: WeComCallbackBody = match serde_json::from_slice(&body) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                format!("Invalid request body: {}", e),
+                            );
+                        }
+                    };
+                    match post_cloned
+                        .handle_callback_message(&query, &callback_body)
+                        .await
+                    {
+                        Ok(()) => (axum::http::StatusCode::OK, "success".to_string()),
+                        Err(e) => {
+                            tracing::error!("WeCom callback processing failed: {}", e);
+                            (axum::http::StatusCode::OK, "success".to_string())
+                        }
+                    }
+                },
+            ),
+        )
     }
 
     // ── Token management ─────────────────────────────────────
@@ -142,9 +205,12 @@ impl WeComChannel {
     ///
     /// Caches the token in `self.access_token`. Called automatically during `start()`.
     #[instrument(name = "channel.wecom.get_token", skip_all)]
-    pub async fn get_access_token(&mut self) -> anyhow::Result<&str> {
-        if let Some(ref token) = self.access_token {
-            return Ok(token);
+    pub async fn get_access_token(&self) -> anyhow::Result<String> {
+        {
+            let guard = self.access_token.lock().await;
+            if let Some(ref token) = *guard {
+                return Ok(token.clone());
+            }
         }
 
         let url = format!(
@@ -182,23 +248,18 @@ impl WeComChannel {
             anyhow::anyhow!("WeCom gettoken returned errcode=0 but no access_token")
         })?;
 
-        self.access_token = Some(token);
+        let mut guard = self.access_token.lock().await;
+        *guard = Some(token);
         info!("Obtained WeCom access token");
 
-        Ok(self
-            .access_token
-            .as_ref()
-            .expect("access_token was just set"))
+        Ok(guard.as_ref().unwrap().clone())
     }
 
     // ── Sending ──────────────────────────────────────────────
 
     /// Send a POST to the message/send API and check the response.
     async fn post_message<T: Serialize>(&self, body: &T) -> anyhow::Result<()> {
-        let token = self
-            .access_token
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No access token. Call get_access_token first."))?;
+        let token = self.get_access_token().await?;
 
         let url = format!(
             "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={}",
@@ -539,30 +600,23 @@ pub fn parse_callback_xml(xml: &str) -> anyhow::Result<WeComCallbackMessage> {
 }
 
 #[async_trait]
-impl Channel for WeComChannel {
+impl ImAdapter for WeComChannel {
     fn name(&self) -> &str {
         "wecom"
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
+    async fn start(&self, _inbound: InboundSender) -> anyhow::Result<()> {
         info!("Starting WeCom channel");
         self.get_access_token().await?;
-
-        // Pre-decode AES key if configured
-        if let Some(ref encoding_aes_key) = self.config.encoding_aes_key {
-            let key = decode_aes_key(encoding_aes_key)?;
-            self.aes_key = Some(key);
-            info!("WeCom callback decryption key loaded");
-        }
-
         Ok(())
     }
 
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        info!("Stopping WeCom channel");
-        Ok(())
+    async fn send(&self, msg: &OutboundMessage) -> anyhow::Result<()> {
+        self.send_text(&msg.chat_id, &msg.content).await
     }
 }
+
+pub type WeComAdapter = WeComChannel;
 
 #[cfg(test)]
 mod tests {

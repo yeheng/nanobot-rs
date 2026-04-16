@@ -1,37 +1,32 @@
 //! OutboundDispatcher — replaces the Outbound Actor.
 //!
-//! Lives in gasket-engine (not gasket-broker) because it depends on
-//! `OutboundSenderRegistry` from gasket-channels.
-//!
 //! Subscribes to `Topic::Outbound` via the broker and dispatches each
-//! message to the appropriate channel sender. Each send is fire-and-forget
+//! message to the appropriate IM provider. Each send is fire-and-forget
 //! (`tokio::spawn`) to avoid Head-of-Line Blocking.
 
 use std::sync::Arc;
 
 use gasket_broker::{BrokerPayload, MemoryBroker, Topic};
+use gasket_channels::provider::ImProviders;
 
-/// Dispatches outbound messages from the broker to `OutboundSenderRegistry`.
+/// Dispatches outbound messages from the broker to `ImProviders`.
 ///
 /// Replaces `run_outbound_actor` from the old bus architecture.
 /// The broker's topic-based routing means this is a pure consumer —
 /// no inbound routing logic lives here.
 pub struct OutboundDispatcher {
     broker: Arc<MemoryBroker>,
-    registry: Arc<gasket_channels::outbound::OutboundSenderRegistry>,
+    providers: Arc<ImProviders>,
     #[cfg(feature = "webhook")]
     websocket_manager: Option<Arc<gasket_channels::websocket::WebSocketManager>>,
 }
 
 impl OutboundDispatcher {
     /// Create a new dispatcher without WebSocket support.
-    pub fn new(
-        broker: Arc<MemoryBroker>,
-        registry: Arc<gasket_channels::outbound::OutboundSenderRegistry>,
-    ) -> Self {
+    pub fn new(broker: Arc<MemoryBroker>, providers: Arc<ImProviders>) -> Self {
         Self {
             broker,
-            registry,
+            providers,
             #[cfg(feature = "webhook")]
             websocket_manager: None,
         }
@@ -41,12 +36,12 @@ impl OutboundDispatcher {
     #[cfg(feature = "webhook")]
     pub fn with_websocket(
         broker: Arc<MemoryBroker>,
-        registry: Arc<gasket_channels::outbound::OutboundSenderRegistry>,
+        providers: Arc<ImProviders>,
         websocket_manager: Arc<gasket_channels::websocket::WebSocketManager>,
     ) -> Self {
         Self {
             broker,
-            registry,
+            providers,
             websocket_manager: Some(websocket_manager),
         }
     }
@@ -65,7 +60,7 @@ impl OutboundDispatcher {
         while let Ok(envelope) = sub.recv().await {
             match envelope.payload.as_ref() {
                 BrokerPayload::Outbound(msg) => {
-                    // WebSocket messages go through WebSocketManager, not the registry
+                    // WebSocket messages go through WebSocketManager, not the providers enum
                     #[cfg(feature = "webhook")]
                     if let gasket_types::events::ChannelType::WebSocket = msg.channel {
                         if let Some(ref manager) = self.websocket_manager {
@@ -78,12 +73,10 @@ impl OutboundDispatcher {
                         continue;
                     }
 
-                    let reg = self.registry.clone();
+                    let providers = self.providers.clone();
                     let msg = msg.clone();
-                    // Fire-and-forget: each send runs in its own task,
-                    // eliminating Head-of-Line Blocking across messages.
                     tokio::spawn(async move {
-                        if let Err(e) = reg.send(msg).await {
+                        if let Err(e) = providers.send(&msg).await {
                             tracing::error!("Outbound delivery failed: {}", e);
                         }
                     });
