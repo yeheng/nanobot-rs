@@ -221,9 +221,9 @@ impl SqliteStore {
             r#"
             SELECT e.message_id, m.content, e.embedding
             FROM session_embeddings e
-            LEFT JOIN session_messages m ON e.message_id = CAST(m.id AS TEXT)
+            LEFT JOIN session_events m ON e.message_id = m.id
             WHERE e.session_key = $1
-            ORDER BY m.id ASC
+            ORDER BY m.sequence ASC
             "#,
         )
         .bind(session_key)
@@ -341,8 +341,8 @@ impl SqliteStore {
     ///
     /// Only machine-state tables are created here:
     /// - `kv_store` — generic key-value persistence
-    /// - `sessions` / `session_messages` / `session_summaries` — conversation history
-    /// - `cron_jobs` — scheduled tasks
+    /// - `sessions_v2` / `session_events` / `session_summaries` — conversation history
+    /// - `cron_state` — scheduled tasks
     /// - `session_embeddings` — semantic history recall
     ///
     /// Explicit long-term memory lives exclusively in `~/.gasket/memory/*.md` files
@@ -356,48 +356,6 @@ impl SqliteStore {
                 value       TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
             )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // ── Sessions tables ──
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                key         TEXT PRIMARY KEY,
-                last_consolidated INTEGER NOT NULL DEFAULT 0,
-                updated_at  TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS session_messages (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_key TEXT NOT NULL,
-                role        TEXT NOT NULL,
-                content     TEXT NOT NULL,
-                timestamp   TEXT NOT NULL,
-                tools_used  TEXT,
-                FOREIGN KEY (session_key) REFERENCES sessions(key) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_session_messages_session_key ON session_messages(session_key)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp)",
         )
         .execute(&self.pool)
         .await?;
@@ -446,7 +404,7 @@ impl SqliteStore {
                 session_key TEXT NOT NULL,
                 embedding   BLOB NOT NULL,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (session_key) REFERENCES sessions(key) ON DELETE CASCADE
+                FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
             )",
         )
         .execute(&self.pool)

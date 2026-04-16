@@ -329,7 +329,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // History query tool — direct SQL query over session_messages
+    // History query tool — direct SQL query over session_events
     if let Some(ref db) = sqlite_store {
         tools.register_with_metadata(
             Box::new(HistoryQueryTool::new(db.pool().clone())),

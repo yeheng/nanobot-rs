@@ -1,6 +1,6 @@
 //! History query tool for searching conversation records in SQLite.
 //!
-//! Provides a `query_history` tool that searches the `session_messages` table
+//! Provides a `query_history` tool that searches the `session_events` table
 //! without relying on the external `sqlite3` CLI binary (which may be blocked
 //! by macOS sandbox or enterprise policies).
 
@@ -16,7 +16,7 @@ use gasket_storage::SqlitePool;
 /// Query conversation history from the local SQLite store.
 ///
 /// This tool bypasses the need for an external `sqlite3` binary by using
-/// `sqlx` to query the `session_messages` table directly via the async pool.
+/// `sqlx` to query the `session_events` table directly via the async pool.
 pub struct HistoryQueryTool {
     pool: SqlitePool,
 }
@@ -37,10 +37,6 @@ struct QueryArgs {
 
     /// Maximum number of messages to return (default: 20).
     limit: Option<usize>,
-
-    /// Optional session key override. If omitted, the current session key from
-    /// `ToolContext` is used.
-    session_key: Option<String>,
 }
 
 #[async_trait]
@@ -67,10 +63,6 @@ impl Tool for HistoryQueryTool {
                     "type": "integer",
                     "description": "Maximum number of messages to return",
                     "default": 20
-                },
-                "session_key": {
-                    "type": "string",
-                    "description": "Optional session key (e.g. 'telegram:12345'). Uses current session if omitted."
                 }
             },
             "required": []
@@ -78,13 +70,10 @@ impl Tool for HistoryQueryTool {
     }
 
     #[instrument(name = "tool.query_history", skip_all)]
-    async fn execute(&self, params: Value, ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
         let args: QueryArgs = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let session_key = args
-            .session_key
-            .unwrap_or_else(|| ctx.session_key.to_string());
         let limit = args.limit.unwrap_or(20).min(100) as i64;
         let pattern = args
             .keywords
@@ -93,15 +82,23 @@ impl Tool for HistoryQueryTool {
 
         let rows = sqlx::query(
             r#"
-            SELECT role, content, timestamp
-            FROM session_messages
-            WHERE session_key = ?1
-              AND content LIKE ?2 ESCAPE '\'
-            ORDER BY timestamp DESC
-            LIMIT ?3
+            SELECT
+                CASE event_type
+                    WHEN 'user_message' THEN 'user'
+                    WHEN 'assistant_message' THEN 'assistant'
+                    WHEN 'tool_call' THEN 'tool'
+                    WHEN 'tool_result' THEN 'tool'
+                    WHEN 'summary' THEN 'system'
+                    ELSE 'unknown'
+                END AS role,
+                content,
+                created_at AS timestamp
+            FROM session_events
+            WHERE content LIKE ?1 ESCAPE '\'
+            ORDER BY created_at DESC
+            LIMIT ?2
             "#,
         )
-        .bind(&session_key)
         .bind(&pattern)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -109,17 +106,10 @@ impl Tool for HistoryQueryTool {
         .map_err(|e| ToolError::ExecutionError(format!("Database query failed: {}", e)))?;
 
         if rows.is_empty() {
-            return Ok(format!(
-                "No history found for session '{}' with the given keywords.",
-                session_key
-            ));
+            return Ok("No history found.".to_string());
         }
 
-        let mut lines = vec![format!(
-            "Conversation history for session '{}' ({} messages):",
-            session_key,
-            rows.len()
-        )];
+        let mut lines = vec![format!("Conversation history ({} messages):", rows.len())];
 
         for row in rows {
             let role: String = row.try_get("role").unwrap_or_default();
@@ -150,14 +140,15 @@ mod tests {
         let store = SqliteStore::with_path(path).await.unwrap();
         // seed a session and a message
         sqlx::query(
-            "INSERT OR IGNORE INTO sessions (key, updated_at) VALUES ('cli:test', datetime('now'))",
+            "INSERT OR IGNORE INTO sessions_v2 (key, channel, chat_id, created_at, updated_at) VALUES ('cli:test', 'cli', 'test', datetime('now'), datetime('now'))",
         )
         .execute(&store.pool())
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO session_messages (session_key, role, content, timestamp) VALUES ('cli:test', 'user', 'Hello world', datetime('now'))"
+            "INSERT INTO session_events (id, session_key, channel, chat_id, event_type, content, created_at, sequence) VALUES (?, 'cli:test', 'cli', 'test', 'user_message', 'Hello world', datetime('now'), 1)"
         )
+        .bind(uuid::Uuid::new_v4().to_string())
         .execute(&store.pool())
         .await
         .unwrap();
