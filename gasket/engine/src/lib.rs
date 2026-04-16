@@ -181,6 +181,7 @@ pub mod providers {
     #[cfg(feature = "provider-copilot")]
     pub use gasket_providers::{
         CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
+        COPILOT_DEFAULT_CLIENT_ID,
     };
 }
 

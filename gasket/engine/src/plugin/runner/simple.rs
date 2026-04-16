@@ -161,7 +161,8 @@ pub(super) fn spawn_process(
 
 #[cfg(test)]
 mod tests {
-    use crate::tools::{PluginProtocol, RuntimeConfig};
+
+    use crate::plugin::{PluginProtocol, RuntimeConfig};
 
     use super::*;
     use serde_json::json;

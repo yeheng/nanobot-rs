@@ -61,6 +61,9 @@ pub struct CopilotProvider {
     cached_token: Mutex<Option<CachedToken>>,
     api_base: String,
     default_model: String,
+    proxy_url: Option<String>,
+    proxy_username: Option<String>,
+    proxy_password: Option<String>,
 }
 
 impl CopilotProvider {
@@ -81,6 +84,9 @@ impl CopilotProvider {
             cached_token: Mutex::new(None),
             api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            proxy_url: None,
+            proxy_username: None,
+            proxy_password: None,
         }
     }
 
@@ -111,6 +117,9 @@ impl CopilotProvider {
             cached_token: Mutex::new(None),
             api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            proxy_url: proxy_url.clone(),
+            proxy_username: proxy_username.clone(),
+            proxy_password: proxy_password.clone(),
         }
     }
 
@@ -137,7 +146,12 @@ impl CopilotProvider {
     async fn refresh_copilot_token(&self) -> anyhow::Result<String> {
         debug!("Refreshing Copilot token");
 
-        let oauth = CopilotOAuth::with_default_client_id();
+        let oauth = CopilotOAuth::with_proxy(
+            crate::copilot_oauth::DEFAULT_CLIENT_ID,
+            self.proxy_url.clone(),
+            self.proxy_username.clone(),
+            self.proxy_password.clone(),
+        );
         let response = oauth.get_copilot_token(&self.github_token).await?;
 
         let token = response.token.clone();

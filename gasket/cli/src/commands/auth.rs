@@ -19,11 +19,27 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     let loader = ConfigLoader::new();
     let mut config = loader.load().await.unwrap_or_default();
 
+    // Preserve existing proxy configuration if present
+    let existing_proxy = config.providers.get("copilot").map(|p| {
+        (
+            p.proxy_url.clone(),
+            p.proxy_username.clone(),
+            p.proxy_password.clone(),
+        )
+    });
+    let (proxy_url, proxy_username, proxy_password) = existing_proxy
+        .unwrap_or((None, None, None));
+
     let access_token = if let Some(token) = pat {
         // PAT mode: validate and use directly
         println!("Validating Personal Access Token...");
 
-        let oauth = gasket_engine::providers::CopilotOAuth::with_default_client_id();
+        let oauth = gasket_engine::providers::CopilotOAuth::with_proxy(
+            gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
+            proxy_url.clone(),
+            proxy_username.clone(),
+            proxy_password.clone(),
+        );
         match oauth.validate_pat(&token).await {
             Ok(true) => {
                 println!("{} Token validated successfully", "✓".green());
@@ -42,9 +58,19 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     } else {
         // OAuth Device Flow
         let oauth = if let Some(ref cid) = client_id {
-            gasket_engine::providers::CopilotOAuth::new(cid)
+            gasket_engine::providers::CopilotOAuth::with_proxy(
+                cid,
+                proxy_url.clone(),
+                proxy_username.clone(),
+                proxy_password.clone(),
+            )
         } else {
-            gasket_engine::providers::CopilotOAuth::with_default_client_id()
+            gasket_engine::providers::CopilotOAuth::with_proxy(
+                gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
+                proxy_url.clone(),
+                proxy_username.clone(),
+                proxy_password.clone(),
+            )
         };
 
         match oauth.start_device_flow().await {
@@ -76,9 +102,9 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             client_id,
             models: Default::default(),
             default_currency: Some("USD".to_string()),
-            proxy_url: None,
-            proxy_username: None,
-            proxy_password: None,
+            proxy_url,
+            proxy_username,
+            proxy_password,
         },
     );
 

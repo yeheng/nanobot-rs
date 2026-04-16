@@ -48,7 +48,12 @@ pub async fn cmd_auth_status() -> Result<()> {
             {
                 if let Some(ref token) = provider_config.api_key {
                     // Try to validate the token
-                    let oauth = gasket_engine::providers::CopilotOAuth::with_default_client_id();
+                    let oauth = gasket_engine::providers::CopilotOAuth::with_proxy(
+                        gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
+                        provider_config.proxy_url.clone(),
+                        provider_config.proxy_username.clone(),
+                        provider_config.proxy_password.clone(),
+                    );
                     match oauth.validate_pat(token).await {
                         Ok(true) => format!("{} Authenticated", "✓".green()),
                         Ok(false) => format!("{} Invalid token", "✗".red()),
