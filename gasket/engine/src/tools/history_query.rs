@@ -115,8 +115,8 @@ impl Tool for HistoryQueryTool {
             let role: String = row.try_get("role").unwrap_or_default();
             let content: String = row.try_get("content").unwrap_or_default();
             let timestamp: String = row.try_get("timestamp").unwrap_or_default();
-            let preview = if content.len() > 400 {
-                format!("{}...", &content[..400])
+            let preview = if content.chars().count() > 400 {
+                format!("{}...", content.chars().take(400).collect::<String>())
             } else {
                 content
             };
