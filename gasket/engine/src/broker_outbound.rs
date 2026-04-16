@@ -39,8 +39,17 @@ impl OutboundDispatcher {
         while let Ok(envelope) = sub.recv().await {
             match envelope.payload.as_ref() {
                 BrokerPayload::Outbound(msg) => {
-                    let providers = self.providers.clone();
                     let msg = msg.clone();
+                    // WebSocket is a streaming channel: chunks must arrive in strict
+                    // order. Inline the send instead of spawning to preserve FIFO.
+                    if msg.channel == gasket_channels::ChannelType::WebSocket {
+                        if let Err(e) = self.providers.send(&msg).await {
+                            tracing::error!("Outbound delivery failed: {}", e);
+                        }
+                        continue;
+                    }
+
+                    let providers = self.providers.clone();
                     tokio::spawn(async move {
                         if let Err(e) = providers.send(&msg).await {
                             tracing::error!("Outbound delivery failed: {}", e);
