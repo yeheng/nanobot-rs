@@ -31,6 +31,10 @@ pub struct ChannelsConfig {
     /// WeCom channel
     #[serde(default)]
     pub wecom: Option<WeComConfig>,
+
+    /// WebSocket channel
+    #[serde(default)]
+    pub websocket: Option<WebSocketConfig>,
 }
 
 // ── Telegram ─────────────────────────────────────────────────────────────
@@ -262,6 +266,16 @@ impl std::fmt::Debug for WeComConfig {
     }
 }
 
+// ── WebSocket ─────────────────────────────────────────────────────────────
+
+/// WebSocket channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSocketConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 // ── Default Functions ─────────────────────────────────────────────────────
 
 fn default_true() -> bool {
@@ -310,6 +324,9 @@ impl ChannelsConfig {
             count += 1;
         }
         if self.wecom.as_ref().is_some_and(|c| c.enabled) {
+            count += 1;
+        }
+        if self.websocket.as_ref().is_some_and(|c| c.enabled) {
             count += 1;
         }
         count

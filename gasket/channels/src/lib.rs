@@ -28,7 +28,7 @@ pub mod provider;
 // Webhook HTTP server infrastructure
 // Enabled when any platform that needs webhooks is enabled, or when webhook feature is explicitly enabled
 #[cfg(any(
-    feature = "webhook",
+    feature = "websocket",
     feature = "dingtalk",
     feature = "feishu",
     feature = "wecom"
@@ -46,7 +46,7 @@ pub mod feishu;
 pub mod slack;
 #[cfg(feature = "telegram")]
 pub mod telegram;
-#[cfg(feature = "webhook")]
+#[cfg(feature = "websocket")]
 pub mod websocket;
 #[cfg(feature = "wecom")]
 pub mod wecom;
@@ -55,7 +55,7 @@ pub mod wecom;
 pub use adapter::ImAdapter;
 pub use config::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
-    WeComConfig,
+    WeComConfig, WebSocketConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{

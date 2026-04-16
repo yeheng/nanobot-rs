@@ -146,13 +146,13 @@ pub mod channels {
     #[cfg(feature = "telegram")]
     pub use gasket_channels::telegram;
     #[cfg(any(
-        feature = "webhook",
+        feature = "websocket",
         feature = "dingtalk",
         feature = "feishu",
         feature = "wecom"
     ))]
     pub use gasket_channels::webhook;
-    #[cfg(feature = "webhook")]
+    #[cfg(feature = "websocket")]
     pub use gasket_channels::websocket;
     #[cfg(feature = "wecom")]
     pub use gasket_channels::wecom;

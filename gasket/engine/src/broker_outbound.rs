@@ -17,33 +17,12 @@ use gasket_channels::provider::ImProviders;
 pub struct OutboundDispatcher {
     broker: Arc<MemoryBroker>,
     providers: Arc<ImProviders>,
-    #[cfg(feature = "webhook")]
-    websocket_manager: Option<Arc<gasket_channels::websocket::WebSocketManager>>,
 }
 
 impl OutboundDispatcher {
-    /// Create a new dispatcher without WebSocket support.
+    /// Create a new dispatcher.
     pub fn new(broker: Arc<MemoryBroker>, providers: Arc<ImProviders>) -> Self {
-        Self {
-            broker,
-            providers,
-            #[cfg(feature = "webhook")]
-            websocket_manager: None,
-        }
-    }
-
-    /// Create a dispatcher with WebSocket manager support.
-    #[cfg(feature = "webhook")]
-    pub fn with_websocket(
-        broker: Arc<MemoryBroker>,
-        providers: Arc<ImProviders>,
-        websocket_manager: Arc<gasket_channels::websocket::WebSocketManager>,
-    ) -> Self {
-        Self {
-            broker,
-            providers,
-            websocket_manager: Some(websocket_manager),
-        }
+        Self { broker, providers }
     }
 
     /// Main loop — subscribes to Outbound topic and dispatches.
@@ -60,19 +39,6 @@ impl OutboundDispatcher {
         while let Ok(envelope) = sub.recv().await {
             match envelope.payload.as_ref() {
                 BrokerPayload::Outbound(msg) => {
-                    // WebSocket messages go through WebSocketManager, not the providers enum
-                    #[cfg(feature = "webhook")]
-                    if let gasket_types::events::ChannelType::WebSocket = msg.channel {
-                        if let Some(ref manager) = self.websocket_manager {
-                            manager.send(msg.clone()).await;
-                        } else {
-                            tracing::warn!(
-                                "OutboundDispatcher: websocket_manager is None, dropping WS message"
-                            );
-                        }
-                        continue;
-                    }
-
                     let providers = self.providers.clone();
                     let msg = msg.clone();
                     tokio::spawn(async move {

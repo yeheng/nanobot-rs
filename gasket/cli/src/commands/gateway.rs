@@ -51,9 +51,8 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Check if any channels are configured
     let has_channels = config.channels.enabled_count() > 0;
-    let has_websocket = cfg!(feature = "all-channels");
 
-    if !has_channels && !has_websocket {
+    if !has_channels {
         println!("{}", "⚠️  No channels configured".yellow());
         println!("Add a channel to your config:");
         println!("\n  channels:");
@@ -266,41 +265,24 @@ pub async fn cmd_gateway() -> Result<()> {
     // Outbound Actor decouples network I/O from the agent loop.
 
     // Build IM providers (replaces OutboundSenderRegistry + ChannelRegistry)
-    let mut providers =
+    let providers =
         gasket_engine::channels::ImProviders::from_config(&config.channels, inbound_sender.clone());
-
-    #[cfg(feature = "all-channels")]
-    let websocket_manager = {
-        Arc::new(
-            gasket_engine::channels::websocket::WebSocketManager::new_with_broker(broker.clone()),
-        )
-    };
-
-    #[cfg(feature = "all-channels")]
-    {
-        providers.push(gasket_engine::channels::ImProvider::WebSocket(
-            gasket_engine::channels::websocket::WebSocketAdapter::new(websocket_manager.clone()),
-        ));
-    }
 
     let providers = Arc::new(providers);
 
-    // Start HTTP server (WebSocket + webhooks on port 3000)
-    #[cfg(feature = "all-channels")]
+    // Start HTTP server for webhook-based providers (WebSocket, DingTalk, Feishu, WeCom)
+    #[cfg(any(
+        feature = "websocket",
+        feature = "dingtalk",
+        feature = "feishu",
+        feature = "wecom"
+    ))]
     {
-        let manager = websocket_manager.clone();
         let providers_for_http = providers.clone();
         tasks.push(tokio::spawn(async move {
-            let mut app = axum::Router::new()
-                .route(
-                    "/ws",
-                    axum::routing::get(
-                        gasket_engine::channels::websocket::WebSocketManager::handle_connection,
-                    ),
-                )
-                .with_state(manager);
+            let mut app = axum::Router::new();
 
-            // Merge webhook routes from enabled providers
+            // Merge routes from enabled providers
             for provider in providers_for_http.iter() {
                 if let Some(router) = provider.routes() {
                     app = app.merge(router);
@@ -325,13 +307,6 @@ pub async fn cmd_gateway() -> Result<()> {
     // --- Broker Pipeline (replaces old Router/Session/Outbound actors) ---
 
     // 1. Start OutboundDispatcher (subscribes to Topic::Outbound, routes to providers)
-    #[cfg(feature = "all-channels")]
-    let outbound_dispatcher = OutboundDispatcher::with_websocket(
-        broker.clone(),
-        providers.clone(),
-        websocket_manager.clone(),
-    );
-    #[cfg(not(feature = "all-channels"))]
     let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), providers.clone());
     tasks.push(tokio::spawn(outbound_dispatcher.run()));
 

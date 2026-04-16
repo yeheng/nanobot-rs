@@ -157,6 +157,9 @@ channels:
     app_token: ""
     allow_from: []
 
+  websocket:
+    enabled: true
+
 # Embedding configuration (optional)
 # Enable semantic search and history recall features
 embedding:

@@ -23,7 +23,7 @@ pub enum ImProvider {
     Discord(crate::discord::DiscordAdapter),
     #[cfg(feature = "slack")]
     Slack(crate::slack::SlackAdapter),
-    #[cfg(feature = "webhook")]
+    #[cfg(feature = "websocket")]
     WebSocket(crate::websocket::WebSocketAdapter),
     Cli(crate::websocket::CliAdapter), // re-use the no-op adapter
     #[cfg(feature = "dingtalk")]
@@ -43,7 +43,7 @@ impl ImProvider {
             Self::Discord(_) => ChannelType::Discord,
             #[cfg(feature = "slack")]
             Self::Slack(_) => ChannelType::Slack,
-            #[cfg(feature = "webhook")]
+            #[cfg(feature = "websocket")]
             Self::WebSocket(_) => ChannelType::WebSocket,
             Self::Cli(_) => ChannelType::Cli,
             #[cfg(feature = "dingtalk")]
@@ -63,7 +63,7 @@ impl ImProvider {
             Self::Discord(a) => a.name(),
             #[cfg(feature = "slack")]
             Self::Slack(a) => a.name(),
-            #[cfg(feature = "webhook")]
+            #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.name(),
             Self::Cli(a) => a.name(),
             #[cfg(feature = "dingtalk")]
@@ -83,7 +83,7 @@ impl ImProvider {
             Self::Discord(a) => a.start(inbound).await,
             #[cfg(feature = "slack")]
             Self::Slack(a) => a.start(inbound).await,
-            #[cfg(feature = "webhook")]
+            #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.start(inbound).await,
             Self::Cli(a) => a.start(inbound).await,
             #[cfg(feature = "dingtalk")]
@@ -98,6 +98,8 @@ impl ImProvider {
     /// Return webhook routes for this provider, if any.
     pub fn routes(&self) -> Option<axum::Router> {
         match self {
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(a) => Some(a.routes()),
             #[cfg(feature = "dingtalk")]
             Self::DingTalk(a) => Some(a.routes()),
             #[cfg(feature = "feishu")]
@@ -116,7 +118,7 @@ impl ImProvider {
             Self::Discord(a) => a.send(msg).await,
             #[cfg(feature = "slack")]
             Self::Slack(a) => a.send(msg).await,
-            #[cfg(feature = "webhook")]
+            #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.send(msg).await,
             Self::Cli(a) => a.send(msg).await,
             #[cfg(feature = "dingtalk")]
@@ -193,6 +195,19 @@ impl ImProviders {
             }
         }
 
+        #[cfg(feature = "websocket")]
+        if let Some(ref cfg) = config.websocket {
+            if cfg.enabled {
+                providers.push(ImProvider::WebSocket(
+                    crate::websocket::WebSocketAdapter::from_config(cfg, inbound.clone()),
+                ));
+            }
+        }
+
+        // Always register the no-op CLI adapter so outbound messages tagged with
+        // ChannelType::Cli are gracefully absorbed instead of dropped with a warning.
+        providers.push(ImProvider::Cli(crate::websocket::CliAdapter));
+
         Self { providers }
     }
 
@@ -228,7 +243,7 @@ impl ImProviders {
                 ImProvider::Discord(a) => ImProvider::Discord(a.clone()),
                 #[cfg(feature = "slack")]
                 ImProvider::Slack(a) => ImProvider::Slack(a.clone()),
-                #[cfg(feature = "webhook")]
+                #[cfg(feature = "websocket")]
                 ImProvider::WebSocket(a) => ImProvider::WebSocket(a.clone()),
                 ImProvider::Cli(a) => ImProvider::Cli(*a),
                 #[cfg(feature = "dingtalk")]
