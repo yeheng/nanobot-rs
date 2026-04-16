@@ -76,7 +76,7 @@ impl CopilotProvider {
         default_model: Option<String>,
     ) -> Self {
         Self {
-            client: build_http_client(true),
+            client: build_http_client(None, None, None),
             github_token: github_token.into(),
             cached_token: Mutex::new(None),
             api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
@@ -90,15 +90,23 @@ impl CopilotProvider {
     /// * `github_token` - GitHub access token (PAT or OAuth token)
     /// * `api_base` - Optional custom API base URL
     /// * `default_model` - Default model to use (e.g., "gpt-4o")
-    /// * `proxy_enabled` - Whether to enable HTTP proxy (default: true)
+    /// * `proxy_url` - Optional proxy URL (e.g., `http://127.0.0.1:7890`)
+    /// * `proxy_username` - Optional username for proxy authentication
+    /// * `proxy_password` - Optional password for proxy authentication
     pub fn with_proxy(
         github_token: impl Into<String>,
         api_base: Option<String>,
         default_model: Option<String>,
-        proxy_enabled: bool,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
     ) -> Self {
         Self {
-            client: build_http_client(proxy_enabled),
+            client: build_http_client(
+                proxy_url.as_deref(),
+                proxy_username.as_deref(),
+                proxy_password.as_deref(),
+            ),
             github_token: github_token.into(),
             cached_token: Mutex::new(None),
             api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),

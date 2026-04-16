@@ -10,8 +10,8 @@ use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::tools::WebFetchTool;
 use gasket_engine::tools::WebSearchTool;
 use gasket_engine::tools::{
-    EditFileTool, ExecTool, ListDirTool, MemorizeTool, MemorySearchTool, ReadFileTool,
-    ToolMetadata, ToolRegistry, WriteFileTool,
+    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemorySearchTool,
+    ReadFileTool, ToolMetadata, ToolRegistry, WriteFileTool,
 };
 use gasket_engine::tools::{SpawnParallelTool, SpawnTool};
 use gasket_engine::AgentConfig;
@@ -328,6 +328,24 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
+
+    // History query tool — direct SQL query over session_messages
+    if let Some(ref db) = sqlite_store {
+        tools.register_with_metadata(
+            Box::new(HistoryQueryTool::new(db.pool().clone())),
+            ToolMetadata {
+                display_name: "Query History".to_string(),
+                category: "memory".to_string(),
+                tags: vec![
+                    "history".to_string(),
+                    "search".to_string(),
+                    "sqlite".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
 
     // Memorize tool for writing structured long-term memories
     tools.register_with_metadata(

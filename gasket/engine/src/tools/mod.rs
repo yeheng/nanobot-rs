@@ -16,6 +16,7 @@
 mod base;
 mod cron;
 mod filesystem;
+mod history_query;
 mod memorize;
 mod memory_decay;
 mod memory_refresh;
@@ -38,6 +39,7 @@ pub use gasket_types::{
 // Re-export tool implementations
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
+pub use history_query::HistoryQueryTool;
 pub use memorize::MemorizeTool;
 pub use memory_decay::MemoryDecayTool;
 pub use memory_refresh::MemoryRefreshTool;

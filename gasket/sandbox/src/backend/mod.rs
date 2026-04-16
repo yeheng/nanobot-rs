@@ -111,7 +111,13 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         match platform {
             Platform::Linux => "bwrap",
             Platform::MacOS => "sandbox-exec",
-            Platform::Windows => "unsafe-direct", // Windows has no real sandbox
+            Platform::Windows => {
+                panic!(
+                    "Windows does not have a built-in sandbox backend. \
+                     Please explicitly set `backend = \"unsafe-direct\"` (or \"host-executor\") \
+                     in your sandbox configuration to run commands without isolation."
+                )
+            }
         }
     } else {
         &backend_name

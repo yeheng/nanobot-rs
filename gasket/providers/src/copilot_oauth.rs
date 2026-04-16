@@ -199,7 +199,7 @@ impl CopilotOAuth {
     /// Create a new OAuth client with the given client ID
     pub fn new(client_id: impl Into<String>) -> Self {
         Self {
-            client: build_http_client(true),
+            client: build_http_client(None, None, None),
             client_id: client_id.into(),
         }
     }
@@ -210,9 +210,18 @@ impl CopilotOAuth {
     }
 
     /// Create a new OAuth client with proxy configuration
-    pub fn with_proxy(client_id: impl Into<String>, proxy_enabled: bool) -> Self {
+    pub fn with_proxy(
+        client_id: impl Into<String>,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
+    ) -> Self {
         Self {
-            client: build_http_client(proxy_enabled),
+            client: build_http_client(
+                proxy_url.as_deref(),
+                proxy_username.as_deref(),
+                proxy_password.as_deref(),
+            ),
             client_id: client_id.into(),
         }
     }

@@ -6,7 +6,7 @@ pub mod types;
 
 pub use broker::{QueueMetrics, Subscriber};
 pub use error::BrokerError;
-pub use types::{AckResult, BrokerPayload, DeliveryMode, Envelope, Topic};
+pub use types::{BrokerPayload, DeliveryMode, Envelope, Topic};
 
 pub use memory::MemoryBroker;
 pub use session::SessionManager;

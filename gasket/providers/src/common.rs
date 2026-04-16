@@ -19,7 +19,9 @@
 //!     api_key: "your-api-key".to_string(),
 //!     default_model: "model-id".to_string(),
 //!     extra_headers: HashMap::new(),
-//!     proxy_enabled: true,
+//!     proxy_url: None,
+//!     proxy_username: None,
+//!     proxy_password: None,
 //! };
 //! let provider = OpenAICompatibleProvider::new(config);
 //!
@@ -29,7 +31,9 @@
 //!     "your-api-key",
 //!     "https://api.openai.com/v1".to_string(),
 //!     Some("gpt-4o".to_string()),
-//!     true,
+//!     None,
+//!     None,
+//!     None,
 //! );
 //! ```
 
@@ -63,25 +67,32 @@ use crate::{
 /// Build an HTTP client with optional proxy support.
 ///
 /// # Arguments
-/// * `proxy_enabled` - If `true`, the client will use proxy settings from
-///   environment variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY).
-///   If `false`, all proxy settings are bypassed.
-///
-/// # Environment Variables (when proxy is enabled)
-/// - `HTTP_PROXY` / `http_proxy`: Proxy for HTTP requests
-/// - `HTTPS_PROXY` / `https_proxy`: Proxy for HTTPS requests
-/// - `ALL_PROXY` / `all_proxy`: Proxy for all requests
-/// - `NO_PROXY` / `no_proxy`: Hosts to bypass proxy
-pub fn build_http_client(proxy_enabled: bool) -> Client {
+/// * `proxy_url` - Optional proxy URL (e.g., `http://127.0.0.1:7890`).
+///   If provided, the client will use this proxy for all requests.
+///   If `None`, all proxy settings are bypassed and environment variables are ignored.
+/// * `proxy_username` - Optional username for proxy authentication.
+/// * `proxy_password` - Optional password for proxy authentication.
+pub fn build_http_client(
+    proxy_url: Option<&str>,
+    proxy_username: Option<&str>,
+    proxy_password: Option<&str>,
+) -> Client {
     let mut builder = Client::builder();
 
-    if !proxy_enabled {
-        // Disable all proxies explicitly
+    if let Some(url) = proxy_url {
+        let mut proxy = reqwest::Proxy::all(url).unwrap_or_else(|e| {
+            tracing::warn!("Failed to create proxy for {}: {}", url, e);
+            reqwest::Proxy::custom(|_| None::<&str>)
+        });
+        if let (Some(user), Some(pass)) = (proxy_username, proxy_password) {
+            proxy = proxy.basic_auth(user, pass);
+        }
+        builder = builder.proxy(proxy);
+        info!("HTTP client created with proxy: {}", url);
+    } else {
+        // Disable all proxies explicitly and ignore environment variables
         builder = builder.no_proxy();
         info!("HTTP client created with proxy disabled");
-    } else {
-        // Default behavior: reqwest automatically reads environment variables
-        info!("HTTP client created with proxy enabled (using environment variables)");
     }
 
     builder.build().unwrap_or_else(|e| {
@@ -106,8 +117,12 @@ pub struct ProviderConfig {
     pub default_model: String,
     /// Extra HTTP headers to send with every request
     pub extra_headers: HashMap<String, String>,
-    /// Whether to enable HTTP proxy (default: true)
-    pub proxy_enabled: bool,
+    /// Optional proxy URL (e.g., `http://127.0.0.1:7890`)
+    pub proxy_url: Option<String>,
+    /// Optional username for proxy authentication
+    pub proxy_username: Option<String>,
+    /// Optional password for proxy authentication
+    pub proxy_password: Option<String>,
 }
 
 /// OpenAI-compatible provider that implements `LlmProvider`.
@@ -123,7 +138,11 @@ pub struct OpenAICompatibleProvider {
 impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
     pub fn new(config: ProviderConfig) -> Self {
-        let client = build_http_client(config.proxy_enabled);
+        let client = build_http_client(
+            config.proxy_url.as_deref(),
+            config.proxy_username.as_deref(),
+            config.proxy_password.as_deref(),
+        );
         Self { client, config }
     }
 
@@ -142,7 +161,9 @@ impl OpenAICompatibleProvider {
     /// * `api_key` - API key for authentication
     /// * `api_base` - **Required** API base URL (e.g., "https://api.openai.com/v1")
     /// * `default_model` - Optional default model ID (defaults to "default")
-    /// * `proxy_enabled` - Whether to enable HTTP proxy
+    /// * `proxy_url` - Optional proxy URL (e.g., `http://127.0.0.1:7890`)
+    /// * `proxy_username` - Optional username for proxy authentication
+    /// * `proxy_password` - Optional password for proxy authentication
     ///
     /// # Example
     /// ```ignore
@@ -151,7 +172,9 @@ impl OpenAICompatibleProvider {
     ///     "your-api-key",
     ///     "https://api.openai.com/v1".to_string(),
     ///     Some("gpt-4o".to_string()),
-    ///     true,
+    ///     None,
+    ///     None,
+    ///     None,
     /// );
     /// ```
     pub fn from_name(
@@ -159,7 +182,9 @@ impl OpenAICompatibleProvider {
         api_key: impl Into<String>,
         api_base: String,
         default_model: Option<String>,
-        proxy_enabled: bool,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
     ) -> Self {
         let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
 
@@ -169,20 +194,33 @@ impl OpenAICompatibleProvider {
             api_key: api_key.into(),
             default_model: resolved_model,
             extra_headers: HashMap::new(),
-            proxy_enabled,
+            proxy_url,
+            proxy_username,
+            proxy_password,
         })
     }
 
     /// Create a provider by name with extra headers (e.g., for MiniMax's X-Group-Id)
+    #[allow(clippy::too_many_arguments)]
     pub fn from_name_with_headers(
         name: &str,
         api_key: impl Into<String>,
         api_base: String,
         default_model: Option<String>,
         extra_headers: HashMap<String, String>,
-        proxy_enabled: bool,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
     ) -> Self {
-        let mut provider = Self::from_name(name, api_key, api_base, default_model, proxy_enabled);
+        let mut provider = Self::from_name(
+            name,
+            api_key,
+            api_base,
+            default_model,
+            proxy_url,
+            proxy_username,
+            proxy_password,
+        );
         provider.config.extra_headers = extra_headers;
         provider
     }
@@ -195,7 +233,9 @@ impl OpenAICompatibleProvider {
         api_base: String,
         default_model: impl Into<String>,
         group_id: Option<String>,
-        proxy_enabled: bool,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
     ) -> Self {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
@@ -207,7 +247,9 @@ impl OpenAICompatibleProvider {
             api_base,
             Some(default_model.into()),
             extra_headers,
-            proxy_enabled,
+            proxy_url,
+            proxy_username,
+            proxy_password,
         )
     }
 
@@ -452,13 +494,17 @@ mod tests {
             api_key: "test-key".to_string(),
             default_model: "test-model".to_string(),
             extra_headers: HashMap::new(),
-            proxy_enabled: true,
+            proxy_url: None,
+            proxy_username: None,
+            proxy_password: None,
         };
 
         assert_eq!(config.api_base, "https://api.example.com/v1");
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.default_model, "test-model");
-        assert!(config.proxy_enabled);
+        assert!(config.proxy_url.is_none());
+        assert!(config.proxy_username.is_none());
+        assert!(config.proxy_password.is_none());
     }
 
     #[test]
@@ -468,7 +514,9 @@ mod tests {
             "test-key",
             "https://api.openai.com/v1".to_string(),
             Some("gpt-4o".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
@@ -482,7 +530,9 @@ mod tests {
             "sk-or-test",
             "https://openrouter.ai/api/v1".to_string(),
             Some("anthropic/claude-sonnet-4".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
@@ -495,7 +545,9 @@ mod tests {
             "sk-ant-test",
             "https://api.anthropic.com/v1".to_string(),
             Some("claude-sonnet-4-20250514".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
@@ -508,7 +560,9 @@ mod tests {
             "test-key",
             "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             Some("qwen-max".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
@@ -525,7 +579,9 @@ mod tests {
             "test-key",
             "https://api.moonshot.cn/v1".to_string(),
             Some("moonshot-v1-8k".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
@@ -538,7 +594,9 @@ mod tests {
             "test-jwt",
             "https://open.bigmodel.cn/api/paas/v4".to_string(),
             Some("GLM-5".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
@@ -552,7 +610,9 @@ mod tests {
             "https://api.minimax.chat/v1".to_string(),
             "abab6.5-chat",
             Some("group123".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
@@ -565,7 +625,9 @@ mod tests {
             "ollama",
             "http://localhost:11434/v1".to_string(),
             Some("llama2".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
@@ -579,7 +641,9 @@ mod tests {
             "ollama",
             "http://192.168.1.100:11434/v1".to_string(),
             Some("mistral".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
@@ -593,7 +657,9 @@ mod tests {
             "", // LiteLLM may not require API key
             "http://localhost:4000/v1".to_string(),
             Some("gpt-4o".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "gpt-4o");
@@ -607,7 +673,9 @@ mod tests {
             "sk-test-key",
             "http://192.168.1.100:4000/v1".to_string(),
             Some("claude-3-opus".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "claude-3-opus");
@@ -621,7 +689,9 @@ mod tests {
             "test-key",
             "https://custom.api.com/v1".to_string(),
             Some("custom-model".to_string()),
-            true,
+            None,
+            None,
+            None,
         );
         assert_eq!(provider.name(), "custom-provider");
         assert_eq!(provider.api_base(), "https://custom.api.com/v1");

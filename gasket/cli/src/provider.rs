@@ -64,7 +64,9 @@ pub fn build_provider(
         );
     }
 
-    let proxy_enabled = provider_config.proxy_enabled();
+    let proxy_url = provider_config.proxy_url.clone();
+    let proxy_username = provider_config.proxy_username.clone();
+    let proxy_password = provider_config.proxy_password.clone();
 
     // Create provider based on provider_type
     match provider_config.provider_type {
@@ -76,7 +78,9 @@ pub fn build_provider(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
-                    proxy_enabled,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
                 );
                 Ok(Arc::new(provider))
             }
@@ -97,7 +101,9 @@ pub fn build_provider(
                         provider_config.api_base.clone(),
                         model,
                         None,
-                        proxy_enabled,
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
                     );
                     Ok(Arc::new(provider))
                 }
@@ -108,7 +114,9 @@ pub fn build_provider(
                         api_key,
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),
-                        proxy_enabled,
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
                     ),
                 )),
                 // All other providers use the generic from_name constructor
@@ -118,7 +126,9 @@ pub fn build_provider(
                         api_key,
                         provider_config.api_base.clone(),
                         Some(model.to_string()),
-                        proxy_enabled,
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
                     );
                     Ok(Arc::new(provider))
                 }

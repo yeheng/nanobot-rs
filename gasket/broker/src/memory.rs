@@ -4,11 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::oneshot;
 
 use crate::broker::{QueueMetrics, Subscriber};
 use crate::error::BrokerError;
-use crate::types::{AckResult, DeliveryMode, Envelope, Topic};
+use crate::types::{DeliveryMode, Envelope, Topic};
 
 // ── Internal queue ─────────────────────────────────────────
 
@@ -38,42 +37,10 @@ impl QueueStats {
     }
 }
 
-// ── ACK side-channel ───────────────────────────────────────
-
-struct AckTracker {
-    pending: DashMap<uuid::Uuid, oneshot::Sender<AckResult>>,
-}
-
-impl AckTracker {
-    fn new() -> Self {
-        Self {
-            pending: DashMap::new(),
-        }
-    }
-
-    fn register(&self, id: uuid::Uuid, tx: oneshot::Sender<AckResult>) -> Result<(), BrokerError> {
-        if self.pending.contains_key(&id) {
-            return Err(BrokerError::AckAlreadyConsumed(id));
-        }
-        self.pending.insert(id, tx);
-        Ok(())
-    }
-
-    fn resolve(&self, id: uuid::Uuid, result: AckResult) -> Result<(), BrokerError> {
-        if let Some((_, tx)) = self.pending.remove(&id) {
-            let _ = tx.send(result);
-            Ok(())
-        } else {
-            Err(BrokerError::AckAlreadyConsumed(id))
-        }
-    }
-}
-
 // ── MemoryBroker ───────────────────────────────────────────
 
 pub struct MemoryBroker {
     queues: DashMap<Topic, QueueInner>,
-    ack_tracker: AckTracker,
     p2p_capacity: usize,
     broadcast_capacity: usize,
 }
@@ -88,7 +55,6 @@ impl MemoryBroker {
     pub fn new(p2p_capacity: usize, broadcast_capacity: usize) -> Self {
         Self {
             queues: DashMap::new(),
-            ack_tracker: AckTracker::new(),
             p2p_capacity,
             broadcast_capacity,
         }
@@ -167,28 +133,6 @@ impl MemoryBroker {
             }
         }
         Ok(())
-    }
-
-    /// Publish with ACK — returns a receiver for the consumer's acknowledgment.
-    pub async fn publish_with_ack(
-        &self,
-        envelope: Envelope,
-    ) -> Result<oneshot::Receiver<AckResult>, BrokerError> {
-        let id = envelope.id;
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.ack_tracker.register(id, ack_tx)?;
-        self.publish(envelope).await?;
-        Ok(ack_rx)
-    }
-
-    /// Acknowledge a message by ID (consumer-side).
-    pub fn ack(&self, id: uuid::Uuid) -> Result<(), BrokerError> {
-        self.ack_tracker.resolve(id, AckResult::Ack)
-    }
-
-    /// Negatively acknowledge a message by ID (consumer-side).
-    pub fn nack(&self, id: uuid::Uuid, reason: String) -> Result<(), BrokerError> {
-        self.ack_tracker.resolve(id, AckResult::Nack(reason))
     }
 
     /// Subscribe to a topic.
@@ -372,44 +316,6 @@ mod tests {
         // Slow subscriber should see Lagged
         let result = slow_sub.recv().await;
         assert!(matches!(result, Err(BrokerError::Lagged(_))));
-    }
-
-    #[tokio::test]
-    async fn test_ack_round_trip() {
-        let broker = MemoryBroker::default();
-        let mut sub = broker.subscribe(&Topic::Inbound).await.unwrap();
-        let env = Envelope::new(
-            Topic::Inbound,
-            crate::types::BrokerPayload::Inbound(dummy_inbound("important")),
-        );
-        let mut ack_rx = broker.publish_with_ack(env).await.unwrap();
-        let received = sub.recv().await.unwrap();
-        broker.ack(received.id).unwrap();
-        let ack_result = tokio::time::timeout(Duration::from_secs(1), &mut ack_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(ack_result, AckResult::Ack));
-    }
-
-    #[tokio::test]
-    async fn test_nack_round_trip() {
-        let broker = MemoryBroker::default();
-        let mut sub = broker.subscribe(&Topic::Inbound).await.unwrap();
-        let env = Envelope::new(
-            Topic::Inbound,
-            crate::types::BrokerPayload::Inbound(dummy_inbound("fail")),
-        );
-        let mut ack_rx = broker.publish_with_ack(env).await.unwrap();
-        let received = sub.recv().await.unwrap();
-        broker
-            .nack(received.id, "processing failed".into())
-            .unwrap();
-        let ack_result = tokio::time::timeout(Duration::from_secs(1), &mut ack_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(ack_result, AckResult::Nack(_)));
     }
 
     #[tokio::test]

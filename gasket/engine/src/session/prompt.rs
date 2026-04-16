@@ -133,20 +133,30 @@ pub fn truncate_keep_tail(content: &str, max_tokens: usize) -> String {
     let warning_tokens = count_tokens(warning) + 10; // margin for newlines
     let budget = max_tokens.saturating_sub(warning_tokens);
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut kept: Vec<&str> = Vec::new();
-    let mut kept_tokens: usize = 0;
+    let mut current_tokens = 0;
+    let mut split_byte_index = content.len();
 
-    // Walk from the tail (newest) toward the head (oldest)
-    for line in lines.iter().rev() {
+    // rmatch_indices guarantees UTF-8 safe byte indices because '\n' is an ASCII byte
+    // and can never appear inside a multi-byte UTF-8 character continuation byte.
+    for (idx, _) in content.rmatch_indices('\n') {
+        let line = &content[idx..split_byte_index];
         let line_tokens = count_tokens(line);
-        if kept_tokens + line_tokens > budget {
+
+        if current_tokens + line_tokens > budget {
             break;
         }
-        kept.push(line);
-        kept_tokens += line_tokens;
+        current_tokens += line_tokens;
+        split_byte_index = idx;
     }
 
-    kept.reverse();
-    format!("{}\n\n{}", warning, kept.join("\n"))
+    if split_byte_index == content.len() && current_tokens <= budget {
+        content.to_string()
+    } else {
+        let mut result =
+            String::with_capacity(warning.len() + content.len() - split_byte_index + 2);
+        result.push_str(warning);
+        result.push_str("\n\n");
+        result.push_str(&content[split_byte_index..]);
+        result
+    }
 }

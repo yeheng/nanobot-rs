@@ -395,32 +395,32 @@ pub enum StreamEvent {
         /// Agent ID (`None` for main agent, `Some(uuid)` for subagent)
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-        content: String,
+        content: Arc<str>,
     },
 
     /// A tool call has started
     ToolStart {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-        name: String,
+        name: Arc<str>,
         #[serde(default)]
-        arguments: Option<String>,
+        arguments: Option<Arc<str>>,
     },
 
     /// A tool call has completed
     ToolEnd {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-        name: String,
+        name: Arc<str>,
         #[serde(default)]
-        output: Option<String>,
+        output: Option<Arc<str>>,
     },
 
     /// Streaming content chunk
     Content {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-        content: String,
+        content: Arc<str>,
     },
 
     /// Stream has completed for this iteration
@@ -437,37 +437,37 @@ pub enum StreamEvent {
         output_tokens: usize,
         total_tokens: usize,
         cost: f64,
-        currency: String,
+        currency: Arc<str>,
     },
 
     // === Subagent Lifecycle Events ===
     /// Subagent started execution
     SubagentStarted {
-        agent_id: String,
-        task: String,
+        agent_id: Arc<str>,
+        task: Arc<str>,
         index: u32,
     },
 
     /// Subagent completed execution
     SubagentCompleted {
-        agent_id: String,
+        agent_id: Arc<str>,
         index: u32,
-        summary: String,
+        summary: Arc<str>,
         tool_count: u32,
     },
 
     /// Subagent encountered an error
     SubagentError {
-        agent_id: String,
+        agent_id: Arc<str>,
         index: u32,
-        error: String,
+        error: Arc<str>,
     },
 
     /// Plain text message (legacy support for non-streaming channels)
     Text {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-        content: String,
+        content: Arc<str>,
     },
 }
 
@@ -480,63 +480,63 @@ pub enum StreamEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatEvent {
     /// Thinking/reasoning content from the LLM
-    Thinking { content: String },
+    Thinking { content: Arc<str> },
 
     /// A tool call has started
     ToolStart {
-        name: String,
+        name: Arc<str>,
         #[serde(default)]
-        arguments: Option<String>,
+        arguments: Option<Arc<str>>,
     },
 
     /// A tool call has completed
     ToolEnd {
-        name: String,
+        name: Arc<str>,
         #[serde(default)]
-        output: Option<String>,
+        output: Option<Arc<str>>,
     },
 
     /// Streaming content chunk
-    Content { content: String },
+    Content { content: Arc<str> },
 
     /// Stream has completed for this iteration
     Done,
 
     /// Plain text message (legacy support for non-streaming channels)
-    Text { content: String },
+    Text { content: Arc<str> },
 
     /// Error message
-    Error { message: String },
+    Error { message: Arc<str> },
 }
 
 impl ChatEvent {
     /// Create a content message
     pub fn content(content: impl Into<String>) -> Self {
         Self::Content {
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
     /// Create a thinking message
     pub fn thinking(content: impl Into<String>) -> Self {
         Self::Thinking {
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
     /// Create a tool_start message
     pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
         Self::ToolStart {
-            name: name.into(),
-            arguments,
+            name: Arc::from(name.into()),
+            arguments: arguments.map(Arc::from),
         }
     }
 
     /// Create a tool_end message
     pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
         Self::ToolEnd {
-            name: name.into(),
-            output,
+            name: Arc::from(name.into()),
+            output: output.map(Arc::from),
         }
     }
 
@@ -548,14 +548,14 @@ impl ChatEvent {
     /// Create a text message
     pub fn text(content: impl Into<String>) -> Self {
         Self::Text {
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
     /// Create an error message
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
-            message: message.into(),
+            message: Arc::from(message.into()),
         }
     }
 
@@ -576,7 +576,7 @@ impl StreamEvent {
     pub fn thinking(content: impl Into<String>) -> Self {
         Self::Thinking {
             agent_id: None,
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
@@ -584,8 +584,8 @@ impl StreamEvent {
     pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
         Self::ToolStart {
             agent_id: None,
-            name: name.into(),
-            arguments,
+            name: Arc::from(name.into()),
+            arguments: arguments.map(Arc::from),
         }
     }
 
@@ -593,8 +593,8 @@ impl StreamEvent {
     pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
         Self::ToolEnd {
             agent_id: None,
-            name: name.into(),
-            output,
+            name: Arc::from(name.into()),
+            output: output.map(Arc::from),
         }
     }
 
@@ -602,7 +602,7 @@ impl StreamEvent {
     pub fn content(content: impl Into<String>) -> Self {
         Self::Content {
             agent_id: None,
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
@@ -625,7 +625,7 @@ impl StreamEvent {
             output_tokens,
             total_tokens,
             cost,
-            currency: currency.into(),
+            currency: Arc::from(currency.into()),
         }
     }
 
@@ -633,7 +633,7 @@ impl StreamEvent {
     pub fn text(content: impl Into<String>) -> Self {
         Self::Text {
             agent_id: None,
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
@@ -643,7 +643,7 @@ impl StreamEvent {
     pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::Thinking {
             agent_id: Some(Arc::from(id.into())),
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
@@ -655,8 +655,8 @@ impl StreamEvent {
     ) -> Self {
         Self::ToolStart {
             agent_id: Some(Arc::from(id.into())),
-            name: name.into(),
-            arguments,
+            name: Arc::from(name.into()),
+            arguments: arguments.map(Arc::from),
         }
     }
 
@@ -668,8 +668,8 @@ impl StreamEvent {
     ) -> Self {
         Self::ToolEnd {
             agent_id: Some(Arc::from(id.into())),
-            name: name.into(),
-            output,
+            name: Arc::from(name.into()),
+            output: output.map(Arc::from),
         }
     }
 
@@ -677,15 +677,15 @@ impl StreamEvent {
     pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::Content {
             agent_id: Some(Arc::from(id.into())),
-            content: content.into(),
+            content: Arc::from(content.into()),
         }
     }
 
     /// Create a subagent_started message
     pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
         Self::SubagentStarted {
-            agent_id: id.into(),
-            task: task.into(),
+            agent_id: Arc::from(id.into()),
+            task: Arc::from(task.into()),
             index,
         }
     }
@@ -698,9 +698,9 @@ impl StreamEvent {
         tool_count: u32,
     ) -> Self {
         Self::SubagentCompleted {
-            agent_id: id.into(),
+            agent_id: Arc::from(id.into()),
             index,
-            summary: summary.into(),
+            summary: Arc::from(summary.into()),
             tool_count,
         }
     }
@@ -708,9 +708,9 @@ impl StreamEvent {
     /// Create a subagent_error message
     pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
         Self::SubagentError {
-            agent_id: id.into(),
+            agent_id: Arc::from(id.into()),
             index,
-            error: error.into(),
+            error: Arc::from(error.into()),
         }
     }
 
@@ -752,16 +752,26 @@ impl StreamEvent {
             return None;
         }
         match self {
-            Self::Thinking { content, .. } => Some(ChatEvent::thinking(content.clone())),
+            Self::Thinking { content, .. } => Some(ChatEvent::Thinking {
+                content: Arc::clone(content),
+            }),
             Self::ToolStart {
                 name, arguments, ..
-            } => Some(ChatEvent::tool_start(name.clone(), arguments.clone())),
-            Self::ToolEnd { name, output, .. } => {
-                Some(ChatEvent::tool_end(name.clone(), output.clone()))
-            }
-            Self::Content { content, .. } => Some(ChatEvent::content(content.clone())),
-            Self::Done { .. } => Some(ChatEvent::done()),
-            Self::Text { content, .. } => Some(ChatEvent::text(content.clone())),
+            } => Some(ChatEvent::ToolStart {
+                name: Arc::clone(name),
+                arguments: arguments.as_ref().map(Arc::clone),
+            }),
+            Self::ToolEnd { name, output, .. } => Some(ChatEvent::ToolEnd {
+                name: Arc::clone(name),
+                output: output.as_ref().map(Arc::clone),
+            }),
+            Self::Content { content, .. } => Some(ChatEvent::Content {
+                content: Arc::clone(content),
+            }),
+            Self::Done { .. } => Some(ChatEvent::Done),
+            Self::Text { content, .. } => Some(ChatEvent::Text {
+                content: Arc::clone(content),
+            }),
             Self::TokenStats { .. }
             | Self::SubagentStarted { .. }
             | Self::SubagentCompleted { .. }
@@ -901,8 +911,8 @@ mod tests {
                 task,
                 index,
             } => {
-                assert_eq!(agent_id, "id-123");
-                assert_eq!(task, "Test task");
+                assert_eq!(agent_id.as_ref(), "id-123");
+                assert_eq!(task.as_ref(), "Test task");
                 assert_eq!(index, 1);
             }
             _ => panic!("Expected SubagentStarted"),
@@ -948,7 +958,7 @@ mod tests {
                 assert_eq!(output_tokens, 500);
                 assert_eq!(total_tokens, 1500);
                 assert!((cost - 0.01).abs() < 0.0001);
-                assert_eq!(currency, "USD");
+                assert_eq!(currency.as_ref(), "USD");
             }
             _ => panic!("Expected TokenStats"),
         }

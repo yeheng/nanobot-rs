@@ -83,10 +83,12 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
-    #[serde(default)]
-    pub proxy: Option<bool>,
-    #[serde(default)]
-    pub proxy_enabled: Option<bool>,
+    #[serde(default, alias = "proxyUrl")]
+    pub proxy_url: Option<String>,
+    #[serde(default, alias = "proxyUsername")]
+    pub proxy_username: Option<String>,
+    #[serde(default, alias = "proxyPassword")]
+    pub proxy_password: Option<String>,
     #[serde(default)]
     pub client_id: Option<String>,
     #[serde(default, alias = "defaultCurrency")]
@@ -98,10 +100,6 @@ impl ProviderConfig {
         self.api_key.is_some()
             || self.api_base.contains("localhost")
             || self.api_base.contains("127.0.0.1")
-    }
-
-    pub fn proxy_enabled(&self) -> bool {
-        self.proxy.unwrap_or(true)
     }
 
     pub fn thinking_enabled_for_model(&self, model: &str) -> bool {
@@ -520,7 +518,9 @@ impl ProviderRegistry {
             api_key,
             default_model: "default".to_string(),
             extra_headers: HashMap::new(),
-            proxy_enabled: config.proxy_enabled(),
+            proxy_url: config.proxy_url.clone(),
+            proxy_username: config.proxy_username.clone(),
+            proxy_password: config.proxy_password.clone(),
         };
 
         Ok(std::sync::Arc::new(

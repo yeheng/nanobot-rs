@@ -30,7 +30,7 @@ impl GeminiProvider {
     /// Create a new Gemini provider
     pub fn new(api_key: String) -> Self {
         Self {
-            client: build_http_client(true),
+            client: build_http_client(None, None, None),
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-pro".to_string(),
@@ -38,9 +38,18 @@ impl GeminiProvider {
     }
 
     /// Create with proxy configuration
-    pub fn with_proxy(api_key: String, proxy_enabled: bool) -> Self {
+    pub fn with_proxy(
+        api_key: String,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
+    ) -> Self {
         Self {
-            client: build_http_client(proxy_enabled),
+            client: build_http_client(
+                proxy_url.as_deref(),
+                proxy_username.as_deref(),
+                proxy_password.as_deref(),
+            ),
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-pro".to_string(),
@@ -50,7 +59,7 @@ impl GeminiProvider {
     /// Create with custom API base URL
     pub fn with_api_base(api_key: String, api_base: String) -> Self {
         Self {
-            client: build_http_client(true),
+            client: build_http_client(None, None, None),
             api_key,
             api_base,
             default_model: "gemini-pro".to_string(),
@@ -62,10 +71,16 @@ impl GeminiProvider {
         api_key: String,
         api_base: Option<String>,
         default_model: Option<String>,
-        proxy_enabled: bool,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
     ) -> Self {
         Self {
-            client: build_http_client(proxy_enabled),
+            client: build_http_client(
+                proxy_url.as_deref(),
+                proxy_username.as_deref(),
+                proxy_password.as_deref(),
+            ),
             api_key,
             api_base: api_base
                 .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),

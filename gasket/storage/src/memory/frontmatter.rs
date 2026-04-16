@@ -54,24 +54,36 @@ pub fn extract_frontmatter_raw(content: &str) -> Result<(String, String)> {
         anyhow::bail!("Invalid markdown format: missing frontmatter start delimiter '---'");
     }
 
-    // Find the end of frontmatter (\n--- or \r\n---)
-    // Skip the first "---"
-    let after_start = &content[3..];
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        anyhow::bail!("Invalid markdown format: missing frontmatter end delimiter '---'");
+    }
 
-    // Find the next "\n---" which closes frontmatter
-    // We need to handle both \n and \r\n
-    let end_pos = after_start.find("\n---").ok_or_else(|| {
+    // Find the first line after the opening delimiter that is exactly "---"
+    // (allowing optional trailing whitespace).
+    let mut close_idx = None;
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if line.trim() == "---" {
+            close_idx = Some(i);
+            break;
+        }
+    }
+
+    let close_idx = close_idx.ok_or_else(|| {
         anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'")
     })?;
 
-    // Extract YAML (skip initial ---, take content until closing ---)
-    let yaml_str = &after_start[..end_pos];
-    // Normalize line endings for YAML parsing
-    let yaml_str = yaml_str.replace("\r\n", "\n").replace('\r', "\n");
+    let yaml_lines = &lines[1..close_idx];
+    let yaml_str = yaml_lines.join("\n").replace('\r', "");
 
-    // Extract body (skip past the closing ---)
-    // Position after "\n---" is end_pos + 4 (for "\n---")
-    let body_start = 3 + end_pos + 4;
+    // Compute body start byte position robustly using the actual line text.
+    let opening_line_len = lines[0].len();
+    let after_opening = &content[opening_line_len..];
+    let closing_line = lines[close_idx];
+    let close_byte_pos = after_opening.find(closing_line).ok_or_else(|| {
+        anyhow::anyhow!("Invalid markdown format: could not locate closing delimiter")
+    })?;
+    let body_start = opening_line_len + close_byte_pos + closing_line.len();
     let body = if body_start < content.len() {
         content[body_start..].trim().to_string()
     } else {
@@ -158,11 +170,20 @@ pub fn extract_body(content: &str) -> &str {
     if !content.starts_with("---") {
         return content;
     }
-    if let Some(end) = content[3..].find("\n---") {
-        // Skip `---\n` + `\n---\n` = 7 chars
-        let body_start = end + 7;
-        if body_start < content.len() {
-            return content[body_start..].trim();
+
+    let lines: Vec<&str> = content.lines().collect();
+    for line in lines.iter().skip(1) {
+        if line.trim() == "---" {
+            let opening_line_len = lines[0].len();
+            let after_opening = &content[opening_line_len..];
+            let closing_line = *line;
+            if let Some(pos) = after_opening.find(closing_line) {
+                let body_start = opening_line_len + pos + closing_line.len();
+                if body_start < content.len() {
+                    return content[body_start..].trim();
+                }
+            }
+            return "";
         }
     }
     ""

@@ -89,13 +89,6 @@ impl Envelope {
     }
 }
 
-/// ACK result — only used in the Broker's side-channel, never serialized.
-#[derive(Debug)]
-pub enum AckResult {
-    Ack,
-    Nack(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

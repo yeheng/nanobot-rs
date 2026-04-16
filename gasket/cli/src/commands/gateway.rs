@@ -227,7 +227,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
                 ext
             },
-            sqlite_store: None, // Cron service is now file-driven, no SQLite needed
+            sqlite_store: Some((*sqlite_store).clone()),
             model_registry: Some(model_registry.clone()),
             provider_registry: Some(provider_registry.clone()),
         },
@@ -332,6 +332,10 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // --- Background services ---
     start_heartbeat_service(&broker, &workspace, &mut tasks);
+    // Ensure system cron jobs exist before starting the cron checker
+    // This prevents "Job not found" errors when advancing ticks for jobs
+    // that exist in the database but not yet in memory
+    cron_service.ensure_system_cron_jobs().await;
     start_cron_checker(
         &cron_service,
         &broker,
@@ -339,7 +343,6 @@ pub async fn cmd_gateway() -> Result<()> {
         subagent_spawner.clone(),
         &mut tasks,
     );
-    cron_service.ensure_system_cron_jobs().await;
 
     // --- Start all configured channels using factory pattern ---
     let registry =
