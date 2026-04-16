@@ -228,8 +228,7 @@ async fn process_streaming<H: MessageHandler + 'static>(
 
     // ChatEvent is already a clean WebSocketMessage — no translation needed.
     while let Some(event) = event_rx.recv().await {
-        let outbound =
-            OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
+        let outbound = OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
         broker
             .publish(Envelope::new(
                 Topic::Outbound,

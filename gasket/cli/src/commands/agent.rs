@@ -8,9 +8,9 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
+use gasket_engine::channels::ChatEvent;
 use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
-use gasket_engine::channels::ChatEvent;
 use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};

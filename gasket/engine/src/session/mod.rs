@@ -25,12 +25,12 @@ use tracing::{debug, info, warn};
 use crate::error::AgentError;
 use crate::hooks::{HookPoint, HookRegistry, MutableContext};
 use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
-use gasket_types::events::ChatEvent;
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
 use config::AgentConfigExt;
 use gasket_storage::EventStore;
+use gasket_types::events::ChatEvent;
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
 
 use history::builder::BuildOutcome;

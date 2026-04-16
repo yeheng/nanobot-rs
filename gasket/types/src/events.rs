@@ -512,22 +512,32 @@ pub enum ChatEvent {
 impl ChatEvent {
     /// Create a content message
     pub fn content(content: impl Into<String>) -> Self {
-        Self::Content { content: content.into() }
+        Self::Content {
+            content: content.into(),
+        }
     }
 
     /// Create a thinking message
     pub fn thinking(content: impl Into<String>) -> Self {
-        Self::Thinking { content: content.into() }
+        Self::Thinking {
+            content: content.into(),
+        }
     }
 
     /// Create a tool_start message
     pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
-        Self::ToolStart { name: name.into(), arguments }
+        Self::ToolStart {
+            name: name.into(),
+            arguments,
+        }
     }
 
     /// Create a tool_end message
     pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
-        Self::ToolEnd { name: name.into(), output }
+        Self::ToolEnd {
+            name: name.into(),
+            output,
+        }
     }
 
     /// Create a done message
@@ -537,12 +547,16 @@ impl ChatEvent {
 
     /// Create a text message
     pub fn text(content: impl Into<String>) -> Self {
-        Self::Text { content: content.into() }
+        Self::Text {
+            content: content.into(),
+        }
     }
 
     /// Create an error message
     pub fn error(message: impl Into<String>) -> Self {
-        Self::Error { message: message.into() }
+        Self::Error {
+            message: message.into(),
+        }
     }
 
     /// Serialize to JSON string
@@ -739,9 +753,9 @@ impl StreamEvent {
         }
         match self {
             Self::Thinking { content, .. } => Some(ChatEvent::thinking(content.clone())),
-            Self::ToolStart { name, arguments, .. } => {
-                Some(ChatEvent::tool_start(name.clone(), arguments.clone()))
-            }
+            Self::ToolStart {
+                name, arguments, ..
+            } => Some(ChatEvent::tool_start(name.clone(), arguments.clone())),
             Self::ToolEnd { name, output, .. } => {
                 Some(ChatEvent::tool_end(name.clone(), output.clone()))
             }
