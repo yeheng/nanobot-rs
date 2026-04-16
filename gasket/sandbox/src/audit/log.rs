@@ -123,19 +123,18 @@ impl AuditLog {
 
         let line_len = line.len() as u64;
 
-        // All state modifications happen within a single lock scope
+        // All state modifications happen within a single lock scope.
+        // The tokio::sync::Mutex guard is held across await points to prevent
+        // TOCTOU race conditions during rotation.
         let mut state = self.state.lock().await;
 
         // Check for rotation
         if state.current_size + line_len > self.max_size_bytes {
             // Close the writer before rotation
             state.writer = None;
-            drop(state); // Release lock during I/O
 
             self.rotate().await?;
 
-            // Re-acquire lock after rotation
-            state = self.state.lock().await;
             state.current_size = 0;
         }
 

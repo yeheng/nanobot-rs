@@ -250,6 +250,7 @@ impl ContextCompactor {
         let flag = self.is_compressing.clone();
 
         tokio::spawn(async move {
+            let _guard = CompactionGuard(flag);
             debug!("Background compaction started for {}", sk);
 
             if let Err(e) = run_compaction(
@@ -265,10 +266,16 @@ impl ContextCompactor {
             {
                 warn!("Compaction failed for {}: {}", sk, e);
             }
-
-            // Always clear the flag, even on failure
-            flag.store(false, Ordering::SeqCst);
         });
+    }
+}
+
+/// RAII guard that resets the compaction flag on drop, ensuring panic safety.
+struct CompactionGuard(Arc<AtomicBool>);
+
+impl Drop for CompactionGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 

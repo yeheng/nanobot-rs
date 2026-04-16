@@ -25,12 +25,12 @@ pub use gasket_sandbox::ProcessManager;
 // Use alias to avoid name conflict with core's SandboxConfig
 pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
 
-/// Dangerous patterns that could indicate command injection attempts.
+/// Dangerous patterns that could indicate command injection or file overwrite attempts.
 ///
-/// Note: `>` and `>>` are intentionally excluded — they are output redirections,
-/// not injection vectors. The sandbox layer already constrains file system access.
-/// Harmless fd-duplication patterns like `2>&1` must be allowed for normal use.
-const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r"];
+/// `>` and `<` are included because on Windows fallback (HostExecutor) there is no
+/// sandbox layer to constrain filesystem access, allowing arbitrary file overwrite.
+/// Harmless fd-duplication patterns like `2>&1` are still allowed.
+const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r", ">", "<"];
 
 /// Shell execution tool with optional sandboxing.
 ///
@@ -396,31 +396,48 @@ mod tests {
     }
 
     #[test]
-    fn test_redirect_patterns_allowed() {
+    fn test_redirect_patterns_blocked_on_fallback() {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Redirect patterns are NOT injection vectors and should pass validation
-        let redirect_commands = vec![
-            "gasket memory reindex 2>&1",
+        // `>` and `<` are blocked to prevent arbitrary file overwrite on Windows fallback
+        let blocked_commands = vec![
             "echo hello > /tmp/test_output.txt",
             "echo hello >> /tmp/test_append.txt",
+            "cat < /tmp/test_input.txt",
         ];
 
-        for cmd in redirect_commands {
+        for cmd in blocked_commands {
             let result = rt.block_on(
                 tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()),
             );
-            // Should NOT be blocked by injection check (may still fail on execution)
-            if let Err(e) = &result {
-                let err_msg = e.to_string();
-                assert!(
-                    !err_msg.contains("unsafe pattern"),
-                    "Redirect command '{}' should not be blocked as unsafe, got: {}",
-                    cmd,
-                    err_msg
-                );
-            }
+            assert!(
+                result.is_err(),
+                "Redirect command '{}' should be blocked on fallback",
+                cmd
+            );
+            assert!(
+                result.unwrap_err().to_string().contains("unsafe pattern"),
+                "Redirect command '{}' should be blocked as unsafe",
+                cmd
+            );
         }
+    }
+
+    #[test]
+    fn test_fd_redirect_allowed() {
+        let tool = ExecTool::default().with_enabled(true);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // fd-duplication patterns like `2>&1` contain `>` and are therefore
+        // blocked in fallback mode to prevent arbitrary file overwrite.
+        let result = rt.block_on(
+            tool.execute(serde_json::json!({"command": "gasket memory reindex 2>&1"}), &ToolContext::default()),
+        );
+        assert!(result.is_err(), "fd redirect should be blocked in fallback mode");
+        assert!(
+            result.unwrap_err().to_string().contains("unsafe pattern"),
+            "fd redirect should be blocked as unsafe"
+        );
     }
 }

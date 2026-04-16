@@ -36,8 +36,13 @@ pub fn top_k_similar<'a>(
         .map(|(name, vec)| (name.as_str(), cosine_similarity(query, vec)))
         .collect();
 
+    if scores.len() > k {
+        scores.select_nth_unstable_by(k, |a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scores.truncate(k);
+    }
     scores.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scores.truncate(k);
     scores
 }
 
