@@ -431,10 +431,14 @@ mod tests {
 
         // fd-duplication patterns like `2>&1` contain `>` and are therefore
         // blocked in fallback mode to prevent arbitrary file overwrite.
-        let result = rt.block_on(
-            tool.execute(serde_json::json!({"command": "gasket memory reindex 2>&1"}), &ToolContext::default()),
+        let result = rt.block_on(tool.execute(
+            serde_json::json!({"command": "gasket memory reindex 2>&1"}),
+            &ToolContext::default(),
+        ));
+        assert!(
+            result.is_err(),
+            "fd redirect should be blocked in fallback mode"
         );
-        assert!(result.is_err(), "fd redirect should be blocked in fallback mode");
         assert!(
             result.unwrap_err().to_string().contains("unsafe pattern"),
             "fd redirect should be blocked as unsafe"
