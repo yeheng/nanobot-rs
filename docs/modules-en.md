@@ -93,11 +93,12 @@ trait Tool: Send + Sync {
 | `spawn_parallel` | system | Execute multiple tasks in parallel with subagents |
 | `web_fetch` | web | HTTP GET request |
 | `web_search` | web | Web search (Brave/Tavily/Exa/Firecrawl) |
-| `message` | communication | Send message through Bus to channel |
+| `send_message` | communication | Send message through Bus to channel |
 | `cron` | system | Manage scheduled tasks (CRUD) |
 | `memory_search` | memory | Search structured memories via SQLite MetadataStore |
 | `memorize` | memory | Write structured long-term memories |
 | MCP tools | mcp | Dynamic tools provided by MCP servers |
+| Plugin tools | plugin | External script tools loaded from `~/.gasket/scripts/` |
 
 ### Helper Modules
 
@@ -105,6 +106,46 @@ trait Tool: Send + Sync {
 |------|-------------|
 | `registry.rs` | `ToolRegistry` — Tool registry with semantic routing support |
 | `base.rs` | Re-exports `Tool` trait, `ToolContext`, `ToolError` from types crate |
+
+---
+
+## 2.5. plugin/ — External Plugin System
+
+> Located at `engine/src/plugin/`
+
+The plugin system loads external scripts via YAML manifests and exposes them as native tools.
+
+### Module Structure
+
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | `PluginTool` — Tool trait implementation for external scripts |
+| `manifest.rs` | `PluginManifest`, `PluginProtocol`, `RuntimeConfig`, `Permission` |
+| `rpc.rs` | JSON-RPC 2.0 message types (`RpcMessage`, `RpcRequest`, `RpcResponse`) and line codec |
+| `runner/simple.rs` | One-shot stdin/stdout runner for Simple protocol |
+| `runner/jsonrpc.rs` | Bidirectional JSON-RPC runner |
+| `runner/daemon.rs` | `JsonRpcDaemon` — persistent JSON-RPC process with request multiplexing |
+| `dispatcher/mod.rs` | `RpcDispatcher` — routes RPC calls with permission enforcement |
+| `dispatcher/llm_chat.rs` | Handler for `llm/chat` |
+| `dispatcher/memory_search.rs` | Handler for `memory/search` |
+| `dispatcher/memory_write.rs` | Handler for `memory/write` |
+| `dispatcher/memory_decay.rs` | Handler for `memory/decay` |
+| `dispatcher/subagent.rs` | Handler for `subagent/spawn` |
+
+### Protocols
+
+- **Simple**: One-shot JSON input/output via stdin/stdout
+- **JsonRpc**: Bidirectional JSON-RPC 2.0 with callback methods (`llm/chat`, `memory/search`, etc.)
+
+### Permissions (Default Deny)
+
+| Permission | RPC Method |
+|------------|------------|
+| `LlmChat` | `llm/chat` |
+| `MemorySearch` | `memory/search` |
+| `MemoryWrite` | `memory/write` |
+| `MemoryDecay` | `memory/decay` |
+| `SubagentSpawn` | `subagent/spawn` |
 
 ---
 
@@ -363,28 +404,33 @@ pub async fn execute_streaming(
 
 | File | Responsibility |
 |------|----------------|
-| `manager.rs` | `SubagentManager`, `SubagentTaskBuilder` — Builder pattern subagent management |
+| `manager.rs` | `spawn_subagent()`, `TaskSpec` — Pure function subagent spawning |
 | `tracker.rs` | `SubagentTracker`, `TrackerError` — Parallel task coordination |
-| `runner.rs` | `run_subagent()`, `ModelResolver` — Subagent execution and model resolution |
+| `runner.rs` | `ModelResolver` — Subagent execution and model resolution |
 
-### SubagentManager API
+### Spawning API
 
-Builder pattern for flexible task creation:
+Subagent spawning uses a simple pure-function approach:
 
 ```rust
-let task_id = manager
-    .task("sub-1", "Execute task")
-    .with_system_prompt("Custom prompt".to_string())
-    .with_streaming(event_tx)
-    .with_cancellation_token(token)
-    .with_hooks(hooks)
-    .spawn(result_tx)
-    .await?;
+let task = TaskSpec::new("sub-1", "Execute task")
+    .with_model("openrouter/anthropic/claude-4.5-sonnet")
+    .with_system_prompt("Custom prompt".to_string());
+
+let handle = spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    task,
+    Some(event_tx),
+    result_tx,
+    Some(token_tracker),
+);
 ```
 
 ---
 
-## 10. config/ — Configuration Management
+## 12. config/ — Configuration Management
 
 | File | Responsibility |
 |------|----------------|

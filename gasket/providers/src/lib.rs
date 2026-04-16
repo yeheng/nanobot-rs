@@ -85,7 +85,8 @@ pub use common::{
 pub use copilot::CopilotProvider;
 #[cfg(feature = "provider-copilot")]
 pub use copilot_oauth::{
-    CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse, DEFAULT_CLIENT_ID as COPILOT_DEFAULT_CLIENT_ID,
+    CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse,
+    DEFAULT_CLIENT_ID as COPILOT_DEFAULT_CLIENT_ID,
 };
 #[cfg(feature = "provider-gemini")]
 pub use gemini::GeminiProvider;

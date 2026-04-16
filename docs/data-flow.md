@@ -432,23 +432,18 @@ InjectionReport {
 
 ---
 
-## 7. SubagentManager 调度模式
+## 7. 子代理调度模式
 
-### 7.1 Builder 模式（推荐）
+### 7.1 纯函数创建（推荐）
 
 ```
-调用者 ──▶ SubagentManager::task(id, prompt)
+调用者 ──▶ TaskSpec::new(id, prompt)
               │
-              ▼
-         SubagentTaskBuilder
-              │
+              ├──▶ .with_model()
               ├──▶ .with_system_prompt()
-              ├──▶ .with_streaming(event_tx)
-              ├──▶ .with_cancellation_token(token)
-              └──▶ .with_hooks(hooks)
               │
               ▼
-         .spawn(result_tx)
+    spawn_subagent(provider, tools, workspace, task, event_tx, result_tx, token_tracker)
               │
               ▼
     tokio::spawn(async {
@@ -456,15 +451,15 @@ InjectionReport {
     })
               │
               ▼
-    SubagentEvent ──▶ mpsc::channel ──▶ SubagentTracker
+    StreamEvent ──▶ mpsc::channel ──▶ SubagentTracker
 ```
 
 ### 7.2 Fire-and-Forget 模式
 
 ```
-调用者 ──▶ SubagentManager::submit(prompt, channel, chat_id)
+调用者 ──▶ spawn_subagent(task, result_tx, ...)
   │
-  │  立即返回 Ok(())
+  │  返回 JoinHandle
   │
   ▼
 tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
@@ -478,15 +473,15 @@ tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
 ### 7.3 同步等待模式
 
 ```
-调用者 ──▶ SubagentManager::submit_and_wait(prompt, system_prompt, channel, chat_id)
+调用者 ──▶ spawn_subagent(task, result_tx, ...)
   │              │
   │  await rx    │  tokio::spawn
   │  (阻塞等待)  │  │
   ▼              ▼  │
-(收到 AgentResponse  │
- 或 Error)          │
+(收到 SubagentResult │
+  或 channel 关闭)   │
                     ▼
-              oneshot::channel
+              result_tx.send(result)
                     │
                     ▼
               (返回结果给调用者)

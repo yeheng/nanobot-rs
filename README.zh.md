@@ -154,6 +154,7 @@ sequenceDiagram
 | [💬 会话管理](docs/session.md) | AI 如何组织一次完整的对话 | 想了解对话流程 |
 | [📝 记忆与历史](docs/memory-history.md) | AI 如何记住事情 | 想了解 AI 的记忆系统 |
 | [🧰 工具系统](docs/tools.md) | AI 的"手"和"脚" | 想知道 AI 能做什么 |
+| [🔌 插件系统](docs/plugin.md) | 用自定义脚本扩展 AI | 自定义工具 |
 | [⏰ 定时任务](docs/cron.md) | AI 的"闹钟" | 需要自动化任务 |
 | [🪝 钩子系统](docs/hooks.md) | 在关键时刻"插一脚" | 想扩展 AI 功能 |
 | [👥 子代理](docs/subagents.md) | AI 创建"分身"并行工作 | 复杂任务处理 |

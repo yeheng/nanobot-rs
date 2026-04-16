@@ -27,8 +27,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             p.proxy_password.clone(),
         )
     });
-    let (proxy_url, proxy_username, proxy_password) = existing_proxy
-        .unwrap_or((None, None, None));
+    let (proxy_url, proxy_username, proxy_password) = existing_proxy.unwrap_or((None, None, None));
 
     let access_token = if let Some(token) = pat {
         // PAT mode: validate and use directly

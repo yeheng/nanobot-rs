@@ -91,9 +91,9 @@ gasket-rs/                    (Cargo workspace)
 │                                                             │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │  subagents (Subagent System)                            ││
-│  │  ├── manager.rs: SubagentManager, SubagentTaskBuilder  ││
+│  │  ├── manager.rs: spawn_subagent, TaskSpec              ││
 │  │  ├── tracker.rs: SubagentTracker, parallel coordination││
-│  │  └── runner.rs: run_subagent, ModelResolver            ││
+│  │  └── runner.rs: ModelResolver                          ││
 │  └─────────────────────────────────────────────────────────┘│
 │                                                             │
 │  │                │                                            │
@@ -195,7 +195,7 @@ engine
     │       └── AgentExecutor, ToolExecutor, execute(), execute_streaming()
     │
     ├── subagents/ (Subagent system)
-    │       └── SubagentManager, SubagentTracker
+    │       └── spawn_subagent, SubagentTracker
     │
     ├── optional: channels (feature flags)
     │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket

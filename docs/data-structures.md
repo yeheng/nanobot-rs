@@ -872,37 +872,41 @@ InjectionReport {
 
 ## 8. 子代理 (Subagent) 结构
 
-### 8.1 SubagentManager
+### 8.1 TaskSpec
 
 > **来源**: `gasket-engine::subagents::manager`
 
+子代理任务规格：
+
 ```rust
-pub struct SubagentManager {
-    provider: Arc<dyn LlmProvider>,
-    tools: Arc<ToolRegistry>,
-    outbound_tx: mpsc::Sender<OutboundMessage>,
-    session_key: Arc<RwLock<Option<SessionKey>>>,
-    timeout_secs: u64,
+pub struct TaskSpec {
+    pub id: String,
+    pub task: String,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+}
+
+impl TaskSpec {
+    pub fn new(id: impl Into<String>, task: impl Into<String>) -> Self;
+    pub fn with_model(mut self, model: impl Into<String>) -> Self;
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self;
 }
 ```
 
-### 8.2 SubagentTaskBuilder
+### 8.2 spawn_subagent
 
-Builder 模式用于配置子代理任务：
+纯函数式子代理创建入口：
 
 ```rust
-pub struct SubagentTaskBuilder<'a> {
-    manager: &'a SubagentManager,
-    subagent_id: String,
-    task: String,
-    provider: Option<Arc<dyn LlmProvider>>,
-    config: Option<AgentConfig>,
-    event_tx: Option<mpsc::Sender<SubagentEvent>>,
-    system_prompt: Option<String>,
-    session_key: Option<SessionKey>,
-    cancellation_token: Option<CancellationToken>,
-    hooks: Option<Arc<HookRegistry>>,
-}
+pub fn spawn_subagent(
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    workspace: PathBuf,
+    task: TaskSpec,
+    event_tx: Option<mpsc::Sender<StreamEvent>>,
+    result_tx: mpsc::Sender<SubagentResult>,
+    token_tracker: Option<Arc<TokenTracker>>,
+) -> JoinHandle<()>
 ```
 
 ### 8.3 SubagentEvent

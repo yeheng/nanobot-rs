@@ -154,6 +154,7 @@ These docs use everyday analogies with plenty of diagrams, understandable withou
 | [💬 Session Management](docs/session-en.md) | How AI organizes conversations | Understanding flow |
 | [📝 Memory & History](docs/memory-history-en.md) | How AI remembers things | Memory system |
 | [🧰 Tool System](docs/tools-en.md) | AI's "hands" and "feet" | What AI can do |
+| [🔌 Plugin System](docs/plugin-en.md) | Extend AI with custom scripts | Custom tools |
 | [⏰ Scheduled Tasks](docs/cron-en.md) | AI's "alarm clock" | Automation |
 | [🪝 Hooks System](docs/hooks-en.md) | Extending AI at key points | Extensions |
 | [👥 Subagents](docs/subagents-en.md) | AI creating parallel workers | Complex tasks |

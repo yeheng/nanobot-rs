@@ -132,7 +132,6 @@ Results aggregated for full analysis
 sequenceDiagram
     participant Main as Main Agent
     participant Spawner as SpawnParallelTool
-    participant Manager as SubagentManager
     participant Tracker as SubagentTracker
     participant S1 as Subagent 1
     participant S2 as Subagent 2
@@ -142,9 +141,8 @@ sequenceDiagram
     Spawner->>Tracker: Create tracker
     
     loop For each task
-        Spawner->>Manager: task(id, prompt).spawn()
-        Manager->>S1: tokio::spawn(async)
-        Manager->>S2: tokio::spawn(async)
+        Spawner->>S1: spawn_subagent(task_spec, ...)
+        Spawner->>S2: spawn_subagent(task_spec, ...)
     end
     
     par Result Collection
@@ -197,12 +195,17 @@ flowchart TB
 ### Mode 1: Fire-and-Forget
 
 ```rust
-// Submit and continue immediately
-manager.submit(
-    "Summarize this article".to_string(),
-    channel,
-    chat_id
-).await?;
+// Spawn and continue immediately
+let (result_tx, mut result_rx) = mpsc::channel(1);
+spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    TaskSpec::new("sub-1", "Summarize this article"),
+    None,
+    result_tx,
+    None,
+);
 // Returns immediately, runs in background
 ```
 
@@ -210,25 +213,39 @@ manager.submit(
 
 ```rust
 // Block until complete
-let result = manager.submit_and_wait(
-    "Analyze this code".to_string(),
-    system_prompt,
-    channel,
-    chat_id
-).await?;
+let (result_tx, mut result_rx) = mpsc::channel(1);
+spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    TaskSpec::new("sub-1", "Analyze this code"),
+    None,
+    result_tx,
+    None,
+);
+let result = result_rx.recv().await;
 // Use result in main agent
 ```
 
 ### Mode 3: Parallel (Recommended)
 
 ```rust
-// Builder pattern for parallel execution
-let task_id = manager
-    .task("sub-1", "Review file 1")
-    .with_system_prompt("Code reviewer".to_string())
-    .with_streaming(event_tx)
-    .spawn(result_tx)
-    .await?;
+// Spawn multiple subagents with a tracker
+let mut tracker = SubagentTracker::new();
+for (id, task) in tasks {
+    let task = TaskSpec::new(&id, task)
+        .with_system_prompt("Code reviewer".to_string());
+    spawn_subagent(
+        provider.clone(),
+        tools.clone(),
+        workspace.clone(),
+        task,
+        Some(tracker.event_sender()),
+        tracker.result_sender(),
+        Some(token_tracker.clone()),
+    );
+}
+let results = tracker.wait_for_all(tasks.len()).await?;
 ```
 
 ---
@@ -312,22 +329,16 @@ Subagents can use different models than the main agent:
 
 ```rust
 // Fast/cheap model for simple tasks
-manager.submit_and_wait_with_model(
-    prompt,
-    system_prompt,
-    channel,
-    chat_id,
-    "gpt-4o-mini"  // Cheaper model
-).await?;
+let task = TaskSpec::new("sub-1", prompt)
+    .with_model("gpt-4o-mini")
+    .with_system_prompt(system_prompt);
+spawn_subagent(provider, tools, workspace, task, None, result_tx, None);
 
 // Powerful model for complex tasks
-manager.submit_and_wait_with_model(
-    prompt,
-    system_prompt,
-    channel,
-    chat_id,
-    "claude-4.5-sonnet"  // Better reasoning
-).await?;
+let task = TaskSpec::new("sub-2", prompt)
+    .with_model("claude-4.5-sonnet")
+    .with_system_prompt(system_prompt);
+spawn_subagent(provider, tools, workspace, task, None, result_tx, None);
 ```
 
 | Task Type | Recommended Model | Why |
@@ -346,9 +357,8 @@ manager.submit_and_wait_with_model(
 ```mermaid
 flowchart TB
     subgraph Management["Management Layer"]
-        SM[SubagentManager]
         ST[SubagentTracker]
-        SB[SubagentTaskBuilder]
+        TS[TaskSpec]
     end
     
     subgraph Execution["Execution Layer"]
@@ -362,10 +372,9 @@ flowchart TB
         WS[WebSocket]
     end
     
-    SM --> SB
-    SB -->|spawns| R1
-    SB -->|spawns| R2
-    SB -->|spawns| RN
+    TS -->|spawns| R1
+    TS -->|spawns| R2
+    TS -->|spawns| RN
     
     R1 -->|events| CH
     R2 -->|events| CH
@@ -375,17 +384,20 @@ flowchart TB
     ST -->|forward| WS
 ```
 
-### SubagentManager
+### spawn_subagent
 
-Central coordination:
+Core pure-function API for spawning a subagent:
 
 ```rust
-pub struct SubagentManager {
-    provider: Arc<dyn LlmProvider>,    // AI model
-    tools: Arc<ToolRegistry>,           // Available tools
-    outbound_tx: mpsc::Sender<OutboundMessage>,
-    timeout_secs: u64,                  // Task timeout
-}
+pub fn spawn_subagent(
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    workspace: PathBuf,
+    task: TaskSpec,
+    event_tx: Option<mpsc::Sender<StreamEvent>>,
+    result_tx: mpsc::Sender<SubagentResult>,
+    token_tracker: Option<Arc<TokenTracker>>,
+) -> JoinHandle<()>
 ```
 
 ### SubagentTracker
@@ -418,10 +430,10 @@ pub struct SubagentTracker {
 
 ```rust
 // Always handle subagent failures
-match manager.submit_and_wait(...).await {
-    Ok(result) => process(result),
-    Err(e) => {
-        log!("Subagent failed: {}", e);
+match result_rx.recv().await {
+    Some(result) => process(result),
+    None => {
+        log!("Subagent failed or channel closed");
         // Fallback or retry
     }
 }

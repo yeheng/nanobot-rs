@@ -20,31 +20,42 @@ When spawning subagents, you can specify different models than the main agent us
 
 ```rust
 // Spawn subagent with a specific model
-let result = manager
-    .submit_and_wait_with_model(
-        "Summarize this text".to_string(),
-        "You are a summarizer".to_string(),
-        channel,
-        chat_id,
-        "gpt-4o-mini"  // Cheaper model for simple task
-    )
-    .await?;
+let task = TaskSpec::new("sub-1", "Summarize this text")
+    .with_model("gpt-4o-mini")  // Cheaper model for simple task
+    .with_system_prompt("You are a summarizer".to_string());
+
+let (result_tx, mut result_rx) = mpsc::channel(1);
+spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    task,
+    None,
+    result_tx,
+    None,
+);
+let result = result_rx.recv().await;
 ```
 
 ### With Streaming
 
 ```rust
 // Spawn with streaming and specific model
-let result = manager
-    .submit_and_wait_with_model_streaming(
-        "Analyze this code".to_string(),
-        "You are a code reviewer".to_string(),
-        channel,
-        chat_id,
-        "claude-4.5-sonnet",  // Better model for code
-        event_tx
-    )
-    .await?;
+let task = TaskSpec::new("sub-1", "Analyze this code")
+    .with_model("claude-4.5-sonnet")  // Better model for code
+    .with_system_prompt("You are a code reviewer".to_string());
+
+let (result_tx, mut result_rx) = mpsc::channel(1);
+spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    task,
+    Some(event_tx),
+    result_tx,
+    None,
+);
+let result = result_rx.recv().await;
 ```
 
 ---
@@ -69,27 +80,36 @@ let result = manager
 
 ```rust
 // Use cheap model first, escalate if needed
-let result = manager
-    .submit_and_wait_with_model(
-        task.clone(),
-        prompt.clone(),
-        channel,
-        chat_id,
-        "gpt-4o-mini"  // Try cheap model first
-    )
-    .await;
+let cheap_task = TaskSpec::new("sub-cheap", task.clone())
+    .with_model("gpt-4o-mini");
+
+let (tx1, mut rx1) = mpsc::channel(1);
+spawn_subagent(
+    provider.clone(),
+    tools.clone(),
+    workspace.clone(),
+    cheap_task,
+    None,
+    tx1,
+    None,
+);
+let cheap_result = rx1.recv().await;
 
 // If result quality is insufficient, retry with better model
-if !is_quality_sufficient(&result) {
-    let result = manager
-        .submit_and_wait_with_model(
-            task,
-            prompt,
-            channel,
-            chat_id,
-            "claude-4.5-sonnet"  // Use better model
-        )
-        .await?;
+if !is_quality_sufficient(&cheap_result) {
+    let better_task = TaskSpec::new("sub-better", task)
+        .with_model("claude-4.5-sonnet");
+    let (tx2, mut rx2) = mpsc::channel(1);
+    spawn_subagent(
+        provider,
+        tools,
+        workspace,
+        better_task,
+        None,
+        tx2,
+        None,
+    );
+    let better_result = rx2.recv().await;
 }
 ```
 
@@ -97,10 +117,17 @@ if !is_quality_sufficient(&result) {
 
 ```rust
 // Run same task on multiple models, pick best result
-let cheap = manager.spawn_with_model(task.clone(), "gpt-4o-mini");
-let expensive = manager.spawn_with_model(task.clone(), "claude-4.5-sonnet");
+let cheap_task = TaskSpec::new("sub-cheap", task.clone())
+    .with_model("gpt-4o-mini");
+let expensive_task = TaskSpec::new("sub-expensive", task)
+    .with_model("claude-4.5-sonnet");
 
-let (cheap_result, expensive_result) = tokio::join!(cheap, expensive);
+let (tx1, mut rx1) = mpsc::channel(1);
+let (tx2, mut rx2) = mpsc::channel(1);
+spawn_subagent(provider.clone(), tools.clone(), workspace.clone(), cheap_task, None, tx1, None);
+spawn_subagent(provider, tools, workspace, expensive_task, None, tx2, None);
+
+let (cheap_result, expensive_result) = tokio::join!(rx1.recv(), rx2.recv());
 
 // Compare and select best result
 ```

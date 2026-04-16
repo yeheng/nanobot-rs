@@ -526,26 +526,31 @@ Query with Summary
 
 ---
 
-## 8. SubagentManager Scheduling Patterns
+## 8. Subagent Spawning Patterns
 
 ```
-─── submit() (async fire-and-forget) ───
+─── spawn_subagent() (async fire-and-forget) ───
 
-Caller ──▶ tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
-  │                              │                              │
-  │  Returns Ok(()) immediately  │  10 min timeout             │  via outbound_tx
-  │                              │                              │  to channel
-  ▼                              ▼                              ▼
-(don't wait)               (background run)              (result routed to chat)
+Caller ──▶ spawn_subagent(task, result_tx, ...)
+  │              │
+  │  Returns     │  tokio::spawn
+  │  JoinHandle  │  │
+  │              ▼  │
+  │        AgentSession::process_direct()
+  │              │
+  ▼              ▼
+(don't wait)  OutboundMessage ──▶ channel
 
 
-─── submit_and_wait() (sync wait) ───
+─── Sync wait via channel ───
 
-Caller ──▶ tokio::spawn ──▶ AgentSession::process_direct() ──▶ oneshot::Sender
-  │              │                                              │
-  │  await rx    │  10 min timeout                               │ tx.send(result)
-  │  (blocking)  │                                              │
-  ▼              ▼                                              ▼
-(receives AgentResponse                                 (oneshot channel)
- or Error)
+Caller ──▶ spawn_subagent(task, result_tx, ...)
+  │              │
+  │  await rx    │  tokio::spawn
+  │  (blocking)  │  │
+  ▼              ▼  │
+(receives     AgentSession::process_direct()
+ SubagentResult)   │
+                    ▼
+              result_tx.send(result)
 ```

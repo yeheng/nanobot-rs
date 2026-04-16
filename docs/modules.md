@@ -102,6 +102,7 @@ trait Tool: Send + Sync {
 | `memory_search` | memory | 通过 SQLite MetadataStore 搜索结构化记忆 |
 | `memorize` | memory | 写入结构化长期记忆 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
+| 插件工具 | plugin | 从 `~/.gasket/scripts/` 加载的外部脚本工具 |
 
 ### 辅助模块
 
@@ -111,6 +112,46 @@ trait Tool: Send + Sync {
 | `base.rs` | 工具基础类型和辅助函数 |
 
 > **注意**: 沙箱相关类型（`ProcessManager`, `SandboxConfig`）从 `sandbox` crate re-export。
+
+---
+
+## 2.5. plugin/ — 外部插件系统
+
+> 位于 `engine/src/plugin/`
+
+插件系统通过 YAML 清单加载外部脚本，并将其暴露为原生工具。
+
+### 模块结构
+
+| 文件 | 职责 |
+|------|------|
+| `mod.rs` | `PluginTool` — 外部脚本的 Tool trait 实现 |
+| `manifest.rs` | `PluginManifest`, `PluginProtocol`, `RuntimeConfig`, `Permission` |
+| `rpc.rs` | JSON-RPC 2.0 消息类型和行编解码器 |
+| `runner/simple.rs` | Simple 协议的一次性 stdin/stdout 执行器 |
+| `runner/jsonrpc.rs` | JSON-RPC 双向通信执行器 |
+| `runner/daemon.rs` | `JsonRpcDaemon` — 持久化 JSON-RPC 进程，支持请求多路复用 |
+| `dispatcher/mod.rs` | `RpcDispatcher` — 带权限校验的 RPC 方法路由 |
+| `dispatcher/llm_chat.rs` | `llm/chat` 处理器 |
+| `dispatcher/memory_search.rs` | `memory/search` 处理器 |
+| `dispatcher/memory_write.rs` | `memory/write` 处理器 |
+| `dispatcher/memory_decay.rs` | `memory/decay` 处理器 |
+| `dispatcher/subagent.rs` | `subagent/spawn` 处理器 |
+
+### 协议
+
+- **Simple**: 一次性 JSON 输入/输出，通过 stdin/stdout 通信
+- **JsonRpc**: 双向 JSON-RPC 2.0，支持回调引擎能力（LLM、记忆、子代理等）
+
+### 权限（默认拒绝）
+
+| 权限 | RPC 方法 |
+|------|----------|
+| `LlmChat` | `llm/chat` |
+| `MemorySearch` | `memory/search` |
+| `MemoryWrite` | `memory/write` |
+| `MemoryDecay` | `memory/decay` |
+| `SubagentSpawn` | `subagent/spawn` |
 
 ---
 
@@ -375,26 +416,28 @@ pub async fn execute_streaming(
 
 | 文件 | 职责 |
 |------|------|
-| `manager.rs` | `SubagentManager`, `SubagentTaskBuilder` — Builder 模式子代理管理 |
+| `manager.rs` | `spawn_subagent()`, `TaskSpec` — 纯函数式子代理创建 |
 | `tracker.rs` | `SubagentTracker`, `TrackerError` — 并行任务协调 |
-| `runner.rs` | `run_subagent()`, `ModelResolver` — 子代理运行和模型解析 |
+| `runner.rs` | `ModelResolver` — 子代理运行和模型解析 |
 
-### SubagentManager API
+### 创建 API
 
-Builder 模式的任务创建：
+子代理创建采用简洁的纯函数风格：
 
 ```rust
-let task_id = manager
-    .task("sub-1", "执行任务")
-    .with_provider(provider)
-    .with_config(config)
-    .with_system_prompt("自定义提示词".to_string())
-    .with_streaming(event_tx)
-    .with_session_key(session_key)
-    .with_cancellation_token(token)
-    .with_hooks(hooks)
-    .spawn(result_tx)
-    .await?;
+let task = TaskSpec::new("sub-1", "执行任务")
+    .with_model("openrouter/anthropic/claude-4.5-sonnet")
+    .with_system_prompt("自定义提示词".to_string());
+
+let handle = spawn_subagent(
+    provider,
+    tools,
+    workspace,
+    task,
+    Some(event_tx),
+    result_tx,
+    Some(token_tracker),
+);
 ```
 
 ---
