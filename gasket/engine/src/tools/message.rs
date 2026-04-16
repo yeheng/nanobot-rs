@@ -88,6 +88,10 @@ impl Tool for MessageTool {
     }
 
     #[instrument(name = "tool.send_message", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;

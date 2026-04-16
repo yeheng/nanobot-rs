@@ -61,6 +61,10 @@ impl Tool for SpawnTool {
     }
 
     #[instrument(name = "tool.spawn", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let args: SpawnArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;

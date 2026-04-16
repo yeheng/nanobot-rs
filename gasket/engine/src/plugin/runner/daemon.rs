@@ -16,13 +16,11 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use crate::tools::script::dispatcher::{DispatcherContext, RpcDispatcher};
-use crate::tools::script::manifest::{Permission, ScriptManifest};
-use crate::tools::script::rpc::{
-    decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE,
-};
-use crate::tools::script::runner::simple::spawn_process;
-use crate::tools::script::runner::{ScriptError, ScriptResult};
+use crate::plugin::dispatcher::{DispatcherContext, RpcDispatcher};
+use crate::plugin::manifest::{Permission, PluginManifest};
+use crate::plugin::rpc::{decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE};
+use crate::plugin::runner::simple::spawn_process;
+use crate::plugin::runner::{PluginError, PluginResult};
 
 /// Persistent JSON-RPC script process.
 pub struct JsonRpcDaemon {
@@ -38,27 +36,27 @@ pub struct JsonRpcDaemon {
 impl JsonRpcDaemon {
     /// Spawn a new persistent JSON-RPC process.
     pub async fn spawn(
-        manifest: &ScriptManifest,
+        manifest: &PluginManifest,
         manifest_dir: &Path,
         idle_timeout_secs: u64,
         permissions: &[Permission],
         dispatcher: &RpcDispatcher,
         ctx: &DispatcherContext,
-    ) -> Result<Self, ScriptError> {
+    ) -> Result<Self, PluginError> {
         let mut child = spawn_process(manifest, manifest_dir)?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| ScriptError::Io("Failed to open stdin".to_string()))?;
+            .ok_or_else(|| PluginError::Io("Failed to open stdin".to_string()))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| ScriptError::Io("Failed to open stdout".to_string()))?;
+            .ok_or_else(|| PluginError::Io("Failed to open stdout".to_string()))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| ScriptError::Io("Failed to open stderr".to_string()))?;
+            .ok_or_else(|| PluginError::Io("Failed to open stderr".to_string()))?;
 
         let pending: Arc<DashMap<i64, oneshot::Sender<RpcResponse>>> = Arc::new(DashMap::new());
         let (write_tx, mut write_rx) = mpsc::unbounded_channel::<RpcMessage>();
@@ -153,9 +151,9 @@ impl JsonRpcDaemon {
         &self,
         method: &str,
         params: Option<Value>,
-    ) -> Result<ScriptResult, ScriptError> {
+    ) -> Result<PluginResult, PluginError> {
         if !self.alive.load(Ordering::Relaxed) {
-            return Err(ScriptError::Io(
+            return Err(PluginError::Io(
                 "JSON-RPC daemon process has exited".to_string(),
             ));
         }
@@ -178,30 +176,30 @@ impl JsonRpcDaemon {
         };
         self.write_tx
             .send(RpcMessage::Request(request))
-            .map_err(|_| ScriptError::Io("Daemon write channel closed".to_string()))?;
+            .map_err(|_| PluginError::Io("Daemon write channel closed".to_string()))?;
 
         self.touch();
 
         let timeout_duration = Duration::from_millis(self.idle_timeout_ms.max(5000) as u64);
         let response = tokio::time::timeout(timeout_duration, rx)
             .await
-            .map_err(|_| ScriptError::Timeout(self.idle_timeout_ms.max(5000) as u64 / 1000))?
-            .map_err(|_| ScriptError::Io("Daemon response channel closed".to_string()))?;
+            .map_err(|_| PluginError::Timeout(self.idle_timeout_ms.max(5000) as u64 / 1000))?
+            .map_err(|_| PluginError::Io("Daemon response channel closed".to_string()))?;
 
         if let Some(error) = response.error {
-            return Err(ScriptError::InvalidOutput(format!(
+            return Err(PluginError::InvalidOutput(format!(
                 "JSON-RPC error: {} (code {})",
                 error.message, error.code
             )));
         }
 
         let output = response.result.ok_or_else(|| {
-            ScriptError::InvalidOutput("No result received from daemon".to_string())
+            PluginError::InvalidOutput("No result received from daemon".to_string())
         })?;
 
         let stderr = self.stderr.lock().await.clone();
 
-        Ok(ScriptResult {
+        Ok(PluginResult {
             output,
             stderr,
             duration: Duration::default(),

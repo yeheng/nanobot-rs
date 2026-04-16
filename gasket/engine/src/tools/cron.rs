@@ -86,6 +86,10 @@ impl Tool for CronTool {
     }
 
     #[instrument(name = "tool.cron", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

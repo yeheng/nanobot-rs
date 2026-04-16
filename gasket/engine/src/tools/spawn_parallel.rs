@@ -98,6 +98,10 @@ impl Tool for SpawnParallelTool {
     }
 
     #[instrument(name = "tool.spawn_parallel", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         // Pre-parse guard: reject oversized JSON payloads before serde allocates.
         // Check both the raw args size and the tasks array element count.

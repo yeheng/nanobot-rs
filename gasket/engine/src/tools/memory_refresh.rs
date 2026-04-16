@@ -48,6 +48,10 @@ impl Tool for MemoryRefreshTool {
     }
 
     #[instrument(name = "tool.memory_refresh", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

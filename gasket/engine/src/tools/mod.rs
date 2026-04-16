@@ -14,6 +14,7 @@
 //! - `script`: External script tools with YAML manifests
 
 mod base;
+mod builder;
 mod cron;
 mod filesystem;
 mod history_query;
@@ -23,7 +24,6 @@ mod memory_refresh;
 mod memory_search;
 mod message;
 mod registry;
-pub mod script;
 mod shell;
 mod spawn;
 mod spawn_parallel;
@@ -37,6 +37,9 @@ pub use gasket_types::{
 };
 
 // Re-export tool implementations
+pub use builder::{
+    build_tool_registry, register_sqlite_tools, resolve_exec_workspace, ToolRegistryConfig,
+};
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use history_query::HistoryQueryTool;
@@ -51,9 +54,6 @@ pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
-
-// Re-export script tool types
-pub use script::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol, ScriptTool};
 
 // Re-export sandbox types from gasket-sandbox for backward compatibility
 pub use gasket_sandbox::ProcessManager;

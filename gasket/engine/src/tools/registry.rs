@@ -1,21 +1,47 @@
 //! Tool registry for managing and executing tools
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
+use gasket_providers::LlmProvider;
 use gasket_providers::ToolDefinition;
 use gasket_storage::top_k_similar;
+
+/// Cached tool embeddings: mapping from tool name to embedding vector.
+type ToolEmbeddings = Vec<(String, Vec<f32>)>;
 #[cfg(feature = "local-embedding")]
 use gasket_storage::TextEmbedder;
 
 /// A tool bundled with its optional metadata.
 struct RegisteredTool {
-    tool: Box<dyn Tool>,
+    tool: Arc<dyn Tool>,
     metadata: Option<ToolMetadata>,
+}
+
+impl Clone for RegisteredTool {
+    fn clone(&self) -> Self {
+        // Deep-clone PluginTool so that each registry clone can hold
+        // independent engine references (tool_registry / provider).
+        if let Some(plugin_tool) = self
+            .tool
+            .as_any()
+            .downcast_ref::<crate::plugin::PluginTool>()
+        {
+            Self {
+                tool: Arc::new(plugin_tool.clone()),
+                metadata: self.metadata.clone(),
+            }
+        } else {
+            Self {
+                tool: self.tool.clone(),
+                metadata: self.metadata.clone(),
+            }
+        }
+    }
 }
 
 /// Registry for managing tools with semantic routing support.
@@ -26,7 +52,19 @@ struct RegisteredTool {
 pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
     /// Cached embeddings: (tool_name, embedding_vector)
-    embeddings: OnceLock<Vec<(String, Vec<f32>)>>,
+    embeddings: Arc<OnceLock<ToolEmbeddings>>,
+    /// Names of plugins registered via `discover_plugins`.
+    plugin_names: Vec<String>,
+}
+
+impl Clone for ToolRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            embeddings: Arc::new(OnceLock::new()),
+            plugin_names: self.plugin_names.clone(),
+        }
+    }
 }
 
 impl ToolRegistry {
@@ -34,16 +72,28 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             items: HashMap::new(),
-            embeddings: OnceLock::new(),
+            embeddings: Arc::new(OnceLock::new()),
+            plugin_names: Vec::new(),
         }
+    }
+
+    fn is_plugin(tool: &dyn Tool) -> bool {
+        tool.as_any()
+            .downcast_ref::<crate::plugin::PluginTool>()
+            .is_some()
     }
 
     /// Register a tool
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
+        let is_plugin = Self::is_plugin(tool.as_ref());
+        let tool = Arc::from(tool);
         debug!("Registering tool: {}", name);
+        if is_plugin {
+            self.plugin_names.push(name.clone());
+        }
         // Invalidate cached embeddings when tools change
-        self.embeddings = OnceLock::new();
+        self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
             name,
             RegisteredTool {
@@ -56,12 +106,17 @@ impl ToolRegistry {
     /// Register a tool with associated metadata
     pub fn register_with_metadata(&mut self, tool: Box<dyn Tool>, meta: ToolMetadata) {
         let name = tool.name().to_string();
+        let is_plugin = Self::is_plugin(tool.as_ref());
+        let tool = Arc::from(tool);
         debug!(
             "Registering tool with metadata: {} (category: {:?})",
             name, meta.category
         );
+        if is_plugin {
+            self.plugin_names.push(name.clone());
+        }
         // Invalidate cached embeddings when tools change
-        self.embeddings = OnceLock::new();
+        self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
             name,
             RegisteredTool {
@@ -75,6 +130,24 @@ impl ToolRegistry {
     pub fn set_metadata(&mut self, name: &str, meta: ToolMetadata) {
         if let Some(entry) = self.items.get_mut(name) {
             entry.metadata = Some(meta);
+        }
+    }
+
+    /// Inject engine references into all registered plugins.
+    pub fn link_engine_refs(&mut self, registry: Arc<Self>, provider: Arc<dyn LlmProvider>) {
+        for name in &self.plugin_names {
+            if let Some(entry) = self.items.get_mut(name) {
+                if let Some(plugin_tool) = entry
+                    .tool
+                    .as_any()
+                    .downcast_ref::<crate::plugin::PluginTool>()
+                {
+                    let updated = plugin_tool
+                        .clone()
+                        .with_engine_refs(registry.clone(), provider.clone());
+                    entry.tool = Arc::new(updated);
+                }
+            }
         }
     }
 

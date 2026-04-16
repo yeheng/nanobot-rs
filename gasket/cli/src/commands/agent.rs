@@ -77,7 +77,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     if let Some(ref v) = vault {
         provider_registry.with_vault(v.clone());
     }
-    let provider_registry = Arc::new(provider_registry);
+    let _provider_registry = Arc::new(provider_registry);
 
     // Log available models if any are configured
     if !model_registry.is_empty() {
@@ -88,25 +88,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         );
     }
 
-    let tools = Arc::new(super::registry::build_tool_registry(
-        super::registry::ToolRegistryConfig {
-            config: config.clone(),
-            workspace: workspace.clone(),
-            subagent_spawner: None,
-            extra_tools: vec![],
-            sqlite_store: Some(sqlite_store),
-            model_registry: Some(model_registry),
-            provider_registry: Some(provider_registry),
-        },
-    ));
-
-    // Create spawner for spawn/spawn_parallel tools
-    let (_dummy_tx, _dummy_rx): (
-        tokio::sync::mpsc::Sender<gasket_engine::channels::OutboundMessage>,
-        _,
-    ) = tokio::sync::mpsc::channel(16);
-    let subagent_tools = Arc::new(super::registry::build_tool_registry(
-        super::registry::ToolRegistryConfig {
+    // Build common tool registry once and share it between agent and subagent
+    let common_tools =
+        gasket_engine::tools::build_tool_registry(gasket_engine::tools::ToolRegistryConfig {
             config: config.clone(),
             workspace: workspace.clone(),
             subagent_spawner: None,
@@ -114,8 +98,23 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             sqlite_store: None,
             model_registry: None,
             provider_registry: None,
-        },
-    ));
+        });
+
+    let mut tools = common_tools.clone();
+    gasket_engine::tools::register_sqlite_tools(&mut tools, &sqlite_store);
+    let tools_arc = Arc::new(tools.clone());
+    tools.link_engine_refs(tools_arc, provider_info.provider.clone());
+    let tools = Arc::new(tools);
+
+    // Create spawner for spawn/spawn_parallel tools
+    let (_dummy_tx, _dummy_rx): (
+        tokio::sync::mpsc::Sender<gasket_engine::channels::OutboundMessage>,
+        _,
+    ) = tokio::sync::mpsc::channel(16);
+    let mut subagent_tools = common_tools.clone();
+    let subagent_tools_arc = Arc::new(subagent_tools.clone());
+    subagent_tools.link_engine_refs(subagent_tools_arc, provider_info.provider.clone());
+    let subagent_tools = Arc::new(subagent_tools);
 
     // Create model resolver for subagent spawner to support model_id switching in spawn tools
     let mut resolver_registry = ProviderRegistry::from_config(&config);

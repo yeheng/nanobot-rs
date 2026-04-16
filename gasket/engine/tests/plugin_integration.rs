@@ -1,4 +1,4 @@
-use gasket_engine::tools::script::discover_scripts_in_dir;
+use gasket_engine::plugin::discover_plugins_in_dir;
 use gasket_engine::tools::{Tool, ToolContext, ToolRegistry};
 use gasket_providers::LlmProvider;
 use gasket_types::{
@@ -73,7 +73,7 @@ fn make_test_ctx() -> ToolContext {
 
 #[tokio::test]
 async fn test_simple_echo_tool() {
-    let tools = discover_scripts_in_dir(&test_scripts_dir()).unwrap();
+    let tools = discover_plugins_in_dir(&test_scripts_dir()).unwrap();
     let echo_tool = tools
         .iter()
         .find(|t| t.name() == "test_echo")
@@ -88,7 +88,7 @@ async fn test_simple_echo_tool() {
 
 #[tokio::test]
 async fn test_jsonrpc_ping_tool() {
-    let tools = discover_scripts_in_dir(&test_scripts_dir()).unwrap();
+    let tools = discover_plugins_in_dir(&test_scripts_dir()).unwrap();
     let ping_tool = tools
         .into_iter()
         .find(|t| t.name() == "test_ping")
@@ -104,7 +104,7 @@ async fn test_jsonrpc_ping_tool() {
 
 #[test]
 fn test_discover_finds_both_tools() {
-    let tools = discover_scripts_in_dir(&test_scripts_dir()).unwrap();
+    let tools = discover_plugins_in_dir(&test_scripts_dir()).unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"test_echo"), "Missing test_echo");
     assert!(names.contains(&"test_ping"), "Missing test_ping");

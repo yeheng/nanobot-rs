@@ -1,44 +1,42 @@
-//! Memory search callback handler.
+//! Memory decay callback handler.
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{DispatcherContext, RpcHandler};
-use crate::tools::script::manifest::Permission;
-use crate::tools::script::rpc::RpcError;
+use crate::plugin::manifest::Permission;
+use crate::plugin::rpc::RpcError;
 use crate::tools::ToolContext;
 
-/// Handler for `memory/search` RPC method calls.
+/// Handler for `memory/decay` RPC method calls.
 ///
-/// This handler processes memory search requests from scripts by delegating
-/// to the engine's memory_search tool.
-pub struct MemorySearchHandler;
+/// This handler processes memory decay requests from scripts by delegating
+/// to the engine's memory_decay tool.
+pub struct MemoryDecayHandler;
 
 #[async_trait]
-impl RpcHandler for MemorySearchHandler {
+impl RpcHandler for MemoryDecayHandler {
     fn method(&self) -> &str {
-        "memory/search"
+        "memory/decay"
     }
 
     fn required_permission(&self) -> Permission {
-        Permission::MemorySearch
+        Permission::MemoryDecay
     }
 
     async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
         let registry = &ctx.engine.tool_registry;
 
-        // Build ToolContext from engine handle
         let tool_ctx = ToolContext::default()
             .session_key(ctx.engine.session_key.clone())
             .outbound_tx(ctx.engine.outbound_tx.clone())
             .spawner(ctx.engine.spawner.clone())
             .token_tracker(ctx.engine.token_tracker.clone());
 
-        // Execute the memory_search tool
         let output = registry
-            .execute("memory_search", params, &tool_ctx)
+            .execute("memory_decay", params, &tool_ctx)
             .await
-            .map_err(|e| RpcError::internal_error(format!("Memory search failed: {}", e)))?;
+            .map_err(|e| RpcError::internal_error(format!("Memory decay failed: {}", e)))?;
 
         Ok(serde_json::json!({"output": output}))
     }

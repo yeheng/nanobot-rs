@@ -1,7 +1,7 @@
-//! Script tools module
+//! Plugins module
 //!
-//! This module provides support for external script tools that can be
-//! integrated into Gasket via YAML manifests. Scripts communicate via
+//! This module provides support for external plugins that can be
+//! integrated into Gasket via YAML manifests. Plugins communicate via
 //! either Simple (stdin/stdout JSON) or JSON-RPC 2.0 protocols.
 
 pub mod dispatcher;
@@ -16,21 +16,21 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use super::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
+use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
 use gasket_providers::LlmProvider;
 
 pub use dispatcher::{build_dispatcher, DispatcherContext, EngineHandle, RpcDispatcher};
-pub use manifest::{Permission, RuntimeConfig, ScriptManifest, ScriptProtocol};
-pub use runner::{run_jsonrpc, run_simple, JsonRpcDaemon, ScriptError, ScriptResult};
+pub use manifest::{Permission, PluginManifest, PluginProtocol, RuntimeConfig};
+pub use runner::{run_jsonrpc, run_simple, JsonRpcDaemon, PluginError, PluginResult};
 
-/// Script tool that implements the Tool trait for external scripts.
+/// Plugin that implements the Tool trait for external scripts.
 ///
-/// ScriptTool wraps an external script with a YAML manifest and exposes
+/// PluginTool wraps an external script with a YAML manifest and exposes
 /// it as a native Gasket tool. It supports both Simple and JSON-RPC protocols.
 #[derive(Clone)]
-pub struct ScriptTool {
+pub struct PluginTool {
     /// Parsed manifest describing the script
-    manifest: ScriptManifest,
+    manifest: PluginManifest,
     /// Directory containing the manifest (for resolving paths)
     manifest_dir: PathBuf,
     /// RPC dispatcher for handling method calls (JSON-RPC mode only)
@@ -43,8 +43,8 @@ pub struct ScriptTool {
     daemon: Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>,
 }
 
-impl ScriptTool {
-    /// Create a new ScriptTool from a manifest.
+impl PluginTool {
+    /// Create a new PluginTool from a manifest.
     ///
     /// # Arguments
     ///
@@ -53,9 +53,9 @@ impl ScriptTool {
     ///
     /// # Returns
     ///
-    /// A new ScriptTool instance with an empty dispatcher.
+    /// A new PluginTool instance with an empty dispatcher.
     /// Use `with_engine_refs()` to inject engine capabilities.
-    pub fn new(manifest: ScriptManifest, manifest_dir: PathBuf) -> Self {
+    pub fn new(manifest: PluginManifest, manifest_dir: PathBuf) -> Self {
         let dispatcher = Arc::new(build_dispatcher());
         Self {
             manifest,
@@ -102,11 +102,11 @@ impl ScriptTool {
         let tool_registry = self
             .tool_registry
             .clone()
-            .expect("ScriptTool missing tool_registry - call with_engine_refs()");
+            .expect("PluginTool missing tool_registry - call with_engine_refs()");
         let provider = self
             .provider
             .clone()
-            .expect("ScriptTool missing provider - call with_engine_refs()");
+            .expect("PluginTool missing provider - call with_engine_refs()");
 
         DispatcherContext {
             engine: Arc::new(EngineHandle {
@@ -122,7 +122,7 @@ impl ScriptTool {
 }
 
 #[async_trait]
-impl Tool for ScriptTool {
+impl Tool for PluginTool {
     /// Get the tool name from the manifest.
     fn name(&self) -> &str {
         &self.manifest.name
@@ -138,7 +138,7 @@ impl Tool for ScriptTool {
         self.manifest.parameters.clone()
     }
 
-    /// Execute the script tool.
+    /// Execute the plugin.
     ///
     /// # Protocol
     ///
@@ -149,11 +149,15 @@ impl Tool for ScriptTool {
     ///
     /// - `Ok(String)` - JSON-encoded result with optional `_debug_stderr` field
     /// - `Err(ToolError)` - Spawn, timeout, exit, or protocol error
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
 
         let result = match self.manifest.protocol {
-            ScriptProtocol::Simple => {
+            PluginProtocol::Simple => {
                 run_simple(
                     &self.manifest,
                     &self.manifest_dir,
@@ -162,7 +166,7 @@ impl Tool for ScriptTool {
                 )
                 .await
             }
-            ScriptProtocol::JsonRpc => {
+            PluginProtocol::JsonRpc => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx);
 
                 // Fast path: read-check daemon
@@ -232,7 +236,7 @@ impl Tool for ScriptTool {
                 output.insert("result".to_string(), script_result.output);
 
                 // Attach stderr as _debug_stderr field in JSON-RPC mode
-                if self.manifest.protocol == ScriptProtocol::JsonRpc
+                if self.manifest.protocol == PluginProtocol::JsonRpc
                     && !script_result.stderr.is_empty()
                 {
                     output.insert("_debug_stderr".to_string(), script_result.stderr.into());
@@ -250,24 +254,24 @@ impl Tool for ScriptTool {
                 })
             }
             Err(e) => match e {
-                ScriptError::SpawnFailed(msg) => Err(ToolError::ExecutionError(format!(
+                PluginError::SpawnFailed(msg) => Err(ToolError::ExecutionError(format!(
                     "Failed to spawn script '{}': {}",
                     self.manifest.name, msg
                 ))),
-                ScriptError::Timeout(secs) => Err(ToolError::ExecutionError(format!(
-                    "Script '{}' timed out after {}s",
+                PluginError::Timeout(secs) => Err(ToolError::ExecutionError(format!(
+                    "Plugin '{}' timed out after {}s",
                     self.manifest.name, secs
                 ))),
-                ScriptError::NonZeroExit(code) => Err(ToolError::ExecutionError(format!(
-                    "Script '{}' exited with non-zero code: {:?}",
+                PluginError::NonZeroExit(code) => Err(ToolError::ExecutionError(format!(
+                    "Plugin '{}' exited with non-zero code: {:?}",
                     self.manifest.name, code
                 ))),
-                ScriptError::InvalidOutput(msg) => Err(ToolError::ExecutionError(format!(
-                    "Script '{}' returned invalid output: {}",
+                PluginError::InvalidOutput(msg) => Err(ToolError::ExecutionError(format!(
+                    "Plugin '{}' returned invalid output: {}",
                     self.manifest.name, msg
                 ))),
-                ScriptError::Io(msg) => Err(ToolError::ExecutionError(format!(
-                    "Script '{}' I/O error: {}",
+                PluginError::Io(msg) => Err(ToolError::ExecutionError(format!(
+                    "Plugin '{}' I/O error: {}",
                     self.manifest.name, msg
                 ))),
             },
@@ -275,10 +279,10 @@ impl Tool for ScriptTool {
     }
 }
 
-/// Discover and load all script tools in a directory.
+/// Discover and load all plugins in a directory.
 ///
 /// Scans the directory for `*.yaml` files, parses them as manifests,
-/// and creates ScriptTool instances for valid manifests.
+/// and creates PluginTool instances for valid manifests.
 ///
 /// # Arguments
 ///
@@ -286,15 +290,15 @@ impl Tool for ScriptTool {
 ///
 /// # Returns
 ///
-/// * `Ok(Vec<ScriptTool>)` - Vector of discovered script tools
+/// * `Ok(Vec<PluginTool>)` - Vector of discovered plugins
 /// * `Err(anyhow::Error)` - Directory read error or manifest parse error
-pub fn discover_scripts_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<ScriptTool>> {
+pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginTool>> {
     let mut tools = Vec::new();
 
     // Check if directory exists
     if !scripts_dir.exists() {
         info!(
-            "Scripts directory does not exist: {:?}, skipping discovery",
+            "Plugins directory does not exist: {:?}, skipping discovery",
             scripts_dir
         );
         return Ok(tools);
@@ -326,8 +330,8 @@ pub fn discover_scripts_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<ScriptT
         // Load manifest
         match load_manifest(&path) {
             Ok(manifest) => {
-                info!("Discovered script tool '{}' from {:?}", manifest.name, path);
-                let tool = ScriptTool::new(manifest, scripts_dir.to_path_buf());
+                info!("Discovered plugin '{}' from {:?}", manifest.name, path);
+                let tool = PluginTool::new(manifest, scripts_dir.to_path_buf());
                 tools.push(tool);
             }
             Err(e) => {
@@ -339,9 +343,9 @@ pub fn discover_scripts_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<ScriptT
     Ok(tools)
 }
 
-/// Discover and register all script tools in the Gasket scripts directory.
+/// Discover and register all plugins in the Gasket scripts directory.
 ///
-/// This is the main entry point for script tool discovery. It reads
+/// This is the main entry point for plugin discovery. It reads
 /// `~/.gasket/scripts/` and registers all valid manifests with the
 /// provided tool registry.
 ///
@@ -360,7 +364,7 @@ pub fn discover_scripts_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<ScriptT
 ///
 /// If the scripts directory does not exist, this function returns `Ok(())`
 /// without error. Missing directories are treated as empty tool sets.
-pub fn discover_scripts(
+pub fn discover_plugins(
     registry: &mut ToolRegistry,
     engine_registry: Option<Arc<ToolRegistry>>,
     provider: Option<Arc<dyn LlmProvider>>,
@@ -371,7 +375,7 @@ pub fn discover_scripts(
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve home directory"))?;
 
     // Discover tools
-    let tools = discover_scripts_in_dir(&scripts_dir)?;
+    let tools = discover_plugins_in_dir(&scripts_dir)?;
 
     // Register each tool
     for tool in &tools {
@@ -387,7 +391,7 @@ pub fn discover_scripts(
     }
 
     info!(
-        "Discovered and registered {} script tools from {:?}",
+        "Discovered and registered {} plugins from {:?}",
         tools.len(),
         scripts_dir
     );
@@ -403,13 +407,13 @@ pub fn discover_scripts(
 ///
 /// # Returns
 ///
-/// * `Ok(ScriptManifest)` - Parsed manifest
+/// * `Ok(PluginManifest)` - Parsed manifest
 /// * `Err(anyhow::Error)` - File read or YAML parse error
-fn load_manifest(path: &Path) -> anyhow::Result<ScriptManifest> {
+fn load_manifest(path: &Path) -> anyhow::Result<PluginManifest> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read manifest file {:?}: {}", path, e))?;
 
-    let manifest: ScriptManifest = serde_yaml::from_str(&content)
+    let manifest: PluginManifest = serde_yaml::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse manifest YAML from {:?}: {}", path, e))?;
 
     // Validate manifest
@@ -441,9 +445,9 @@ mod tests {
     use tempfile::TempDir;
 
     /// Create a minimal manifest for testing.
-    fn test_manifest(command: &str) -> (ScriptManifest, TempDir) {
+    fn test_manifest(command: &str) -> (PluginManifest, TempDir) {
         let dir = TempDir::new().unwrap();
-        let manifest = ScriptManifest {
+        let manifest = PluginManifest {
             name: "test_tool".to_string(),
             description: "Test tool".to_string(),
             version: "1.0.0".to_string(),
@@ -454,7 +458,7 @@ mod tests {
                 timeout_secs: 120,
                 env: Default::default(),
             },
-            protocol: ScriptProtocol::Simple,
+            protocol: PluginProtocol::Simple,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -470,7 +474,7 @@ mod tests {
     #[test]
     fn test_script_tool_new() {
         let (manifest, dir) = test_manifest("cat");
-        let tool = ScriptTool::new(manifest, dir.path().to_path_buf());
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf());
 
         assert_eq!(tool.name(), "test_tool");
         assert_eq!(tool.description(), "Test tool");
@@ -480,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_tool_execute() {
         let (manifest, dir) = test_manifest("cat");
-        let tool = ScriptTool::new(manifest, dir.path().to_path_buf());
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf());
 
         let args = json!({"hello": "world", "number": 42});
         let ctx = ToolContext::default();
@@ -500,11 +504,11 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_scripts_no_dir() {
+    fn test_discover_plugins_no_dir() {
         // Use a nonexistent directory path
         let nonexistent = PathBuf::from("/tmp/nonexistent_gasket_scripts_xyz123");
 
-        let tools = discover_scripts_in_dir(&nonexistent).unwrap();
+        let tools = discover_plugins_in_dir(&nonexistent).unwrap();
 
         // Should return empty vec without error
         assert_eq!(tools.len(), 0);
@@ -608,7 +612,7 @@ parameters:
         }
 
         let dir = TempDir::new().unwrap();
-        let manifest = ScriptManifest {
+        let manifest = PluginManifest {
             name: "test_tool".to_string(),
             description: "Test tool".to_string(),
             version: "1.0.0".to_string(),
@@ -619,7 +623,7 @@ parameters:
                 timeout_secs: 120,
                 env: Default::default(),
             },
-            protocol: ScriptProtocol::JsonRpc,
+            protocol: PluginProtocol::JsonRpc,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -630,7 +634,7 @@ parameters:
             permissions: vec![],
         };
 
-        let tool = ScriptTool::new(manifest, dir.path().to_path_buf())
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf())
             .with_engine_refs(Arc::new(ToolRegistry::new()), Arc::new(MockProvider));
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);

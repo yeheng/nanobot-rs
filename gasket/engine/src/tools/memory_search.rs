@@ -129,6 +129,10 @@ impl Tool for MemorySearchTool {
         ])
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;

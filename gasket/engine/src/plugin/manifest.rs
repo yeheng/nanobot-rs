@@ -1,20 +1,20 @@
-//! Script tool manifest types
+//! Plugin manifest types
 //!
-//! This module defines the YAML manifest format for external script tools.
-//! Scripts are declared via YAML manifests that describe their runtime
+//! This module defines the YAML manifest format for external plugins.
+//! Plugins are declared via YAML manifests that describe their runtime
 //! configuration, protocol, parameters, and required permissions.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Manifest describing an external script tool.
+/// Manifest describing an external plugin.
 ///
 /// The manifest is loaded from a YAML file and defines how the script
 /// should be executed, what protocol it uses, what permissions it needs,
 /// and what parameters it accepts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScriptManifest {
+pub struct PluginManifest {
     /// Tool name (must be unique across all tools)
     pub name: String,
 
@@ -30,7 +30,7 @@ pub struct ScriptManifest {
 
     /// Communication protocol (default: Simple)
     #[serde(default)]
-    pub protocol: ScriptProtocol,
+    pub protocol: PluginProtocol,
 
     /// JSON Schema defining the tool's parameters
     pub parameters: serde_json::Value,
@@ -40,13 +40,13 @@ pub struct ScriptManifest {
     pub permissions: Vec<Permission>,
 }
 
-/// Communication protocol for script tools.
+/// Communication protocol for plugins.
 ///
 /// - Simple: stdin/stdout with newline-delimited JSON
 /// - JsonRpc: JSON-RPC 2.0 over stdio
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ScriptProtocol {
+pub enum PluginProtocol {
     /// Simple stdin/stdout protocol (default)
     ///
     /// Input: JSON object via stdin
@@ -96,7 +96,7 @@ fn default_timeout() -> u64 {
 /// Permission grants access to specific Gasket capabilities.
 ///
 /// Permissions map to JSON-RPC method names that will be made available
-/// to the script tool. The default-deny policy means omitted permissions
+/// to the plugin. The default-deny policy means omitted permissions
 /// result in no access.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,7 +131,7 @@ impl Permission {
     /// Get the JSON-RPC method name for this permission.
     ///
     /// Each permission maps to a specific RPC method that will be
-    /// made available to the script tool.
+    /// made available to the plugin.
     pub fn method_name(&self) -> &'static str {
         match self {
             Permission::LlmChat => "llm/chat",
@@ -164,7 +164,7 @@ parameters:
   required: ["input"]
 "#;
 
-        let manifest: ScriptManifest =
+        let manifest: PluginManifest =
             serde_yaml::from_str(yaml).expect("Failed to parse manifest");
 
         assert_eq!(manifest.name, "example_tool");
@@ -174,7 +174,7 @@ parameters:
         assert_eq!(manifest.runtime.args, vec!["script.py"]);
         assert_eq!(manifest.runtime.working_dir, ".");
         assert_eq!(manifest.runtime.timeout_secs, 120);
-        assert_eq!(manifest.protocol, ScriptProtocol::Simple);
+        assert_eq!(manifest.protocol, PluginProtocol::Simple);
         assert!(manifest.runtime.env.is_empty());
         assert!(manifest.permissions.is_empty());
     }
@@ -206,12 +206,12 @@ permissions:
   - memory_write
 "#;
 
-        let manifest: ScriptManifest =
+        let manifest: PluginManifest =
             serde_yaml::from_str(yaml).expect("Failed to parse manifest");
 
         assert_eq!(manifest.name, "advanced_tool");
         assert_eq!(manifest.version, "2.0.0");
-        assert_eq!(manifest.protocol, ScriptProtocol::JsonRpc);
+        assert_eq!(manifest.protocol, PluginProtocol::JsonRpc);
         assert_eq!(manifest.runtime.command, "node");
         assert_eq!(manifest.runtime.args, vec!["index.js", "--verbose"]);
         assert_eq!(manifest.runtime.working_dir, "./scripts");
@@ -244,12 +244,12 @@ parameters:
   properties: {}
 "#;
 
-        let manifest: ScriptManifest =
+        let manifest: PluginManifest =
             serde_yaml::from_str(yaml).expect("Failed to parse manifest");
 
         // Verify defaults for omitted fields
         assert_eq!(manifest.version, "");
-        assert_eq!(manifest.protocol, ScriptProtocol::Simple);
+        assert_eq!(manifest.protocol, PluginProtocol::Simple);
         assert_eq!(manifest.runtime.working_dir, ".");
         assert_eq!(manifest.runtime.timeout_secs, 120);
         assert!(manifest.runtime.env.is_empty());

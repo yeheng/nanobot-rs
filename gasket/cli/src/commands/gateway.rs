@@ -18,9 +18,9 @@ use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::AgentSession;
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
-use gasket_engine::tools::CronTool;
 use gasket_engine::tools::MemoryDecayTool;
 use gasket_engine::tools::MemoryRefreshTool;
+use gasket_engine::tools::{build_tool_registry, CronTool, Tool, ToolContext, ToolRegistryConfig};
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
 
@@ -120,7 +120,7 @@ pub async fn cmd_gateway() -> Result<()> {
     if let Some(ref v) = vault {
         provider_registry.with_vault(v.clone());
     }
-    let provider_registry = Arc::new(provider_registry);
+    let _provider_registry = Arc::new(provider_registry);
 
     // Log available models if any are configured
     if !model_registry.is_empty() {
@@ -131,19 +131,23 @@ pub async fn cmd_gateway() -> Result<()> {
         );
     }
 
-    let subagent_tools = Arc::new(super::registry::build_tool_registry(
-        super::registry::ToolRegistryConfig {
-            config: config.clone(),
-            workspace: workspace.clone(),
-            subagent_spawner: None,
-            extra_tools: vec![],
-            sqlite_store: None, // Subagent doesn't need history search
-            model_registry: Some(model_registry.clone()),
-            provider_registry: Some(provider_registry.clone()),
-        },
-    ));
+    // Build common tool registry once and share it between agent and subagent
+    let common_tools = build_tool_registry(ToolRegistryConfig {
+        config: config.clone(),
+        workspace: workspace.clone(),
+        subagent_spawner: None,
+        extra_tools: vec![],
+        sqlite_store: None,
+        model_registry: None,
+        provider_registry: None,
+    });
 
-    let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
+    let mut subagent_tools = common_tools.clone();
+    let subagent_tools_arc = Arc::new(subagent_tools.clone());
+    subagent_tools.link_engine_refs(subagent_tools_arc, provider_info.provider.clone());
+    let subagent_tools = Arc::new(subagent_tools);
+
+    let subagent_spawner: Arc<dyn SubagentSpawner> = Arc::new(
         SimpleSpawner::new(
             provider_info.provider.clone(),
             subagent_tools,
@@ -161,77 +165,73 @@ pub async fn cmd_gateway() -> Result<()> {
         })),
     );
 
-    let tools = Arc::new(super::registry::build_tool_registry(
-        super::registry::ToolRegistryConfig {
-            config: config.clone(),
-            workspace: workspace.clone(),
-            subagent_spawner: Some(subagent_spawner.clone()),
-            extra_tools: {
-                let mut ext: Vec<(Box<dyn gasket_engine::tools::Tool>, ToolMetadata)> = vec![(
-                    Box::new(MessageTool::new_broker(broker.clone()))
-                        as Box<dyn gasket_engine::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Send Message".to_string(),
-                        category: "communication".to_string(),
-                        tags: vec!["message".to_string(), "send".to_string()],
-                        requires_approval: false,
-                        is_mutating: false,
-                    },
-                )];
-
-                ext.push((
-                    Box::new(CronTool::new(cron_service.clone()))
-                        as Box<dyn gasket_engine::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Schedule Task".to_string(),
-                        category: "system".to_string(),
-                        tags: vec!["cron".to_string(), "schedule".to_string()],
-                        requires_approval: false,
-                        is_mutating: false,
-                    },
-                ));
-
-                ext.push((
-                    Box::new(MemoryRefreshTool::new(memory_manager.clone()))
-                        as Box<dyn gasket_engine::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Memory Refresh".to_string(),
-                        category: "system".to_string(),
-                        tags: vec![
-                            "memory".to_string(),
-                            "refresh".to_string(),
-                            "index".to_string(),
-                        ],
-                        requires_approval: false,
-                        is_mutating: true,
-                    },
-                ));
-
-                ext.push((
-                    Box::new(MemoryDecayTool::new(
-                        workspace.clone(),
-                        sqlite_store.clone(),
-                    )) as Box<dyn gasket_engine::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Memory Decay".to_string(),
-                        category: "system".to_string(),
-                        tags: vec![
-                            "memory".to_string(),
-                            "decay".to_string(),
-                            "maintenance".to_string(),
-                        ],
-                        requires_approval: false,
-                        is_mutating: true,
-                    },
-                ));
-
-                ext
+    let extra_tools: Vec<(Box<dyn Tool>, ToolMetadata)> = {
+        let mut ext = vec![(
+            Box::new(MessageTool::new_broker(broker.clone())) as Box<dyn Tool>,
+            ToolMetadata {
+                display_name: "Send Message".to_string(),
+                category: "communication".to_string(),
+                tags: vec!["message".to_string(), "send".to_string()],
+                requires_approval: false,
+                is_mutating: false,
             },
-            sqlite_store: Some((*sqlite_store).clone()),
-            model_registry: Some(model_registry.clone()),
-            provider_registry: Some(provider_registry.clone()),
-        },
-    ));
+        )];
+
+        ext.push((
+            Box::new(CronTool::new(cron_service.clone())) as Box<dyn Tool>,
+            ToolMetadata {
+                display_name: "Schedule Task".to_string(),
+                category: "system".to_string(),
+                tags: vec!["cron".to_string(), "schedule".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        ));
+
+        ext.push((
+            Box::new(MemoryRefreshTool::new(memory_manager.clone())) as Box<dyn Tool>,
+            ToolMetadata {
+                display_name: "Memory Refresh".to_string(),
+                category: "system".to_string(),
+                tags: vec![
+                    "memory".to_string(),
+                    "refresh".to_string(),
+                    "index".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: true,
+            },
+        ));
+
+        ext.push((
+            Box::new(MemoryDecayTool::new(
+                workspace.clone(),
+                sqlite_store.clone(),
+            )) as Box<dyn Tool>,
+            ToolMetadata {
+                display_name: "Memory Decay".to_string(),
+                category: "system".to_string(),
+                tags: vec![
+                    "memory".to_string(),
+                    "decay".to_string(),
+                    "maintenance".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: true,
+            },
+        ));
+
+        ext
+    };
+
+    let mut tools = common_tools.clone();
+    gasket_engine::tools::register_sqlite_tools(&mut tools, &sqlite_store);
+    for (tool, metadata) in extra_tools {
+        tools.register_with_metadata(tool, metadata);
+    }
+    let tools_arc = Arc::new(tools.clone());
+    tools.link_engine_refs(tools_arc, provider_info.provider.clone());
+    let tools = Arc::new(tools);
 
     // Convert pricing info to ModelPricing
     let pricing = provider_info
@@ -450,7 +450,7 @@ fn start_cron_checker(
                             );
 
                             // Build ToolContext with broker-based outbound
-                            let ctx = gasket_engine::tools::ToolContext::default()
+                            let ctx = ToolContext::default()
                                 .outbound_tx({
                                     // Create a temporary mpsc channel for tool output,
                                     // then forward to broker. This preserves the

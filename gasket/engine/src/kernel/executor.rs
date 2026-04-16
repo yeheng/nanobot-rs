@@ -786,6 +786,10 @@ mod tests {
         fn parameters(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         async fn execute(&self, args: Value, _ctx: &ToolContext) -> TResult {
             Ok(args.to_string())
         }
@@ -804,6 +808,10 @@ mod tests {
         fn parameters(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         async fn execute(&self, _args: Value, _ctx: &ToolContext) -> TResult {
             Err(ToolError::ExecutionError("boom".to_string()))
         }

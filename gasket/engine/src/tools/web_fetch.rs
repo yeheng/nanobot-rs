@@ -129,6 +129,10 @@ impl Tool for WebFetchTool {
     }
 
     #[instrument(name = "tool.web_fetch", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

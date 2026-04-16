@@ -186,6 +186,9 @@ pub trait Tool: Send + Sync {
     /// and outbound channel for WebSocket streaming. This eliminates the
     /// need for global mutable state in SubagentManager.
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
+
+    /// Return as `&dyn Any` for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Metadata describing a tool's capabilities, tags, and permission requirements.

@@ -45,6 +45,10 @@ impl Tool for MemoryDecayTool {
     }
 
     #[instrument(name = "tool.memory_decay", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
         let memory_dir = self.workspace.join("memory");
         if !memory_dir.exists() {

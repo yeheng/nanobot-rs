@@ -1,6 +1,6 @@
-//! Process runners for script tools.
+//! Process runners for plugins.
 //!
-//! This module provides two execution modes for external script tools:
+//! This module provides two execution modes for external plugins:
 //! - `run_simple()`: One-shot execution with JSON input/output via stdin/stdout
 //! - `run_jsonrpc()`: Bidirectional JSON-RPC 2.0 communication
 
@@ -18,7 +18,7 @@ use thiserror::Error;
 
 /// Result of a successful script execution.
 #[derive(Debug, Clone)]
-pub struct ScriptResult {
+pub struct PluginResult {
     /// Parsed JSON output from stdout
     pub output: Value,
 
@@ -31,20 +31,20 @@ pub struct ScriptResult {
 
 /// Errors that can occur during script execution.
 #[derive(Debug, Error)]
-pub enum ScriptError {
+pub enum PluginError {
     /// Failed to spawn the script process.
     #[error("Failed to spawn script process: {0}")]
     SpawnFailed(String),
 
-    /// Script execution exceeded the configured timeout.
-    #[error("Script timed out after {0}s")]
+    /// Plugin execution exceeded the configured timeout.
+    #[error("Plugin timed out after {0}s")]
     Timeout(u64),
 
-    /// Script exited with a non-zero status code.
-    #[error("Script exited with non-zero code: {0:?}")]
+    /// Plugin exited with a non-zero status code.
+    #[error("Plugin exited with non-zero code: {0:?}")]
     NonZeroExit(Option<i32>),
 
-    /// Script output was not valid JSON.
+    /// Plugin output was not valid JSON.
     #[error("Invalid script output: {0}")]
     InvalidOutput(String),
 
@@ -53,8 +53,8 @@ pub enum ScriptError {
     Io(String),
 }
 
-impl From<tokio::io::Error> for ScriptError {
+impl From<tokio::io::Error> for PluginError {
     fn from(err: tokio::io::Error) -> Self {
-        ScriptError::Io(err.to_string())
+        PluginError::Io(err.to_string())
     }
 }

@@ -23,6 +23,7 @@ pub mod error;
 pub mod heartbeat;
 pub mod hooks;
 pub mod kernel;
+pub mod plugin;
 pub mod search;
 pub mod session;
 pub mod skills;

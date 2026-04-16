@@ -165,6 +165,10 @@ impl Tool for ReadFileTool {
     }
 
     #[instrument(name = "tool.read_file", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -238,6 +242,10 @@ impl Tool for WriteFileTool {
     }
 
     #[instrument(name = "tool.write_file", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -324,6 +332,10 @@ impl Tool for EditFileTool {
     }
 
     #[instrument(name = "tool.edit_file", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -409,6 +421,10 @@ impl Tool for ListDirTool {
     }
 
     #[instrument(name = "tool.list_dir", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

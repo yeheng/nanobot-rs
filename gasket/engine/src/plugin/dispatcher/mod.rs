@@ -1,4 +1,4 @@
-//! RPC dispatcher for script tools.
+//! RPC dispatcher for plugins.
 //!
 //! This module provides the dispatcher that routes JSON-RPC method calls to
 //! registered handlers with permission enforcement. It's the core routing layer
@@ -204,7 +204,7 @@ impl Default for RpcDispatcher {
 
 /// Build and return an RPC dispatcher with default handlers.
 ///
-/// Registers all built-in callback handlers for script tool RPC methods:
+/// Registers all built-in callback handlers for plugin RPC methods:
 /// - `llm/chat` - LLM chat completions
 /// - `memory/search` - Memory search
 /// - `memory/write` - Memory write (memorize)

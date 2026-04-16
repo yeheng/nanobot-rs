@@ -1,4 +1,4 @@
-//! JSON-RPC mode runner for script tools.
+//! JSON-RPC mode runner for plugins.
 //!
 //! Bidirectional JSON-RPC 2.0 communication with request/response handling.
 
@@ -11,12 +11,10 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use crate::tools::script::dispatcher::{DispatcherContext, RpcDispatcher};
-use crate::tools::script::manifest::{Permission, ScriptManifest};
-use crate::tools::script::rpc::{
-    decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE,
-};
-use crate::tools::script::runner::{ScriptError, ScriptResult};
+use crate::plugin::dispatcher::{DispatcherContext, RpcDispatcher};
+use crate::plugin::manifest::{Permission, PluginManifest};
+use crate::plugin::rpc::{decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE};
+use crate::plugin::runner::{PluginError, PluginResult};
 
 /// Background stderr collector to prevent pipe deadlock.
 struct StderrCollector {
@@ -54,7 +52,7 @@ impl StderrCollector {
 ///
 /// # Arguments
 ///
-/// * `manifest` - Script manifest with runtime configuration
+/// * `manifest` - Plugin manifest with runtime configuration
 /// * `manifest_dir` - Directory containing the manifest
 /// * `args` - Initial parameters (passed to `initialize` method)
 /// * `timeout_secs` - Maximum execution time
@@ -64,8 +62,8 @@ impl StderrCollector {
 ///
 /// # Returns
 ///
-/// - `Ok(ScriptResult)` - Script completed with final result
-/// - `Err(ScriptError)` - Spawn, timeout, exit, or protocol error
+/// - `Ok(PluginResult)` - Plugin completed with final result
+/// - `Err(PluginError)` - Spawn, timeout, exit, or protocol error
 ///
 /// # Protocol
 ///
@@ -79,15 +77,15 @@ impl StderrCollector {
 /// 5. When response with `id: 0` received, extract result and exit
 /// 6. Collect stderr and return result
 pub async fn run_jsonrpc(
-    manifest: &ScriptManifest,
+    manifest: &PluginManifest,
     manifest_dir: &Path,
     args: &Value,
     timeout_secs: u64,
     permissions: &[Permission],
     dispatcher: &RpcDispatcher,
     ctx: &DispatcherContext,
-) -> Result<ScriptResult, ScriptError> {
-    use crate::tools::script::runner::simple::spawn_process;
+) -> Result<PluginResult, PluginError> {
+    use crate::plugin::runner::simple::spawn_process;
 
     let start = std::time::Instant::now();
     let mut child = spawn_process(manifest, manifest_dir)?;
@@ -99,11 +97,11 @@ pub async fn run_jsonrpc(
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| ScriptError::Io("Failed to open stdin".to_string()))?;
+        .ok_or_else(|| PluginError::Io("Failed to open stdin".to_string()))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| ScriptError::Io("Failed to open stdout".to_string()))?;
+        .ok_or_else(|| PluginError::Io("Failed to open stdout".to_string()))?;
 
     let mut reader_lines =
         FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_MESSAGE_SIZE));
@@ -124,11 +122,11 @@ pub async fn run_jsonrpc(
     stdin
         .write_all(init_encoded.as_bytes())
         .await
-        .map_err(|e| ScriptError::Io(format!("Failed to write initialize request: {}", e)))?;
+        .map_err(|e| PluginError::Io(format!("Failed to write initialize request: {}", e)))?;
     stdin
         .flush()
         .await
-        .map_err(|e| ScriptError::Io(format!("Failed to flush stdin: {}", e)))?;
+        .map_err(|e| PluginError::Io(format!("Failed to flush stdin: {}", e)))?;
 
     // Track final result (id: 0 response)
     #[allow(unused_assignments)]
@@ -156,13 +154,13 @@ pub async fn run_jsonrpc(
                             RpcMessage::Request(request) => {
                                 let response = dispatcher.dispatch(request, permissions, ctx).await;
                                 if response_tx.send(response).await.is_err() {
-                                    return Err(ScriptError::Io("Response channel closed".to_string()));
+                                    return Err(PluginError::Io("Response channel closed".to_string()));
                                 }
                             }
                             RpcMessage::Response(response) => {
                                 if response.id == Value::Number(0.into()) {
                                     if let Some(error) = response.error {
-                                        return Err(ScriptError::InvalidOutput(format!(
+                                        return Err(PluginError::InvalidOutput(format!(
                                             "Initialize failed: {} (code {})",
                                             error.message, error.code
                                         )));
@@ -174,10 +172,10 @@ pub async fn run_jsonrpc(
                         }
                     }
                     None => {
-                        return Err(ScriptError::InvalidOutput("Unexpected EOF from script".to_string()));
+                        return Err(PluginError::InvalidOutput("Unexpected EOF from script".to_string()));
                     }
                     Some(Err(e)) => {
-                        return Err(ScriptError::Io(format!("Failed to read stdout: {}", e)));
+                        return Err(PluginError::Io(format!("Failed to read stdout: {}", e)));
                     }
                 }
             }
@@ -189,12 +187,12 @@ pub async fn run_jsonrpc(
                         let msg = RpcMessage::Response(response);
                         let encoded = encode(&msg);
                         stdin.write_all(encoded.as_bytes()).await
-                            .map_err(|e| ScriptError::Io(format!("Failed to write response: {}", e)))?;
+                            .map_err(|e| PluginError::Io(format!("Failed to write response: {}", e)))?;
                         stdin.flush().await
-                            .map_err(|e| ScriptError::Io(format!("Failed to flush stdin: {}", e)))?;
+                            .map_err(|e| PluginError::Io(format!("Failed to flush stdin: {}", e)))?;
                     }
                     None => {
-                        return Err(ScriptError::Io("Response channel closed".to_string()));
+                        return Err(PluginError::Io("Response channel closed".to_string()));
                     }
                 }
             }
@@ -202,8 +200,8 @@ pub async fn run_jsonrpc(
             // Timeout branch
             _ = &mut sleep_future => {
                 child.kill().await
-                    .map_err(|e| ScriptError::Io(format!("Failed to kill timed-out process: {}", e)))?;
-                return Err(ScriptError::Timeout(timeout_secs));
+                    .map_err(|e| PluginError::Io(format!("Failed to kill timed-out process: {}", e)))?;
+                return Err(PluginError::Timeout(timeout_secs));
             }
         }
     }
@@ -212,10 +210,10 @@ pub async fn run_jsonrpc(
     let exit_status = child
         .wait()
         .await
-        .map_err(|e| ScriptError::Io(format!("Failed to wait for process: {}", e)))?;
+        .map_err(|e| PluginError::Io(format!("Failed to wait for process: {}", e)))?;
 
     if !exit_status.success() {
-        return Err(ScriptError::NonZeroExit(exit_status.code()));
+        return Err(PluginError::NonZeroExit(exit_status.code()));
     }
 
     // Collect stderr
@@ -223,10 +221,10 @@ pub async fn run_jsonrpc(
 
     // Extract final result
     let output = final_result.ok_or_else(|| {
-        ScriptError::InvalidOutput("No result received from initialize".to_string())
+        PluginError::InvalidOutput("No result received from initialize".to_string())
     })?;
 
-    Ok(ScriptResult {
+    Ok(PluginResult {
         output,
         stderr,
         duration: start.elapsed(),

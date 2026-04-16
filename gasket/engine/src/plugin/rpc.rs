@@ -1,7 +1,7 @@
-//! JSON-RPC 2.0 message types and line-based codec for script tools.
+//! JSON-RPC 2.0 message types and line-based codec for plugins.
 //!
 //! This module provides a minimal JSON-RPC 2.0 implementation for communication
-//! with external script tools over stdio. Messages are serialized as single JSON
+//! with external plugins over stdio. Messages are serialized as single JSON
 //! lines separated by `\n` for unambiguous parsing.
 //!
 //! # Protocol
@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust
-//! use gasket_engine::tools::script::rpc::{RpcMessage, RpcRequest};
+//! use gasket_engine::plugin::rpc::{RpcMessage, RpcRequest};
 //! use serde_json::json;
 //!
 //! let request = RpcRequest {
@@ -25,7 +25,7 @@
 //! };
 //!
 //! let msg = RpcMessage::Request(request);
-//! let encoded = gasket_engine::tools::script::rpc::encode(&msg);
+//! let encoded = gasket_engine::plugin::rpc::encode(&msg);
 //! assert!(encoded.ends_with('\n'));
 //! ```
 
@@ -190,7 +190,7 @@ impl From<gasket_types::ToolError> for RpcError {
 /// # Example
 ///
 /// ```rust
-/// use gasket_engine::tools::script::rpc::{RpcMessage, RpcRequest};
+/// use gasket_engine::plugin::rpc::{RpcMessage, RpcRequest};
 /// use serde_json::json;
 ///
 /// let request = RpcRequest {
@@ -200,7 +200,7 @@ impl From<gasket_types::ToolError> for RpcError {
 ///     params: None,
 /// };
 /// let msg = RpcMessage::Request(request);
-/// let encoded = gasket_engine::tools::script::rpc::encode(&msg);
+/// let encoded = gasket_engine::plugin::rpc::encode(&msg);
 /// assert!(encoded.ends_with('\n'));
 /// ```
 pub fn encode(msg: &RpcMessage) -> String {
@@ -228,7 +228,7 @@ pub fn encode(msg: &RpcMessage) -> String {
 /// # Example
 ///
 /// ```rust
-/// use gasket_engine::tools::script::rpc::decode;
+/// use gasket_engine::plugin::rpc::decode;
 ///
 /// // Valid JSON-RPC request
 /// let line = r#"{"jsonrpc":"2.0","id":1,"method":"test","params":{}}"#;
