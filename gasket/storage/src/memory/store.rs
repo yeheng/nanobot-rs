@@ -248,7 +248,7 @@ impl FileMemoryStore {
         }
 
         // Sort by modification time, newest first
-        versions.sort_by(|a, b| b.1.cmp(&a.1));
+        versions.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         // Remove oldest versions beyond the limit
         for (name, _) in versions.into_iter().skip(MAX_HISTORY_VERSIONS) {
