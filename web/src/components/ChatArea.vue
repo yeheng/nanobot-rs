@@ -2,14 +2,14 @@
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/stores/chatStore';
-import { AlertCircle, ArrowDown, Bot, Cpu, MoreVertical, RotateCcw, Send, Sparkles, Square, Trash2, X as XIcon } from 'lucide-vue-next';
+import { Menu as HeadlessMenu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue';
+import { AlertCircle, ArrowDown, Bot, Cpu, Loader2, MoreVertical, RotateCcw, Send, Sparkles, Square, Trash2, X as XIcon } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useIMWebSocket } from '../hooks/useIMWebSocket';
 import type { Message, SubagentState } from '../types';
-import { Menu as HeadlessMenu, MenuButton, MenuItems, MenuItem } from '@headlessui/vue';
 import ChatTimeDivider from './ChatTimeDivider.vue';
 import MessageBubble from './MessageBubble.vue';
 import SubagentPanel from './SubagentPanel.vue';
-import { useIMWebSocket } from '../hooks/useIMWebSocket';
 
 const props = defineProps<{
   chatId: string;
@@ -423,8 +423,27 @@ const clearHistory = () => {
   chatStore.clearChatMessages(props.chatId);
 };
 
-const forceCompact = () => {
-  send(JSON.stringify({ type: 'force_compact' }));
+const isCompacting = ref(false);
+
+const forceCompact = async () => {
+  if (isCompacting.value) return;
+  isCompacting.value = true;
+  try {
+    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+    const sessionKey = encodeURIComponent(`websocket:${props.chatId}`);
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionKey}/context/compact`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.context_stats) {
+      chatStore.setContextStats(props.chatId, data.context_stats);
+    }
+    if (res.ok && data.watermark_info) {
+      chatStore.setWatermarkInfo(props.chatId, data.watermark_info);
+    }
+  } catch (e) {
+    console.error('Force compact failed:', e);
+  } finally {
+    isCompacting.value = false;
+  }
 };
 </script>
 
@@ -432,14 +451,14 @@ const forceCompact = () => {
   <div class="flex h-full w-full relative">
     <div class="flex flex-col flex-1 min-w-0">
       <!-- Header -->
-      <header class="py-3 px-5 bg-slate-800/80 border-b border-white/10 flex justify-between items-center shrink-0">
+      <header class="py-3 px-5 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex justify-between items-center shrink-0">
         <div class="flex items-center gap-3">
           <div class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
             <Bot class="w-5 h-5 text-white" />
           </div>
           <div>
-            <div class="text-sm font-semibold text-slate-100">gasket AI</div>
-            <div class="text-[10px] text-slate-400 flex items-center gap-1">
+            <div class="text-sm font-semibold text-gray-900 dark:text-slate-100">Gasket</div>
+            <div class="text-[10px] text-gray-500 dark:text-slate-400 flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full" :class="isConnected ? 'bg-emerald-500' : 'bg-red-500'" />
               {{ isConnected ? 'Online' : 'Offline' }}
             </div>
@@ -447,14 +466,29 @@ const forceCompact = () => {
         </div>
 
         <div class="flex items-center gap-2">
+          <div
+            v-if="sessionStatus !== 'idle'"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border animate-in fade-in zoom-in-95 duration-200"
+            :class="{
+              'bg-red-500/10 text-red-500 dark:text-red-400 border-red-500/20': sessionStatus === 'disconnected',
+              'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20': sessionStatus === 'sending',
+              'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20': sessionStatus === 'receiving'
+            }"
+          >
+            <Loader2 v-if="sessionStatus === 'sending' || sessionStatus === 'receiving'" class="w-3.5 h-3.5 animate-spin" />
+            <span v-if="sessionStatus === 'disconnected'">Disconnected</span>
+            <span v-else-if="sessionStatus === 'sending'">Sending...</span>
+            <span v-else-if="sessionStatus === 'receiving'">Thinking...</span>
+          </div>
+
           <Button v-if="showReconnectButton" variant="outline" size="sm" @click="manualReconnect"
-            class="text-amber-400 border-amber-500/30 hover:bg-amber-500/10 text-xs h-8">
+            class="text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10 text-xs h-8">
             <RotateCcw class="w-3.5 h-3.5 mr-1.5" />
             Reconnect
           </Button>
 
           <HeadlessMenu as="div" class="relative">
-            <MenuButton as="button" class="p-2 rounded-md hover:bg-white/10 text-slate-400 hover:text-slate-200 transition-colors">
+            <MenuButton as="button" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 transition-colors">
               <MoreVertical class="w-4 h-4" />
             </MenuButton>
             <transition
@@ -465,10 +499,10 @@ const forceCompact = () => {
               leave-from-class="transform scale-100 opacity-100"
               leave-to-class="transform scale-95 opacity-0"
             >
-              <MenuItems class="absolute right-0 top-10 z-30 w-40 origin-top-right rounded-lg bg-slate-800 border border-white/10 shadow-lg focus:outline-none py-1">
+              <MenuItems class="absolute right-0 top-10 z-30 w-40 origin-top-right rounded-lg bg-white dark:bg-slate-800 border border-gray-200 dark:border-white/10 shadow-lg focus:outline-none py-1">
                 <MenuItem v-slot="{ active }">
-                  <button @click="clearHistory" :class="[active ? 'bg-white/10' : '', 'group flex w-full items-center px-3 py-2 text-xs text-slate-300']">
-                    <Trash2 class="w-3.5 h-3.5 mr-2 text-slate-400" />
+                  <button @click="clearHistory" :class="[active ? 'bg-gray-100 dark:bg-white/10' : '', 'group flex w-full items-center px-3 py-2 text-xs text-gray-700 dark:text-slate-300']">
+                    <Trash2 class="w-3.5 h-3.5 mr-2 text-gray-400 dark:text-slate-400" />
                     Clear History
                   </button>
                 </MenuItem>
@@ -479,27 +513,28 @@ const forceCompact = () => {
       </header>
 
       <!-- Context Stats Bar -->
-      <div v-if="contextStats" class="px-4 py-2 bg-slate-900/40 border-b border-white/5 flex items-center gap-3 shrink-0">
-        <div class="text-[10px] text-slate-400 font-medium whitespace-nowrap">
+      <div v-if="contextStats" class="px-4 py-2 bg-gray-100/60 dark:bg-slate-900/40 border-b border-gray-200 dark:border-white/5 flex items-center gap-3 shrink-0">
+        <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
           Context: {{ contextStats.usage_percent.toFixed(1) }}%
         </div>
-        <div class="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden relative">
+        <div class="flex-1 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full overflow-hidden relative">
           <div class="h-full rounded-full transition-all duration-500" :class="usageColor" :style="{ width: Math.min(contextStats.usage_percent, 100) + '%' }" />
         </div>
-        <div v-if="watermarkInfo" class="text-[10px] text-slate-500 whitespace-nowrap">
+        <div v-if="watermarkInfo" class="text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
           Watermark: {{ watermarkInfo.watermark }}/{{ watermarkInfo.max_sequence }}
         </div>
-        <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white/5 border-white/10 hover:bg-white/10 text-slate-300"
-          :disabled="contextStats.is_compressing" @click="forceCompact">
-          <Cpu class="w-3 h-3 mr-1" />
-          {{ contextStats.is_compressing ? 'Compressing...' : 'Compress' }}
+        <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
+          :disabled="isCompacting" @click="forceCompact">
+          <Cpu v-if="!isCompacting" class="w-3 h-3 mr-1" />
+          <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
+          {{ isCompacting ? 'Compressing...' : 'Compress' }}
         </Button>
       </div>
 
       <!-- Error Banner -->
       <div v-if="errorBanner"
-        class="mx-4 mt-2 flex items-center gap-2 bg-red-500/15 border border-red-500/30 text-red-300 px-3 py-2 rounded-lg text-xs animate-in fade-in slide-in-from-top-2 duration-300 shrink-0">
-        <AlertCircle class="w-4 h-4 shrink-0 text-red-400" />
+        class="mx-4 mt-2 flex items-center gap-2 bg-red-500/15 border border-red-500/30 text-red-600 dark:text-red-300 px-3 py-2 rounded-lg text-xs animate-in fade-in slide-in-from-top-2 duration-300 shrink-0">
+        <AlertCircle class="w-4 h-4 shrink-0 text-red-500 dark:text-red-400" />
         <span class="flex-1">{{ errorBanner }}</span>
         <button @click="dismissError" class="p-0.5 hover:bg-red-500/20 rounded transition-colors">
           <XIcon class="w-3.5 h-3.5" />
@@ -514,12 +549,12 @@ const forceCompact = () => {
           <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center mb-5 shadow-lg shadow-blue-500/20">
             <Sparkles class="w-7 h-7 text-white" />
           </div>
-          <h2 class="text-xl font-semibold text-slate-100 mb-2">How can I help you today?</h2>
-          <p class="text-slate-400 mb-6 text-xs">Ask me anything about your code, project, or ideas.</p>
+          <h2 class="text-xl font-semibold text-gray-900 dark:text-slate-100 mb-2">How can I help you today?</h2>
+          <p class="text-gray-500 dark:text-slate-400 mb-6 text-xs">Ask me anything about your code, project, or ideas.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
             <button v-for="(prompt, idx) in suggestedPrompts" :key="idx" @click="sendPrompt(prompt.text)"
               :disabled="!isConnected"
-              class="flex items-center gap-2 p-3 bg-slate-800/60 hover:bg-slate-700/60 border border-white/5 hover:border-white/15 rounded-xl text-left text-xs text-slate-300 hover:text-slate-100 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group">
+              class="flex items-center gap-2 p-3 bg-white dark:bg-slate-800/60 border border-gray-200 dark:border-white/5 hover:border-gray-300 dark:hover:border-white/15 rounded-xl text-left text-xs text-gray-700 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group shadow-sm">
               <span class="text-base flex-shrink-0 group-hover:scale-110 transition-transform">{{ prompt.icon }}</span>
               <span>{{ prompt.text }}</span>
             </button>
@@ -547,10 +582,10 @@ const forceCompact = () => {
             <div class="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
               <Bot class="w-3.5 h-3.5 text-white" />
             </div>
-            <div class="px-3 py-2 rounded-2xl rounded-bl-sm bg-slate-700/60 text-slate-300 text-xs flex items-center gap-1">
-              <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay: 0ms" />
-              <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay: 150ms" />
-              <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay: 300ms" />
+            <div class="px-3 py-2 rounded-2xl rounded-bl-sm bg-gray-200 dark:bg-slate-700/60 text-gray-600 dark:text-slate-300 text-xs flex items-center gap-1">
+              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 0ms" />
+              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 150ms" />
+              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 300ms" />
             </div>
           </div>
 
@@ -566,7 +601,7 @@ const forceCompact = () => {
       <Transition enter-active-class="transition-all duration-200 ease-out" leave-active-class="transition-all duration-150 ease-in"
         enter-from-class="opacity-0 translate-y-2" leave-to-class="opacity-0 translate-y-2">
         <button v-if="showScrollButton" @click="forceScrollToBottom"
-          class="absolute bottom-28 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-slate-700/90 hover:bg-slate-600/90 border border-white/10 rounded-full text-slate-300 text-xs shadow-lg backdrop-blur-sm transition-colors">
+          class="absolute bottom-28 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-700/90 hover:bg-gray-100 dark:hover:bg-slate-600/90 border border-gray-200 dark:border-white/10 rounded-full text-gray-700 dark:text-slate-300 text-xs shadow-lg backdrop-blur-sm transition-colors">
           <ArrowDown class="w-3.5 h-3.5" />
           New messages
         </button>
@@ -575,7 +610,7 @@ const forceCompact = () => {
       <!-- Input Area -->
       <div class="p-4 bg-transparent shrink-0">
         <div class="max-w-4xl mx-auto w-full relative">
-          <div class="flex items-end bg-slate-900/70 border border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
+          <div class="flex items-end bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
             :class="{
               'focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20': sessionStatus === 'idle' || sessionStatus === 'disconnected',
               'border-violet-500/30 ring-2 ring-violet-500/20': sessionStatus === 'receiving',
@@ -585,7 +620,7 @@ const forceCompact = () => {
               :placeholder="sessionStatus === 'receiving' ? 'AI is processing...' : 'Type a message...'"
               :disabled="!isConnected || sessionStatus === 'receiving' || sessionStatus === 'sending'"
               autofocus rows="1"
-              class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 text-slate-100 px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
+              class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 text-gray-900 dark:text-slate-100 px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
 
             <Button v-if="sessionStatus === 'receiving' || isThinking" @click="stopGenerating"
               class="w-9 h-9 rounded-xl bg-red-500/80 hover:bg-red-500 text-white shrink-0 ml-2 transition-all" size="icon" title="Stop generating">
@@ -593,12 +628,12 @@ const forceCompact = () => {
             </Button>
             <Button v-else @click="sendMessage" :disabled="!inputValue.trim() || !isConnected || sessionStatus === 'sending'"
               class="w-9 h-9 rounded-xl text-white shrink-0 ml-2 transition-all"
-              :class="{ 'bg-blue-500 hover:bg-blue-400': sessionStatus === 'idle', 'bg-slate-600 cursor-not-allowed': sessionStatus !== 'idle' }"
+              :class="{ 'bg-blue-500 hover:bg-blue-400': sessionStatus === 'idle', 'bg-slate-300 dark:bg-slate-600 cursor-not-allowed': sessionStatus !== 'idle' }"
               size="icon">
               <Send class="w-4 h-4" />
             </Button>
           </div>
-          <div class="flex items-center justify-center text-[10px] text-slate-500 mt-2 px-1">
+          <div class="flex items-center justify-center text-[10px] text-gray-400 dark:text-slate-500 mt-2 px-1">
             <span>Shift+Enter for new line</span>
           </div>
         </div>
@@ -609,7 +644,10 @@ const forceCompact = () => {
 
 <style>
 .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+.custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); border-radius: 4px; }
+.dark .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 4px; }
+.dark .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.3); }
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
 </style>

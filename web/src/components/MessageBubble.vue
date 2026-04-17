@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue';
-import { marked } from 'marked';
-import { markedHighlight } from 'marked-highlight';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
-import DOMPurify from 'dompurify';
+import { AlertCircle, Bot, Check, CheckCheck, User } from 'lucide-vue-next';
+import { marked } from 'marked';
+import { markedHighlight } from 'marked-highlight';
 import mermaid from 'mermaid';
-import { Check, CheckCheck, AlertCircle, Bot, User } from 'lucide-vue-next';
-import MessageMetaBadges from './MessageMetaBadges.vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../types';
+import MessageThoughtsPanel from './MessageThoughtsPanel.vue';
 
 const props = defineProps<{
   message: Message;
@@ -67,7 +67,7 @@ customRenderer.code = (codeObj: any) => {
     return `<div class="mermaid-diagram my-2 flex justify-center" data-source="${encodeURIComponent(trimmed)}"></div>`;
   }
   const highlighted = hljs.highlightAuto(code).value;
-  return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
+  return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 hover:bg-black/30 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
 };
 
 const parsedContent = computed(() => {
@@ -104,7 +104,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
     :class="message.role === 'user' ? 'flex justify-end' : message.role === 'system' ? 'flex justify-center' : 'flex justify-start'">
     
     <!-- System message -->
-    <div v-if="message.role === 'system'" class="text-[10px] text-slate-500 px-3 py-1 bg-slate-800/40 rounded-full">
+    <div v-if="message.role === 'system'" class="text-[10px] text-gray-500 dark:text-slate-500 px-3 py-1 bg-gray-100 dark:bg-slate-800/40 rounded-full">
       {{ message.content }}
     </div>
 
@@ -115,17 +115,17 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
           <div class="whitespace-pre-wrap">{{ message.content }}</div>
         </div>
         <div class="flex items-center gap-1 px-1">
-          <span class="text-[10px] text-slate-500">{{ formatTime(message.timestamp) }}</span>
-          <Check v-if="message.status === 'sending'" class="w-3 h-3 text-slate-500" />
-          <CheckCheck v-else-if="message.status === 'sent'" class="w-3 h-3 text-slate-500" />
-          <div v-else-if="message.status === 'error'" class="flex items-center gap-1 text-red-400 cursor-pointer hover:underline" @click="emit('retry')">
+          <span class="text-[10px] text-gray-400 dark:text-slate-500">{{ formatTime(message.timestamp) }}</span>
+          <Check v-if="message.status === 'sending'" class="w-3 h-3 text-gray-400 dark:text-slate-500" />
+          <CheckCheck v-else-if="message.status === 'sent'" class="w-3 h-3 text-gray-400 dark:text-slate-500" />
+          <div v-else-if="message.status === 'error'" class="flex items-center gap-1 text-red-500 dark:text-red-400 cursor-pointer hover:underline" @click="emit('retry')">
             <AlertCircle class="w-3 h-3" />
             <span class="text-[10px]">Failed</span>
           </div>
         </div>
       </div>
-      <div class="w-7 h-7 rounded-full bg-slate-600 flex items-center justify-center shrink-0">
-        <User class="w-3.5 h-3.5 text-slate-200" />
+      <div class="w-7 h-7 rounded-full bg-gray-300 dark:bg-slate-600 flex items-center justify-center shrink-0">
+        <User class="w-3.5 h-3.5 text-gray-700 dark:text-slate-200" />
       </div>
     </div>
 
@@ -136,11 +136,11 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
       </div>
       <div class="flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2">
-          <span class="text-xs font-medium text-slate-300">gasket AI</span>
-          <span class="text-[10px] text-slate-500">{{ formatTime(message.timestamp) }}</span>
+          <span class="text-xs font-medium text-gray-800 dark:text-slate-300">AI</span>
+          <span class="text-[10px] text-gray-400 dark:text-slate-500">{{ formatTime(message.timestamp) }}</span>
         </div>
 
-        <MessageMetaBadges
+        <MessageThoughtsPanel
           :message="message"
           :is-thinking="isThinking"
           :is-last-bot-message="isLastBotMessage"
@@ -148,10 +148,10 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
 
         <!-- Content -->
         <div v-if="message.content || isStreaming"
-          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-slate-700/50 text-slate-100 text-sm border border-white/5 shadow-sm min-w-0">
+          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0">
           <div class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
           <!-- Streaming cursor -->
-          <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />
+          <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-500/80 dark:bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />
         </div>
       </div>
     </div>

@@ -3,6 +3,31 @@
 @tailwind utilities;
 
 :root {
+  --bg-color: #f8fafc;
+  --panel-bg: rgba(255, 255, 255, 0.8);
+  --panel-border: rgba(0, 0, 0, 0.08);
+
+  --chat-bg: #ffffff;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-light: rgba(59, 130, 246, 0.1);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --purple: #8b5cf6;
+
+  --user-msg: linear-gradient(135deg, #3b82f6, #2563eb);
+  --bot-msg: rgba(241, 245, 249, 0.8);
+
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: light;
+}
+
+.dark {
   --bg-color: #0f172a;
   --panel-bg: rgba(30, 41, 59, 0.7);
   --panel-border: rgba(255, 255, 255, 0.08);
@@ -15,15 +40,9 @@
   --accent-hover: #60a5fa;
   --accent-light: rgba(59, 130, 246, 0.15);
 
-  --success: #10b981;
-  --warning: #f59e0b;
-  --error: #ef4444;
-  --purple: #8b5cf6;
-
   --user-msg: linear-gradient(135deg, #3b82f6, #2563eb);
   --bot-msg: rgba(30, 41, 59, 0.8);
 
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color-scheme: dark;
 }
 
@@ -36,10 +55,13 @@
 body {
   background-color: var(--bg-color);
   color: var(--text-main);
-  background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 70%);
   height: 100vh;
   overflow: hidden;
   display: flex;
+}
+
+.dark body {
+  background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 70%);
 }
 
 #app {
@@ -59,11 +81,19 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.15);
+  background-color: rgba(0, 0, 0, 0.2);
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.25);
 }
 
@@ -109,6 +139,11 @@ body {
   margin: 1rem 0;
   border-radius: 8px;
   overflow: hidden;
+  background: rgba(241, 245, 249, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.dark .mermaid-container {
   background: rgba(30, 41, 59, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
@@ -139,8 +174,12 @@ body {
   white-space: pre-wrap;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 0.875rem;
-  color: #94a3b8;
+  color: #64748b;
   padding: 1rem;
+}
+
+.dark .mermaid-error.show-raw {
+  color: #94a3b8;
 }
 
 /* Markdown Styles */
@@ -182,6 +221,13 @@ body {
 .prose h4 {
   margin: 1em 0 0.5em 0;
   font-weight: 600;
+  color: #0f172a;
+}
+
+.dark .prose h1,
+.dark .prose h2,
+.dark .prose h3,
+.dark .prose h4 {
   color: #ffffff;
 }
 
@@ -192,20 +238,30 @@ body {
 }
 
 .prose pre {
-  background-color: rgba(0, 0, 0, 0.4);
+  background-color: rgba(0, 0, 0, 0.05);
   padding: 12px;
   border-radius: 8px;
   overflow-x: auto;
   margin: 0.75em 0;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.dark .prose pre {
+  background-color: rgba(0, 0, 0, 0.4);
   border: 1px solid var(--panel-border);
 }
 
 .prose code {
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  background-color: rgba(0, 0, 0, 0.3);
+  background-color: rgba(0, 0, 0, 0.05);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.85em;
+  color: #334155;
+}
+
+.dark .prose code {
+  background-color: rgba(0, 0, 0, 0.3);
   color: #e2e8f0;
 }
 
@@ -213,6 +269,10 @@ body {
   background-color: transparent;
   padding: 0;
   font-size: 0.9em;
+  color: #334155;
+}
+
+.dark .prose pre code {
   color: #e2e8f0;
 }
 
@@ -232,12 +292,21 @@ body {
 
 .prose th,
 .prose td {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.1);
   padding: 8px 12px;
   text-align: left;
 }
 
+.dark .prose th,
+.dark .prose td {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .prose th {
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: rgba(0, 0, 0, 0.03);
   font-weight: 600;
+}
+
+.dark .prose th {
+  background-color: rgba(255, 255, 255, 0.05);
 }

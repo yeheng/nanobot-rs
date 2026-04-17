@@ -323,7 +323,7 @@ pub async fn cmd_gateway() -> Result<()> {
             let agent_for_compact = agent_for_http.clone();
             app = app
                 .route(
-                    "/api/sessions/:session_key/context",
+                    "/api/sessions/{session_key}/context",
                     axum::routing::get(move |axum::extract::Path(session_key): axum::extract::Path<String>| {
                         let agent = agent_for_context.clone();
                         async move {
@@ -373,7 +373,7 @@ pub async fn cmd_gateway() -> Result<()> {
                     })
                 )
                 .route(
-                    "/api/sessions/:session_key/context/compact",
+                    "/api/sessions/{session_key}/context/compact",
                     axum::routing::post(move |axum::extract::Path(session_key): axum::extract::Path<String>| {
                         let agent = agent_for_compact.clone();
                         async move {
