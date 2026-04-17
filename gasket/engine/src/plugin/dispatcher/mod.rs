@@ -218,7 +218,7 @@ impl Default for RpcDispatcher {
 /// - `memory/write` - Memory write (memorize)
 /// - `memory/decay` - Memory decay
 /// - `subagent/spawn` - Subagent spawning
-/// Generic handler that delegates an RPC method to an engine tool.
+///   Generic handler that delegates an RPC method to an engine tool.
 pub struct ToolDelegateHandler {
     method: &'static str,
     permission: Permission,

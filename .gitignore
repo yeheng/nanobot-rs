@@ -31,3 +31,4 @@ config.yaml
 .fastembed_cache
 .worktrees/
 docs/superpowers
+.zread
