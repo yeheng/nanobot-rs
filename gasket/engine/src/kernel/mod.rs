@@ -36,7 +36,8 @@ pub async fn execute(
     messages: Vec<ChatMessage>,
 ) -> Result<ExecutionResult, KernelError> {
     let exec = build_executor(ctx);
-    exec.execute_with_options(messages, &ExecutorOptions::new()).await
+    exec.execute_with_options(messages, &ExecutorOptions::new())
+        .await
 }
 
 /// Pure function: streaming LLM conversation loop.

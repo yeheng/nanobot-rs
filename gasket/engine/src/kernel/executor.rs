@@ -18,8 +18,7 @@ use crate::token_tracker::TokenUsage;
 use crate::tools::{SubagentSpawner, ToolContext, ToolRegistry};
 use crate::vault::redact_secrets;
 use gasket_providers::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig,
-    ToolCall,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
 };
 use gasket_types::StreamEvent;
 
@@ -256,9 +255,7 @@ struct TokenLedger {
 
 impl TokenLedger {
     fn new() -> Self {
-        Self {
-            total_usage: None,
-        }
+        Self { total_usage: None }
     }
 
     fn accumulate(&mut self, usage: &TokenUsage) {
@@ -273,8 +270,6 @@ impl TokenLedger {
         });
     }
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AgentExecutor
@@ -372,9 +367,7 @@ impl<'a> KernelExecutor<'a> {
                 .await
                 .map_err(|e| KernelError::Provider(e.to_string()))?;
 
-            let response = self
-                .get_response(stream_result, event_tx, ledger)
-                .await?;
+            let response = self.get_response(stream_result, event_tx, ledger).await?;
 
             Self::log_token_usage(ledger, iteration);
             Self::log_response(&response, iteration, options.vault_values);
@@ -572,8 +565,6 @@ impl<'a> KernelExecutor<'a> {
         Ok(response)
     }
 
-
-
     fn check_final_response(response: &ChatResponse) -> Option<(String, Option<String>)> {
         if response.has_tool_calls() {
             return None;
@@ -585,8 +576,6 @@ impl<'a> KernelExecutor<'a> {
             .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
         Some((content, response.reasoning_content.clone()))
     }
-
-
 }
 
 #[cfg(test)]
