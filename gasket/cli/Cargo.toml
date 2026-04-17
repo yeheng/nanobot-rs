@@ -27,8 +27,8 @@ slack = ["gasket-engine/slack"]
 feishu = ["gasket-engine/feishu"]
 dingtalk = ["gasket-engine/dingtalk"]
 wecom = ["gasket-engine/wecom"]
-websocket = ["gasket-engine/websocket", "axum"]
-all-channels = ["gasket-engine/all-channels", "axum", "teloxide"]
+websocket = ["gasket-engine/websocket", "axum", "dep:tower-http"]
+all-channels = ["gasket-engine/all-channels", "axum", "teloxide", "dep:tower-http"]
 
 # Embedding
 local-embedding = ["gasket-engine/local-embedding"]
@@ -104,6 +104,7 @@ rustls = { version = "0.23", features = ["ring"] }
 
 # HTTP server
 axum = { workspace = true, features = ["ws"], optional = true }
+tower-http = { workspace = true, optional = true }
 
 # HTTP client (for workspace downloads)
 reqwest.workspace = true

@@ -12,7 +12,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
@@ -31,6 +31,11 @@ pub struct JsonRpcDaemon {
     idle_timeout_ms: i64,
     stderr: Arc<tokio::sync::Mutex<String>>,
     alive: Arc<AtomicBool>,
+    child: Arc<tokio::sync::Mutex<tokio::process::Child>>,
+    /// Background task handles for graceful shutdown.
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Shutdown signal for background tasks.
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl JsonRpcDaemon {
@@ -61,17 +66,25 @@ impl JsonRpcDaemon {
         let pending: Arc<DashMap<i64, oneshot::Sender<RpcResponse>>> = Arc::new(DashMap::new());
         let (write_tx, mut write_rx) = mpsc::unbounded_channel::<RpcMessage>();
         let alive = Arc::new(AtomicBool::new(true));
+        let child = Arc::new(tokio::sync::Mutex::new(child));
+        let (shutdown_tx, _) = watch::channel(false);
 
         // ── Writer task ──────────────────────────────────────────
+        let mut shutdown_rx_w = shutdown_tx.subscribe();
         let mut stdin = stdin;
-        tokio::spawn(async move {
-            while let Some(msg) = write_rx.recv().await {
-                let encoded = encode(&msg);
-                if stdin.write_all(encoded.as_bytes()).await.is_err() {
-                    break;
-                }
-                if stdin.flush().await.is_err() {
-                    break;
+        let writer_handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(msg) = write_rx.recv() => {
+                        let encoded = encode(&msg);
+                        if stdin.write_all(encoded.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        if stdin.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = shutdown_rx_w.changed() => break,
                 }
             }
         });
@@ -79,17 +92,23 @@ impl JsonRpcDaemon {
         // ── Stderr collector ─────────────────────────────────────
         let stderr_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
         let stderr_buffer_clone = stderr_buffer.clone();
-        tokio::spawn(async move {
+        let mut shutdown_rx_e = shutdown_tx.subscribe();
+        let stderr_handle = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             loop {
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        stderr_buffer_clone.lock().await.push_str(&line);
-                        line.clear();
+                tokio::select! {
+                    result = reader.read_line(&mut line) => {
+                        match result {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                stderr_buffer_clone.lock().await.push_str(&line);
+                                line.clear();
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    Err(_) => break,
+                    _ = shutdown_rx_e.changed() => break,
                 }
             }
         });
@@ -101,39 +120,48 @@ impl JsonRpcDaemon {
         let ctx = ctx.clone();
         let write_tx_clone = write_tx.clone();
         let alive_reader = alive.clone();
-        tokio::spawn(async move {
+        let child_reader = child.clone();
+        let mut shutdown_rx_r = shutdown_tx.subscribe();
+        let reader_handle = tokio::spawn(async move {
             let mut reader_lines =
                 FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_MESSAGE_SIZE));
-            while let Some(result) = reader_lines.next().await {
-                match result {
-                    Ok(line) => {
-                        let msg = decode(&line);
-                        let msg = match msg {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        match msg {
-                            RpcMessage::Request(request) => {
-                                let response =
-                                    dispatcher.dispatch(request, &permissions, &ctx).await;
-                                let _ = write_tx_clone.send(RpcMessage::Response(response));
-                            }
-                            RpcMessage::Response(response) => {
-                                if let Some(id) = response.id.as_i64() {
-                                    if let Some((_, tx)) = pending_reader.remove(&id) {
-                                        let _ = tx.send(response);
+            loop {
+                tokio::select! {
+                    result = reader_lines.next() => {
+                        match result {
+                            Some(Ok(line)) => {
+                                let msg = decode(&line);
+                                let msg = match msg {
+                                    Some(m) => m,
+                                    None => continue,
+                                };
+                                match msg {
+                                    RpcMessage::Request(request) => {
+                                        let response =
+                                            dispatcher.dispatch(request, &permissions, &ctx).await;
+                                        let _ = write_tx_clone.send(RpcMessage::Response(response));
+                                    }
+                                    RpcMessage::Response(response) => {
+                                        if let Some(id) = response.id.as_i64() {
+                                            if let Some((_, tx)) = pending_reader.remove(&id) {
+                                                let _ = tx.send(response);
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            Some(Err(_)) | None => break,
                         }
                     }
-                    Err(_) => break,
+                    _ = shutdown_rx_r.changed() => break,
                 }
             }
             alive_reader.store(false, Ordering::Relaxed);
             // stdout closed — process is dead or dying
-            let _ = child.kill().await;
+            let _ = child_reader.lock().await.kill().await;
         });
+
+        let tasks = vec![writer_handle, stderr_handle, reader_handle];
 
         Ok(Self {
             pending,
@@ -143,6 +171,9 @@ impl JsonRpcDaemon {
             idle_timeout_ms: (idle_timeout_secs as i64) * 1000,
             stderr: stderr_buffer,
             alive,
+            child,
+            tasks: std::sync::Mutex::new(tasks),
+            shutdown_tx,
         })
     }
 
@@ -206,6 +237,47 @@ impl JsonRpcDaemon {
         })
     }
 
+    /// Run a one-shot JSON-RPC call, spawning and shutting down the daemon
+    /// for a single invocation.
+    pub async fn run_once(
+        manifest: &PluginManifest,
+        manifest_dir: &Path,
+        args: &Value,
+        timeout_secs: u64,
+        permissions: &[Permission],
+        dispatcher: &RpcDispatcher,
+        ctx: &DispatcherContext,
+    ) -> Result<PluginResult, PluginError> {
+        let daemon = Self::spawn(
+            manifest,
+            manifest_dir,
+            timeout_secs,
+            permissions,
+            dispatcher,
+            ctx,
+        )
+        .await?;
+        let result = daemon.call("initialize", Some(args.clone())).await;
+        daemon.shutdown().await;
+        result
+    }
+
+    /// Gracefully shut down the daemon and kill the underlying process.
+    pub async fn shutdown(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+        let _ = self.shutdown_tx.send(true);
+        let tasks: Vec<_> = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for handle in tasks {
+            let _ = handle.await;
+        }
+        let _ = self.child.lock().await.kill().await;
+    }
+
     /// Returns true if the daemon has been idle longer than its timeout.
     pub fn is_idle_expired(&self) -> bool {
         let now = chrono::Utc::now().timestamp_millis();
@@ -216,5 +288,19 @@ impl JsonRpcDaemon {
     fn touch(&self) {
         self.last_used_ms
             .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+    }
+}
+
+impl Drop for JsonRpcDaemon {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+        let _ = self.shutdown_tx.send(true);
+        // Best-effort async cleanup: spawn a task to kill the child.
+        // Tasks will exit naturally once the child process dies and
+        // pipes close, but we expedite it here.
+        let child = self.child.clone();
+        tokio::spawn(async move {
+            let _ = child.lock().await.kill().await;
+        });
     }
 }

@@ -44,6 +44,8 @@ pub struct AgentConfig {
     pub summarization_prompt: Option<String>,
     /// Embedding configuration for semantic search and memory indexing.
     pub embedding_config: Option<crate::config::EmbeddingConfig>,
+    /// Memory token budget for three-phase context loading.
+    pub memory_budget: Option<gasket_storage::memory::TokenBudget>,
 }
 
 impl Default for AgentConfig {
@@ -61,6 +63,7 @@ impl Default for AgentConfig {
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             summarization_prompt: None,
             embedding_config: None,
+            memory_budget: None,
         }
     }
 }

@@ -135,6 +135,10 @@ impl ToolRegistry {
 
     /// Inject engine references into all registered plugins.
     pub fn link_engine_refs(&mut self, registry: Arc<Self>, provider: Arc<dyn LlmProvider>) {
+        let resources = crate::plugin::EngineResources {
+            tool_registry: registry,
+            provider,
+        };
         for name in &self.plugin_names {
             if let Some(entry) = self.items.get_mut(name) {
                 if let Some(plugin_tool) = entry
@@ -142,9 +146,7 @@ impl ToolRegistry {
                     .as_any()
                     .downcast_ref::<crate::plugin::PluginTool>()
                 {
-                    let updated = plugin_tool
-                        .clone()
-                        .with_engine_refs(registry.clone(), provider.clone());
+                    let updated = plugin_tool.clone().with_engine_refs(resources.clone());
                     entry.tool = Arc::new(updated);
                 }
             }

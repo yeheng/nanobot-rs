@@ -83,6 +83,18 @@ impl EventType {
     }
 }
 
+impl std::fmt::Display for EventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventType::UserMessage => write!(f, "User"),
+            EventType::AssistantMessage => write!(f, "Assistant"),
+            EventType::ToolCall { tool_name, .. } => write!(f, "Tool({})", tool_name),
+            EventType::ToolResult { tool_name, .. } => write!(f, "ToolResult({})", tool_name),
+            EventType::Summary { summary_type, .. } => write!(f, "Summary({:?})", summary_type),
+        }
+    }
+}
+
 impl SessionEvent {
     /// Return pre-computed content token count from DB.
     /// Returns 0 if not yet computed (e.g., events created in-memory before persistence).

@@ -74,6 +74,12 @@ agents:
     memory_window: 10
     thinking_enabled: false
     streaming: true
+    # Optional: three-phase memory token budgets (defaults shown)
+    # memory_budget:
+    #   bootstrap: 1500    # Phase 1: profile + active hot/warm
+    #   scenario: 1500     # Phase 2: scenario-specific hot + tag-matched warm
+    #   on_demand: 1000    # Phase 3: semantic search fill
+    #   total_cap: 4000    # Hard upper limit across all phases
 
   # Model profiles for dynamic switching
   # The LLM can use the switch_model tool to delegate tasks to these models

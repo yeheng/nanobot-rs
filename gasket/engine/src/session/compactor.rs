@@ -515,7 +515,7 @@ fn build_context_text(existing_summary: Option<&str>, events: &[SessionEvent]) -
     }
 
     for event in events {
-        parts.push(format!("{:?}: {}", event.event_type, event.content));
+        parts.push(format!("{}: {}", event.event_type, event.content));
     }
 
     parts.join("\n")

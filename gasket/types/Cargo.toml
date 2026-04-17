@@ -23,3 +23,6 @@ uuid.workspace = true
 
 # Error handling
 thiserror.workspace = true
+
+# Locking primitives
+parking_lot = "0.12"

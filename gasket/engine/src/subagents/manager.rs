@@ -222,6 +222,10 @@ pub fn spawn_subagent(
 }
 
 /// Execute kernel with streaming support, forwarding events with subagent_id.
+///
+/// The `Arc<str>` for agent_id is allocated **once** before the streaming loop.
+/// Inside the loop, `inject_agent_id` only performs `Arc::clone` (an atomic
+/// refcount bump) per event — zero heap allocations on the hot path.
 async fn execute_with_streaming(
     ctx: &kernel::RuntimeContext,
     messages: Vec<ChatMessage>,
@@ -238,10 +242,11 @@ async fn execute_with_streaming(
         );
 
     // Forward events with subagent_id
+    // Pre-allocate Arc<str> once — Arc::clone inside the loop is O(1) refcount bump
     if let Some(tx) = event_tx {
+        let agent_id: Arc<str> = Arc::from(subagent_id);
         while let Some(event) = kernel_rx.recv().await {
-            // Convert kernel event to subagent event by injecting agent_id
-            let subagent_event = inject_agent_id(event, subagent_id);
+            let subagent_event = inject_agent_id(event, &agent_id);
             let _ = tx.try_send(subagent_event);
         }
     }
@@ -256,9 +261,10 @@ async fn execute_with_streaming(
 
 /// Inject subagent_id into a StreamEvent.
 ///
-/// This transforms a main agent event into a subagent event by setting agent_id.
-fn inject_agent_id(event: StreamEvent, subagent_id: &str) -> StreamEvent {
-    let id: std::sync::Arc<str> = subagent_id.into();
+/// Receives a pre-allocated `&Arc<str>` so that the per-event cost is only
+/// `Arc::clone` (atomic refcount increment) — no heap allocation.
+fn inject_agent_id(event: StreamEvent, agent_id: &Arc<str>) -> StreamEvent {
+    let id = Arc::clone(agent_id);
     match event {
         StreamEvent::Thinking {
             agent_id: _,

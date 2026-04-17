@@ -259,7 +259,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     }
 
     // Discover external plugins from ~/.gasket/scripts/
-    if let Err(e) = crate::plugin::discover_plugins(&mut tools, None, None) {
+    if let Err(e) = crate::plugin::discover_plugins(&mut tools, None) {
         tracing::warn!("Failed to discover script tools: {}", e);
     }
 

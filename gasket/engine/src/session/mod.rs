@@ -90,6 +90,9 @@ impl gasket_storage::memory::Embedder for SharedTextEmbedder {
     fn dimension(&self) -> usize {
         self.0.dimension()
     }
+    fn clone_box(&self) -> Box<dyn gasket_storage::memory::Embedder> {
+        Box::new(Self(self.0.clone()))
+    }
 }
 
 // ── Skill loading (inlined from agent/core/mod.rs) ──
@@ -278,7 +281,9 @@ impl AgentSession {
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
         let hooks = Self::build_hooks();
-        let memory_manager = Self::try_init_memory_manager(&memory_store, shared_embedder).await;
+        let memory_manager =
+            Self::try_init_memory_manager(&memory_store, shared_embedder, config.memory_budget)
+                .await;
 
         Ok(Self {
             runtime_ctx,
@@ -525,8 +530,6 @@ impl AgentSession {
 
         let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
-        let session_key_for_stats = session_key.clone();
-        let compactor_for_stats = compactor.clone();
 
         // Translate kernel StreamEvents into clean ChatEvents for consumers.
         // System events (TokenStats, subagent lifecycle) are dropped here;
@@ -537,31 +540,6 @@ impl AgentSession {
                     if chat_tx.send(chat).await.is_err() {
                         break;
                     }
-                }
-            }
-            // After stream ends, push context stats and watermark info
-            if let Some(compactor) = compactor_for_stats {
-                if let Ok(stats) = compactor.get_usage_stats(&session_key_for_stats).await {
-                    let _ = chat_tx
-                        .send(gasket_types::events::ChatEvent::ContextStats {
-                            token_budget: stats.token_budget,
-                            compaction_threshold: stats.compaction_threshold as f64,
-                            threshold_tokens: stats.threshold_tokens,
-                            current_tokens: stats.current_tokens,
-                            usage_percent: stats.usage_percent,
-                            is_compressing: stats.is_compressing,
-                        })
-                        .await;
-                }
-                if let Ok(info) = compactor.get_watermark_info(&session_key_for_stats).await {
-                    let _ = chat_tx
-                        .send(gasket_types::events::ChatEvent::WatermarkInfo {
-                            watermark: info.watermark,
-                            max_sequence: info.max_sequence,
-                            uncompacted_count: info.uncompacted_count,
-                            compacted_percent: info.compacted_percent,
-                        })
-                        .await;
                 }
             }
         });
@@ -644,6 +622,7 @@ impl AgentSession {
     async fn try_init_memory_manager(
         memory_store: &MemoryStore,
         _shared_embedder: Option<SharedEmbedder>,
+        memory_budget: Option<gasket_storage::memory::TokenBudget>,
     ) -> Option<Arc<MemoryManager>> {
         use gasket_storage::memory::{memory_base_dir, Embedder, NoopEmbedder};
 
@@ -669,7 +648,11 @@ impl AgentSession {
             }
         };
 
-        match MemoryManager::new(base_dir, &memory_store.sqlite_store().pool(), embedder).await {
+        let pool = memory_store.sqlite_store().pool();
+        let mgr_result = MemoryManager::new(base_dir, &pool, embedder).await;
+        let mgr_result = mgr_result.map(|m| m.with_budget(memory_budget));
+
+        match mgr_result {
             Ok(mgr) => {
                 if let Err(e) = mgr.init().await {
                     warn!("Failed to initialize memory manager: {}", e);

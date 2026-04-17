@@ -1,13 +1,14 @@
 //! Token usage tracking and cost calculation
 //!
 //! Provides token counting and budget enforcement for parent and subagent coordination.
+//!
+//! Cost tracking uses `parking_lot::Mutex<f64>` instead of fixed-point `AtomicU64`.
+//! For a personal AI assistant with single-digit subagent concurrency, uncontended
+//! mutex lock/unlock is nanosecond-scale — the CAS-loop and scaling overhead of
+//! `AtomicU64` was pure mental tax with no measurable benefit.
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-
-/// Scaling factor for fixed-point cost storage (1 billion = 10^9).
-///
-/// This allows micro-cent precision without the dangers of concurrent f64 CAS.
-pub const COST_SCALE: u64 = 1_000_000_000;
 
 /// Token usage information from an LLM response
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -66,12 +67,6 @@ impl ModelPricing {
         let input_cost = (input_tokens as f64) * self.price_input_per_million / 1_000_000.0;
         let output_cost = (output_tokens as f64) * self.price_output_per_million / 1_000_000.0;
         input_cost + output_cost
-    }
-
-    /// Calculate cost as a fixed-point integer (scaled by [`COST_SCALE`]).
-    pub fn calculate_cost_scaled(&self, input_tokens: usize, output_tokens: usize) -> u64 {
-        let cost = self.calculate_cost(input_tokens, output_tokens);
-        (cost * COST_SCALE as f64).round() as u64
     }
 }
 
@@ -140,33 +135,46 @@ impl SessionTokenStats {
 
 /// Shared token tracker for budget enforcement across parent and subagents.
 ///
-/// Uses Arc for shared ownership - parent and subagents all accumulate
+/// Uses `Arc` for shared ownership — parent and subagents all accumulate
 /// to the same tracker, enabling unified budget enforcement.
-#[derive(Debug, Default)]
+///
+/// Cost accumulation uses `parking_lot::Mutex<f64>` for simplicity.
+/// Uncontended lock/unlock is ~2ns, negligible compared to LLM round-trips.
+#[derive(Debug)]
 pub struct TokenTracker {
     /// Total input tokens across all requests (including subagents)
     total_input_tokens: std::sync::atomic::AtomicUsize,
     /// Total output tokens across all requests (including subagents)
     total_output_tokens: std::sync::atomic::AtomicUsize,
-    /// Total cost accumulated as fixed-point micro-cents (including subagents)
-    total_cost: std::sync::atomic::AtomicU64,
+    /// Total cost accumulated (including subagents) — direct f64, no scaling
+    total_cost: Mutex<f64>,
     /// Number of LLM requests made (including subagents)
     request_count: std::sync::atomic::AtomicUsize,
-    /// Optional budget limit in fixed-point (0 = unlimited)
-    budget_limit: std::sync::atomic::AtomicU64,
+    /// Optional budget limit (0.0 = unlimited, immutable after construction)
+    budget_limit: f64,
     /// Currency for cost display (immutable after construction)
     currency: String,
+}
+
+impl Default for TokenTracker {
+    fn default() -> Self {
+        Self {
+            total_input_tokens: std::sync::atomic::AtomicUsize::new(0),
+            total_output_tokens: std::sync::atomic::AtomicUsize::new(0),
+            total_cost: Mutex::new(0.0),
+            request_count: std::sync::atomic::AtomicUsize::new(0),
+            budget_limit: 0.0,
+            currency: String::new(),
+        }
+    }
 }
 
 impl TokenTracker {
     /// Create a new token tracker with optional budget limit.
     pub fn new(currency: &str, budget_limit: Option<f64>) -> Self {
-        let scaled_limit = budget_limit
-            .map(|b| (b * COST_SCALE as f64).round() as u64)
-            .unwrap_or(0);
         Self {
             currency: currency.to_string(),
-            budget_limit: std::sync::atomic::AtomicU64::new(scaled_limit),
+            budget_limit: budget_limit.unwrap_or(0.0),
             ..Default::default()
         }
     }
@@ -178,19 +186,15 @@ impl TokenTracker {
 
     /// Accumulate token usage from a single request.
     ///
-    /// Uses a single atomic `fetch_add` on a fixed-point integer.
-    /// The floating-point `cost` is converted to a scaled `u64` before
-    /// accumulation, eliminating the need for a CAS loop and avoiding
-    /// the associativity problems of concurrent f64 addition.
+    /// Token counts use atomics (lock-free). Cost uses a `Mutex<f64>` —
+    /// uncontended lock is ~2ns, dwarfed by any LLM round-trip.
     pub fn accumulate(&self, usage: &TokenUsage, cost: f64) {
         self.total_input_tokens
             .fetch_add(usage.input_tokens, std::sync::atomic::Ordering::Relaxed);
         self.total_output_tokens
             .fetch_add(usage.output_tokens, std::sync::atomic::Ordering::Relaxed);
 
-        let cost_scaled = (cost * COST_SCALE as f64).round() as u64;
-        self.total_cost
-            .fetch_add(cost_scaled, std::sync::atomic::Ordering::Relaxed);
+        *self.total_cost.lock() += cost;
 
         self.request_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -215,8 +219,7 @@ impl TokenTracker {
 
     /// Get total cost
     pub fn total_cost(&self) -> f64 {
-        let scaled = self.total_cost.load(std::sync::atomic::Ordering::Relaxed);
-        scaled as f64 / COST_SCALE as f64
+        *self.total_cost.lock()
     }
 
     /// Get request count
@@ -225,24 +228,21 @@ impl TokenTracker {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Get budget limit (0 = unlimited)
+    /// Get budget limit (0.0 = unlimited)
     pub fn budget_limit(&self) -> f64 {
-        let scaled = self.budget_limit.load(std::sync::atomic::Ordering::Relaxed);
-        scaled as f64 / COST_SCALE as f64
+        self.budget_limit
     }
 
     /// Check if budget is exceeded
     pub fn is_budget_exceeded(&self) -> bool {
-        let limit = self.budget_limit.load(std::sync::atomic::Ordering::Relaxed);
-        limit > 0 && self.total_cost.load(std::sync::atomic::Ordering::Relaxed) > limit
+        self.budget_limit > 0.0 && *self.total_cost.lock() > self.budget_limit
     }
 
     /// Get remaining budget (returns None if unlimited)
     pub fn remaining_budget(&self) -> Option<f64> {
-        let limit = self.budget_limit.load(std::sync::atomic::Ordering::Relaxed);
-        if limit > 0 {
-            let spent = self.total_cost.load(std::sync::atomic::Ordering::Relaxed);
-            Some(scaled_as_f64(limit.saturating_sub(spent)))
+        if self.budget_limit > 0.0 {
+            let spent = *self.total_cost.lock();
+            Some((self.budget_limit - spent).max(0.0))
         } else {
             None
         }
@@ -257,7 +257,7 @@ impl TokenTracker {
     pub fn format_summary(&self) -> String {
         let currency = self.currency();
         let currency_symbol = if currency == "CNY" { "¥" } else { "$" };
-        let budget_info = if self.budget_limit() > 0.0 {
+        let budget_info = if self.budget_limit > 0.0 {
             format!(
                 " (Budget: {}{:.4}, Remaining: {}{:.4})",
                 currency_symbol,
@@ -296,10 +296,6 @@ impl TokenTracker {
     }
 }
 
-fn scaled_as_f64(scaled: u64) -> f64 {
-    scaled as f64 / COST_SCALE as f64
-}
-
 /// Calculate cost for token usage given optional pricing
 pub fn calculate_cost(usage: &TokenUsage, pricing: Option<&ModelPricing>) -> f64 {
     match pricing {
@@ -325,6 +321,8 @@ pub fn format_cost(cost: f64, currency: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn test_token_usage_creation() {
@@ -358,7 +356,7 @@ mod tests {
         assert_eq!(tracker.output_tokens(), 50);
         assert_eq!(tracker.total_tokens(), 150);
         assert_eq!(tracker.request_count(), 1);
-        assert!((tracker.total_cost() - 0.05).abs() < 0.0000001);
+        assert!((tracker.total_cost() - 0.05).abs() < 1e-10);
     }
 
     #[test]
@@ -369,7 +367,7 @@ mod tests {
 
         assert!(!tracker.is_budget_exceeded());
         assert!(tracker.remaining_budget().is_some());
-        assert!((tracker.remaining_budget().unwrap() - 0.05).abs() < 0.0000001);
+        assert!((tracker.remaining_budget().unwrap() - 0.05).abs() < 1e-10);
 
         tracker.accumulate(&usage, 0.06);
         assert!(tracker.is_budget_exceeded());
@@ -423,7 +421,7 @@ mod tests {
         assert_eq!(stats.total_input_tokens, 100);
         assert_eq!(stats.total_output_tokens, 50);
         assert_eq!(stats.request_count, 1);
-        assert!((stats.total_cost - 0.05).abs() < 0.0000001);
+        assert!((stats.total_cost - 0.05).abs() < 1e-10);
     }
 
     #[test]
@@ -462,13 +460,46 @@ mod tests {
     }
 
     #[test]
-    fn test_fixed_point_precision() {
-        // Verify that repeated small additions are exact with fixed-point
+    fn test_repeated_accumulation_precision() {
+        // Direct f64 accumulation — no fixed-point needed
         let tracker = TokenTracker::unlimited("USD");
         for _ in 0..1_000 {
             tracker.accumulate(&TokenUsage::new(1, 0), 0.000_001);
         }
         // 1_000 * 0.000_001 = 0.001
         assert!((tracker.total_cost() - 0.001).abs() < 1e-12);
+    }
+
+    /// Test Case: test_token_tracker_simplicity
+    /// 100 concurrent tasks accumulating costs. Final total_cost must be exact.
+    #[test]
+    fn test_token_tracker_simplicity() {
+        let tracker = Arc::new(TokenTracker::unlimited("USD"));
+        let num_tasks = 100;
+        let cost_per_task = 0.01;
+
+        let handles: Vec<_> = (0..num_tasks)
+            .map(|_| {
+                let t = tracker.clone();
+                thread::spawn(move || {
+                    t.accumulate(&TokenUsage::new(100, 50), cost_per_task);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(tracker.request_count(), num_tasks);
+        assert_eq!(tracker.input_tokens(), num_tasks * 100);
+        assert_eq!(tracker.output_tokens(), num_tasks * 50);
+        let expected = num_tasks as f64 * cost_per_task;
+        assert!(
+            (tracker.total_cost() - expected).abs() < 1e-10,
+            "expected {}, got {}",
+            expected,
+            tracker.total_cost()
+        );
     }
 }

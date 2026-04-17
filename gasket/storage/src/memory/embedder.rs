@@ -11,6 +11,9 @@ pub trait Embedder: Send + Sync {
 
     /// Get the embedding dimension.
     fn dimension(&self) -> usize;
+
+    /// Clone into a boxed trait object.
+    fn clone_box(&self) -> Box<dyn Embedder>;
 }
 
 /// No-op embedder that returns zero vectors.
@@ -33,5 +36,11 @@ impl Embedder for NoopEmbedder {
 
     fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    fn clone_box(&self) -> Box<dyn Embedder> {
+        Box::new(Self {
+            dimension: self.dimension,
+        })
     }
 }

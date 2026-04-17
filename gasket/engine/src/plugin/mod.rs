@@ -17,11 +17,27 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
-use gasket_providers::LlmProvider;
-
-pub use dispatcher::{build_dispatcher, DispatcherContext, EngineHandle, RpcDispatcher};
+pub use dispatcher::{
+    build_dispatcher, DispatcherContext, EngineHandle, EngineResources, RpcDispatcher,
+};
 pub use manifest::{Permission, PluginManifest, PluginProtocol, RuntimeConfig};
-pub use runner::{run_jsonrpc, run_simple, JsonRpcDaemon, PluginError, PluginResult};
+pub use runner::{run_simple, JsonRpcDaemon, PluginError, PluginResult};
+
+/// Internal configuration state for a plugin.
+///
+/// Eliminates the previous `Option<T> + expect()` pattern by using
+/// the type system to distinguish configured vs unconfigured JSON-RPC plugins.
+#[derive(Clone)]
+enum PluginConfig {
+    /// Simple one-shot plugins need no engine references.
+    Simple,
+    /// JSON-RPC plugins require engine capabilities.
+    JsonRpc {
+        dispatcher: Arc<RpcDispatcher>,
+        resources: EngineResources,
+        daemon: Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>,
+    },
+}
 
 /// Plugin that implements the Tool trait for external scripts.
 ///
@@ -33,91 +49,110 @@ pub struct PluginTool {
     manifest: PluginManifest,
     /// Directory containing the manifest (for resolving paths)
     manifest_dir: PathBuf,
-    /// RPC dispatcher for handling method calls (JSON-RPC mode only)
-    dispatcher: Arc<RpcDispatcher>,
-    /// Tool registry for delegating to other tools (injected post-construction)
-    tool_registry: Option<Arc<ToolRegistry>>,
-    /// LLM provider for chat completions (injected post-construction)
-    provider: Option<Arc<dyn LlmProvider>>,
-    /// Persistent JSON-RPC daemon (lazy-initialized, JSON-RPC mode only)
-    daemon: Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>,
+    /// Engine configuration (Simple or JsonRpc)
+    config: PluginConfig,
 }
 
 impl PluginTool {
     /// Create a new PluginTool from a manifest.
     ///
-    /// # Arguments
-    ///
-    /// * `manifest` - Parsed script manifest
-    /// * `manifest_dir` - Directory containing the manifest file
-    ///
-    /// # Returns
-    ///
-    /// A new PluginTool instance with an empty dispatcher.
-    /// Use `with_engine_refs()` to inject engine capabilities.
+    /// Simple plugins are fully usable immediately. JSON-RPC plugins
+    /// must be converted via `with_engine_refs()` before execution.
     pub fn new(manifest: PluginManifest, manifest_dir: PathBuf) -> Self {
-        let dispatcher = Arc::new(build_dispatcher());
         Self {
             manifest,
             manifest_dir,
-            dispatcher,
-            tool_registry: None,
-            provider: None,
-            daemon: Arc::new(tokio::sync::RwLock::new(None)),
+            config: PluginConfig::Simple,
         }
     }
 
-    /// Inject engine references for JSON-RPC mode.
+    /// Inject engine resources for JSON-RPC mode.
     ///
-    /// This is a separate method to avoid circular dependencies during
-    /// construction. The tool registry and provider are needed for
-    /// JSON-RPC handlers but aren't available when the manifest is loaded.
-    ///
-    /// # Arguments
-    ///
-    /// * `registry` - Tool registry for delegating to other tools
-    /// * `provider` - LLM provider for chat completions
-    ///
-    /// # Returns
-    ///
-    /// Self for method chaining
-    pub fn with_engine_refs(
-        mut self,
-        registry: Arc<ToolRegistry>,
-        provider: Arc<dyn LlmProvider>,
-    ) -> Self {
-        self.tool_registry = Some(registry);
-        self.provider = Some(provider);
+    /// For Simple plugins this is a no-op. For JSON-RPC plugins this
+    /// installs the dispatcher and engine resources required for callbacks.
+    pub fn with_engine_refs(mut self, resources: EngineResources) -> Self {
+        if self.manifest.protocol == PluginProtocol::JsonRpc {
+            self.config = PluginConfig::JsonRpc {
+                dispatcher: Arc::new(build_dispatcher()),
+                resources,
+                daemon: Arc::new(tokio::sync::RwLock::new(None)),
+            };
+        }
         self
     }
 
     /// Build a dispatcher context from a tool context.
     ///
-    /// Extracts the relevant fields from ToolContext and constructs
-    /// a DispatcherContext for JSON-RPC handler execution.
+    /// Replaces the `session_key`, `outbound_tx`, `spawner` and `token_tracker`
+    /// in the stored engine handle with the values from the current ToolContext.
     fn make_dispatch_ctx(&self, ctx: &ToolContext) -> DispatcherContext {
         use dispatcher::EngineHandle;
 
-        // Get required engine components - all must be present for JSON-RPC mode
-        let tool_registry = self
-            .tool_registry
-            .clone()
-            .expect("PluginTool missing tool_registry - call with_engine_refs()");
-        let provider = self
-            .provider
-            .clone()
-            .expect("PluginTool missing provider - call with_engine_refs()");
-
-        DispatcherContext {
-            engine: Arc::new(EngineHandle {
-                session_key: ctx.session_key.clone(),
-                outbound_tx: ctx.outbound_tx.clone(),
-                spawner: ctx.spawner.clone(),
-                token_tracker: ctx.token_tracker.clone(),
-                tool_registry,
-                provider,
-            }),
+        match &self.config {
+            PluginConfig::JsonRpc { resources, .. } => DispatcherContext {
+                engine: Arc::new(EngineHandle {
+                    session_key: ctx.session_key.clone(),
+                    outbound_tx: ctx.outbound_tx.clone(),
+                    spawner: ctx.spawner.clone(),
+                    token_tracker: ctx.token_tracker.clone(),
+                    tool_registry: resources.tool_registry.clone(),
+                    provider: resources.provider.clone(),
+                }),
+            },
+            PluginConfig::Simple => {
+                unreachable!("make_dispatch_ctx called on Simple plugin")
+            }
         }
+    }
+
+    /// Get or spawn the JSON-RPC daemon, handling idle expiration and deduplication.
+    async fn get_or_spawn_daemon(
+        &self,
+        dispatch_ctx: &DispatcherContext,
+    ) -> Result<Arc<JsonRpcDaemon>, ToolError> {
+        let PluginConfig::JsonRpc {
+            daemon,
+            dispatcher,
+            resources: _,
+        } = &self.config
+        else {
+            return Err(ToolError::ExecutionError(
+                "get_or_spawn_daemon called on non-JSON-RPC plugin".to_string(),
+            ));
+        };
+
+        // Fast path: check existing daemon
+        {
+            let guard = daemon.read().await;
+            if let Some(d) = guard.as_ref() {
+                if !d.is_idle_expired() {
+                    return Ok(d.clone());
+                }
+            }
+        }
+
+        // Slow path: acquire write lock and double-check
+        let mut guard = daemon.write().await;
+        if let Some(d) = guard.as_ref() {
+            if !d.is_idle_expired() {
+                return Ok(d.clone());
+            }
+        }
+
+        let new_daemon = Arc::new(
+            JsonRpcDaemon::spawn(
+                &self.manifest,
+                &self.manifest_dir,
+                self.manifest.runtime.timeout_secs,
+                &self.manifest.permissions,
+                dispatcher,
+                dispatch_ctx,
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionError(e.to_string()))?,
+        );
+        *guard = Some(new_daemon.clone());
+        Ok(new_daemon)
     }
 }
 
@@ -156,8 +191,8 @@ impl Tool for PluginTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
 
-        let result = match self.manifest.protocol {
-            PluginProtocol::Simple => {
+        let result = match (&self.manifest.protocol, &self.config) {
+            (PluginProtocol::Simple, _) => {
                 run_simple(
                     &self.manifest,
                     &self.manifest_dir,
@@ -166,65 +201,15 @@ impl Tool for PluginTool {
                 )
                 .await
             }
-            PluginProtocol::JsonRpc => {
+            (PluginProtocol::JsonRpc, PluginConfig::JsonRpc { .. }) => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx);
-
-                // Fast path: read-check daemon
-                let daemon = {
-                    let guard = self.daemon.read().await;
-                    guard.as_ref().and_then(|d| {
-                        if d.is_idle_expired() {
-                            None
-                        } else {
-                            Some(d.clone())
-                        }
-                    })
-                };
-
-                let daemon = match daemon {
-                    Some(d) => d,
-                    None => {
-                        let mut guard = self.daemon.write().await;
-                        if let Some(d) = guard.as_ref() {
-                            if !d.is_idle_expired() {
-                                d.clone()
-                            } else {
-                                let new_daemon = Arc::new(
-                                    JsonRpcDaemon::spawn(
-                                        &self.manifest,
-                                        &self.manifest_dir,
-                                        self.manifest.runtime.timeout_secs,
-                                        &self.manifest.permissions,
-                                        &self.dispatcher,
-                                        &dispatch_ctx,
-                                    )
-                                    .await
-                                    .map_err(|e| ToolError::ExecutionError(e.to_string()))?,
-                                );
-                                *guard = Some(new_daemon.clone());
-                                new_daemon
-                            }
-                        } else {
-                            let new_daemon = Arc::new(
-                                JsonRpcDaemon::spawn(
-                                    &self.manifest,
-                                    &self.manifest_dir,
-                                    self.manifest.runtime.timeout_secs,
-                                    &self.manifest.permissions,
-                                    &self.dispatcher,
-                                    &dispatch_ctx,
-                                )
-                                .await
-                                .map_err(|e| ToolError::ExecutionError(e.to_string()))?,
-                            );
-                            *guard = Some(new_daemon.clone());
-                            new_daemon
-                        }
-                    }
-                };
-
+                let daemon = self.get_or_spawn_daemon(&dispatch_ctx).await?;
                 daemon.call("initialize", Some(args)).await
             }
+            // PluginConfig::Simple is only created for Simple-protocol manifests,
+            // so this arm is unreachable. JsonRpc plugins are configured via
+            // with_engine_refs() before registration.
+            (PluginProtocol::JsonRpc, PluginConfig::Simple) => unreachable!(),
         };
 
         let duration = start.elapsed();
@@ -253,28 +238,10 @@ impl Tool for PluginTool {
                     ToolError::ExecutionError(format!("Failed to serialize result: {}", e))
                 })
             }
-            Err(e) => match e {
-                PluginError::SpawnFailed(msg) => Err(ToolError::ExecutionError(format!(
-                    "Failed to spawn script '{}': {}",
-                    self.manifest.name, msg
-                ))),
-                PluginError::Timeout(secs) => Err(ToolError::ExecutionError(format!(
-                    "Plugin '{}' timed out after {}s",
-                    self.manifest.name, secs
-                ))),
-                PluginError::NonZeroExit(code) => Err(ToolError::ExecutionError(format!(
-                    "Plugin '{}' exited with non-zero code: {:?}",
-                    self.manifest.name, code
-                ))),
-                PluginError::InvalidOutput(msg) => Err(ToolError::ExecutionError(format!(
-                    "Plugin '{}' returned invalid output: {}",
-                    self.manifest.name, msg
-                ))),
-                PluginError::Io(msg) => Err(ToolError::ExecutionError(format!(
-                    "Plugin '{}' I/O error: {}",
-                    self.manifest.name, msg
-                ))),
-            },
+            Err(e) => Err(ToolError::ExecutionError(format!(
+                "Plugin '{}' error: {}",
+                self.manifest.name, e
+            ))),
         }
     }
 }
@@ -352,8 +319,8 @@ pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginT
 /// # Arguments
 ///
 /// * `registry` - Tool registry to register discovered tools
-/// * `engine_registry` - Optional engine tool registry for JSON-RPC handlers
-/// * `provider` - Optional LLM provider for JSON-RPC handlers
+/// * `engine` - Optional engine resources for JSON-RPC plugins.
+///   If `None`, JSON-RPC plugins are silently skipped.
 ///
 /// # Returns
 ///
@@ -366,8 +333,7 @@ pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginT
 /// without error. Missing directories are treated as empty tool sets.
 pub fn discover_plugins(
     registry: &mut ToolRegistry,
-    engine_registry: Option<Arc<ToolRegistry>>,
-    provider: Option<Arc<dyn LlmProvider>>,
+    engine: Option<EngineResources>,
 ) -> anyhow::Result<()> {
     // Resolve scripts directory: ~/.gasket/scripts/
     let scripts_dir = dirs::home_dir()
@@ -381,9 +347,17 @@ pub fn discover_plugins(
     for tool in &tools {
         let mut tool = tool.clone();
 
-        // Inject engine references if both are provided
-        if let (Some(reg), Some(prov)) = (engine_registry.clone(), provider.clone()) {
-            tool = tool.with_engine_refs(reg, prov);
+        // JSON-RPC plugins require engine resources; skip if unavailable.
+        if tool.manifest.protocol == PluginProtocol::JsonRpc {
+            if let Some(ref res) = engine {
+                tool = tool.with_engine_refs(res.clone());
+            } else {
+                warn!(
+                    "Skipping JSON-RPC plugin '{}' - no engine resources provided",
+                    tool.name()
+                );
+                continue;
+            }
         }
 
         // Register with registry
@@ -634,8 +608,11 @@ parameters:
             permissions: vec![],
         };
 
-        let tool = PluginTool::new(manifest, dir.path().to_path_buf())
-            .with_engine_refs(Arc::new(ToolRegistry::new()), Arc::new(MockProvider));
+        let tool =
+            PluginTool::new(manifest, dir.path().to_path_buf()).with_engine_refs(EngineResources {
+                tool_registry: Arc::new(ToolRegistry::new()),
+                provider: Arc::new(MockProvider),
+            });
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
         let ctx = ToolContext::default()

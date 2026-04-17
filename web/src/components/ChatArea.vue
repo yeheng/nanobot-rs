@@ -190,16 +190,6 @@ const generateSubagentSummary = (subagents: SubagentState[]): string => {
 };
 
 const processWebSocketMessage = (msg: any) => {
-  // Context stats
-  if (msg.type === 'context_stats') {
-    chatStore.setContextStats(props.chatId, msg);
-    return;
-  }
-  if (msg.type === 'watermark_info') {
-    chatStore.setWatermarkInfo(props.chatId, msg);
-    return;
-  }
-
   isSending.value = false;
   isReceiving.value = true;
 
@@ -266,6 +256,7 @@ const processWebSocketMessageInner = (msg: any, botMsg: Message) => {
     case 'done':
       isThinking.value = false;
       isReceiving.value = false;
+      fetchContext();
       setTimeout(() => scrollToBottom(true), 150);
       break;
     case 'subagent_started':
@@ -321,12 +312,14 @@ const hasUserMessages = computed(() => messages.value.some(m => m.role === 'user
 
 onMounted(() => {
   connect();
+  fetchContext();
   nextTick(() => scrollToBottom(true));
   setupScrollObserver();
 });
 
 watch(() => props.chatId, () => {
   connect();
+  fetchContext();
   userScrolledUp.value = false;
   nextTick(() => scrollToBottom(true));
 });
@@ -424,6 +417,23 @@ const clearHistory = () => {
 };
 
 const isCompacting = ref(false);
+
+const fetchContext = async () => {
+  try {
+    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+    const sessionKey = encodeURIComponent(`websocket:${props.chatId}`);
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionKey}/context`);
+    const data = await res.json();
+    if (res.ok && data.context_stats) {
+      chatStore.setContextStats(props.chatId, data.context_stats);
+    }
+    if (res.ok && data.watermark_info) {
+      chatStore.setWatermarkInfo(props.chatId, data.watermark_info);
+    }
+  } catch (e) {
+    console.error('Fetch context failed:', e);
+  }
+};
 
 const forceCompact = async () => {
   if (isCompacting.value) return;

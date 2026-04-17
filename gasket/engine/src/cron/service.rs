@@ -315,13 +315,26 @@ impl CronService {
         let (changed, meta_errors) = self.get_changed_files().await;
         report.errors += meta_errors;
 
-        let mut current_ids = std::collections::HashSet::new();
+        // Sync changed files into memory
         for (path, job_id, metadata) in changed {
-            current_ids.insert(job_id.clone());
             match self.sync_job_from_file(&path, &job_id, metadata).await {
                 Ok(true) => report.updated += 1,
                 Ok(false) => report.loaded += 1,
                 Err(_) => report.errors += 1,
+            }
+        }
+
+        // Build the set of IDs that actually exist on disk (all .md files, not just changed)
+        let mut current_ids = std::collections::HashSet::new();
+        let cron_dir = self.workspace.join("cron");
+        if let Ok(entries) = std::fs::read_dir(&cron_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                        current_ids.insert(id.to_string());
+                    }
+                }
             }
         }
 

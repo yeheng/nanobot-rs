@@ -27,6 +27,6 @@ pub use token_tracker::{
     TokenUsage,
 };
 pub use tool::{
-    simple_schema, SubagentResponse, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError,
-    ToolMetadata, ToolResult,
+    simple_schema, NoopSpawner, SubagentResponse, SubagentResult, SubagentSpawner, Tool,
+    ToolContext, ToolError, ToolMetadata, ToolResult,
 };

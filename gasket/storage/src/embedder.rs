@@ -318,6 +318,12 @@ impl crate::memory::Embedder for TextEmbedder {
     fn dimension(&self) -> usize {
         self.dimension
     }
+
+    fn clone_box(&self) -> Box<dyn crate::memory::Embedder> {
+        // TextEmbedder is always used through SharedTextEmbedder (Arc<TextEmbedder>)
+        // which handles clone_box via Arc::clone. This path should never be hit.
+        unimplemented!("TextEmbedder.clone_box: wrap in SharedTextEmbedder for cloning support")
+    }
 }
 
 #[cfg(test)]

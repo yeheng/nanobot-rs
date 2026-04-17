@@ -93,7 +93,10 @@ async fn test_jsonrpc_ping_tool() {
         .into_iter()
         .find(|t| t.name() == "test_ping")
         .expect("test_ping not found")
-        .with_engine_refs(Arc::new(ToolRegistry::new()), Arc::new(FailingMockProvider));
+        .with_engine_refs(gasket_engine::plugin::EngineResources {
+            tool_registry: Arc::new(ToolRegistry::new()),
+            provider: Arc::new(FailingMockProvider),
+        });
     let args = serde_json::json!({"name": "Alice"});
     let result = ping_tool.execute(args, &make_test_ctx()).await;
     assert!(result.is_ok(), "JsonRpc ping failed: {:?}", result);

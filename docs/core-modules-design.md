@@ -113,102 +113,60 @@ MemoryManager 采用三阶段分层加载策略，严格控制 Token 预算：
 
 ```rust
 pub struct TokenBudget {
-    pub bootstrap: usize,      // Phase 1: 700 tokens（Profile + Active）
+    pub bootstrap: usize,      // Phase 1: 1500 tokens（Profile + Active）
     pub scenario: usize,       // Phase 2: 1500 tokens（场景相关）
     pub on_demand: usize,      // Phase 3: 1000 tokens（按需搜索）
-    pub total_cap: usize,      // 硬上限: 3200 tokens
+    pub total_cap: usize,      // 硬上限: 4000 tokens
+}
+
+pub struct PhaseBreakdown {
+    pub bootstrap_tokens: usize,
+    pub scenario_tokens: usize,
+    pub on_demand_tokens: usize,
 }
 
 impl MemoryManager {
     /// 三阶段加载主入口
     pub async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext> {
-        let mut loaded = Vec::new();
-        let mut loaded_filenames = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut memories = Vec::new();
+        let mut phase = PhaseBreakdown::default();
 
-        // Phase 1: Bootstrap（必加载）
-        let bootstrap_memories = self.load_bootstrap(&mut loaded_filenames).await?;
-        let bootstrap_tokens = bootstrap_memories.iter().map(|m| m.metadata.tokens).sum();
-        loaded.extend(bootstrap_memories);
+        // Phase 1: Bootstrap（profile + active hot/warm）
+        let bootstrap_candidates = self.collect_bootstrap_candidates().await?;
+        let bootstrap_cap = self.budget.bootstrap.min(self.budget.total_cap);
+        phase.bootstrap_tokens = self
+            .load_candidates(&bootstrap_candidates, bootstrap_cap, &mut seen, &mut memories)
+            .await;
 
-        // Phase 2: Scenario 相关
+        // Phase 2: Scenario 相关（当前 scenario hot + tag-matched warm）
         let scenario = query.scenario.unwrap_or(Scenario::Knowledge);
-        let scenario_memories = self
-            .load_scenario(scenario, &query.tags, &mut loaded_filenames)
+        let scenario_candidates = self
+            .collect_scenario_candidates(scenario, &query.tags)
             .await?;
-        let scenario_tokens = scenario_memories.iter().map(|m| m.metadata.tokens).sum();
-        loaded.extend(scenario_memories);
+        let scenario_cap = self.budget.scenario
+            .min(self.budget.total_cap.saturating_sub(phase.bootstrap_tokens));
+        phase.scenario_tokens = self
+            .load_candidates(&scenario_candidates, scenario_cap, &mut seen, &mut memories)
+            .await;
 
-        // Phase 3: On-demand 搜索
-        let remaining = self.budget.total_cap.saturating_sub(bootstrap_tokens + scenario_tokens);
-        let on_demand_memories = self
-            .load_on_demand(query, remaining, &mut loaded_filenames)
-            .await?;
+        // Phase 3: On-demand 语义搜索填充
+        let on_demand_cap = self.budget.on_demand.min(
+            self.budget.total_cap.saturating_sub(
+                phase.bootstrap_tokens + phase.scenario_tokens,
+            ),
+        );
+        phase.on_demand_tokens = self
+            .load_on_demand(query, on_demand_cap, &mut seen, &mut memories)
+            .await;
 
-        // 硬上限截断
-        self.truncate_to_cap(loaded, self.budget.total_cap)
-    }
-
-    /// Phase 1: 加载 Profile + Active（Hot/Warm）
-    async fn load_bootstrap(&self, loaded: &mut HashSet<String>) -> Result<Vec<MemoryFile>> {
-        // 1. 所有 Profile（最高优先级）
-        let profile_entries = self.metadata_store.query_entries(Scenario::Profile).await?;
-        for entry in profile_entries {
-            if let Ok(mem) = self.store.read(Scenario::Profile, &entry.filename).await {
-                memories.push(mem);
-            }
-        }
-
-        // 2. Active 中的 Hot/Warm（跳过 Cold/Archived）
-        let active_entries = self.metadata_store.query_entries(Scenario::Active).await?;
-        for entry in active_entries {
-            if matches!(entry.frequency, Frequency::Cold | Frequency::Archived) {
-                continue;
-            }
-            // 预算检查...
-        }
-    }
-
-    /// Phase 2: 加载场景特定的 Hot + 匹配的 Warm
-    async fn load_scenario(
-        &self,
-        scenario: Scenario,
-        tags: &[String],
-        loaded: &mut HashSet<String>,
-    ) -> Result<Vec<MemoryFile>> {
-        let entries = self.metadata_store.query_entries(scenario).await?;
-
-        // 2a: 先加载所有 Hot（无论标签）
-        for entry in entries.iter().filter(|e| e.frequency == Frequency::Hot) {
-            // 加载...
-        }
-
-        // 2b: 再加载匹配的 Warm
-        for entry in entries.iter().filter(|e| e.frequency == Frequency::Warm) {
-            if !tags.is_empty() {
-                let matches = entry.tags.iter()
-                    .any(|t| tags.iter().any(|qt| qt.eq_ignore_ascii_case(t)));
-                if !matches { continue; }
-            }
-            // 加载...
-        }
-    }
-
-    /// Phase 3: 语义搜索填充
-    async fn load_on_demand(
-        &self,
-        query: &MemoryQuery,
-        budget: usize,
-        loaded: &mut HashSet<String>,
-    ) -> Result<Vec<MemoryFile>> {
-        // 使用 RetrievalEngine 进行语义搜索
-        let results = self.retrieval.search(query).await?;
-        
-        for result in results {
-            // 跳过已在 Phase 1/2 加载的
-            if loaded.contains(&key) { continue; }
-            
-            // 预算检查...
-        }
+        Ok(MemoryContext {
+            memories,
+            tokens_used: phase.bootstrap_tokens
+                + phase.scenario_tokens
+                + phase.on_demand_tokens,
+            phase_breakdown: phase,
+        })
     }
 }
 ```

@@ -104,11 +104,21 @@ gasket memory reindex
 
 Memory is loaded automatically based on context:
 
-1. **Phase 1 (Bootstrap, ~700 tokens):** Always loads profile + active memories
-2. **Phase 2 (Scenario, ~1500 tokens):** Scenario-specific hot/warm items
-3. **Phase 3 (On-demand, ~1000 tokens):** Fills remaining budget via semantic search
+1. **Phase 1 (Bootstrap, 1500 tokens):** Always loads profile + active memories
+2. **Phase 2 (Scenario, 1500 tokens):** Scenario-specific hot/warm items
+3. **Phase 3 (On-demand, 1000 tokens):** Fills remaining budget via semantic search
 
-Total never exceeds ~3200 tokens default budget.
+Total never exceeds 4000 tokens default budget. You can customize these budgets in `config.yaml`:
+
+```yaml
+agents:
+  defaults:
+    memory_budget:
+      bootstrap: 1500
+      scenario: 1500
+      on_demand: 1000
+      total_cap: 4000
+```
 
 ### Using MemorySearchTool
 

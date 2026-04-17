@@ -70,9 +70,21 @@ customRenderer.code = (codeObj: any) => {
   return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 hover:bg-black/30 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
 };
 
+const unescapeRecursive = (str: string): string => {
+  const decoded = str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'");
+  return decoded === str ? str : unescapeRecursive(decoded);
+};
+
 const parsedContent = computed(() => {
   if (!props.message.content) return '';
-  const raw = marked.parse(props.message.content, { renderer: customRenderer }) as string;
+  const decoded = unescapeRecursive(props.message.content);
+  const raw = marked.parse(decoded, { renderer: customRenderer }) as string;
   return DOMPurify.sanitize(raw);
 });
 
@@ -130,11 +142,11 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
     </div>
 
     <!-- Bot message -->
-    <div v-else class="flex items-start gap-2 max-w-[95%] md:max-w-[85%]">
+    <div v-else class="flex items-start gap-2 w-full">
       <div class="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0 mt-0.5">
         <Bot class="w-3.5 h-3.5 text-white" />
       </div>
-      <div class="flex flex-col gap-1 min-w-0">
+      <div class="flex flex-col gap-1 min-w-0 flex-1 pr-4">
         <div class="flex items-center gap-2">
           <span class="text-xs font-medium text-gray-800 dark:text-slate-300">AI</span>
           <span class="text-[10px] text-gray-400 dark:text-slate-500">{{ formatTime(message.timestamp) }}</span>
@@ -148,7 +160,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
 
         <!-- Content -->
         <div v-if="message.content || isStreaming"
-          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0">
+          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0 max-w-[95%] md:max-w-[85%]">
           <div class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
           <!-- Streaming cursor -->
           <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-500/80 dark:bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />

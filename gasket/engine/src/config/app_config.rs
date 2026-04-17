@@ -78,6 +78,8 @@ pub struct AgentDefaults {
     pub thinking_enabled: bool,
     #[serde(default)]
     pub streaming: bool,
+    #[serde(default, alias = "memoryBudget")]
+    pub memory_budget: Option<gasket_storage::memory::TokenBudget>,
 }
 
 impl Default for AgentDefaults {
@@ -90,6 +92,7 @@ impl Default for AgentDefaults {
             memory_window: 0,
             thinking_enabled: false,
             streaming: true,
+            memory_budget: None,
         }
     }
 }

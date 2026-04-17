@@ -5,11 +5,9 @@
 //! - `run_jsonrpc()`: Bidirectional JSON-RPC 2.0 communication
 
 mod daemon;
-mod jsonrpc;
 mod simple;
 
 pub use daemon::JsonRpcDaemon;
-pub use jsonrpc::run_jsonrpc;
 pub use simple::run_simple;
 
 use serde_json::Value;

@@ -17,15 +17,10 @@ use super::manifest::Permission;
 use super::rpc::{RpcError, RpcRequest, RpcResponse};
 
 mod llm_chat;
-mod memory_decay;
-mod memory_search;
-mod memory_write;
 mod subagent;
 
+use crate::tools::ToolContext;
 use llm_chat::LlmChatHandler;
-use memory_decay::MemoryDecayHandler;
-use memory_search::MemorySearchHandler;
-use memory_write::MemoryWriteHandler;
 use subagent::SubagentSpawnHandler;
 
 /// Trait for RPC method handlers.
@@ -53,6 +48,18 @@ pub trait RpcHandler: Send + Sync {
     /// - `Ok(Value)` - Successful result (will be wrapped in RpcResponse)
     /// - `Err(RpcError)` - Error response
     async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError>;
+}
+
+/// Static engine resources that are injected once at construction time.
+///
+/// These do not change between calls and belong to the plugin's lifecycle.
+#[derive(Clone)]
+pub struct EngineResources {
+    /// Tool registry for executing engine tools
+    pub tool_registry: Arc<ToolRegistry>,
+
+    /// LLM provider for direct chat completions
+    pub provider: Arc<dyn LlmProvider>,
 }
 
 /// Unified handle to engine capabilities.
@@ -116,15 +123,16 @@ impl RpcDispatcher {
     ///
     /// * `handler` - The handler to register
     ///
-    /// # Panics
+    /// # Returns
     ///
-    /// Panics if a handler is already registered for the same method name.
-    pub fn register(&mut self, handler: Arc<dyn RpcHandler>) {
+    /// `Err(method_name)` if a handler is already registered for the same method.
+    pub fn register(&mut self, handler: Arc<dyn RpcHandler>) -> Result<(), String> {
         let method = handler.method().to_string();
         if self.handlers.contains_key(&method) {
-            panic!("Handler already registered for method: {}", method);
+            return Err(method.clone());
         }
         self.handlers.insert(method, handler);
+        Ok(())
     }
 
     /// Dispatch an RPC request to the appropriate handler.
@@ -210,13 +218,74 @@ impl Default for RpcDispatcher {
 /// - `memory/write` - Memory write (memorize)
 /// - `memory/decay` - Memory decay
 /// - `subagent/spawn` - Subagent spawning
+/// Generic handler that delegates an RPC method to an engine tool.
+pub struct ToolDelegateHandler {
+    method: &'static str,
+    permission: Permission,
+    tool_name: &'static str,
+}
+
+impl ToolDelegateHandler {
+    pub fn new(method: &'static str, permission: Permission, tool_name: &'static str) -> Self {
+        Self {
+            method,
+            permission,
+            tool_name,
+        }
+    }
+}
+
+#[async_trait]
+impl RpcHandler for ToolDelegateHandler {
+    fn method(&self) -> &str {
+        self.method
+    }
+
+    fn required_permission(&self) -> Permission {
+        self.permission.clone()
+    }
+
+    async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
+        let tool_ctx = ToolContext::default()
+            .session_key(ctx.engine.session_key.clone())
+            .outbound_tx(ctx.engine.outbound_tx.clone())
+            .spawner(ctx.engine.spawner.clone())
+            .token_tracker(ctx.engine.token_tracker.clone());
+
+        let output = ctx
+            .engine
+            .tool_registry
+            .execute(self.tool_name, params, &tool_ctx)
+            .await
+            .map_err(|e| RpcError::internal_error(format!("{} failed: {}", self.tool_name, e)))?;
+
+        Ok(serde_json::json!({"output": output}))
+    }
+}
+
 pub fn build_dispatcher() -> RpcDispatcher {
     let mut d = RpcDispatcher::new();
-    d.register(Arc::new(LlmChatHandler));
-    d.register(Arc::new(MemorySearchHandler));
-    d.register(Arc::new(MemoryWriteHandler));
-    d.register(Arc::new(MemoryDecayHandler));
-    d.register(Arc::new(SubagentSpawnHandler));
+    // Unwrap is safe: built-in handlers have unique method names.
+    d.register(Arc::new(LlmChatHandler)).unwrap();
+    d.register(Arc::new(ToolDelegateHandler::new(
+        "memory/search",
+        Permission::MemorySearch,
+        "memory_search",
+    )))
+    .unwrap();
+    d.register(Arc::new(ToolDelegateHandler::new(
+        "memory/write",
+        Permission::MemoryWrite,
+        "memorize",
+    )))
+    .unwrap();
+    d.register(Arc::new(ToolDelegateHandler::new(
+        "memory/decay",
+        Permission::MemoryDecay,
+        "memory_decay",
+    )))
+    .unwrap();
+    d.register(Arc::new(SubagentSpawnHandler)).unwrap();
     d
 }
 
@@ -325,7 +394,7 @@ mod tests {
             method: "test/echo".to_string(),
             permission: Permission::LlmChat,
         });
-        dispatcher.register(handler);
+        dispatcher.register(handler).unwrap();
 
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -354,7 +423,7 @@ mod tests {
             method: "test/echo".to_string(),
             permission: Permission::LlmChat,
         });
-        dispatcher.register(handler);
+        dispatcher.register(handler).unwrap();
 
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -403,7 +472,7 @@ mod tests {
             method: "test/notify".to_string(),
             permission: Permission::MemorySearch,
         });
-        dispatcher.register(handler);
+        dispatcher.register(handler).unwrap();
 
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),

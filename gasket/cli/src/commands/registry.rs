@@ -95,5 +95,6 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
         summarization_prompt: None,
         embedding_config: Some(config.embedding.clone()),
+        memory_budget: config.agents.defaults.memory_budget,
     }
 }

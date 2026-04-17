@@ -21,7 +21,6 @@ use anyhow::Result;
 use chrono::Utc;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
@@ -48,12 +47,13 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    /// Create a new MemoryManager with default components.
+    /// Create a new MemoryManager.
     ///
     /// # Arguments
     /// * `base_dir` - Memory base directory (e.g., ~/.gasket/memory/)
     /// * `pool` - SQLite connection pool for metadata and embedding stores
     /// * `embedder` - Embedder for computing memory embeddings
+    /// * `budget` - Optional token budget override (defaults if None)
     pub async fn new(
         base_dir: PathBuf,
         pool: &SqlitePool,
@@ -61,11 +61,12 @@ impl MemoryManager {
     ) -> Result<Self> {
         let store = FileMemoryStore::new(base_dir.clone());
         let index_manager = FileIndexManager::new(base_dir.clone());
-        let embedding_store = EmbeddingStore::new(pool.clone());
         let metadata_store = MetadataStore::new(pool.clone());
+        let embedding_store = EmbeddingStore::new(pool.clone());
         let retrieval = RetrievalEngine::new(
             MetadataStore::new(pool.clone()),
             EmbeddingStore::new(pool.clone()),
+            Some(embedder.clone_box()),
         );
         let budget = TokenBudget::default();
 
@@ -86,37 +87,12 @@ impl MemoryManager {
         })
     }
 
-    /// Create a MemoryManager with custom token budget.
-    pub async fn with_budget(
-        base_dir: PathBuf,
-        pool: &SqlitePool,
-        budget: TokenBudget,
-        embedder: BoxedEmbedder,
-    ) -> Result<Self> {
-        let store = FileMemoryStore::new(base_dir.clone());
-        let index_manager = FileIndexManager::new(base_dir.clone());
-        let embedding_store = EmbeddingStore::new(pool.clone());
-        let metadata_store = MetadataStore::new(pool.clone());
-        let retrieval = RetrievalEngine::new(
-            MetadataStore::new(pool.clone()),
-            EmbeddingStore::new(pool.clone()),
-        );
-
-        let (access_tx, shutdown_tx, access_task) =
-            Self::spawn_access_worker(metadata_store.clone());
-
-        Ok(Self {
-            store,
-            index_manager,
-            metadata_store,
-            embedding_store,
-            retrieval,
-            embedder,
-            budget,
-            access_tx,
-            shutdown_tx,
-            access_task: std::sync::Mutex::new(access_task),
-        })
+    /// Override the token budget (builder-style).
+    pub fn with_budget(mut self, budget: Option<TokenBudget>) -> Self {
+        if let Some(b) = budget {
+            self.budget = b;
+        }
+        self
     }
 
     /// Create a MemoryManager with pre-built components (for testing).
@@ -517,161 +493,172 @@ impl MemoryManager {
         false
     }
 
-    /// Load memories for context injection using Ord-based multi-criteria sorting.
+    /// Three-phase memory loading for context injection.
     ///
-    /// Candidates are ranked by `(is_exempt, frequency, similarity)` tuple
-    /// comparison via `ScoredCandidate::Ord`, then truncated by token cap.
+    /// 1. **Bootstrap** (budget: `self.budget.bootstrap`): load all `profile` +
+    ///    `active` hot/warm memories.
+    /// 2. **Scenario** (budget: `self.budget.scenario`): load current scenario
+    ///    hot + tag-matched warm memories.
+    /// 3. **On-demand** (budget: remaining up to `self.budget.on_demand`): fill
+    ///    with semantic search results.
+    ///
+    /// The total never exceeds `self.budget.total_cap`.
     pub async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext> {
         let scenario = query.scenario.unwrap_or(Scenario::Knowledge);
         let mut seen = HashSet::new();
-        let mut candidates: Vec<ScoredCandidate> = Vec::new();
-
-        // 1. Collect from metadata store (profile + active + scenario hot/warm)
-        let entries = self
-            .metadata_store
-            .query_for_loading(scenario, &query.tags)
-            .await
-            .unwrap_or_default();
-
-        for entry in &entries {
-            let key = format!("{}/{}", entry.scenario.dir_name(), entry.filename);
-            if seen.insert(key) {
-                let candidate = ScoredCandidate {
-                    scenario: entry.scenario,
-                    filename: entry.filename.clone(),
-                    tokens: entry.tokens,
-                    frequency: entry.frequency,
-                    similarity: None,
-                };
-                if candidate.is_relevant() {
-                    candidates.push(candidate);
-                }
-            }
-        }
-
-        // 2. Augment with vector search results (if query text provided)
-        if query.text.is_some() {
-            if let Ok(results) = self.retrieval.search(query).await {
-                for result in &results {
-                    let key = format!("{}/{}", result.scenario.dir_name(), result.memory_path);
-                    if seen.insert(key) {
-                        let candidate = ScoredCandidate {
-                            scenario: result.scenario,
-                            filename: result.memory_path.clone(),
-                            tokens: result.tokens,
-                            frequency: result.frequency,
-                            similarity: Some(result.score),
-                        };
-                        if candidate.is_relevant() {
-                            candidates.push(candidate);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Sort by Ord (exempt first, then frequency desc, then similarity desc)
-        candidates.sort();
-
-        // 4. Load files within token budget
         let mut memories = Vec::new();
-        let mut tokens_used = 0;
-        let cap = self.budget.total_cap;
+        let mut phase = PhaseBreakdown::default();
 
-        for candidate in &candidates {
-            if tokens_used + candidate.tokens as usize > cap {
+        // Phase 1: Bootstrap
+        let bootstrap_candidates = self.collect_bootstrap_candidates().await?;
+        let bootstrap_cap = self.budget.bootstrap.min(self.budget.total_cap);
+        phase.bootstrap_tokens = self
+            .load_results(
+                &bootstrap_candidates,
+                bootstrap_cap,
+                &mut seen,
+                &mut memories,
+            )
+            .await;
+
+        // Phase 2: Scenario-specific
+        let scenario_candidates = self
+            .collect_scenario_candidates(scenario, &query.tags)
+            .await?;
+        let scenario_cap = self
+            .budget
+            .scenario
+            .min(self.budget.total_cap.saturating_sub(phase.bootstrap_tokens));
+        phase.scenario_tokens = self
+            .load_results(&scenario_candidates, scenario_cap, &mut seen, &mut memories)
+            .await;
+
+        // Phase 3: On-demand semantic search
+        let on_demand_cap = self.budget.on_demand.min(
+            self.budget
+                .total_cap
+                .saturating_sub(phase.bootstrap_tokens + phase.scenario_tokens),
+        );
+        phase.on_demand_tokens = self
+            .load_on_demand(query, on_demand_cap, &mut seen, &mut memories)
+            .await;
+
+        let tokens_used = phase.bootstrap_tokens + phase.scenario_tokens + phase.on_demand_tokens;
+
+        Ok(MemoryContext {
+            memories,
+            tokens_used,
+            phase_breakdown: phase,
+        })
+    }
+
+    /// Collect bootstrap candidates: all Profile + Active hot/warm.
+    async fn collect_bootstrap_candidates(&self) -> Result<Vec<SearchResult>> {
+        let mut candidates = Vec::new();
+
+        // 1. All Profile entries (exempt from decay, highest priority)
+        let profile_entries = self.metadata_store.query_entries(Scenario::Profile).await?;
+        candidates.extend(profile_entries.into_iter().map(SearchResult::from));
+
+        // 2. Active hot/warm only
+        let active_entries = self.metadata_store.query_entries(Scenario::Active).await?;
+        candidates.extend(
+            active_entries
+                .into_iter()
+                .filter(|e| matches!(e.frequency, Frequency::Hot | Frequency::Warm))
+                .map(SearchResult::from),
+        );
+
+        candidates.sort();
+        Ok(candidates)
+    }
+
+    /// Collect scenario candidates: hot always + tag-matched warm, single pass.
+    async fn collect_scenario_candidates(
+        &self,
+        scenario: Scenario,
+        tags: &[String],
+    ) -> Result<Vec<SearchResult>> {
+        let entries = self.metadata_store.query_entries(scenario).await?;
+
+        let mut candidates: Vec<SearchResult> = entries
+            .into_iter()
+            .filter(|e| match e.frequency {
+                Frequency::Hot => true,
+                Frequency::Warm if tags.is_empty() => true,
+                Frequency::Warm => e
+                    .tags
+                    .iter()
+                    .any(|t| tags.iter().any(|qt| qt.eq_ignore_ascii_case(t))),
+                _ => false,
+            })
+            .map(SearchResult::from)
+            .collect();
+
+        candidates.sort();
+        Ok(candidates)
+    }
+
+    /// Load results within a budget, deduplicating via seen set.
+    ///
+    /// Shared core loop for both phase-based and on-demand loading.
+    async fn load_results(
+        &self,
+        results: &[SearchResult],
+        budget: usize,
+        seen: &mut HashSet<String>,
+        memories: &mut Vec<MemoryFile>,
+    ) -> usize {
+        let mut tokens_used = 0usize;
+        for r in results {
+            if tokens_used + r.tokens as usize > budget {
                 break;
             }
-            match self
-                .store
-                .read(candidate.scenario, &candidate.filename)
-                .await
-            {
+            let key = format!("{}/{}", r.scenario.dir_name(), r.memory_path);
+            if !seen.insert(key) {
+                continue;
+            }
+            match self.store.read(r.scenario, &r.memory_path).await {
                 Ok(mem) => {
                     tokens_used += mem.metadata.tokens;
-                    self.record_access(candidate.scenario, &candidate.filename);
+                    self.record_access(r.scenario, &r.memory_path);
                     memories.push(mem);
                 }
                 Err(e) => {
                     if !self
-                        .cleanup_stale_if_not_found(candidate.scenario, &candidate.filename, &e)
+                        .cleanup_stale_if_not_found(r.scenario, &r.memory_path, &e)
                         .await
                     {
                         warn!(
                             "Failed to load {}/{}: {}",
-                            candidate.scenario.dir_name(),
-                            candidate.filename,
+                            r.scenario.dir_name(),
+                            r.memory_path,
                             e
                         );
                     }
                 }
             }
         }
-
-        Ok(MemoryContext {
-            memories,
-            tokens_used,
-        })
+        tokens_used
     }
-}
 
-/// A candidate for context loading, sorted by multi-criteria relevance.
-///
-/// Sort order (via `Ord`):
-/// 1. Exempt scenarios (Profile, Decisions, Reference) always first
-/// 2. Higher frequency (Hot > Warm > Cold)
-/// 3. Higher similarity (when available, None sorts after Some)
-///
-/// This replaces the former f32 `score = similarity × coefficient` approach,
-/// eliminating magic numbers and NaN-prone float comparisons.
-#[derive(Debug, Clone)]
-struct ScoredCandidate {
-    scenario: Scenario,
-    filename: String,
-    tokens: u32,
-    frequency: Frequency,
-    similarity: Option<f32>,
-}
+    /// Phase 3: on-demand semantic/tag search fill.
+    async fn load_on_demand(
+        &self,
+        query: &MemoryQuery,
+        budget: usize,
+        seen: &mut HashSet<String>,
+        memories: &mut Vec<MemoryFile>,
+    ) -> usize {
+        if budget == 0 || (query.text.is_none() && query.tags.is_empty()) {
+            return 0;
+        }
 
-impl PartialEq for ScoredCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.scenario == other.scenario && self.filename == other.filename
-    }
-}
+        let Ok(results) = self.retrieval.search(query).await else {
+            return 0;
+        };
 
-impl Eq for ScoredCandidate {}
-
-impl ScoredCandidate {
-    /// Whether this candidate is relevant for context loading.
-    /// Archived items are always excluded.
-    fn is_relevant(&self) -> bool {
-        self.frequency != Frequency::Archived
-    }
-}
-
-impl Ord for ScoredCandidate {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let self_exempt = self.scenario.is_exempt_from_decay();
-        let other_exempt = other.scenario.is_exempt_from_decay();
-
-        // 1. Exempt scenarios first
-        other_exempt
-            .cmp(&self_exempt)
-            // 2. Higher frequency first (uses Frequency::Ord rank-based ordering)
-            .then_with(|| other.frequency.cmp(&self.frequency))
-            // 3. Higher similarity first; known similarity outranks None
-            .then_with(|| match (self.similarity, other.similarity) {
-                (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            })
-    }
-}
-
-impl PartialOrd for ScoredCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+        self.load_results(&results, budget, seen, memories).await
     }
 }
 
@@ -738,6 +725,17 @@ pub struct ReindexReport {
     pub total_errors: usize,
 }
 
+/// Per-phase token breakdown for three-phase memory loading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhaseBreakdown {
+    /// Tokens used in Phase 1 (bootstrap: profile + active hot/warm).
+    pub bootstrap_tokens: usize,
+    /// Tokens used in Phase 2 (scenario-specific hot + tag-matched warm).
+    pub scenario_tokens: usize,
+    /// Tokens used in Phase 3 (on-demand semantic search fill).
+    pub on_demand_tokens: usize,
+}
+
 /// Result of loading memories for context injection.
 #[derive(Debug)]
 pub struct MemoryContext {
@@ -745,6 +743,8 @@ pub struct MemoryContext {
     pub memories: Vec<MemoryFile>,
     /// Total tokens used.
     pub tokens_used: usize,
+    /// Per-phase token breakdown.
+    pub phase_breakdown: PhaseBreakdown,
 }
 
 /// Implement MemoryProvider trait for MemoryManager.
@@ -978,6 +978,9 @@ mod tests {
         // Cold active file and Cold knowledge file excluded from bootstrap
         assert_eq!(context.memories.len(), 4);
         assert_eq!(context.tokens_used, 700);
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 700);
+        assert_eq!(context.phase_breakdown.scenario_tokens, 0);
+        assert_eq!(context.phase_breakdown.on_demand_tokens, 0);
 
         // Verify Cold file was excluded
         assert!(!context
@@ -1032,6 +1035,7 @@ mod tests {
             .iter()
             .any(|m| m.metadata.title == "Sprint Plan"));
         assert_eq!(context.tokens_used, 250);
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 250);
     }
 
     #[tokio::test]
@@ -1086,11 +1090,13 @@ mod tests {
             .with_tag("rust");
         let context = manager.load_for_context(&query).await.unwrap();
 
-        // With unified scoring, total_cap (4000) is the only limit.
-        // Both hot items (800+800=1600) should fit within budget.
+        // Hot 1 loads in Phase 2 (scenario budget = 1500).
+        // Hot 2 is deferred to Phase 3 via tag search fallback.
         assert!(context.tokens_used <= 4000);
         assert!(context.memories.iter().any(|m| m.metadata.title == "Hot 1"));
         assert!(context.memories.iter().any(|m| m.metadata.title == "Hot 2"));
+        assert_eq!(context.phase_breakdown.scenario_tokens, 800);
+        assert_eq!(context.phase_breakdown.on_demand_tokens, 800);
     }
 
     #[tokio::test]
@@ -1135,11 +1141,14 @@ mod tests {
             .with_tag("search");
         let context = manager.load_for_context(&query).await.unwrap();
 
-        // Cold items should be found by search and loaded (score > 0)
+        // Cold items should be found by search and loaded in Phase 3
         assert!(
             context.tokens_used > 0,
-            "Unified scoring should load cold items from search"
+            "On-demand phase should load cold items from tag search"
         );
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 0);
+        assert_eq!(context.phase_breakdown.scenario_tokens, 0);
+        assert!(context.phase_breakdown.on_demand_tokens > 0);
     }
 
     #[tokio::test]
@@ -1188,8 +1197,8 @@ mod tests {
             .unwrap()
             .pool()
             .clone();
-        let embedding_store = EmbeddingStore::new(pool.clone());
-        let metadata_store = MetadataStore::new(pool);
+        let metadata_store = MetadataStore::new(pool.clone());
+        let embedding_store = EmbeddingStore::new(pool);
         let retrieval = RetrievalEngine::new(
             MetadataStore::new(
                 SqliteStore::with_path(temp_dir.path().join("test.db"))
@@ -1205,6 +1214,7 @@ mod tests {
                     .pool()
                     .clone(),
             ),
+            None,
         );
         let embedder: BoxedEmbedder = Box::new(NoopEmbedder::new(384));
         let custom_manager = MemoryManager::with_components(
@@ -1222,6 +1232,11 @@ mod tests {
 
         // Should never exceed hard cap
         assert!(context.tokens_used <= 1000);
+        // Both profile files are 600 tokens, exceeding the 500 bootstrap budget,
+        // so nothing should load.
+        assert_eq!(context.phase_breakdown.bootstrap_tokens, 0);
+        assert_eq!(context.phase_breakdown.scenario_tokens, 0);
+        assert_eq!(context.phase_breakdown.on_demand_tokens, 0);
     }
 
     #[tokio::test]

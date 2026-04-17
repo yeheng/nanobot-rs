@@ -8,13 +8,20 @@
 //! Results are sorted by `(frequency desc, score desc)` using tuple comparison.
 //! This eliminates magic-number multipliers and NaN-prone float comparisons.
 
+use super::embedder::Embedder;
 use super::embedding_store::EmbeddingStore;
+use super::index::MemoryIndexEntry;
 use super::metadata_store::MetadataStore;
 use super::types::*;
 use anyhow::Result;
 use std::cmp::Ordering;
 
 /// A search result with combined scoring.
+///
+/// Sort order (via `Ord`):
+/// 1. Exempt scenarios (Profile, Decisions, Reference) always first
+/// 2. Higher frequency (Hot > Warm > Cold)
+/// 3. Higher score (when available)
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub memory_path: String,
@@ -23,30 +30,91 @@ pub struct SearchResult {
     pub tags: Vec<String>,
     pub frequency: Frequency,
     pub score: f32,
-    pub tag_score: f32,
-    pub embedding_score: f32,
     pub tokens: u32,
     pub id: String,
 }
 
+impl PartialEq for SearchResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.scenario == other.scenario && self.memory_path == other.memory_path
+    }
+}
+
+impl Eq for SearchResult {}
+
+impl Ord for SearchResult {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_exempt = self.scenario.is_exempt_from_decay();
+        let other_exempt = other.scenario.is_exempt_from_decay();
+
+        // 1. Exempt scenarios first
+        other_exempt
+            .cmp(&self_exempt)
+            // 2. Higher frequency first
+            .then_with(|| other.frequency.cmp(&self.frequency))
+            // 3. Higher score first
+            .then_with(|| {
+                other
+                    .score
+                    .partial_cmp(&self.score)
+                    .unwrap_or(Ordering::Equal)
+            })
+    }
+}
+
+impl PartialOrd for SearchResult {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl From<MemoryIndexEntry> for SearchResult {
+    fn from(entry: MemoryIndexEntry) -> Self {
+        Self {
+            memory_path: entry.filename,
+            scenario: entry.scenario,
+            title: entry.title,
+            tags: entry.tags,
+            frequency: entry.frequency,
+            score: 0.0,
+            tokens: entry.tokens,
+            id: entry.id,
+        }
+    }
+}
+
 /// Retrieval engine combining tag and embedding search via SQLite metadata.
+///
+/// Holds an `Embedder` reference for computing real query embeddings.
+/// Falls back to tag-only search when the embedder fails or produces
+/// degenerate (all-zero) vectors.
 pub struct RetrievalEngine {
     metadata_store: MetadataStore,
     embedding_store: EmbeddingStore,
+    embedder: Option<Box<dyn Embedder>>,
 }
 
 impl RetrievalEngine {
-    pub fn new(metadata_store: MetadataStore, embedding_store: EmbeddingStore) -> Self {
+    pub fn new(
+        metadata_store: MetadataStore,
+        embedding_store: EmbeddingStore,
+        embedder: Option<Box<dyn Embedder>>,
+    ) -> Self {
         Self {
             metadata_store,
             embedding_store,
+            embedder,
         }
     }
 
     /// Tag-only search via SQLite metadata.
     ///
     /// Tags act as a hard filter (must match at least one). Score is based on
-    /// tag match ratio × frequency bonus.
+    /// tag match ratio.
+    ///
+    /// **Note:** Excludes Active and Profile scenarios — the bootstrap phase
+    /// in `MemoryManager` loads these unconditionally, so tag search skips them
+    /// to avoid duplication in combined search results.
     pub async fn search_by_tags(
         &self,
         query_tags: &[String],
@@ -76,20 +144,14 @@ impl RetrievalEngine {
                     tags: entry.tags,
                     frequency: entry.frequency,
                     score: tag_score,
-                    tag_score,
-                    embedding_score: 0.0,
                     tokens: entry.tokens,
                     id: entry.id,
                 }
             })
             .collect();
 
-        // Sort by frequency desc, then score desc
-        results.sort_by(|a, b| {
-            b.frequency
-                .cmp(&a.frequency)
-                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
-        });
+        // Sort using unified Ord impl (exempt > frequency > score)
+        results.sort();
 
         Ok(results)
     }
@@ -122,40 +184,50 @@ impl RetrievalEngine {
                     tags: hit.tags,
                     frequency,
                     score: emb_score,
-                    tag_score: 0.0,
-                    embedding_score: emb_score,
                     tokens: hit.token_count,
                     id: String::new(), // not stored in embedding table
                 }
             })
             .collect();
 
-        // Sort by frequency desc, then score desc
-        results.sort_by(|a, b| {
-            b.frequency
-                .cmp(&a.frequency)
-                .then_with(|| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal))
-        });
+        // Sort using unified Ord impl (exempt > frequency > score)
+        results.sort();
 
         Ok(results)
     }
 
+    /// Compute query embedding via the embedder, if available.
+    ///
+    /// Returns `None` when: no text, no embedder, embedding fails,
+    /// or the result is a degenerate all-zero vector (NoopEmbedder fallback).
+    async fn try_embed(&self, text: &str) -> Option<Vec<f32>> {
+        let embedder = self.embedder.as_ref()?;
+        let vec = embedder.embed(text).await.ok()?;
+        if vec.iter().all(|&v| v == 0.0) {
+            return None;
+        }
+        Some(vec)
+    }
+
     /// Combined search: embedding primary score + tag hard filter + frequency bonus.
     ///
-    /// Flattened strategy:
-    /// 1. Get embedding results (which include tags/frequency from SQLite)
-    /// 2. If tags specified, apply hard filter: score = emb × freq_bonus × tag_filter
-    /// 3. If no embedding results but tags exist, fall back to tag-only search
+    /// 1. Compute real query embedding via the embedder (if available and text provided)
+    /// 2. Search by embedding similarity
+    /// 3. If tags specified, apply hard filter on embedding results
+    /// 4. Fall back to tag-only search if embedding fails or no text provided
     pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>> {
         let limit = 20;
 
-        // Get embedding results
-        let emb_results = if query.text.is_some() {
-            let dummy_emb = vec![0.0f32; 384]; // TODO: use actual embedder
-            self.search_by_embedding("", &dummy_emb, query.scenario, limit)
-                .await?
-        } else {
-            Vec::new()
+        // Compute real query embedding (returns None when no text / no embedder / failure)
+        let emb_results = match &query.text {
+            Some(text) => match self.try_embed(text).await {
+                Some(query_emb) => self
+                    .search_by_embedding(text, &query_emb, query.scenario, limit)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
         };
 
         // If tags specified, apply hard filter on embedding results
@@ -176,7 +248,11 @@ impl RetrievalEngine {
                 .await;
         }
 
-        // No tags — return embedding results as-is
+        // No tags — return embedding results as-is, or fall back to tag search
+        if emb_results.is_empty() && query.text.is_some() {
+            return Ok(Vec::new());
+        }
+
         Ok(emb_results)
     }
 }
@@ -208,7 +284,7 @@ mod tests {
             tokio::fs::create_dir_all(&dir).await.unwrap();
         }
 
-        let engine = RetrievalEngine::new(metadata_store.clone(), embedding_store);
+        let engine = RetrievalEngine::new(metadata_store.clone(), embedding_store, None);
         (engine, metadata_store, temp_dir)
     }
 
@@ -276,7 +352,7 @@ tokens: 100
         assert_eq!(1, results.len());
         assert_eq!(results[0].title, "Rust Programming");
         assert!(results[0].tags.contains(&"rust".to_string()));
-        assert_eq!(results[0].tag_score, 1.0); // 1/1 tags matched
+        assert_eq!(results[0].score, 1.0); // 1/1 tags matched
     }
 
     #[tokio::test]
@@ -323,15 +399,13 @@ tokens: 50
             .await
             .unwrap();
 
-        let engine = RetrievalEngine::new(metadata_store.clone(), emb_store);
+        let engine = RetrievalEngine::new(metadata_store.clone(), emb_store, None);
 
         // Test embedding-only search
         let emb_results = engine
             .search_by_embedding("test", &[1.0, 0.0, 0.0], Some(Scenario::Knowledge), 10)
             .await
             .unwrap();
-        assert_eq!(emb_results[0].tag_score, 0.0);
-        assert!((emb_results[0].embedding_score - 1.0).abs() < 0.001);
         assert!((emb_results[0].score - 1.0).abs() < 0.001); // raw score, no frequency multiplier
     }
 
@@ -444,17 +518,16 @@ tokens: 50
             .await
             .unwrap();
 
-        let engine = RetrievalEngine::new(metadata_store, emb_store);
+        let engine = RetrievalEngine::new(metadata_store, emb_store, None);
 
         // Combined search should deduplicate
         let query = MemoryQuery::new().with_tag("test").with_text("test query");
         let results = engine.search(&query).await.unwrap();
 
-        // Should have exactly 1 result (deduplicated via embedding)
+        // Should have exactly 1 result (deduplicated)
         assert_eq!(1, results.len());
         assert_eq!(results[0].memory_path, "test.md");
-        assert!(results[0].embedding_score > 0.0);
-        // Score is raw embedding similarity; sorting uses explicit (frequency, score) tuple
-        assert!((results[0].score - results[0].embedding_score).abs() < 0.001);
+        // Without a real embedder, falls back to tag search (score > 0)
+        assert!(results[0].score > 0.0);
     }
 }

@@ -31,6 +31,7 @@ use gasket_types::SessionKey;
 use super::registry::CliModelResolver;
 use crate::provider::setup_vault;
 use axum::response::IntoResponse;
+use tower_http::cors::CorsLayer;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -434,6 +435,8 @@ pub async fn cmd_gateway() -> Result<()> {
                         }
                     }),
                 );
+
+            app = app.layer(CorsLayer::permissive());
 
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
             tracing::info!("HTTP server listening on {}", addr);
