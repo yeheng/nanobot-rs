@@ -62,3 +62,52 @@ export type SubagentWsMessage =
 export function isSubagentMessage(msg: { type: string }): msg is SubagentWsMessage {
   return msg.type.startsWith('subagent_');
 }
+
+// ── IM Types ────────────────────────────────────────────────
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments?: string;
+  status: 'running' | 'complete' | 'error';
+  result?: string | null;
+  duration?: string;
+}
+
+export type MessageStatus = 'sending' | 'sent' | 'error';
+
+export interface Message {
+  id: string;
+  role: 'user' | 'bot' | 'system';
+  content: string;
+  thinking?: string;
+  toolCalls?: ToolCall[];
+  timestamp: number;
+  status?: MessageStatus;
+  pending?: boolean;
+}
+
+export interface ContextStats {
+  token_budget: number;
+  compaction_threshold: number;
+  threshold_tokens: number;
+  current_tokens: number;
+  usage_percent: number;
+  is_compressing: boolean;
+}
+
+export interface WatermarkInfo {
+  watermark: number;
+  max_sequence: number;
+  uncompacted_count: number;
+  compacted_percent: number;
+}
+
+export interface Chat {
+  id: string;
+  name: string;
+  messages: Message[];
+  updatedAt: number;
+  contextStats?: ContextStats;
+  watermarkInfo?: WatermarkInfo;
+}

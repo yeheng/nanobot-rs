@@ -522,6 +522,24 @@ pub enum ChatEvent {
 
     /// Error message
     Error { message: Arc<str> },
+
+    /// Context usage statistics
+    ContextStats {
+        token_budget: usize,
+        compaction_threshold: f64,
+        threshold_tokens: usize,
+        current_tokens: usize,
+        usage_percent: f64,
+        is_compressing: bool,
+    },
+
+    /// Watermark and sequence information
+    WatermarkInfo {
+        watermark: i64,
+        max_sequence: i64,
+        uncompacted_count: usize,
+        compacted_percent: f64,
+    },
 }
 
 impl ChatEvent {

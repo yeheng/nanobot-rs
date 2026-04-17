@@ -1,4 +1,4 @@
-import { onUnmounted, ref } from 'vue';
+import { onUnmounted, ref, watch, type Ref } from 'vue';
 
 export interface WebSocketStatus {
   isConnected: boolean;
@@ -17,8 +17,8 @@ export interface WebSocketMessage {
   message?: string;
 }
 
-export function useChatWebSocket(
-  sessionId: string,
+export function useIMWebSocket(
+  chatId: Ref<string>,
   onMessage: (data: string) => void
 ) {
   const ws = ref<WebSocket | null>(null);
@@ -35,7 +35,7 @@ export function useChatWebSocket(
       ws.value.close();
     }
 
-    const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:3000'}/ws?user_id=${encodeURIComponent(sessionId)}`;
+    const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:3000'}/ws?user_id=${encodeURIComponent(chatId.value)}`;
     ws.value = new WebSocket(wsUrl);
 
     ws.value.onopen = () => {
@@ -82,10 +82,12 @@ export function useChatWebSocket(
     connect();
   };
 
-  const send = (data: string) => {
+  const send = (data: string): boolean => {
     if (ws.value?.readyState === WebSocket.OPEN) {
       ws.value.send(data);
+      return true;
     }
+    return false;
   };
 
   const close = () => {
@@ -96,6 +98,10 @@ export function useChatWebSocket(
       clearTimeout(reconnectTimer);
     }
   };
+
+  watch(chatId, () => {
+    connect();
+  });
 
   onUnmounted(() => {
     close();

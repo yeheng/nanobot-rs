@@ -40,6 +40,18 @@ pub trait MessageHandler: Send + Sync {
         ),
         Box<dyn std::error::Error + Send + Sync>,
     >;
+
+    /// Handle a control command for the session (e.g. force_compact).
+    /// Returns a list of ChatEvents to send back to the client.
+    async fn handle_command(
+        &self,
+        session_key: &SessionKey,
+        command: &str,
+    ) -> Result<Vec<ChatEvent>, Box<dyn std::error::Error + Send + Sync>> {
+        let _ = session_key;
+        let _ = command;
+        Ok(vec![])
+    }
 }
 
 /// Manages per-session processing tasks.
@@ -179,6 +191,40 @@ async fn run_session_task<H: MessageHandler + 'static>(
                 break;
             }
         };
+
+        // Check for control commands
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+            if json.get("type").and_then(|v| v.as_str()) == Some("force_compact") {
+                match handler.handle_command(&session_key, "force_compact").await {
+                    Ok(events) => {
+                        for event in events {
+                            let outbound = OutboundMessage::with_ws_message(
+                                msg.channel.clone(),
+                                msg.chat_id.clone(),
+                                event,
+                            );
+                            if let Err(e) = broker
+                                .publish(Envelope::new(
+                                    Topic::Outbound,
+                                    BrokerPayload::Outbound(outbound),
+                                ))
+                                .await
+                            {
+                                tracing::error!(
+                                    "Session [{}] command publish error: {}",
+                                    key_str,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Session [{}] command error: {}", key_str, e);
+                    }
+                }
+                continue;
+            }
+        }
 
         if msg.channel.supports_streaming() {
             if let Err(e) = process_streaming(&session_key, msg, &handler, &broker).await {

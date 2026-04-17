@@ -281,6 +281,35 @@ impl ContextCompactor {
         true
     }
 
+    /// Force-trigger compaction and await its completion.
+    ///
+    /// Returns `Ok(())` if compaction ran successfully, `Err` if already in progress
+    /// or if compaction failed.
+    pub async fn force_compact_and_wait(
+        &self,
+        session_key: &SessionKey,
+        vault_values: &[String],
+    ) -> Result<()> {
+        let sk = session_key.to_string();
+        if !self.try_acquire_lock(&sk) {
+            bail!("Compaction already in progress for {}", sk);
+        }
+        info!("Force compaction (blocking) started for {}", sk);
+        let _guard = CompactionGuard(self.is_compressing.clone());
+
+        run_compaction(
+            &self.event_store,
+            &self.sqlite_store,
+            &*self.provider,
+            &self.model,
+            &self.summarization_prompt,
+            session_key,
+            vault_values,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Compaction failed for {}: {}", sk, e))
+    }
+
     /// Try to trigger background compaction.
     ///
     /// This is the main entry point, called from `finalize_response()`.

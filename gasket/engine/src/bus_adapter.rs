@@ -96,4 +96,45 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
 
         Ok((chat_rx, result_rx))
     }
+
+    async fn handle_command(
+        &self,
+        session_key: &SessionKey,
+        command: &str,
+    ) -> Result<Vec<gasket_types::events::ChatEvent>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let mut events = Vec::new();
+        if command == "force_compact" {
+            let triggered = self.session.force_compact(session_key, &[]);
+            if triggered {
+                events.push(gasket_types::events::ChatEvent::text(
+                    "Context compaction triggered.",
+                ));
+            } else {
+                events.push(gasket_types::events::ChatEvent::text(
+                    "Context compaction already in progress or not available.",
+                ));
+            }
+        }
+        // Always include latest stats
+        if let Some(stats) = self.session.get_context_stats(session_key).await {
+            events.push(gasket_types::events::ChatEvent::ContextStats {
+                token_budget: stats.token_budget,
+                compaction_threshold: stats.compaction_threshold as f64,
+                threshold_tokens: stats.threshold_tokens,
+                current_tokens: stats.current_tokens,
+                usage_percent: stats.usage_percent,
+                is_compressing: stats.is_compressing,
+            });
+        }
+        if let Some(info) = self.session.get_watermark_info(session_key).await {
+            events.push(gasket_types::events::ChatEvent::WatermarkInfo {
+                watermark: info.watermark,
+                max_sequence: info.max_sequence,
+                uncompacted_count: info.uncompacted_count,
+                compacted_percent: info.compacted_percent,
+            });
+        }
+        Ok(events)
+    }
 }

@@ -26,9 +26,11 @@ use gasket_engine::SubagentSpawner;
 
 use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
 use gasket_engine::OutboundDispatcher;
+use gasket_types::SessionKey;
 
 use super::registry::CliModelResolver;
 use crate::provider::setup_vault;
+use axum::response::IntoResponse;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -305,6 +307,7 @@ pub async fn cmd_gateway() -> Result<()> {
     ))]
     {
         let providers_for_http = providers.clone();
+        let agent_for_http = agent.clone();
         tasks.push(tokio::spawn(async move {
             let mut app = axum::Router::new();
 
@@ -314,6 +317,123 @@ pub async fn cmd_gateway() -> Result<()> {
                     app = app.merge(router);
                 }
             }
+
+            // Add context management HTTP endpoints
+            let agent_for_context = agent_for_http.clone();
+            let agent_for_compact = agent_for_http.clone();
+            app = app
+                .route(
+                    "/api/sessions/:session_key/context",
+                    axum::routing::get(move |axum::extract::Path(session_key): axum::extract::Path<String>| {
+                        let agent = agent_for_context.clone();
+                        async move {
+                            let key = match SessionKey::parse(&session_key) {
+                                Some(k) => k,
+                                None => {
+                                    return (
+                                        axum::http::StatusCode::BAD_REQUEST,
+                                        axum::Json(serde_json::json!({"error": "Invalid session key"})),
+                                    )
+                                        .into_response();
+                                }
+                            };
+
+                            match (
+                                agent.get_context_stats(&key).await,
+                                agent.get_watermark_info(&key).await,
+                            ) {
+                                (Some(stats), Some(watermark)) => {
+                                    let body = serde_json::json!({
+                                        "context_stats": {
+                                            "token_budget": stats.token_budget,
+                                            "compaction_threshold": stats.compaction_threshold,
+                                            "threshold_tokens": stats.threshold_tokens,
+                                            "current_tokens": stats.current_tokens,
+                                            "usage_percent": stats.usage_percent,
+                                            "is_compressing": stats.is_compressing,
+                                        },
+                                        "watermark_info": {
+                                            "watermark": watermark.watermark,
+                                            "max_sequence": watermark.max_sequence,
+                                            "uncompacted_count": watermark.uncompacted_count,
+                                            "compacted_percent": watermark.compacted_percent,
+                                        }
+                                    });
+                                    (axum::http::StatusCode::OK, axum::Json(body)).into_response()
+                                }
+                                _ => {
+                                    (
+                                        axum::http::StatusCode::NOT_FOUND,
+                                        axum::Json(serde_json::json!({"error": "Session not found or no compactor available"})),
+                                    )
+                                        .into_response()
+                                }
+                            }
+                        }
+                    })
+                )
+                .route(
+                    "/api/sessions/:session_key/context/compact",
+                    axum::routing::post(move |axum::extract::Path(session_key): axum::extract::Path<String>| {
+                        let agent = agent_for_compact.clone();
+                        async move {
+                            let key = match SessionKey::parse(&session_key) {
+                                Some(k) => k,
+                                None => {
+                                    return (
+                                        axum::http::StatusCode::BAD_REQUEST,
+                                        axum::Json(serde_json::json!({"error": "Invalid session key"})),
+                                    )
+                                        .into_response();
+                                }
+                            };
+
+                            match agent.force_compact_and_wait(&key, &[]).await {
+                                Ok(()) => {
+                                    match (
+                                        agent.get_context_stats(&key).await,
+                                        agent.get_watermark_info(&key).await,
+                                    ) {
+                                        (Some(stats), Some(watermark)) => {
+                                            let body = serde_json::json!({
+                                                "status": "compaction_completed",
+                                                "context_stats": {
+                                                    "token_budget": stats.token_budget,
+                                                    "compaction_threshold": stats.compaction_threshold,
+                                                    "threshold_tokens": stats.threshold_tokens,
+                                                    "current_tokens": stats.current_tokens,
+                                                    "usage_percent": stats.usage_percent,
+                                                    "is_compressing": stats.is_compressing,
+                                                },
+                                                "watermark_info": {
+                                                    "watermark": watermark.watermark,
+                                                    "max_sequence": watermark.max_sequence,
+                                                    "uncompacted_count": watermark.uncompacted_count,
+                                                    "compacted_percent": watermark.compacted_percent,
+                                                }
+                                            });
+                                            (axum::http::StatusCode::OK, axum::Json(body)).into_response()
+                                        }
+                                        _ => {
+                                            (
+                                                axum::http::StatusCode::OK,
+                                                axum::Json(serde_json::json!({ "status": "compaction_completed" })),
+                                            )
+                                                .into_response()
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    (
+                                        axum::http::StatusCode::CONFLICT,
+                                        axum::Json(serde_json::json!({ "error": e.to_string() })),
+                                    )
+                                        .into_response()
+                                }
+                            }
+                        }
+                    }),
+                );
 
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
             tracing::info!("HTTP server listening on {}", addr);

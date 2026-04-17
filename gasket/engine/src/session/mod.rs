@@ -361,6 +361,68 @@ impl AgentSession {
         }
     }
 
+    /// Force-trigger context compaction.
+    pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
+        if let Some(ref compactor) = self.compactor {
+            compactor.force_compact(session_key, vault_values)
+        } else {
+            false
+        }
+    }
+
+    /// Force-trigger context compaction and await completion.
+    pub async fn force_compact_and_wait(
+        &self,
+        session_key: &SessionKey,
+        vault_values: &[String],
+    ) -> Result<(), AgentError> {
+        if let Some(ref compactor) = self.compactor {
+            compactor
+                .force_compact_and_wait(session_key, vault_values)
+                .await
+                .map_err(|e| AgentError::SessionError(e.to_string()))
+        } else {
+            Err(AgentError::SessionError(
+                "No compactor available".to_string(),
+            ))
+        }
+    }
+
+    /// Check if context compaction is currently in progress.
+    pub fn is_compacting(&self) -> bool {
+        if let Some(ref compactor) = self.compactor {
+            compactor
+                .is_compressing_flag()
+                .load(std::sync::atomic::Ordering::SeqCst)
+        } else {
+            false
+        }
+    }
+
+    /// Get context usage statistics.
+    pub async fn get_context_stats(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<crate::session::compactor::UsageStats> {
+        if let Some(ref compactor) = self.compactor {
+            compactor.get_usage_stats(session_key).await.ok()
+        } else {
+            None
+        }
+    }
+
+    /// Get watermark information.
+    pub async fn get_watermark_info(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<crate::session::compactor::WatermarkInfo> {
+        if let Some(ref compactor) = self.compactor {
+            compactor.get_watermark_info(session_key).await.ok()
+        } else {
+            None
+        }
+    }
+
     /// Gracefully shut down the session, awaiting all in-flight finalization tasks.
     ///
     /// Call this before dropping the session or shutting down the gateway to ensure
@@ -394,6 +456,11 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
+        if self.is_compacting() {
+            return Err(AgentError::SessionError(
+                "Context compaction in progress, please wait.".to_string(),
+            ));
+        }
         let (_event_rx, handle) = self
             .process_direct_streaming_with_channel(content, session_key)
             .await?;
@@ -420,6 +487,11 @@ impl AgentSession {
         ),
         AgentError,
     > {
+        if self.is_compacting() {
+            return Err(AgentError::SessionError(
+                "Context compaction in progress, please wait.".to_string(),
+            ));
+        }
         let outcome = self.prepare_pipeline(content, session_key).await?;
 
         let request = match outcome {
@@ -453,6 +525,8 @@ impl AgentSession {
 
         let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
+        let session_key_for_stats = session_key.clone();
+        let compactor_for_stats = compactor.clone();
 
         // Translate kernel StreamEvents into clean ChatEvents for consumers.
         // System events (TokenStats, subagent lifecycle) are dropped here;
@@ -463,6 +537,31 @@ impl AgentSession {
                     if chat_tx.send(chat).await.is_err() {
                         break;
                     }
+                }
+            }
+            // After stream ends, push context stats and watermark info
+            if let Some(compactor) = compactor_for_stats {
+                if let Ok(stats) = compactor.get_usage_stats(&session_key_for_stats).await {
+                    let _ = chat_tx
+                        .send(gasket_types::events::ChatEvent::ContextStats {
+                            token_budget: stats.token_budget,
+                            compaction_threshold: stats.compaction_threshold as f64,
+                            threshold_tokens: stats.threshold_tokens,
+                            current_tokens: stats.current_tokens,
+                            usage_percent: stats.usage_percent,
+                            is_compressing: stats.is_compressing,
+                        })
+                        .await;
+                }
+                if let Ok(info) = compactor.get_watermark_info(&session_key_for_stats).await {
+                    let _ = chat_tx
+                        .send(gasket_types::events::ChatEvent::WatermarkInfo {
+                            watermark: info.watermark,
+                            max_sequence: info.max_sequence,
+                            uncompacted_count: info.uncompacted_count,
+                            compacted_percent: info.compacted_percent,
+                        })
+                        .await;
                 }
             }
         });

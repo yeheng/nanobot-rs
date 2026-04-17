@@ -1,60 +1,14 @@
 <script setup lang="ts">
-import DOMPurify from 'dompurify';
-import hljs from 'highlight.js';
-import { AlertCircle, Brain, Check, CheckCheck, ChevronDown, ChevronRight, Copy, Loader2, MessageSquare, Wrench } from 'lucide-vue-next';
-import { Marked } from 'marked';
+import { computed, ref, watch, nextTick } from 'vue';
+import { marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/github-dark.css';
+import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
-import { computed, nextTick, ref, watch } from 'vue';
-import type { Message } from '../App.vue';
-
-// Initialize mermaid
-let mermaidIdCounter = 0;
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  themeVariables: {
-    darkMode: true,
-    background: '#1e293b',
-    primaryColor: '#3b82f6',
-    primaryTextColor: '#e2e8f0',
-    primaryBorderColor: '#475569',
-    lineColor: '#94a3b8',
-    secondaryColor: '#8b5cf6',
-    tertiaryColor: '#1e293b',
-    fontFamily: 'Inter, sans-serif',
-    fontSize: '14px',
-  },
-  securityLevel: 'loose',
-});
-
-// Configure marked
-const mermaidRenderer = {
-  code({ text, lang }: { text: string; lang?: string }) {
-    if (lang === 'mermaid') {
-      // Use more reliable ID generation with random suffix to avoid conflicts
-      const id = `mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      return `<div class="mermaid-container"><pre class="mermaid" id="${id}" data-processed="false">${text}</pre></div>`;
-    }
-    return false;
-  }
-};
-
-const markedInstance = new Marked(
-  markedHighlight({
-    langPrefix: 'hljs language-',
-    highlight(code: string, lang: string) {
-      if (lang === 'mermaid') return code;
-      if (lang && hljs.getLanguage(lang)) {
-        try { return hljs.highlight(code, { language: lang }).value; } catch (__) {}
-      }
-      try { return hljs.highlightAuto(code).value; } catch (__) {}
-      return code;
-    }
-  })
-);
-markedInstance.use({ renderer: mermaidRenderer });
-markedInstance.setOptions({ breaks: true, gfm: true });
+import { Check, CheckCheck, AlertCircle, Bot, User } from 'lucide-vue-next';
+import MessageMetaBadges from './MessageMetaBadges.vue';
+import type { Message } from '../types';
 
 const props = defineProps<{
   message: Message;
@@ -64,302 +18,148 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'copy-message', message: Message): void;
+  (e: 'retry'): void;
 }>();
 
-// UI State - independent expand states for each section
-const thinkingExpanded = ref(true);
-const toolsExpanded = ref(false);
+// Setup marked
+marked.use(
+  markedHighlight({
+    emptyLangClass: 'hljs',
+    langPrefix: 'hljs language-',
+    highlight(code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+      return hljs.highlight(code, { language }).value;
+    },
+  })
+);
 
-// Tool expand states
-const expandedTools = ref<Record<string, boolean>>({});
-const copiedMessageId = ref<string | null>(null);
-
-// Computed: Tool progress
-const toolProgress = computed(() => {
-  if (!props.message.toolCalls?.length) return { completed: 0, total: 0, hasError: false };
-  const tools = props.message.toolCalls;
-  const completed = tools.filter(t => t.status === 'complete' || t.status === 'error').length;
-  const hasError = tools.some(t => t.status === 'error');
-  return { completed, total: tools.length, hasError };
+marked.setOptions({
+  breaks: true,
+  gfm: true,
 });
 
-// Computed: Is thinking active (streaming)
-const isThinkingActive = computed(() => props.isThinking && props.isLastBotMessage);
+// Mermaid rendering
+const mermaidContainerRef = ref<HTMLDivElement | null>(null);
 
-// Computed: Is tool calls active
-const isToolsActive = computed(() => {
-  if (!props.message.toolCalls?.length) return false;
-  return props.message.toolCalls.some(t => t.status === 'running');
-});
-
-// Toggle functions
-const toggleThinking = () => { thinkingExpanded.value = !thinkingExpanded.value; };
-const toggleTools = () => { toolsExpanded.value = !toolsExpanded.value; };
-const toggleToolExpand = (key: string) => { expandedTools.value[key] = !expandedTools.value[key]; };
-
-// Render markdown
-const renderMarkdown = (text: string) => {
-  if (!text) return '';
-  const rawHtml = markedInstance.parse(text) as string;
-  return DOMPurify.sanitize(rawHtml, { ADD_TAGS: ['pre'], ADD_ATTR: ['class', 'id'] });
+const renderMermaid = async () => {
+  await nextTick();
+  if (!mermaidContainerRef.value) return;
+  const elements = mermaidContainerRef.value.querySelectorAll('.mermaid-diagram');
+  for (const el of elements) {
+    try {
+      const { svg } = await mermaid.render(
+        `mermaid-${Math.random().toString(36).substr(2, 9)}`,
+        decodeURIComponent((el as HTMLElement).dataset.source || '')
+      );
+      (el as HTMLElement).innerHTML = svg;
+    } catch (e) {
+      console.error('Mermaid render error:', e);
+    }
+  }
 };
 
-// Render mermaid diagrams with fallback handling
-const renderMermaidDiagrams = async () => {
-  await nextTick();
-  try {
-    const elements = document.querySelectorAll('pre.mermaid:not([data-processed])');
-    if (elements.length > 0) {
-      await mermaid.run({ 
-        nodes: elements as any,
-        suppressErrors: true 
-      });
-    }
-  } catch (e) {
-    console.warn('Mermaid rendering error:', e);
-    // Fallback: add error class to failed diagrams for visual feedback
-    const failedElements = document.querySelectorAll('pre.mermaid:not([data-processed])');
-    failedElements.forEach(el => {
-      el.classList.add('mermaid-error');
-      el.title = 'Failed to render diagram. Click to see raw code.';
-      el.style.cursor = 'pointer';
-      el.addEventListener('click', () => {
-        el.classList.toggle('show-raw');
-      });
+const customRenderer = new marked.Renderer();
+customRenderer.code = (codeObj: any) => {
+  const code = typeof codeObj === 'string' ? codeObj : codeObj.text || '';
+  const lang = typeof codeObj === 'string' ? '' : codeObj.lang || '';
+  const trimmed = code.trim();
+  if (lang === 'mermaid' || trimmed.startsWith('graph ') || trimmed.startsWith('sequenceDiagram') || trimmed.startsWith('classDiagram')) {
+    return `<div class="mermaid-diagram my-2 flex justify-center" data-source="${encodeURIComponent(trimmed)}"></div>`;
+  }
+  const highlighted = hljs.highlightAuto(code).value;
+  return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/10 hover:bg-white/20 text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
+};
+
+const parsedContent = computed(() => {
+  if (!props.message.content) return '';
+  const raw = marked.parse(props.message.content, { renderer: customRenderer }) as string;
+  return DOMPurify.sanitize(raw);
+});
+
+watch(() => props.message.content, async () => {
+  await renderMermaid();
+}, { immediate: true });
+
+const copyCode = (event: MouseEvent) => {
+  const btn = event.target as HTMLElement;
+  const pre = btn.closest('.relative')?.querySelector('pre');
+  if (pre) {
+    const code = pre.textContent || '';
+    navigator.clipboard.writeText(code).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => (btn.textContent = 'Copy'), 1500);
     });
   }
 };
 
-// Copy message
-const copyMessage = async () => {
-  try {
-    await navigator.clipboard.writeText(props.message.content);
-    copiedMessageId.value = props.message.id;
-    emit('copy-message', props.message);
-    setTimeout(() => { copiedMessageId.value = null; }, 2000);
-  } catch (e) {
-    console.error('Failed to copy message:', e);
-  }
+const formatTime = (ts: number) => {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// Copy code block
-const copyCodeBlock = async (event: MouseEvent) => {
-  const button = (event.target as HTMLElement).closest('.code-copy-btn');
-  if (!button) return;
-  const pre = button.closest('.code-block-wrapper')?.querySelector('pre');
-  if (!pre) return;
-  try {
-    await navigator.clipboard.writeText(pre.textContent || '');
-  } catch (e) {
-    console.error('Failed to copy code:', e);
-  }
-};
-
-// Watch for changes
-watch(() => props.message, () => { renderMermaidDiagrams(); }, { deep: true });
-
-// Format time
-const formatTime = (timestamp: number) => {
-  return new Date(timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-};
-
-// Has thinking content
-const hasThinking = computed(() => props.message.thinking && props.message.thinking.trim().length > 0);
-
-// Has tool calls
-const hasToolCalls = computed(() => props.message.toolCalls && props.message.toolCalls.length > 0);
-
-// Has content
-const hasContent = computed(() => props.message.content && props.message.content.trim().length > 0);
+const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
 </script>
 
 <template>
-  <div
-    :id="`msg-${message.id}`"
-    class="flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-300 w-full group/msg"
-    :class="message.role === 'user' ? 'self-end max-w-[85%]' : (message.role === 'system' ? 'self-center max-w-[95%]' : 'self-start w-full')"
-  >
-    <!-- Header -->
-    <div v-if="message.role !== 'system'" class="flex items-center gap-2 mb-2" :class="message.role === 'user' ? 'justify-end mx-1' : 'ml-0'">
-      <span class="text-xs" :class="message.role === 'user' ? 'text-slate-400' : 'font-semibold text-slate-300'">
-        {{ message.role === 'user' ? 'You' : 'gasket' }}
-      </span>
-      <span class="text-[10px] text-slate-500" :title="new Date(message.timestamp).toLocaleString()">
-        {{ formatTime(message.timestamp) }}
-      </span>
+  <div class="py-1"
+    :class="message.role === 'user' ? 'flex justify-end' : message.role === 'system' ? 'flex justify-center' : 'flex justify-start'">
+    
+    <!-- System message -->
+    <div v-if="message.role === 'system'" class="text-[10px] text-slate-500 px-3 py-1 bg-slate-800/40 rounded-full">
+      {{ message.content }}
     </div>
 
-    <!-- User / System message -->
-    <div v-if="message.role !== 'bot'" class="relative break-words transition-all" :class="{
-      'rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 text-white p-3 px-4 rounded-br-sm shadow-lg shadow-blue-500/20': message.role === 'user',
-      'rounded-xl bg-black/20 text-slate-400 py-1.5 px-3 text-xs text-center mx-auto': message.role === 'system'
-    }">
-      <div v-if="message.role === 'system'" class="text-xs">{{ message.content }}</div>
-      <div v-else class="text-sm whitespace-pre-wrap">{{ message.content }}</div>
+    <!-- User message -->
+    <div v-else-if="message.role === 'user'" class="flex items-end gap-2 max-w-[85%] md:max-w-[75%]">
+      <div class="flex flex-col items-end gap-0.5">
+        <div class="px-4 py-2.5 rounded-2xl rounded-br-sm bg-gradient-to-br from-blue-600 to-blue-500 text-white text-sm shadow-sm">
+          <div class="whitespace-pre-wrap">{{ message.content }}</div>
+        </div>
+        <div class="flex items-center gap-1 px-1">
+          <span class="text-[10px] text-slate-500">{{ formatTime(message.timestamp) }}</span>
+          <Check v-if="message.status === 'sending'" class="w-3 h-3 text-slate-500" />
+          <CheckCheck v-else-if="message.status === 'sent'" class="w-3 h-3 text-slate-500" />
+          <div v-else-if="message.status === 'error'" class="flex items-center gap-1 text-red-400 cursor-pointer hover:underline" @click="emit('retry')">
+            <AlertCircle class="w-3 h-3" />
+            <span class="text-[10px]">Failed</span>
+          </div>
+        </div>
+      </div>
+      <div class="w-7 h-7 rounded-full bg-slate-600 flex items-center justify-center shrink-0">
+        <User class="w-3.5 h-3.5 text-slate-200" />
+      </div>
     </div>
 
-    <!-- Bot message: Separated sections -->
-    <template v-else>
-      <!-- Section 1: Thinking Process (Isolated Box) -->
-      <div v-if="hasThinking || isThinkingActive" class="mb-3">
-        <div
-          class="bg-violet-950/30 border border-violet-500/30 rounded-xl overflow-hidden transition-all"
-          :class="{ 'ring-2 ring-violet-500/50': isThinkingActive }"
-        >
-          <!-- Header -->
-          <div
-            class="flex items-center gap-2 px-3 py-2 bg-violet-900/30 cursor-pointer hover:bg-violet-900/50 transition-colors select-none"
-            @click="toggleThinking"
-          >
-            <Brain class="w-4 h-4 text-violet-400 shrink-0" :class="{ 'animate-pulse': isThinkingActive }" />
-            <span class="text-xs font-medium text-violet-300 flex-1">
-              {{ isThinkingActive ? 'Thinking...' : 'Thinking Process' }}
-            </span>
-            <ChevronDown v-if="thinkingExpanded" class="w-4 h-4 text-violet-400 shrink-0" />
-            <ChevronRight v-else class="w-4 h-4 text-violet-400 shrink-0" />
-          </div>
-          <!-- Content -->
-          <div v-show="thinkingExpanded" class="px-3 py-2 max-h-60 overflow-y-auto custom-scrollbar">
-            <div v-if="isThinkingActive && !hasThinking" class="flex items-center gap-2 text-violet-300/60 text-sm">
-              <Loader2 class="w-4 h-4 animate-spin" />
-              <span>Processing your request...</span>
-            </div>
-            <div v-else class="text-[13px] text-violet-200/80 italic whitespace-pre-wrap leading-relaxed">
-              {{ message.thinking }}
-            </div>
-          </div>
-        </div>
+    <!-- Bot message -->
+    <div v-else class="flex items-start gap-2 max-w-[95%] md:max-w-[85%]">
+      <div class="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0 mt-0.5">
+        <Bot class="w-3.5 h-3.5 text-white" />
       </div>
+      <div class="flex flex-col gap-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-medium text-slate-300">gasket AI</span>
+          <span class="text-[10px] text-slate-500">{{ formatTime(message.timestamp) }}</span>
+        </div>
 
-      <!-- Section 2: Tool Calls (Isolated Box) -->
-      <div v-if="hasToolCalls" class="mb-3">
-        <div
-          class="bg-slate-800/50 border border-slate-700/50 rounded-xl overflow-hidden transition-all"
-          :class="{ 'ring-2 ring-emerald-500/30': isToolsActive }"
-        >
-          <!-- Header -->
-          <div
-            class="flex items-center gap-2 px-3 py-2 bg-slate-800/80 cursor-pointer hover:bg-slate-700/80 transition-colors select-none"
-            @click="toggleTools"
-          >
-            <Wrench class="w-4 h-4 text-emerald-400 shrink-0" />
-            <span class="text-xs font-medium text-slate-300 flex-1">
-              Tool Calls
-            </span>
-            <!-- Progress badge -->
-            <span
-              class="text-[10px] px-2 py-0.5 rounded-full font-mono"
-              :class="toolProgress.hasError ? 'bg-red-500/20 text-red-400' : (toolProgress.completed === toolProgress.total ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400')"
-            >
-              {{ toolProgress.completed }}/{{ toolProgress.total }}
-            </span>
-            <ChevronDown v-if="toolsExpanded" class="w-4 h-4 text-slate-400 shrink-0" />
-            <ChevronRight v-else class="w-4 h-4 text-slate-400 shrink-0" />
-          </div>
-          <!-- Content: Tool list -->
-          <div v-show="toolsExpanded" class="px-3 py-2 space-y-2">
-            <div
-              v-for="(tool, idx) in message.toolCalls"
-              :key="tool.id || idx"
-              class="border rounded-lg overflow-hidden"
-              :class="tool.status === 'error' ? 'border-red-500/30 bg-red-950/20' : 'border-slate-700/50 bg-slate-900/50'"
-            >
-              <!-- Tool header -->
-              <div
-                class="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-700/30 transition-colors select-none"
-                @click="toggleToolExpand(tool.id || `tool_${idx}`)"
-              >
-                <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <Check v-else-if="tool.status === 'complete'" class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <AlertCircle v-else class="w-3.5 h-3.5 text-red-400 shrink-0" />
-                <span class="font-mono text-xs flex-1" :class="tool.status === 'error' ? 'text-red-300' : 'text-slate-300'">
-                  {{ tool.name }}
-                </span>
-                <span v-if="tool.duration" class="text-[10px] text-slate-500">{{ tool.duration }}s</span>
-                <ChevronDown v-if="expandedTools[tool.id || `tool_${idx}`]" class="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              </div>
-              <!-- Tool details -->
-              <div v-if="expandedTools[tool.id || `tool_${idx}`]" class="px-2 pb-2 pt-0 border-t border-slate-700/30">
-                <div class="text-[10px] font-semibold text-slate-500 mt-2 uppercase tracking-wider">Arguments</div>
-                <pre class="bg-black/40 rounded p-2 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all mt-1 border-l-2 border-blue-500/40"><code>{{ tool.arguments || '{}' }}</code></pre>
-                <template v-if="tool.result">
-                  <div class="text-[10px] font-semibold mt-2 uppercase tracking-wider" :class="tool.status === 'error' ? 'text-red-400' : 'text-slate-500'">
-                    {{ tool.status === 'error' ? 'Error' : 'Result' }}
-                  </div>
-                  <pre class="bg-black/40 rounded p-2 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all mt-1 border-l-2" :class="tool.status === 'error' ? 'text-red-300 border-red-500/40' : 'text-slate-300 border-amber-500/40'"><code>{{ tool.result }}</code></pre>
-                </template>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+        <MessageMetaBadges
+          :message="message"
+          :is-thinking="isThinking"
+          :is-last-bot-message="isLastBotMessage"
+        />
 
-      <!-- Section 3: Final Content (Main Response) -->
-      <div v-if="hasContent || isReceiving" class="relative">
-        <!-- Content header -->
-        <div class="flex items-center gap-2 mb-2">
-          <MessageSquare class="w-4 h-4 text-blue-400" />
-          <span class="text-xs font-medium text-slate-300">Response</span>
-          <!-- Copy button -->
-          <button
-            v-if="hasContent"
-            @click.stop="copyMessage"
-            class="ml-auto p-1.5 rounded-md bg-slate-800/80 border border-white/10 text-slate-400 hover:text-slate-200 hover:bg-slate-700/80 opacity-0 group-hover/msg:opacity-100 transition-all"
-            title="Copy message"
-          >
-            <CheckCheck v-if="copiedMessageId === message.id" class="w-3.5 h-3.5 text-emerald-400" />
-            <Copy v-else class="w-3.5 h-3.5" />
-          </button>
-        </div>
-        <!-- Content body -->
-        <div
-          class="prose prose-invert max-w-none text-sm leading-relaxed transition-all bg-slate-800/30 rounded-xl p-4 border border-slate-700/30"
-          @click="copyCodeBlock"
-        >
-          <div v-if="!hasContent && isReceiving" class="flex items-center gap-2 text-slate-400">
-            <div class="flex gap-1">
-              <span class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:0s]"></span>
-              <span class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-              <span class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-            </div>
-            <span class="text-xs">Generating response...</span>
-          </div>
-          <div v-else v-html="renderMarkdown(message.content)"></div>
+        <!-- Content -->
+        <div v-if="message.content || isStreaming"
+          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-slate-700/50 text-slate-100 text-sm border border-white/5 shadow-sm min-w-0">
+          <div class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
+          <!-- Streaming cursor -->
+          <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
-<style scoped>
-/* Markdown styling */
-.prose p { margin-bottom: 0.75em; }
+<style>
+.prose pre { margin: 0; }
+.prose p { margin-bottom: 0.5em; }
 .prose p:last-child { margin-bottom: 0; }
-.prose a { color: #60a5fa; text-decoration: none; }
-.prose a:hover { text-decoration: underline; }
-.prose code { background-color: rgba(0,0,0,0.3); padding: 0.2em 0.4em; border-radius: 4px; font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 0.9em; color: #e2e8f0; }
-.prose pre { background-color: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; overflow-x: auto; margin: 0.75em 0; border: 1px solid rgba(255,255,255,0.1); position: relative; }
-.prose pre code { background-color: transparent; padding: 0; font-size: 0.9em; }
-
-/* Highlight.js */
-.hljs { background: transparent !important; color: #e2e8f0; }
-.hljs-keyword, .hljs-selector-tag { color: #c792ea; }
-.hljs-string, .hljs-attr { color: #c3e88d; }
-.hljs-number, .hljs-literal { color: #f78c6c; }
-.hljs-comment { color: #546e7a; font-style: italic; }
-.hljs-function .hljs-title, .hljs-title.function_ { color: #82aaff; }
-.hljs-built-in { color: #ffcb6b; }
-
-/* Mermaid */
-.mermaid-container { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 16px; margin: 0.75em 0; overflow-x: auto; display: flex; justify-content: center; }
-.mermaid-container pre.mermaid { background: transparent !important; border: none !important; padding: 0 !important; margin: 0 !important; overflow: visible; }
-.mermaid-container svg { max-width: 100%; height: auto; }
-
-/* Scrollbar */
-.custom-scrollbar::-webkit-scrollbar { width: 6px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
 </style>

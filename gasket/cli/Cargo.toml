@@ -47,6 +47,7 @@ full = ["default", "all-channels", "telemetry"]
 [dependencies]
 gasket-engine = { path = "../engine" }
 gasket-sandbox = { path = "../sandbox" }
+gasket-types = { path = "../types" }
 
 # Async
 tokio.workspace = true
