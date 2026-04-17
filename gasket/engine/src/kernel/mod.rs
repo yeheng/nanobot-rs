@@ -10,26 +10,22 @@ pub mod stream;
 
 pub use context::{KernelConfig, RuntimeContext};
 pub use error::KernelError;
-pub use executor::{AgentExecutor, ExecutionResult, ExecutorOptions, ToolExecutor};
+pub use executor::{ExecutionResult, ExecutorOptions, KernelExecutor, ToolExecutor};
 pub use stream::{BufferedEvents, StreamEvent};
-
-// Re-export from gasket_types for convenience
-pub use gasket_types::StreamEvent as KernelStreamEvent;
 
 use gasket_providers::ChatMessage;
 use tokio::sync::mpsc;
 
-/// Build an AgentExecutor and ExecutorOptions from RuntimeContext.
-fn build_executor_and_options(ctx: &RuntimeContext) -> (AgentExecutor<'_>, ExecutorOptions<'_>) {
-    let exec = AgentExecutor::new(ctx.provider.clone(), ctx.tools.clone(), &ctx.config);
-    let mut options = ExecutorOptions::new();
+/// Build a KernelExecutor from RuntimeContext.
+fn build_executor(ctx: &RuntimeContext) -> KernelExecutor<'_> {
+    let mut exec = KernelExecutor::new(ctx.provider.clone(), ctx.tools.clone(), &ctx.config);
+    if let Some(ref spawner) = ctx.spawner {
+        exec = exec.with_spawner(spawner.clone());
+    }
     if let Some(ref tracker) = ctx.token_tracker {
-        options = options.with_token_tracker(tracker.clone());
+        exec = exec.with_token_tracker(tracker.clone());
     }
-    if let Some(ref pricing) = ctx.pricing {
-        options = options.with_pricing(pricing.clone());
-    }
-    (exec, options)
+    exec
 }
 
 /// Pure function: execute LLM conversation loop (non-streaming).
@@ -39,8 +35,8 @@ pub async fn execute(
     ctx: &RuntimeContext,
     messages: Vec<ChatMessage>,
 ) -> Result<ExecutionResult, KernelError> {
-    let (exec, options) = build_executor_and_options(ctx);
-    exec.execute_with_options(messages, &options).await
+    let exec = build_executor(ctx);
+    exec.execute_with_options(messages, &ExecutorOptions::new()).await
 }
 
 /// Pure function: streaming LLM conversation loop.
@@ -49,7 +45,7 @@ pub async fn execute_streaming(
     messages: Vec<ChatMessage>,
     event_tx: mpsc::Sender<StreamEvent>,
 ) -> Result<ExecutionResult, KernelError> {
-    let (exec, options) = build_executor_and_options(ctx);
-    exec.execute_stream_with_options(messages, event_tx, &options)
+    let exec = build_executor(ctx);
+    exec.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
         .await
 }

@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use crate::token_tracker::TokenTracker;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use gasket_providers::LlmProvider;
 
@@ -13,8 +12,7 @@ pub struct RuntimeContext {
     pub tools: Arc<ToolRegistry>,
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
-    pub token_tracker: Option<Arc<TokenTracker>>,
-    pub pricing: Option<crate::token_tracker::ModelPricing>,
+    pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
 }
 
 impl Clone for RuntimeContext {
@@ -25,7 +23,6 @@ impl Clone for RuntimeContext {
             config: self.config.clone(),
             spawner: self.spawner.clone(),
             token_tracker: self.token_tracker.clone(),
-            pricing: self.pricing.clone(),
         }
     }
 }
@@ -38,6 +35,7 @@ impl Clone for RuntimeContext {
 pub struct KernelConfig {
     pub model: String,
     pub max_iterations: u32,
+    pub max_retries: u32,
     pub temperature: f32,
     pub max_tokens: u32,
     pub max_tool_result_chars: usize,
@@ -49,6 +47,7 @@ impl KernelConfig {
         Self {
             model,
             max_iterations: 20,
+            max_retries: 3,
             temperature: 1.0,
             max_tokens: 65536,
             max_tool_result_chars: 8000,
@@ -58,6 +57,10 @@ impl KernelConfig {
 
     pub fn with_max_iterations(mut self, v: u32) -> Self {
         self.max_iterations = v;
+        self
+    }
+    pub fn with_max_retries(mut self, v: u32) -> Self {
+        self.max_retries = v;
         self
     }
     pub fn with_temperature(mut self, v: f32) -> Self {

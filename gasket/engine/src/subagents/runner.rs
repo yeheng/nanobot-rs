@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::kernel::{AgentExecutor, ExecutionResult, ExecutorOptions};
+use crate::kernel::{ExecutionResult, KernelExecutor};
 use crate::session::config::{AgentConfig, AgentConfigExt};
 use crate::tools::ToolRegistry;
 use anyhow::Result;
@@ -29,9 +29,9 @@ pub async fn run_subagent(
 ) -> Result<ExecutionResult, anyhow::Error> {
     let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
     let kernel_config = config.to_kernel_config();
-    let executor = AgentExecutor::new(provider, tools, &kernel_config);
+    let executor = KernelExecutor::new(provider, tools, &kernel_config);
     executor
-        .execute_with_options(messages, &ExecutorOptions::new())
+        .execute_with_options(messages, &crate::kernel::ExecutorOptions::new())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))
 }

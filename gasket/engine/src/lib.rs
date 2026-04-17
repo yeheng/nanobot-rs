@@ -42,7 +42,7 @@ pub use session::AgentSession as AgentLoop;
 
 // ── Kernel ─────────────────────────────────────────────────
 pub use kernel::{
-    AgentExecutor, BufferedEvents, ExecutionResult, ExecutorOptions, StreamEvent, ToolExecutor,
+    BufferedEvents, ExecutionResult, ExecutorOptions, KernelExecutor, StreamEvent, ToolExecutor,
 };
 
 // ── Subagents ──────────────────────────────────────────────

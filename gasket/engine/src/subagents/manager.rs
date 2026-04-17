@@ -143,7 +143,6 @@ pub fn spawn_subagent(
             config: config.to_kernel_config(),
             spawner: None,
             token_tracker: token_tracker.clone(),
-            pricing: None,
         };
 
         // Execute with timeout
