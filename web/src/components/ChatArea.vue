@@ -15,6 +15,10 @@ const props = defineProps<{
   chatId: string;
 }>();
 
+const emit = defineEmits<{
+  (e: 'connection-status', status: boolean): void;
+}>();
+
 const chatStore = useChatStore();
 const scrollAreaRef = ref<InstanceType<typeof ScrollArea> | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
@@ -308,6 +312,10 @@ const sessionStatus = computed<SessionStatus>(() => {
   return 'idle';
 });
 
+watch(isConnected, (val) => {
+  emit('connection-status', val);
+}, { immediate: true });
+
 const hasUserMessages = computed(() => messages.value.some(m => m.role === 'user' || m.role === 'bot'));
 
 onMounted(() => {
@@ -460,21 +468,29 @@ const forceCompact = async () => {
 <template>
   <div class="flex h-full w-full relative">
     <div class="flex flex-col flex-1 min-w-0">
-      <!-- Header -->
-      <header class="py-3 px-5 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex justify-between items-center shrink-0">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
-            <Bot class="w-5 h-5 text-white" />
+      <!-- Stats & Actions Bar -->
+      <div class="px-4 py-2 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex items-center shrink-0"
+        :class="contextStats ? 'justify-between' : 'justify-end'">
+        <!-- Left: Context Stats -->
+        <div v-if="contextStats" class="flex items-center gap-3">
+          <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
+            Context: {{ contextStats.usage_percent.toFixed(1) }}%
           </div>
-          <div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-slate-100">Gasket</div>
-            <div class="text-[10px] text-gray-500 dark:text-slate-400 flex items-center gap-1">
-              <span class="w-1.5 h-1.5 rounded-full" :class="isConnected ? 'bg-emerald-500' : 'bg-red-500'" />
-              {{ isConnected ? 'Online' : 'Offline' }}
-            </div>
+          <div class="w-32 md:w-48 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full overflow-hidden relative">
+            <div class="h-full rounded-full transition-all duration-500" :class="usageColor" :style="{ width: Math.min(contextStats.usage_percent, 100) + '%' }" />
           </div>
+          <div v-if="watermarkInfo" class="text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
+            Watermark: {{ watermarkInfo.watermark }}/{{ watermarkInfo.max_sequence }}
+          </div>
+          <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
+            :disabled="isCompacting" @click="forceCompact">
+            <Cpu v-if="!isCompacting" class="w-3 h-3 mr-1" />
+            <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
+            {{ isCompacting ? 'Compressing...' : 'Compress' }}
+          </Button>
         </div>
 
+        <!-- Right: Actions -->
         <div class="flex items-center gap-2">
           <div
             v-if="sessionStatus !== 'idle'"
@@ -520,25 +536,6 @@ const forceCompact = async () => {
             </transition>
           </HeadlessMenu>
         </div>
-      </header>
-
-      <!-- Context Stats Bar -->
-      <div v-if="contextStats" class="px-4 py-2 bg-gray-100/60 dark:bg-slate-900/40 border-b border-gray-200 dark:border-white/5 flex items-center gap-3 shrink-0">
-        <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
-          Context: {{ contextStats.usage_percent.toFixed(1) }}%
-        </div>
-        <div class="flex-1 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full overflow-hidden relative">
-          <div class="h-full rounded-full transition-all duration-500" :class="usageColor" :style="{ width: Math.min(contextStats.usage_percent, 100) + '%' }" />
-        </div>
-        <div v-if="watermarkInfo" class="text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
-          Watermark: {{ watermarkInfo.watermark }}/{{ watermarkInfo.max_sequence }}
-        </div>
-        <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
-          :disabled="isCompacting" @click="forceCompact">
-          <Cpu v-if="!isCompacting" class="w-3 h-3 mr-1" />
-          <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
-          {{ isCompacting ? 'Compressing...' : 'Compress' }}
-        </Button>
       </div>
 
       <!-- Error Banner -->
@@ -572,7 +569,7 @@ const forceCompact = async () => {
         </div>
 
         <!-- Messages List -->
-        <div v-else class="flex flex-col gap-1 max-w-4xl mx-auto w-full pb-4">
+        <div v-else class="flex flex-col gap-1 max-w-3xl mx-auto w-full pb-4 px-4">
           <template v-for="(msg, idx) in messages" :key="msg.id">
             <ChatTimeDivider
               v-if="idx > 0 && msg.timestamp - messages[idx - 1].timestamp > 5 * 60 * 1000"
@@ -602,7 +599,7 @@ const forceCompact = async () => {
           <SubagentPanel
             v-if="hasActiveSubagents"
             :subagents="activeSubagents"
-            class="max-w-4xl mx-auto w-full mt-2"
+            class="max-w-3xl mx-auto w-full mt-2"
           />
         </div>
       </ScrollArea>
@@ -619,7 +616,7 @@ const forceCompact = async () => {
 
       <!-- Input Area -->
       <div class="p-4 bg-transparent shrink-0">
-        <div class="max-w-4xl mx-auto w-full relative">
+        <div class="max-w-3xl mx-auto w-full relative">
           <div class="flex items-end bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
             :class="{
               'focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20': sessionStatus === 'idle' || sessionStatus === 'disconnected',

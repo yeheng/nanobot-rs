@@ -93,13 +93,16 @@ watch(() => props.message.content, async () => {
 }, { immediate: true });
 
 const copyCode = (event: MouseEvent) => {
-  const btn = event.target as HTMLElement;
+  const target = event.target as HTMLElement;
+  const btn = target.closest('.copy-btn') as HTMLElement | null;
+  if (!btn) return;
   const pre = btn.closest('.relative')?.querySelector('pre');
   if (pre) {
     const code = pre.textContent || '';
     navigator.clipboard.writeText(code).then(() => {
+      const originalText = btn.textContent;
       btn.textContent = 'Copied!';
-      setTimeout(() => (btn.textContent = 'Copy'), 1500);
+      setTimeout(() => (btn.textContent = originalText), 1500);
     });
   }
 };

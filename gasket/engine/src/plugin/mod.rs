@@ -188,6 +188,10 @@ impl Tool for PluginTool {
         self
     }
 
+    fn clone_box(&self) -> Option<Box<dyn Tool>> {
+        Some(Box::new(self.clone()))
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
 

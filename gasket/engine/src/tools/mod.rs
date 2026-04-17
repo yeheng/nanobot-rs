@@ -13,12 +13,13 @@
 //! - `spawn_parallel`: Parallel sub-agent spawning
 //! - `script`: External script tools with YAML manifests
 
-mod base;
 mod builder;
 mod context;
 mod cron;
 mod filesystem;
+mod format;
 mod history_query;
+mod http;
 mod memorize;
 mod memory_decay;
 mod memory_refresh;
@@ -44,7 +45,9 @@ pub use builder::{
 pub use context::ContextTool;
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
+pub use format::format_subagent_response;
 pub use history_query::HistoryQueryTool;
+pub use http::build_client_with_proxy;
 pub use memorize::MemorizeTool;
 pub use memory_decay::MemoryDecayTool;
 pub use memory_refresh::MemoryRefreshTool;
@@ -56,7 +59,3 @@ pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
-
-// Re-export sandbox types from gasket-sandbox for backward compatibility
-pub use gasket_sandbox::ProcessManager;
-pub use gasket_sandbox::SandboxConfig;

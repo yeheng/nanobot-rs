@@ -8,8 +8,7 @@ use serde_json::Value;
 use tokio::fs;
 use tracing::{debug, instrument};
 
-use super::base::{simple_schema, ToolContext};
-use super::{Tool, ToolError, ToolResult};
+use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
 /// Secure path validator that canonicalizes allowed directory at initialization
 /// to prevent symlink attacks and path traversal vulnerabilities.
@@ -33,13 +32,14 @@ impl PathValidator {
     }
 
     /// Build the default list of extra allowed directories (e.g. ~/.gasket).
+    ///
+    /// Stores raw paths (not canonicalized) so that bootstrap-created
+    /// directories are recognised even if they did not exist when the
+    /// validator was constructed.
     fn default_extra_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Some(home) = dirs::home_dir() {
-            let gasket_dir = home.join(".gasket");
-            if let Ok(canonical) = gasket_dir.canonicalize() {
-                dirs.push(canonical);
-            }
+            dirs.push(home.join(".gasket"));
         }
         dirs
     }
@@ -52,9 +52,23 @@ impl PathValidator {
                 return true;
             }
         }
-        // Check extra allowed dirs (e.g. ~/.gasket)
+        // Check extra allowed dirs (e.g. ~/.gasket).
+        // When the directory exists we canonicalize it. When it does not yet
+        // exist (bootstrap) we canonicalize its parent and append the basename,
+        // so that the check stays consistent with `path.canonicalize()` on
+        // macOS firmlinks and other symlinked home-directory setups.
         for extra in &self.extra_allowed_dirs {
-            if canonical.starts_with(extra) {
+            let check = extra.canonicalize().unwrap_or_else(|_| {
+                if let Some(parent) = extra.parent() {
+                    if let Ok(pc) = parent.canonicalize() {
+                        if let Some(name) = extra.file_name() {
+                            return pc.join(name);
+                        }
+                    }
+                }
+                extra.clone()
+            });
+            if canonical.starts_with(&check) {
                 return true;
             }
         }
@@ -211,7 +225,6 @@ impl Tool for ReadFileTool {
 }
 
 /// Write file tool
-#[allow(dead_code)]
 pub struct WriteFileTool {
     validator: PathValidator,
 }
@@ -283,7 +296,6 @@ impl Tool for WriteFileTool {
 }
 
 /// Edit file tool (string replacement)
-#[allow(dead_code)]
 pub struct EditFileTool {
     validator: PathValidator,
 }
@@ -388,7 +400,6 @@ impl Tool for EditFileTool {
 }
 
 /// List directory tool
-#[allow(dead_code)]
 pub struct ListDirTool {
     validator: PathValidator,
 }

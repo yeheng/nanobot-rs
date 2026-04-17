@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, instrument};
 
-use super::base::{Tool, ToolContext, ToolError, ToolResult};
+use super::{format_subagent_response, Tool, ToolContext, ToolError, ToolResult};
 
 pub struct SpawnParallelTool;
 
@@ -187,20 +187,9 @@ impl Tool for SpawnParallelTool {
         // Aggregate results
         let mut output = format!("Completed {} parallel tasks:\n\n", results.len());
         for (idx, result) in results.iter().enumerate() {
-            // Include thinking content if available
-            if let Some(ref reasoning) = result.response.reasoning_content {
-                if !reasoning.is_empty() {
-                    output.push_str(&format!("**Thinking:**\n{}\n\n", reasoning));
-                }
-            }
-
-            output.push_str(&format!(
-                "## Task {}\n**Model:** {}\n**Prompt:** {}\n**Response:**\n{}\n\n",
-                idx + 1,
-                result.model.as_deref().unwrap_or("unknown"),
-                result.task,
-                result.response.content
-            ));
+            output.push_str(&format!("## Task {}\n", idx + 1));
+            output.push_str(&format_subagent_response(result));
+            output.push_str("\n\n");
         }
 
         Ok(output)

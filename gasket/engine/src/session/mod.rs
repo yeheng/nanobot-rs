@@ -551,19 +551,28 @@ impl AgentSession {
         let result_handle = self.pending_done.spawn(async move {
             let result = match kernel::execute_streaming(&runtime_ctx, messages, kernel_tx).await {
                 Ok(r) => r,
-                Err(crate::kernel::KernelError::MaxIterations(n)) => crate::kernel::ExecutionResult {
-                    content: format!("Maximum iterations ({}) reached.", n),
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    token_usage: None,
-                    cost: 0.0,
-                },
+                Err(crate::kernel::KernelError::MaxIterations(n)) => {
+                    crate::kernel::ExecutionResult {
+                        content: format!("Maximum iterations ({}) reached.", n),
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        token_usage: None,
+                        cost: 0.0,
+                    }
+                }
                 Err(e) => return Err(e.into()),
             };
 
-            let response =
-                finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref(), pricing.as_ref())
-                    .await;
+            let response = finalize_response(
+                result,
+                &fctx,
+                &context,
+                &hooks,
+                &model,
+                compactor.as_ref(),
+                pricing.as_ref(),
+            )
+            .await;
 
             Ok(response)
         });
@@ -756,7 +765,7 @@ async fn finalize_response(
         warn!("AfterResponse hook failed (ignored): {}", e);
     }
 
-    let cost = if let (Some(ref usage), Some(pricing)) = (result.token_usage.as_ref(), pricing) {
+    let cost = if let (Some(usage), Some(pricing)) = (result.token_usage.as_ref(), pricing) {
         pricing.calculate_cost(usage.input_tokens, usage.output_tokens)
     } else {
         0.0

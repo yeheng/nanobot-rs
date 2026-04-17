@@ -158,8 +158,11 @@ pub fn stream_events(
 
                     // Extract deltas before feeding to accumulator
                     let content_delta = chunk.delta.content.clone().filter(|s| !s.is_empty());
-                    let reasoning_delta =
-                        chunk.delta.reasoning_content.clone().filter(|s| !s.is_empty());
+                    let reasoning_delta = chunk
+                        .delta
+                        .reasoning_content
+                        .clone()
+                        .filter(|s| !s.is_empty());
 
                     acc.feed(&chunk);
 

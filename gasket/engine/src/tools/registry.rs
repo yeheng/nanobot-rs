@@ -24,22 +24,14 @@ struct RegisteredTool {
 
 impl Clone for RegisteredTool {
     fn clone(&self) -> Self {
-        // Deep-clone PluginTool so that each registry clone can hold
-        // independent engine references (tool_registry / provider).
-        if let Some(plugin_tool) = self
-            .tool
-            .as_any()
-            .downcast_ref::<crate::plugin::PluginTool>()
-        {
-            Self {
-                tool: Arc::new(plugin_tool.clone()),
-                metadata: self.metadata.clone(),
-            }
+        let tool = if let Some(cloned) = self.tool.clone_box() {
+            Arc::from(cloned)
         } else {
-            Self {
-                tool: self.tool.clone(),
-                metadata: self.metadata.clone(),
-            }
+            self.tool.clone()
+        };
+        Self {
+            tool,
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -53,8 +45,6 @@ pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
     /// Cached embeddings: (tool_name, embedding_vector)
     embeddings: Arc<OnceLock<ToolEmbeddings>>,
-    /// Names of plugins registered via `discover_plugins`.
-    plugin_names: Vec<String>,
 }
 
 impl Clone for ToolRegistry {
@@ -62,7 +52,6 @@ impl Clone for ToolRegistry {
         Self {
             items: self.items.clone(),
             embeddings: Arc::new(OnceLock::new()),
-            plugin_names: self.plugin_names.clone(),
         }
     }
 }
@@ -73,25 +62,14 @@ impl ToolRegistry {
         Self {
             items: HashMap::new(),
             embeddings: Arc::new(OnceLock::new()),
-            plugin_names: Vec::new(),
         }
-    }
-
-    fn is_plugin(tool: &dyn Tool) -> bool {
-        tool.as_any()
-            .downcast_ref::<crate::plugin::PluginTool>()
-            .is_some()
     }
 
     /// Register a tool
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
-        let is_plugin = Self::is_plugin(tool.as_ref());
         let tool = Arc::from(tool);
         debug!("Registering tool: {}", name);
-        if is_plugin {
-            self.plugin_names.push(name.clone());
-        }
         // Invalidate cached embeddings when tools change
         self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
@@ -106,15 +84,11 @@ impl ToolRegistry {
     /// Register a tool with associated metadata
     pub fn register_with_metadata(&mut self, tool: Box<dyn Tool>, meta: ToolMetadata) {
         let name = tool.name().to_string();
-        let is_plugin = Self::is_plugin(tool.as_ref());
         let tool = Arc::from(tool);
         debug!(
             "Registering tool with metadata: {} (category: {:?})",
             name, meta.category
         );
-        if is_plugin {
-            self.plugin_names.push(name.clone());
-        }
         // Invalidate cached embeddings when tools change
         self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
@@ -139,16 +113,14 @@ impl ToolRegistry {
             tool_registry: registry,
             provider,
         };
-        for name in &self.plugin_names {
-            if let Some(entry) = self.items.get_mut(name) {
-                if let Some(plugin_tool) = entry
-                    .tool
-                    .as_any()
-                    .downcast_ref::<crate::plugin::PluginTool>()
-                {
-                    let updated = plugin_tool.clone().with_engine_refs(resources.clone());
-                    entry.tool = Arc::new(updated);
-                }
+        for entry in self.items.values_mut() {
+            if let Some(plugin_tool) = entry
+                .tool
+                .as_any()
+                .downcast_ref::<crate::plugin::PluginTool>()
+            {
+                let updated = plugin_tool.clone().with_engine_refs(resources.clone());
+                entry.tool = Arc::new(updated);
             }
         }
     }
@@ -194,9 +166,10 @@ impl ToolRegistry {
         let embeddings = match self.embeddings.get() {
             Some(e) => e,
             None => {
-                // Fallback: return all tools if embeddings not initialized
-                debug!("Tool embeddings not initialized, returning all tools");
-                return self.get_definitions();
+                // Cannot determine relevance without embeddings.
+                // Return empty and let the caller decide on fallback.
+                debug!("Tool embeddings not initialized, returning empty");
+                return Vec::new();
             }
         };
 
