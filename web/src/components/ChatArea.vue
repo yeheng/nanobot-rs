@@ -3,8 +3,9 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/stores/chatStore';
 import { Menu as HeadlessMenu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue';
-import { AlertCircle, ArrowDown, Bot, Cpu, Loader2, MoreVertical, RotateCcw, Send, Sparkles, Square, Trash2, X as XIcon } from 'lucide-vue-next';
+import { AlertCircle, ArrowDown, Bot, Cpu, Loader2, Moon, MoreVertical, RotateCcw, Send, Sparkles, Square, Sun, Trash2, X as XIcon } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useTheme } from '../composables/useTheme';
 import { useIMWebSocket } from '../hooks/useIMWebSocket';
 import type { Message, SubagentState } from '../types';
 import ChatTimeDivider from './ChatTimeDivider.vue';
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+const { theme, toggle: toggleTheme } = useTheme();
 const scrollAreaRef = ref<InstanceType<typeof ScrollArea> | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const inputValue = ref('');
@@ -468,43 +470,55 @@ const forceCompact = async () => {
 <template>
   <div class="flex h-full w-full relative">
     <div class="flex flex-col flex-1 min-w-0">
-      <!-- Stats & Actions Bar -->
-      <div class="px-4 py-2 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex items-center shrink-0"
-        :class="contextStats ? 'justify-between' : 'justify-end'">
-        <!-- Left: Context Stats -->
-        <div v-if="contextStats" class="flex items-center gap-3">
-          <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
-            Context: {{ contextStats.usage_percent.toFixed(1) }}%
+      <!-- Header -->
+      <header class="py-3 px-5 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex justify-between items-center shrink-0">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+            <Bot class="w-5 h-5 text-white" />
           </div>
-          <div class="w-32 md:w-48 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full overflow-hidden relative">
-            <div class="h-full rounded-full transition-all duration-500" :class="usageColor" :style="{ width: Math.min(contextStats.usage_percent, 100) + '%' }" />
+          <div>
+            <div class="text-sm font-semibold text-gray-900 dark:text-slate-100">Model</div>
+            <div class="text-[10px] text-gray-500 dark:text-slate-400 flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full" :class="isConnected ? 'bg-emerald-500' : 'bg-red-500'" />
+              {{ isConnected ? 'Online' : 'Offline' }}
+              <span class="text-gray-300 dark:text-slate-600">|</span>
+              <span
+                class="flex items-center gap-1"
+                :class="{
+                  'text-red-500 dark:text-red-400': sessionStatus === 'disconnected',
+                  'text-blue-600 dark:text-blue-400': sessionStatus === 'sending',
+                  'text-violet-600 dark:text-violet-400': sessionStatus === 'receiving',
+                  'text-gray-400 dark:text-slate-500': sessionStatus === 'idle'
+                }"
+              >
+                <Loader2 v-if="sessionStatus === 'sending' || sessionStatus === 'receiving'" class="w-3 h-3 animate-spin" />
+                <span v-if="sessionStatus === 'disconnected'">Disconnected</span>
+                <span v-else-if="sessionStatus === 'sending'">Sending...</span>
+                <span v-else-if="sessionStatus === 'receiving'">Thinking...</span>
+                <span v-else>Ready</span>
+              </span>
+            </div>
           </div>
-          <div v-if="watermarkInfo" class="text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
-            Watermark: {{ watermarkInfo.watermark }}/{{ watermarkInfo.max_sequence }}
-          </div>
-          <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
-            :disabled="isCompacting" @click="forceCompact">
-            <Cpu v-if="!isCompacting" class="w-3 h-3 mr-1" />
-            <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
-            {{ isCompacting ? 'Compressing...' : 'Compress' }}
-          </Button>
         </div>
 
-        <!-- Right: Actions -->
         <div class="flex items-center gap-2">
-          <div
-            v-if="sessionStatus !== 'idle'"
-            class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border animate-in fade-in zoom-in-95 duration-200"
-            :class="{
-              'bg-red-500/10 text-red-500 dark:text-red-400 border-red-500/20': sessionStatus === 'disconnected',
-              'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20': sessionStatus === 'sending',
-              'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20': sessionStatus === 'receiving'
-            }"
-          >
-            <Loader2 v-if="sessionStatus === 'sending' || sessionStatus === 'receiving'" class="w-3.5 h-3.5 animate-spin" />
-            <span v-if="sessionStatus === 'disconnected'">Disconnected</span>
-            <span v-else-if="sessionStatus === 'sending'">Sending...</span>
-            <span v-else-if="sessionStatus === 'receiving'">Thinking...</span>
+          <!-- Context stats inline -->
+          <div v-if="contextStats" class="hidden md:flex items-center gap-2 mr-1">
+            <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
+              Context: {{ contextStats.usage_percent.toFixed(1) }}%
+            </div>
+            <div class="w-20 lg:w-28 h-1.5 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-500" :class="usageColor" :style="{ width: Math.min(contextStats.usage_percent, 100) + '%' }" />
+            </div>
+            <div v-if="watermarkInfo" class="hidden lg:block text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
+              {{ watermarkInfo.watermark }}/{{ watermarkInfo.max_sequence }}
+            </div>
+            <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
+              :disabled="isCompacting" @click="forceCompact">
+              <Cpu v-if="!isCompacting" class="w-3 h-3 mr-1" />
+              <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
+              {{ isCompacting ? '...' : 'Compress' }}
+            </Button>
           </div>
 
           <Button v-if="showReconnectButton" variant="outline" size="sm" @click="manualReconnect"
@@ -535,8 +549,13 @@ const forceCompact = async () => {
               </MenuItems>
             </transition>
           </HeadlessMenu>
+
+          <Button variant="ghost" size="icon" class="text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200" @click="toggleTheme">
+            <Sun v-if="theme === 'dark'" class="w-4 h-4" />
+            <Moon v-else class="w-4 h-4" />
+          </Button>
         </div>
-      </div>
+      </header>
 
       <!-- Error Banner -->
       <div v-if="errorBanner"
@@ -552,7 +571,7 @@ const forceCompact = async () => {
       <ScrollArea class="flex-1 p-4" ref="scrollAreaRef">
         <!-- Empty State -->
         <div v-if="!hasUserMessages"
-          class="flex flex-col items-center justify-center h-full max-w-2xl mx-auto text-center py-16">
+          class="flex flex-col items-center justify-center h-full max-w-full md:max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto text-center py-16">
           <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center mb-5 shadow-lg shadow-blue-500/20">
             <Sparkles class="w-7 h-7 text-white" />
           </div>
@@ -569,7 +588,7 @@ const forceCompact = async () => {
         </div>
 
         <!-- Messages List -->
-        <div v-else class="flex flex-col gap-1 max-w-3xl mx-auto w-full pb-4 px-4">
+        <div v-else class="flex flex-col gap-1 max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full pb-4 px-4">
           <template v-for="(msg, idx) in messages" :key="msg.id">
             <ChatTimeDivider
               v-if="idx > 0 && msg.timestamp - messages[idx - 1].timestamp > 5 * 60 * 1000"
@@ -599,7 +618,7 @@ const forceCompact = async () => {
           <SubagentPanel
             v-if="hasActiveSubagents"
             :subagents="activeSubagents"
-            class="max-w-3xl mx-auto w-full mt-2"
+            class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full mt-2"
           />
         </div>
       </ScrollArea>
@@ -616,7 +635,7 @@ const forceCompact = async () => {
 
       <!-- Input Area -->
       <div class="p-4 bg-transparent shrink-0">
-        <div class="max-w-3xl mx-auto w-full relative">
+        <div class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full relative">
           <div class="flex items-end bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
             :class="{
               'focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20': sessionStatus === 'idle' || sessionStatus === 'disconnected',
