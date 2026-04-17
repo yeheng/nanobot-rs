@@ -16,8 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
-use super::base::{simple_schema, ToolContext};
-use super::{Tool, ToolError, ToolResult};
+use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 use crate::config::ExecToolConfig;
 
 // Re-export types from gasket-sandbox for external use
@@ -25,12 +24,19 @@ pub use gasket_sandbox::ProcessManager;
 // Use alias to avoid name conflict with core's SandboxConfig
 pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
 
-/// Dangerous patterns that could indicate command injection or file overwrite attempts.
+/// Dangerous patterns blocked when running without sandbox (fallback mode).
 ///
-/// `>` and `<` are included because on Windows fallback (HostExecutor) there is no
-/// sandbox layer to constrain filesystem access, allowing arbitrary file overwrite.
-/// Harmless fd-duplication patterns like `2>&1` are still allowed.
-const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r", ">", "<"];
+/// Includes `>` and `<` because fallback mode has no filesystem containment,
+/// allowing arbitrary file overwrite. FD-duplication like `2>&1` is caught
+/// by the `>` character.
+const FALLBACK_DANGEROUS_PATTERNS: &[&str] =
+    &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r", ">", "<"];
+
+/// Dangerous patterns blocked when running inside a sandbox.
+///
+/// `>` and `<` are allowed because the sandbox constrains filesystem access,
+/// making redirection safe. Pipe `|` is still blocked to prevent data exfiltration.
+const SANDBOX_DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r"];
 
 /// Shell execution tool with optional sandboxing.
 ///
@@ -140,7 +146,12 @@ impl ExecTool {
 
     /// Validate command for potential injection attempts.
     fn validate_command(&self, command: &str) -> Result<(), ToolError> {
-        for pattern in DANGEROUS_PATTERNS {
+        let patterns = if self.process_manager.is_sandboxed() {
+            SANDBOX_DANGEROUS_PATTERNS
+        } else {
+            FALLBACK_DANGEROUS_PATTERNS
+        };
+        for pattern in patterns {
             if command.contains(pattern) {
                 return Err(ToolError::InvalidArguments(format!(
                     "Potentially unsafe pattern detected: '{}'. Command injection is not allowed.",

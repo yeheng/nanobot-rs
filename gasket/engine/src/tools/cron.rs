@@ -12,24 +12,12 @@ use crate::cron::CronService;
 /// Cron tool for managing scheduled tasks
 pub struct CronTool {
     service: std::sync::Arc<CronService>,
-    channel: parking_lot::RwLock<Option<String>>,
-    chat_id: parking_lot::RwLock<Option<String>>,
 }
 
 impl CronTool {
     /// Create a new cron tool
     pub fn new(service: std::sync::Arc<CronService>) -> Self {
-        Self {
-            service,
-            channel: parking_lot::RwLock::new(None),
-            chat_id: parking_lot::RwLock::new(None),
-        }
-    }
-
-    /// Set the context for message routing
-    pub fn set_context(&self, channel: &str, chat_id: &str) {
-        *self.channel.write() = Some(channel.to_string());
-        *self.chat_id.write() = Some(chat_id.to_string());
+        Self { service }
     }
 }
 
@@ -133,9 +121,8 @@ impl Tool for CronTool {
                 })?;
 
                 let id = Uuid::new_v4().to_string();
-                // Use explicitly provided channel/to if available, otherwise fall back to context
-                let channel = args.channel.or_else(|| self.channel.read().clone());
-                let chat_id = args.to.or_else(|| self.chat_id.read().clone());
+                let channel = args.channel;
+                let chat_id = args.to;
 
                 let mut job = crate::cron::CronJob::new(&id, &name, &cron, &message);
                 job.channel = channel;
@@ -157,9 +144,7 @@ impl Tool for CronTool {
                 ))
             }
             "list" => {
-                let jobs = self.service.list_jobs().await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to list cron jobs: {}", e))
-                })?;
+                let jobs = self.service.list_jobs();
                 if jobs.is_empty() {
                     return Ok("No scheduled jobs. Use action 'add' to create one.".to_string());
                 }

@@ -140,8 +140,6 @@ pub async fn cmd_gateway() -> Result<()> {
         subagent_spawner: None,
         extra_tools: vec![],
         sqlite_store: None,
-        model_registry: None,
-        provider_registry: None,
     });
 
     let mut subagent_tools = common_tools.clone();
@@ -557,144 +555,139 @@ fn start_cron_checker(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            match cron_svc.get_due_jobs().await {
-                Ok(due) => {
-                    for job in due {
-                        tracing::info!("Cron job due: {} ({})", job.name, job.id);
+            let due = cron_svc.get_due_jobs();
+            for job in due {
+                tracing::info!("Cron job due: {} ({})", job.name, job.id);
 
-                        let channel = job
-                            .channel
-                            .as_deref()
-                            .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                            .unwrap_or(gasket_engine::channels::ChannelType::Cli);
-                        let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
-                        let is_broadcast = chat_id == "*";
+                let channel = job
+                    .channel
+                    .as_deref()
+                    .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
+                    .unwrap_or(gasket_engine::channels::ChannelType::Cli);
+                let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
+                let is_broadcast = chat_id == "*";
 
-                        // Check if this is a direct tool execution job (bypass LLM)
-                        if let Some(ref tool_name) = job.tool {
-                            // Direct tool execution path - ZERO LLM tokens consumed
-                            tracing::info!(
-                                "Executing cron job '{}' directly via tool '{}' (bypassing LLM)",
-                                job.name,
-                                tool_name
-                            );
+                // Check if this is a direct tool execution job (bypass LLM)
+                if let Some(ref tool_name) = job.tool {
+                    // Direct tool execution path - ZERO LLM tokens consumed
+                    tracing::info!(
+                        "Executing cron job '{}' directly via tool '{}' (bypassing LLM)",
+                        job.name,
+                        tool_name
+                    );
 
-                            // Build ToolContext with broker-based outbound
-                            let ctx = ToolContext::default()
-                                .outbound_tx({
-                                    // Create a temporary mpsc channel for tool output,
-                                    // then forward to broker. This preserves the
-                                    // ToolContext API while using broker underneath.
-                                    let (tx, mut rx) = tokio::sync::mpsc::channel::<gasket_engine::channels::OutboundMessage>(16);
-                                    let b = broker_for_cron.clone();
-                                    tokio::spawn(async move {
-                                        while let Some(msg) = rx.recv().await {
-                                            let envelope = gasket_engine::broker::Envelope::new(
-                                                gasket_engine::broker::Topic::Outbound,
-                                                BrokerPayload::Outbound(msg),
-                                            );
-                                            let _ = b.publish(envelope).await;
-                                        }
-                                    });
-                                    tx
-                                })
-                                .spawner(spawner.clone());
-
-                            let args = job.tool_args.clone().unwrap_or(serde_json::json!({}));
-
-                            // Execute tool directly
-                            match tools.execute(tool_name, args, &ctx).await {
-                                Ok(result) => {
-                                    tracing::info!(
-                                        "Cron job '{}' completed successfully.",
-                                        job.name
-                                    );
-                                    tracing::info!("{}", result);
-                                    // Send result to output channel
-                                    let out_msg = if is_broadcast {
-                                        gasket_engine::channels::OutboundMessage::broadcast(
-                                            channel, result,
-                                        )
-                                    } else {
-                                        gasket_engine::channels::OutboundMessage::new(
-                                            channel, &chat_id, result,
-                                        )
-                                    };
+                    // Build ToolContext with broker-based outbound
+                    let ctx = ToolContext::default()
+                        .outbound_tx({
+                            // Create a temporary mpsc channel for tool output,
+                            // then forward to broker. This preserves the
+                            // ToolContext API while using broker underneath.
+                            let (tx, mut rx) = tokio::sync::mpsc::channel::<
+                                gasket_engine::channels::OutboundMessage,
+                            >(16);
+                            let b = broker_for_cron.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = rx.recv().await {
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
-                                        BrokerPayload::Outbound(out_msg),
+                                        BrokerPayload::Outbound(msg),
                                     );
-                                    let _ = broker_for_cron.publish(envelope).await;
+                                    let _ = b.publish(envelope).await;
                                 }
-                                Err(e) => {
-                                    tracing::error!("Cron job '{}' failed: {}", job.name, e);
-                                    // Send error to output channel
-                                    let error_msg = format!("Cron job error: {}", e);
-                                    let out_msg = if is_broadcast {
-                                        gasket_engine::channels::OutboundMessage::broadcast(
-                                            channel, error_msg,
-                                        )
-                                    } else {
-                                        gasket_engine::channels::OutboundMessage::new(
-                                            channel, &chat_id, error_msg,
-                                        )
-                                    };
-                                    let envelope = gasket_engine::broker::Envelope::new(
-                                        gasket_engine::broker::Topic::Outbound,
-                                        BrokerPayload::Outbound(out_msg),
-                                    );
-                                    let _ = broker_for_cron.publish(envelope).await;
-                                }
-                            }
-                        } else if is_broadcast {
-                            // Broadcast path: send the message directly to all connected clients
-                            let out_msg = gasket_engine::channels::OutboundMessage::broadcast(
-                                channel, job.message.clone(),
-                            );
+                            });
+                            tx
+                        })
+                        .spawner(spawner.clone());
+
+                    let args = job.tool_args.clone().unwrap_or(serde_json::json!({}));
+
+                    // Execute tool directly
+                    match tools.execute(tool_name, args, &ctx).await {
+                        Ok(result) => {
+                            tracing::info!("Cron job '{}' completed successfully.", job.name);
+                            tracing::info!("{}", result);
+                            // Send result to output channel
+                            let out_msg = if is_broadcast {
+                                gasket_engine::channels::OutboundMessage::broadcast(channel, result)
+                            } else {
+                                gasket_engine::channels::OutboundMessage::new(
+                                    channel, &chat_id, result,
+                                )
+                            };
                             let envelope = gasket_engine::broker::Envelope::new(
                                 gasket_engine::broker::Topic::Outbound,
                                 BrokerPayload::Outbound(out_msg),
                             );
                             let _ = broker_for_cron.publish(envelope).await;
-                        } else {
-                            // Traditional LLM-based path
-                            let inbound = gasket_engine::channels::InboundMessage {
-                                channel,
-                                sender_id: "cron".to_string(),
-                                chat_id,
-                                content: job.message.clone(),
-                                media: None,
-                                metadata: None,
-                                timestamp: chrono::Utc::now(),
-                                trace_id: None,
+                        }
+                        Err(e) => {
+                            tracing::error!("Cron job '{}' failed: {}", job.name, e);
+                            // Send error to output channel
+                            let error_msg = format!("Cron job error: {}", e);
+                            let out_msg = if is_broadcast {
+                                gasket_engine::channels::OutboundMessage::broadcast(
+                                    channel, error_msg,
+                                )
+                            } else {
+                                gasket_engine::channels::OutboundMessage::new(
+                                    channel, &chat_id, error_msg,
+                                )
                             };
                             let envelope = gasket_engine::broker::Envelope::new(
-                                gasket_engine::broker::Topic::Inbound,
-                                BrokerPayload::Inbound(inbound),
+                                gasket_engine::broker::Topic::Outbound,
+                                BrokerPayload::Outbound(out_msg),
                             );
                             let _ = broker_for_cron.publish(envelope).await;
                         }
-
-                        // Advance job tick and persist state to database
-                        // This ensures state survives restarts and missed ticks are handled
-                        match cron_svc.advance_job_tick(&job.id).await {
-                            Ok((last_run, next_run)) => {
-                                tracing::debug!(
-                                    "Advanced job {} tick: last_run={}, next_run={}",
-                                    job.id, last_run, next_run
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to advance job {} tick: {}. Job may run again on next check.",
-                                    job.id, e
-                                );
-                            }
-                        }
                     }
+                } else if is_broadcast {
+                    // Broadcast path: send the message directly to all connected clients
+                    let out_msg = gasket_engine::channels::OutboundMessage::broadcast(
+                        channel,
+                        job.message.clone(),
+                    );
+                    let envelope = gasket_engine::broker::Envelope::new(
+                        gasket_engine::broker::Topic::Outbound,
+                        BrokerPayload::Outbound(out_msg),
+                    );
+                    let _ = broker_for_cron.publish(envelope).await;
+                } else {
+                    // Traditional LLM-based path
+                    let inbound = gasket_engine::channels::InboundMessage {
+                        channel,
+                        sender_id: "cron".to_string(),
+                        chat_id,
+                        content: job.message.clone(),
+                        media: None,
+                        metadata: None,
+                        timestamp: chrono::Utc::now(),
+                        trace_id: None,
+                    };
+                    let envelope = gasket_engine::broker::Envelope::new(
+                        gasket_engine::broker::Topic::Inbound,
+                        BrokerPayload::Inbound(inbound),
+                    );
+                    let _ = broker_for_cron.publish(envelope).await;
                 }
-                Err(e) => {
-                    tracing::error!("Failed to get due cron jobs: {}", e);
+
+                // Advance job tick and persist state to database
+                // This ensures state survives restarts and missed ticks are handled
+                match cron_svc.advance_job_tick(&job.id).await {
+                    Ok((last_run, next_run)) => {
+                        tracing::debug!(
+                            "Advanced job {} tick: last_run={}, next_run={}",
+                            job.id,
+                            last_run,
+                            next_run
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to advance job {} tick: {}. Job may run again on next check.",
+                            job.id,
+                            e
+                        );
+                    }
                 }
             }
         }
