@@ -72,11 +72,11 @@ impl Tool for MessageTool {
                 "channel": {
                     "type": "string",
                     "description": "Target channel (e.g., 'telegram', 'discord', 'slack')",
-                    "enum": ["telegram", "discord", "slack", "dingtalk", "feishu", "cli"]
+                    "enum": ["telegram", "discord", "slack", "dingtalk", "feishu", "websocket", "cli"]
                 },
                 "chat_id": {
                     "type": "string",
-                    "description": "Target chat ID (e.g., '123456' for Telegram, 'general' for Slack channel)"
+                    "description": "Target chat ID (e.g., '123456' for Telegram, 'general' for Slack channel). Use '*' to broadcast to all connected WebSocket clients."
                 },
                 "content": {
                     "type": "string",
@@ -96,15 +96,19 @@ impl Tool for MessageTool {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Create outbound message
+        // Create outbound message (broadcast if chat_id is "*")
         let channel_name = params.channel.to_string();
-        let message = OutboundMessage {
-            channel: params.channel,
-            chat_id: params.chat_id.clone(),
-            content: params.content.clone(),
-            metadata: Default::default(),
-            trace_id: None,
-            ws_message: None,
+        let message = if params.chat_id == "*" {
+            OutboundMessage::broadcast(params.channel, params.content.clone())
+        } else {
+            OutboundMessage {
+                channel: params.channel,
+                chat_id: params.chat_id.clone(),
+                content: params.content.clone(),
+                metadata: Default::default(),
+                trace_id: None,
+                ws_message: None,
+            }
         };
 
         // Route through Outbound Actor or broker — enqueue instantly, no network wait.

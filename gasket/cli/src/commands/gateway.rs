@@ -11,11 +11,13 @@ use gasket_engine::bus_adapter::EngineHandler;
 
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::cron::CronService;
+use gasket_engine::memory::EventStore;
 use gasket_engine::memory::MemoryStore;
 use gasket_engine::providers::ProviderRegistry;
-use gasket_engine::session::AgentSession;
+use gasket_engine::session::{AgentSession, ContextCompactor};
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
+use gasket_engine::tools::ContextTool;
 use gasket_engine::tools::MemoryDecayTool;
 use gasket_engine::tools::MemoryRefreshTool;
 use gasket_engine::tools::{build_tool_registry, CronTool, Tool, ToolContext, ToolRegistryConfig};
@@ -213,6 +215,30 @@ pub async fn cmd_gateway() -> Result<()> {
                     "decay".to_string(),
                     "maintenance".to_string(),
                 ],
+                requires_approval: false,
+                is_mutating: true,
+            },
+        ));
+
+        // Context management tool — uses the same SqliteStore as the session
+        let ctx_sqlite = Arc::new(memory_store.sqlite_store().clone());
+        let ctx_event_store = Arc::new(EventStore::new(ctx_sqlite.pool()));
+        let mut ctx_compactor = ContextCompactor::new(
+            provider_info.provider.clone(),
+            ctx_event_store,
+            ctx_sqlite,
+            provider_info.model.clone(),
+            8000, // HistoryConfig::default().token_budget
+        );
+        if let Some(ref prompt) = agent_config.summarization_prompt {
+            ctx_compactor = ctx_compactor.with_summarization_prompt(prompt.clone());
+        }
+        ext.push((
+            Box::new(ContextTool::new(Arc::new(ctx_compactor))) as Box<dyn Tool>,
+            ToolMetadata {
+                display_name: "Context Management".to_string(),
+                category: "system".to_string(),
+                tags: vec!["context".to_string(), "compression".to_string()],
                 requires_approval: false,
                 is_mutating: true,
             },
@@ -419,6 +445,7 @@ fn start_cron_checker(
                             .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
                             .unwrap_or(gasket_engine::channels::ChannelType::Cli);
                         let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
+                        let is_broadcast = chat_id == "*";
 
                         // Check if this is a direct tool execution job (bypass LLM)
                         if let Some(ref tool_name) = job.tool {
@@ -461,9 +488,15 @@ fn start_cron_checker(
                                     );
                                     tracing::info!("{}", result);
                                     // Send result to output channel
-                                    let out_msg = gasket_engine::channels::OutboundMessage::new(
-                                        channel, &chat_id, result,
-                                    );
+                                    let out_msg = if is_broadcast {
+                                        gasket_engine::channels::OutboundMessage::broadcast(
+                                            channel, result,
+                                        )
+                                    } else {
+                                        gasket_engine::channels::OutboundMessage::new(
+                                            channel, &chat_id, result,
+                                        )
+                                    };
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
                                         BrokerPayload::Outbound(out_msg),
@@ -474,9 +507,15 @@ fn start_cron_checker(
                                     tracing::error!("Cron job '{}' failed: {}", job.name, e);
                                     // Send error to output channel
                                     let error_msg = format!("Cron job error: {}", e);
-                                    let out_msg = gasket_engine::channels::OutboundMessage::new(
-                                        channel, &chat_id, error_msg,
-                                    );
+                                    let out_msg = if is_broadcast {
+                                        gasket_engine::channels::OutboundMessage::broadcast(
+                                            channel, error_msg,
+                                        )
+                                    } else {
+                                        gasket_engine::channels::OutboundMessage::new(
+                                            channel, &chat_id, error_msg,
+                                        )
+                                    };
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
                                         BrokerPayload::Outbound(out_msg),
@@ -484,6 +523,16 @@ fn start_cron_checker(
                                     let _ = broker_for_cron.publish(envelope).await;
                                 }
                             }
+                        } else if is_broadcast {
+                            // Broadcast path: send the message directly to all connected clients
+                            let out_msg = gasket_engine::channels::OutboundMessage::broadcast(
+                                channel, job.message.clone(),
+                            );
+                            let envelope = gasket_engine::broker::Envelope::new(
+                                gasket_engine::broker::Topic::Outbound,
+                                BrokerPayload::Outbound(out_msg),
+                            );
+                            let _ = broker_for_cron.publish(envelope).await;
                         } else {
                             // Traditional LLM-based path
                             let inbound = gasket_engine::channels::InboundMessage {

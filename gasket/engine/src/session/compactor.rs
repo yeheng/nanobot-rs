@@ -42,11 +42,10 @@ use anyhow::{bail, Result};
 use tracing::{debug, info, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::{EventStore, SqliteStore};
+use gasket_storage::{count_tokens, EventStore, SqliteStore};
 use gasket_types::{SessionEvent, SessionKey};
 
 use crate::vault::redact_secrets;
-use gasket_storage::count_tokens;
 
 /// Default prompt for LLM summarization (used when no custom prompt is configured).
 pub const DEFAULT_SUMMARIZATION_PROMPT: &str =
@@ -68,6 +67,42 @@ pub const RECALL_PREFIX: &str = "[回忆]";
 // ---------------------------------------------------------------------------
 // ContextCompactor — public API
 // ---------------------------------------------------------------------------
+
+/// Context usage statistics for a session.
+#[derive(Debug, Clone)]
+pub struct UsageStats {
+    /// Configured token budget for the context window.
+    pub token_budget: usize,
+    /// Compaction threshold multiplier (e.g. 1.2 = 120%).
+    pub compaction_threshold: f32,
+    /// Token count at which auto-compaction triggers.
+    pub threshold_tokens: usize,
+    /// Estimated total tokens (summary + uncompacted events).
+    pub current_tokens: usize,
+    /// Current usage as a percentage of token_budget.
+    pub usage_percent: f64,
+    /// Tokens consumed by the existing summary.
+    pub summary_tokens: usize,
+    /// Number of events not yet covered by a summary.
+    pub uncompacted_events: usize,
+    /// Token count of uncompacted events.
+    pub event_tokens: usize,
+    /// Whether a compaction task is currently running.
+    pub is_compressing: bool,
+}
+
+/// Watermark and sequence information for a session.
+#[derive(Debug, Clone)]
+pub struct WatermarkInfo {
+    /// The covered_upto_sequence from the latest summary.
+    pub watermark: i64,
+    /// Maximum sequence number in the event store.
+    pub max_sequence: i64,
+    /// Number of events after the watermark.
+    pub uncompacted_count: usize,
+    /// Percentage of history that has been compacted.
+    pub compacted_percent: f64,
+}
 
 /// Watermark-based context compactor.
 ///
@@ -154,8 +189,97 @@ impl ContextCompactor {
     }
 
     // -----------------------------------------------------------------------
-    // Public entry point
+    // Inspection APIs
     // -----------------------------------------------------------------------
+
+    /// Get context usage statistics for a session.
+    pub async fn get_usage_stats(&self, session_key: &SessionKey) -> Result<UsageStats> {
+        let (summary_text, watermark) = self.load_summary_with_watermark(session_key).await;
+        let summary_tokens = if summary_text.is_empty() {
+            0
+        } else {
+            count_tokens(&summary_text)
+        };
+
+        let events = self
+            .event_store
+            .get_events_after_sequence(session_key, watermark)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load events: {}", e))?;
+
+        let event_tokens: usize = events.iter().map(|e| count_tokens(&e.content)).sum();
+        let total_tokens = summary_tokens + event_tokens;
+        let threshold_tokens = (self.token_budget as f32 * self.compaction_threshold) as usize;
+        let usage_percent = if self.token_budget > 0 {
+            (total_tokens as f64 / self.token_budget as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(UsageStats {
+            token_budget: self.token_budget,
+            compaction_threshold: self.compaction_threshold,
+            threshold_tokens,
+            current_tokens: total_tokens,
+            usage_percent,
+            summary_tokens,
+            uncompacted_events: events.len(),
+            event_tokens,
+            is_compressing: self.is_compressing.load(Ordering::Relaxed),
+        })
+    }
+
+    /// Get watermark and sequence information for a session.
+    pub async fn get_watermark_info(&self, session_key: &SessionKey) -> Result<WatermarkInfo> {
+        let (_, watermark) = self.load_summary_with_watermark(session_key).await;
+
+        let max_sequence = self
+            .event_store
+            .get_max_sequence(session_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get max sequence: {}", e))?;
+
+        let uncompacted = self
+            .event_store
+            .get_events_after_sequence(session_key, watermark)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to count uncompacted events: {}", e))?
+            .len();
+
+        let compacted_percent = if max_sequence > 0 {
+            (watermark as f64 / max_sequence as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(WatermarkInfo {
+            watermark,
+            max_sequence,
+            uncompacted_count: uncompacted,
+            compacted_percent,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Public entry points
+    // -----------------------------------------------------------------------
+
+    /// Force-trigger background compaction, bypassing the threshold check.
+    ///
+    /// Unlike `try_compact`, this always triggers compaction (unless already
+    /// in progress). Useful for manual context management via the `context` tool.
+    ///
+    /// Returns `true` if compaction was triggered, `false` if already in progress.
+    pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
+        let sk = session_key.to_string();
+        if !self.try_acquire_lock(&sk) {
+            debug!("Force compaction skipped: already in progress for {}", sk);
+            return false;
+        }
+        info!("Force compaction triggered for {}", sk);
+        self.spawn_compaction_task(session_key, vault_values);
+        true
+    }
 
     /// Try to trigger background compaction.
     ///

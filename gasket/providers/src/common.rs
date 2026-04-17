@@ -14,16 +14,16 @@
 //!
 //! // Using the constructor directly
 //! let config = ProviderConfig {
-//!     name: "my-provider".to_string(),
 //!     api_base: "https://api.example.com/v1".to_string(),
-//!     api_key: "your-api-key".to_string(),
+//!     api_key: Some("your-api-key".to_string()),
 //!     default_model: "model-id".to_string(),
 //!     extra_headers: HashMap::new(),
 //!     proxy_url: None,
 //!     proxy_username: None,
 //!     proxy_password: None,
+//!     ..Default::default()
 //! };
-//! let provider = OpenAICompatibleProvider::new(config);
+//! let provider = OpenAICompatibleProvider::new("my-provider", config);
 //!
 //! // Using from_name helper
 //! let provider = OpenAICompatibleProvider::from_name(
@@ -104,25 +104,101 @@ pub fn build_http_client(
     })
 }
 
-/// Common provider configuration for OpenAI-compatible providers
-#[derive(Debug, Clone)]
+/// Provider API protocol type
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    #[default]
+    Openai,
+    Anthropic,
+    Gemini,
+}
+
+/// Model-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelConfig {
+    #[serde(default, alias = "priceInputPerMillion")]
+    pub price_input_per_million: Option<f64>,
+    #[serde(default, alias = "priceOutputPerMillion")]
+    pub price_output_per_million: Option<f64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, alias = "maxIterations")]
+    pub max_iterations: Option<u32>,
+    #[serde(default, alias = "memoryWindow")]
+    pub memory_window: Option<usize>,
+    #[serde(default, alias = "thinkingEnabled")]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub streaming: Option<bool>,
+}
+
+/// Common provider configuration
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    /// Provider display name (e.g. "openai", "dashscope")
-    pub name: String,
+    pub provider_type: ProviderType,
+    #[serde(default)]
     /// API base URL (e.g. "https://api.openai.com/v1") - REQUIRED
     pub api_base: String,
+    #[serde(default)]
     /// API key
-    pub api_key: String,
+    pub api_key: Option<String>,
+    #[serde(default)]
     /// Default model
     pub default_model: String,
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
+    #[serde(default)]
     /// Extra HTTP headers to send with every request
     pub extra_headers: HashMap<String, String>,
+    #[serde(default, alias = "proxyUrl")]
     /// Optional proxy URL (e.g., `http://127.0.0.1:7890`)
     pub proxy_url: Option<String>,
+    #[serde(default, alias = "proxyUsername")]
     /// Optional username for proxy authentication
     pub proxy_username: Option<String>,
+    #[serde(default, alias = "proxyPassword")]
     /// Optional password for proxy authentication
     pub proxy_password: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default, alias = "defaultCurrency")]
+    pub default_currency: Option<String>,
+}
+
+impl ProviderConfig {
+    pub fn is_available(&self, _name: &str) -> bool {
+        self.api_key.is_some()
+            || self.api_base.contains("localhost")
+            || self.api_base.contains("127.0.0.1")
+    }
+
+    pub fn thinking_enabled_for_model(&self, model: &str) -> bool {
+        self.models
+            .get(model)
+            .and_then(|m| m.thinking_enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn get_pricing_for_model(
+        &self,
+        model: &str,
+    ) -> Option<gasket_types::token_tracker::ModelPricing> {
+        self.models.get(model).and_then(|m| {
+            match (m.price_input_per_million, m.price_output_per_million) {
+                (Some(input), Some(output)) => Some(gasket_types::token_tracker::ModelPricing {
+                    price_input_per_million: input,
+                    price_output_per_million: output,
+                    currency: m.currency.clone().unwrap_or_else(|| "USD".to_string()),
+                }),
+                _ => None,
+            }
+        })
+    }
 }
 
 /// OpenAI-compatible provider that implements `LlmProvider`.
@@ -131,24 +207,33 @@ pub struct ProviderConfig {
 /// moonshot.rs, zhipu.rs, minimax.rs, etc.) — all of which performed
 /// identical HTTP POST + JSON parse logic.
 pub struct OpenAICompatibleProvider {
+    name: String,
     client: Client,
     config: ProviderConfig,
 }
 
 impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
-    pub fn new(config: ProviderConfig) -> Self {
+    pub fn new(name: impl Into<String>, config: ProviderConfig) -> Self {
         let client = build_http_client(
             config.proxy_url.as_deref(),
             config.proxy_username.as_deref(),
             config.proxy_password.as_deref(),
         );
-        Self { client, config }
+        Self {
+            name: name.into(),
+            client,
+            config,
+        }
     }
 
     /// Create with custom HTTP client
-    pub fn with_client(config: ProviderConfig, client: Client) -> Self {
-        Self { client, config }
+    pub fn with_client(name: impl Into<String>, config: ProviderConfig, client: Client) -> Self {
+        Self {
+            name: name.into(),
+            client,
+            config,
+        }
     }
 
     /// Create a provider by name with explicit configuration.
@@ -188,16 +273,22 @@ impl OpenAICompatibleProvider {
     ) -> Self {
         let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
 
-        Self::new(ProviderConfig {
-            name: name.to_string(),
-            api_base,
-            api_key: api_key.into(),
-            default_model: resolved_model,
-            extra_headers: HashMap::new(),
-            proxy_url,
-            proxy_username,
-            proxy_password,
-        })
+        Self::new(
+            name,
+            ProviderConfig {
+                provider_type: ProviderType::Openai,
+                api_base,
+                api_key: Some(api_key.into()),
+                default_model: resolved_model,
+                models: HashMap::new(),
+                extra_headers: HashMap::new(),
+                proxy_url,
+                proxy_username,
+                proxy_password,
+                client_id: None,
+                default_currency: None,
+            },
+        )
     }
 
     /// Create a provider by name with extra headers (e.g., for MiniMax's X-Group-Id)
@@ -255,7 +346,7 @@ impl OpenAICompatibleProvider {
 
     /// Get the provider name
     pub fn provider_name(&self) -> &str {
-        &self.config.name
+        &self.name
     }
 
     /// Get the API base URL
@@ -267,7 +358,7 @@ impl OpenAICompatibleProvider {
 #[async_trait]
 impl LlmProvider for OpenAICompatibleProvider {
     fn name(&self) -> &str {
-        &self.config.name
+        &self.name
     }
 
     fn default_model(&self) -> &str {
@@ -288,12 +379,15 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: false,
         };
 
-        info!("[{}] POST {} ", self.config.name, url);
+        info!("[{}] POST {} ", self.name, url);
 
         let mut req = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
+            )
             .header("Content-Type", "application/json");
 
         // Apply extra headers (e.g. X-Group-Id for MiniMax)
@@ -307,14 +401,14 @@ impl LlmProvider for OpenAICompatibleProvider {
             })?;
 
         let status = response.status();
-        info!("[{}] response status: {}", self.config.name, status);
+        info!("[{}] response status: {}", self.name, status);
 
         let body = response.text().await.map_err(|e| {
             crate::ProviderError::NetworkError(format!("Failed to read response: {}", e))
         })?;
 
         if !status.is_success() {
-            error!("[{}] response body:\n{}", self.config.name, body);
+            error!("[{}] response body:\n{}", self.name, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),
@@ -324,12 +418,12 @@ impl LlmProvider for OpenAICompatibleProvider {
         let api_response: OpenAICompatibleResponse = serde_json::from_str(&body).map_err(|e| {
             crate::ProviderError::ParseError(format!(
                 "{} API response parse error: {} | body: {}",
-                self.config.name, e, body
+                self.name, e, body
             ))
         })?;
 
         let choice = api_response.choices.into_iter().next().ok_or_else(|| {
-            crate::ProviderError::ParseError(format!("No choices in {} response", self.config.name))
+            crate::ProviderError::ParseError(format!("No choices in {} response", self.name))
         })?;
 
         let tool_calls: Vec<ToolCall> = choice
@@ -375,12 +469,15 @@ impl LlmProvider for OpenAICompatibleProvider {
             stream: true,
         };
 
-        info!("[{}] POST {}", self.config.name, url);
+        info!("[{}] POST {}", self.name, url);
 
         let mut req = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
+            )
             .header("Content-Type", "application/json");
 
         for (key, value) in &self.config.extra_headers {
@@ -393,14 +490,14 @@ impl LlmProvider for OpenAICompatibleProvider {
             })?;
 
         let status = response.status();
-        info!("[{}] stream response status: {}", self.config.name, status);
+        info!("[{}] stream response status: {}", self.name, status);
 
         if !status.is_success() {
             let body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
 
-            error!("[{}] POST {} response: {}", self.config.name, url, body);
+            error!("[{}] POST {} response: {}", self.name, url, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: body,
@@ -489,18 +586,21 @@ mod tests {
     #[test]
     fn test_provider_config_creation() {
         let config = ProviderConfig {
-            name: "test".to_string(),
+            provider_type: ProviderType::Openai,
             api_base: "https://api.example.com/v1".to_string(),
-            api_key: "test-key".to_string(),
+            api_key: Some("test-key".to_string()),
             default_model: "test-model".to_string(),
+            models: HashMap::new(),
             extra_headers: HashMap::new(),
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            client_id: None,
+            default_currency: None,
         };
 
         assert_eq!(config.api_base, "https://api.example.com/v1");
-        assert_eq!(config.api_key, "test-key");
+        assert_eq!(config.api_key, Some("test-key".to_string()));
         assert_eq!(config.default_model, "test-model");
         assert!(config.proxy_url.is_none());
         assert!(config.proxy_username.is_none());

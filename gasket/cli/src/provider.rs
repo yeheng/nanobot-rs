@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gasket_engine::config::{Config, ProviderType};
-use gasket_engine::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use gasket_engine::providers::{LlmProvider, ModelSpec};
 use gasket_engine::vault::{contains_placeholders, VaultStore};
 
 use crate::commands::vault::ensure_unlocked_non_interactive;
@@ -94,19 +94,6 @@ pub fn build_provider(
         ProviderType::Anthropic | ProviderType::Openai => {
             // OpenAI-compatible provider (includes Anthropic's /v1 endpoint)
             match name {
-                // MiniMax requires special handling for group_id header
-                "minimax" => {
-                    let provider = OpenAICompatibleProvider::minimax(
-                        api_key,
-                        provider_config.api_base.clone(),
-                        model,
-                        None,
-                        proxy_url,
-                        proxy_username,
-                        proxy_password,
-                    );
-                    Ok(Arc::new(provider))
-                }
                 // GitHub Copilot requires special handling for OAuth token management
                 #[cfg(feature = "provider-copilot")]
                 "copilot" => Ok(Arc::new(
@@ -119,18 +106,30 @@ pub fn build_provider(
                         proxy_password,
                     ),
                 )),
-                // All other providers use the generic from_name constructor
+                // All other providers build from a fully populated ProviderConfig
                 _ => {
-                    let provider = OpenAICompatibleProvider::from_name(
-                        name,
-                        api_key,
-                        provider_config.api_base.clone(),
-                        Some(model.to_string()),
+                    let extra_headers = provider_config.extra_headers.clone();
+                    // MiniMax requires special handling for group_id header
+                    if name == "minimax" {
+                        // group_id is not supported in CLI provider config yet;
+                        // preserve any existing X-Group-Id if already in extra_headers
+                    }
+                    let config = gasket_engine::providers::ProviderConfig {
+                        provider_type: ProviderType::Openai,
+                        api_base: provider_config.api_base.clone(),
+                        api_key: Some(api_key.to_string()),
+                        default_model: model.to_string(),
+                        models: std::collections::HashMap::new(),
+                        extra_headers,
                         proxy_url,
                         proxy_username,
                         proxy_password,
-                    );
-                    Ok(Arc::new(provider))
+                        client_id: provider_config.client_id.clone(),
+                        default_currency: provider_config.default_currency.clone(),
+                    };
+                    Ok(Arc::new(
+                        gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
+                    ))
                 }
             }
         }

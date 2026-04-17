@@ -164,17 +164,11 @@ impl WebSocketManager {
         };
 
         if let Some(sender) = self.connections.get(&connection_id) {
-            // Check if we have a structured WebSocket message
-            let text = if let Some(ref ws_msg) = msg.ws_message {
-                ws_msg.to_json()
-            } else if !msg.content.is_empty() {
-                // Legacy: send plain text (wrapped in JSON for consistency)
-                msg.content
-            } else {
-                // Empty message, skip
+            let text = Self::message_text(&msg);
+            if text.is_empty() {
                 warn!("WebSocketManager::send - empty message, skipping");
                 return;
-            };
+            }
 
             if let Err(e) = sender.send(Message::Text(text.into())).await {
                 warn!(
@@ -187,6 +181,50 @@ impl WebSocketManager {
                 "Connection {} not found for outbound message",
                 connection_id
             );
+        }
+    }
+
+    /// Broadcast an outbound message to all active WebSocket connections.
+    pub async fn broadcast(&self, msg: &OutboundMessage) {
+        let text = Self::message_text(msg);
+        if text.is_empty() {
+            warn!("WebSocketManager::broadcast - empty message, skipping");
+            return;
+        }
+
+        let count = self.connections.len();
+        if count == 0 {
+            debug!("WebSocketManager::broadcast - no active connections");
+            return;
+        }
+
+        let text_arc: std::sync::Arc<str> = text.into();
+        let mut failed = 0usize;
+        for entry in self.connections.iter() {
+            let sender = entry.value();
+            if let Err(e) = sender
+                .send(Message::Text(text_arc.to_string().into()))
+                .await
+            {
+                warn!("Failed to broadcast to connection {}: {}", entry.key(), e);
+                failed += 1;
+            }
+        }
+
+        info!(
+            "Broadcasted WebSocket message to {}/{} connections",
+            count.saturating_sub(failed),
+            count
+        );
+    }
+
+    fn message_text(msg: &OutboundMessage) -> String {
+        if let Some(ref ws_msg) = msg.ws_message {
+            ws_msg.to_json()
+        } else if !msg.content.is_empty() {
+            msg.content.clone()
+        } else {
+            String::new()
         }
     }
 }
@@ -327,6 +365,37 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
     debug!("WebSocket connection closed: {}", connection_id);
 }
 
+// === Broadcast HTTP API ====================================================
+
+/// Request body for POST /broadcast
+#[derive(Debug, serde::Deserialize)]
+pub struct BroadcastRequest {
+    /// Plain text message (ignored if `ws_message` is present)
+    pub content: Option<String>,
+    /// Structured WebSocket message
+    pub ws_message: Option<crate::events::WebSocketMessage>,
+}
+
+async fn handle_broadcast(
+    State(manager): State<Arc<WebSocketManager>>,
+    axum::extract::Json(req): axum::extract::Json<BroadcastRequest>,
+) -> impl IntoResponse {
+    let msg = if let Some(ws_msg) = req.ws_message {
+        crate::events::OutboundMessage::broadcast_ws_message(
+            crate::events::ChannelType::WebSocket,
+            ws_msg,
+        )
+    } else {
+        crate::events::OutboundMessage::broadcast(
+            crate::events::ChannelType::WebSocket,
+            req.content.unwrap_or_default(),
+        )
+    };
+    manager.broadcast(&msg).await;
+    let body = serde_json::json!({"status": "ok", "connections": manager.connection_count()});
+    (axum::http::StatusCode::OK, body.to_string())
+}
+
 // === WebSocket Adapter =====================================================
 
 use crate::adapter::ImAdapter;
@@ -352,7 +421,7 @@ impl WebSocketAdapter {
         Self { manager }
     }
 
-    /// Return the WebSocket upgrade route.
+    /// Return the WebSocket upgrade route and broadcast endpoint.
     pub fn routes(&self) -> axum::Router {
         let manager = self.manager.clone();
         axum::Router::new()
@@ -360,6 +429,7 @@ impl WebSocketAdapter {
                 "/ws",
                 axum::routing::get(WebSocketManager::handle_connection),
             )
+            .route("/broadcast", axum::routing::post(handle_broadcast))
             .with_state(manager)
     }
 }
@@ -376,7 +446,11 @@ impl ImAdapter for WebSocketAdapter {
     }
 
     async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
-        self.manager.send(msg.clone()).await;
+        if msg.is_broadcast() {
+            self.manager.broadcast(msg).await;
+        } else {
+            self.manager.send(msg.clone()).await;
+        }
         Ok(())
     }
 }

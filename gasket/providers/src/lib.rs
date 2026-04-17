@@ -76,8 +76,8 @@ pub use base::{
 
 // Re-export common types
 pub use common::{
-    build_http_client, parse_json_args, OpenAICompatibleProvider, ProviderBuildError,
-    ProviderConfig, ProviderResult,
+    build_http_client, parse_json_args, ModelConfig, OpenAICompatibleProvider, ProviderBuildError,
+    ProviderConfig, ProviderResult, ProviderType,
 };
 
 // Re-export specialized providers

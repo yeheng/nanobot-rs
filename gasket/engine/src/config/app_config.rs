@@ -3,19 +3,6 @@
 //! These types define the **file format** of `~/.gasket/config.yaml`. They are
 //! the primary config layer used by the CLI to load, validate, and save
 //! configuration.
-//!
-//! ## Relationship to runtime config types
-//!
-//! Some types share names with their runtime counterparts in other crates.
-//! This is intentional — the file-layer type captures the YAML schema (with
-//! optional fields, serde aliases for backward compat), while the runtime type
-//! is a focused, non-optional struct used during execution:
-//!
-//! | File-layer (this module)          | Runtime counterpart              |
-//! |----------------------------------|----------------------------------|
-//! | `ProviderConfig`                 | `gasket_providers::ProviderConfig` |
-//! | `EmbeddingConfig`                | `gasket_storage::EmbeddingConfig`  |
-//! | `ChannelsConfig` (re-exported)   | `gasket_channels::ChannelsConfig`  |
 
 use std::collections::HashMap;
 
@@ -23,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config_dir;
 use crate::error::ConfigValidationError;
-use crate::token_tracker::ModelPricing;
 use crate::vault::contains_placeholders;
 use crate::vault::VaultStore;
 use crate::vault::{replace_placeholders, scan_placeholders};
@@ -35,6 +21,9 @@ use tracing::{debug, warn};
 pub use gasket_channels::ChannelsConfig;
 // Re-export tools config
 use crate::config::ToolsConfig;
+
+// Re-export provider config types (unified in gasket-providers)
+pub use gasket_providers::{ModelConfig, ProviderConfig, ProviderType};
 
 /// Embedding configuration (simplified version for config file)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -57,93 +46,6 @@ impl From<EmbeddingConfig> for gasket_storage::EmbeddingConfig {
         }
         result
     }
-}
-
-/// Provider API protocol type
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ProviderType {
-    #[default]
-    Openai,
-    Anthropic,
-    Gemini,
-}
-
-/// File-level provider configuration (YAML schema).
-///
-/// Maps to a single provider entry under `providers:` in `config.yaml`.
-/// Converted to `gasket_providers::ProviderConfig` at runtime via
-/// `ProviderRegistry::get_or_create`.
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    pub provider_type: ProviderType,
-    #[serde(default)]
-    pub api_base: String,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub models: HashMap<String, ModelConfig>,
-    #[serde(default, alias = "proxyUrl")]
-    pub proxy_url: Option<String>,
-    #[serde(default, alias = "proxyUsername")]
-    pub proxy_username: Option<String>,
-    #[serde(default, alias = "proxyPassword")]
-    pub proxy_password: Option<String>,
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default, alias = "defaultCurrency")]
-    pub default_currency: Option<String>,
-}
-
-impl ProviderConfig {
-    pub fn is_available(&self, _name: &str) -> bool {
-        self.api_key.is_some()
-            || self.api_base.contains("localhost")
-            || self.api_base.contains("127.0.0.1")
-    }
-
-    pub fn thinking_enabled_for_model(&self, model: &str) -> bool {
-        self.models
-            .get(model)
-            .and_then(|m| m.thinking_enabled)
-            .unwrap_or(false)
-    }
-
-    pub fn get_pricing_for_model(&self, model: &str) -> Option<ModelPricing> {
-        self.models.get(model).and_then(|m| {
-            match (m.price_input_per_million, m.price_output_per_million) {
-                (Some(input), Some(output)) => Some(ModelPricing {
-                    price_input_per_million: input,
-                    price_output_per_million: output,
-                    currency: m.currency.clone().unwrap_or_else(|| "USD".to_string()),
-                }),
-                _ => None,
-            }
-        })
-    }
-}
-
-/// Model-specific configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ModelConfig {
-    #[serde(default, alias = "priceInputPerMillion")]
-    pub price_input_per_million: Option<f64>,
-    #[serde(default, alias = "priceOutputPerMillion")]
-    pub price_output_per_million: Option<f64>,
-    #[serde(default)]
-    pub currency: Option<String>,
-    #[serde(default)]
-    pub temperature: Option<f32>,
-    #[serde(default, alias = "maxTokens")]
-    pub max_tokens: Option<u32>,
-    #[serde(default, alias = "maxIterations")]
-    pub max_iterations: Option<u32>,
-    #[serde(default, alias = "memoryWindow")]
-    pub memory_window: Option<usize>,
-    #[serde(default, alias = "thinkingEnabled")]
-    pub thinking_enabled: Option<bool>,
-    #[serde(default)]
-    pub streaming: Option<bool>,
 }
 
 /// Agent profile for model switching
@@ -512,19 +414,14 @@ impl ProviderRegistry {
         let raw_api_key = config.api_key.as_deref().unwrap_or("");
         let api_key = self.resolve_api_key(raw_api_key)?;
 
-        let provider_config = gasket_providers::ProviderConfig {
-            name: name.to_string(),
-            api_base: config.api_base.clone(),
-            api_key,
-            default_model: "default".to_string(),
-            extra_headers: HashMap::new(),
-            proxy_url: config.proxy_url.clone(),
-            proxy_username: config.proxy_username.clone(),
-            proxy_password: config.proxy_password.clone(),
-        };
+        let mut provider_config = config.clone();
+        provider_config.api_key = Some(api_key);
+        if provider_config.default_model.is_empty() {
+            provider_config.default_model = "default".to_string();
+        }
 
         Ok(std::sync::Arc::new(
-            gasket_providers::OpenAICompatibleProvider::new(provider_config),
+            gasket_providers::OpenAICompatibleProvider::new(name, provider_config),
         ))
     }
 

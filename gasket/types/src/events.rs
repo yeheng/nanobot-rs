@@ -331,6 +331,21 @@ impl OutboundMessage {
     pub fn has_ws_message(&self) -> bool {
         self.ws_message.is_some()
     }
+
+    /// Returns true if this message is a broadcast (chat_id == "*").
+    pub fn is_broadcast(&self) -> bool {
+        self.chat_id == "*"
+    }
+
+    /// Create a broadcast outbound message with plain text content.
+    pub fn broadcast(channel: ChannelType, content: impl Into<String>) -> Self {
+        Self::new(channel, "*", content)
+    }
+
+    /// Create a broadcast outbound message with a structured WebSocket message.
+    pub fn broadcast_ws_message(channel: ChannelType, ws_message: WebSocketMessage) -> Self {
+        Self::with_ws_message(channel, "*", ws_message)
+    }
 }
 
 /// Media attachment

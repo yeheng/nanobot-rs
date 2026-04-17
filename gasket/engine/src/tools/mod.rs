@@ -15,6 +15,7 @@
 
 mod base;
 mod builder;
+mod context;
 mod cron;
 mod filesystem;
 mod history_query;
@@ -40,6 +41,7 @@ pub use gasket_types::{
 pub use builder::{
     build_tool_registry, register_sqlite_tools, resolve_exec_workspace, ToolRegistryConfig,
 };
+pub use context::ContextTool;
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use history_query::HistoryQueryTool;

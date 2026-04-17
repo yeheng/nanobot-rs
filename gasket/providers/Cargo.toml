@@ -36,3 +36,6 @@ anyhow.workspace = true
 
 # UUID
 uuid.workspace = true
+
+# Shared types
+gasket-types = { path = "../types" }

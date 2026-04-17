@@ -11,7 +11,7 @@ pub mod memory;
 pub mod prompt;
 pub mod store;
 
-pub use compactor::ContextCompactor;
+pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::AgentConfig;
 pub use context::{AgentContext, PersistentContext};
 pub use memory::{MemoryContext, MemoryManager};
