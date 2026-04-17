@@ -229,7 +229,7 @@ impl ExecutionState {
         }
     }
 
-    fn into_result(
+    fn to_result(
         &self,
         content: String,
         reasoning_content: Option<String>,
@@ -373,7 +373,7 @@ impl<'a> KernelExecutor<'a> {
             Self::log_response(&response, iteration, options.vault_values);
 
             if let Some((content, reasoning_content)) = Self::check_final_response(&response) {
-                return Ok(state.into_result(content, reasoning_content, ledger));
+                return Ok(state.to_result(content, reasoning_content, ledger));
             }
 
             self.handle_tool_calls(&response, &executor, state, event_tx)

@@ -20,7 +20,7 @@ const isActive = computed(() => props.isLastBotMessage && (props.isThinking || r
 </script>
 
 <template>
-  <div v-if="hasThinking || hasTools" class="w-full my-1 max-w-[95%] md:max-w-[85%]">
+  <div v-if="hasThinking || hasTools" class="w-full my-1">
     <!-- Collapsible header -->
     <button
       @click="expanded = !expanded"

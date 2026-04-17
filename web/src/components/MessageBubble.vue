@@ -124,7 +124,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
     </div>
 
     <!-- User message -->
-    <div v-else-if="message.role === 'user'" class="flex items-end gap-2 max-w-[85%] md:max-w-[75%]">
+    <div v-else-if="message.role === 'user'" class="flex items-end gap-2 max-w-[95%] md:max-w-[85%] lg:max-w-[75%]">
       <div class="flex flex-col items-end gap-0.5">
         <div class="px-4 py-2.5 rounded-2xl rounded-br-sm bg-gradient-to-br from-blue-600 to-blue-500 text-white text-sm shadow-sm">
           <div class="whitespace-pre-wrap">{{ message.content }}</div>
@@ -163,7 +163,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
 
         <!-- Content -->
         <div v-if="message.content || isStreaming"
-          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0 max-w-[95%] md:max-w-[85%]">
+          class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0 w-full">
           <div class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
           <!-- Streaming cursor -->
           <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-500/80 dark:bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />
