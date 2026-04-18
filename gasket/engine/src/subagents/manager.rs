@@ -17,6 +17,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
 use crate::kernel;
@@ -65,9 +66,6 @@ impl TaskSpec {
 
 /// Spawn a subagent with minimal overhead - pure function.
 ///
-/// This is the core function that replaces SubagentManager + SubagentTaskBuilder.
-/// It takes everything needed as parameters and spawns a tokio task.
-///
 /// # Arguments
 /// * `provider` - LLM provider
 /// * `tools` - Tool registry
@@ -76,6 +74,7 @@ impl TaskSpec {
 /// * `event_tx` - Optional channel for streaming events
 /// * `result_tx` - Channel for the final result
 /// * `token_tracker` - Optional shared token tracker for budget enforcement
+/// * `cancellation_token` - Token to cancel this subagent (checked before and during execution)
 ///
 /// # Returns
 /// A `JoinHandle` for the spawned task.
@@ -88,6 +87,7 @@ pub fn spawn_subagent(
     event_tx: Option<mpsc::Sender<StreamEvent>>,
     result_tx: mpsc::Sender<SubagentResult>,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+    cancellation_token: CancellationToken,
 ) -> JoinHandle<()> {
     let subagent_id = task.id.clone();
     let task_desc = task.task.clone();
@@ -145,36 +145,41 @@ pub fn spawn_subagent(
             token_tracker: token_tracker.clone(),
         };
 
-        // Execute with timeout
+        // Execute with timeout, cancellable via token
         let timeout = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
         let messages = vec![
             ChatMessage::system(system_prompt),
             ChatMessage::user(&task_desc),
         ];
 
-        let response = match tokio::time::timeout(
-            timeout,
-            execute_with_streaming(&ctx, messages, event_tx.as_ref(), &subagent_id),
-        )
-        .await
-        {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => {
-                warn!("[Subagent {}] Execution failed: {}", subagent_id, e);
-                send_error_result(&subagent_id, &task_desc, &model, &e.to_string(), &result_tx)
+        let response = tokio::select! {
+            result = tokio::time::timeout(
+                timeout,
+                execute_with_streaming(&ctx, messages, event_tx.as_ref(), &subagent_id),
+            ) => match result {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(e)) => {
+                    warn!("[Subagent {}] Execution failed: {}", subagent_id, e);
+                    send_error_result(&subagent_id, &task_desc, &model, &e.to_string(), &result_tx)
+                        .await;
+                    return;
+                }
+                Err(_) => {
+                    warn!("[Subagent {}] Timed out after {:?}", subagent_id, timeout);
+                    send_error_result(
+                        &subagent_id,
+                        &task_desc,
+                        &model,
+                        &format!("Timed out after {}s", SUBAGENT_TIMEOUT_SECS),
+                        &result_tx,
+                    )
                     .await;
-                return;
-            }
-            Err(_) => {
-                warn!("[Subagent {}] Timed out after {:?}", subagent_id, timeout);
-                send_error_result(
-                    &subagent_id,
-                    &task_desc,
-                    &model,
-                    &format!("Timed out after {}s", SUBAGENT_TIMEOUT_SECS),
-                    &result_tx,
-                )
-                .await;
+                    return;
+                }
+            },
+            _ = cancellation_token.cancelled() => {
+                info!("[Subagent {}] Cancelled", subagent_id);
+                send_error_result(&subagent_id, &task_desc, &model, "Cancelled", &result_tx).await;
                 return;
             }
         };
@@ -220,11 +225,13 @@ pub fn spawn_subagent(
     })
 }
 
-/// Execute kernel with streaming support, forwarding events with subagent_id.
+/// Execute kernel with streaming support, forwarding events tagged with subagent_id.
 ///
-/// The `Arc<str>` for agent_id is allocated **once** before the streaming loop.
-/// Inside the loop, `inject_agent_id` only performs `Arc::clone` (an atomic
-/// refcount bump) per event — zero heap allocations on the hot path.
+/// The `Arc<str>` for agent_id is allocated once before the loop; per-event cost
+/// is a single `Arc::clone` (atomic refcount bump, no heap allocation).
+///
+/// When `event_tx` is `None`, the channel is still drained to prevent the kernel
+/// task from blocking on a full channel (deadlock).
 async fn execute_with_streaming(
     ctx: &kernel::RuntimeContext,
     messages: Vec<ChatMessage>,
@@ -233,73 +240,26 @@ async fn execute_with_streaming(
 ) -> anyhow::Result<kernel::ExecutionResult> {
     let (kernel_tx, mut kernel_rx) = mpsc::channel(64);
 
-    // Spawn kernel execution
     let ctx_clone = ctx.clone();
     let handle =
         tokio::spawn(
             async move { kernel::execute_streaming(&ctx_clone, messages, kernel_tx).await },
         );
 
-    // Forward events with subagent_id
-    // Pre-allocate Arc<str> once — Arc::clone inside the loop is O(1) refcount bump
     if let Some(tx) = event_tx {
         let agent_id: Arc<str> = Arc::from(subagent_id);
         while let Some(event) = kernel_rx.recv().await {
-            let subagent_event = inject_agent_id(event, &agent_id);
-            let _ = tx.try_send(subagent_event);
+            let _ = tx.try_send(event.with_agent_id(Arc::clone(&agent_id)));
         }
+    } else {
+        // Must drain to unblock the kernel task; otherwise the channel fills and deadlocks.
+        while kernel_rx.recv().await.is_some() {}
     }
 
-    // Wait for completion
     match handle.await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(e)) => Err(anyhow::anyhow!("Kernel error: {}", e)),
         Err(e) => Err(anyhow::anyhow!("Task join error: {}", e)),
-    }
-}
-
-/// Inject subagent_id into a StreamEvent.
-///
-/// Receives a pre-allocated `&Arc<str>` so that the per-event cost is only
-/// `Arc::clone` (atomic refcount increment) — no heap allocation.
-fn inject_agent_id(event: StreamEvent, agent_id: &Arc<str>) -> StreamEvent {
-    let id = Arc::clone(agent_id);
-    match event {
-        StreamEvent::Thinking {
-            agent_id: _,
-            content,
-        } => StreamEvent::Thinking {
-            agent_id: Some(id),
-            content,
-        },
-        StreamEvent::ToolStart {
-            agent_id: _,
-            name,
-            arguments,
-        } => StreamEvent::ToolStart {
-            agent_id: Some(id),
-            name,
-            arguments,
-        },
-        StreamEvent::ToolEnd {
-            agent_id: _,
-            name,
-            output,
-        } => StreamEvent::ToolEnd {
-            agent_id: Some(id),
-            name,
-            output,
-        },
-        StreamEvent::Content {
-            agent_id: _,
-            content,
-        } => StreamEvent::Content {
-            agent_id: Some(id),
-            content,
-        },
-        StreamEvent::Done { agent_id: _ } => StreamEvent::Done { agent_id: Some(id) },
-        // TokenStats and lifecycle events are passed through as-is
-        _ => event,
     }
 }
 
@@ -387,18 +347,13 @@ impl SubagentSpawner for SimpleSpawner {
         let event_tx = tracker.event_sender();
         let subagent_id = SubagentTracker::generate_id();
 
-        // Resolve model if specified
-        let (provider, model) = if let Some(ref mid) = model_id {
-            if let Some(ref resolver) = self.model_resolver {
-                resolver
-                    .resolve_model(mid)
-                    .map(|(p, c)| (p, Some(c.model)))
-                    .unwrap_or((self.provider.clone(), None))
-            } else {
-                (self.provider.clone(), None)
-            }
-        } else {
-            (self.provider.clone(), None)
+        // Resolve provider and model: only attempt resolution when both model_id and resolver exist.
+        let (provider, model) = match (&model_id, &self.model_resolver) {
+            (Some(mid), Some(resolver)) => resolver
+                .resolve_model(mid)
+                .map(|(p, c)| (p, Some(c.model)))
+                .unwrap_or((self.provider.clone(), None)),
+            _ => (self.provider.clone(), None),
         };
 
         let task_spec = TaskSpec::new(&subagent_id, task);
@@ -416,18 +371,16 @@ impl SubagentSpawner for SimpleSpawner {
             Some(event_tx),
             result_tx,
             self.token_tracker.clone(),
+            tracker.cancellation_token(),
         );
 
-        let results = tracker
+        let result = tracker
             .wait_for_all(1)
             .await
-            .map_err(|e| anyhow::anyhow!("Tracker error: {}", e))?;
-
-        if results.is_empty() {
-            return Err(anyhow::anyhow!("Subagent completed but no result received").into());
-        }
-
-        let result = results.into_iter().next().unwrap();
+            .map_err(|e| anyhow::anyhow!("Tracker error: {}", e))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Subagent completed but no result received"))?;
 
         Ok(TypesSubagentResult {
             id: result.id,

@@ -30,5 +30,6 @@ repomix*
 config.yaml
 .fastembed_cache
 .worktrees/
+gasket/target/
 docs/superpowers
 .zread

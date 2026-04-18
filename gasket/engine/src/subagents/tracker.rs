@@ -16,10 +16,8 @@
 //! Uses `gasket_types::StreamEvent` directly - no conversion needed. The `agent_id` field
 //! in `StreamEvent` distinguishes between main agent (`None`) and subagent (`Some(uuid)`).
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -45,25 +43,23 @@ pub enum TrackerError {
     ResultReceiverNotAvailable,
 }
 
-/// Tracks multiple subagent executions for parallel coordination
+/// Tracks multiple subagent executions for parallel coordination.
 ///
-/// Uses direct ownership of receivers - no `Arc<Mutex>` needed.
+/// Uses direct ownership of MPSC receivers — no `Arc<Mutex>` needed.
 /// The event receiver should be taken via `take_event_receiver()` and moved
 /// to a spawned task before calling `wait_for_all`.
 ///
 /// ## Cancellation
 ///
-/// Uses `CancellationToken` to allow graceful cancellation of all subagents.
-/// When the tracker is dropped (or explicitly cancelled), all running subagents
-/// are notified to stop immediately.
+/// Uses `CancellationToken` to signal all spawned subagents to stop.
+/// The token is passed to each `spawn_subagent` call. When the tracker
+/// is dropped (or `cancel_all` is called), all running subagents receive
+/// the cancellation signal and exit after their current operation.
 pub struct SubagentTracker {
-    results: Arc<RwLock<HashMap<String, SubagentResult>>>,
     result_tx: mpsc::Sender<SubagentResult>,
     result_rx: Option<mpsc::Receiver<SubagentResult>>,
-    /// Event channel for real-time streaming (using unified StreamEvent)
     event_tx: mpsc::Sender<StreamEvent>,
     event_rx: Option<mpsc::Receiver<StreamEvent>>,
-    /// Cancellation token for all spawned subagents
     cancellation_token: CancellationToken,
 }
 
@@ -72,7 +68,6 @@ impl SubagentTracker {
         let (tx, rx) = mpsc::channel(100);
         let (event_tx, event_rx) = mpsc::channel(256);
         Self {
-            results: Arc::new(RwLock::new(HashMap::new())),
             result_tx: tx,
             result_rx: Some(rx),
             event_tx,
@@ -181,14 +176,9 @@ impl SubagentTracker {
                             count,
                             result.id
                         );
-                        self.results
-                            .write()
-                            .await
-                            .insert(result.id.clone(), result.clone());
                         collected.push(result);
                     }
                     None => {
-                        // Channel closed, no more results coming
                         tracing::warn!(
                             "[Tracker] Channel closed unexpectedly after receiving {}/{} results. \
                              This usually means all result senders were dropped before tasks completed.",
@@ -227,15 +217,6 @@ impl SubagentTracker {
         }
     }
 
-    /// Get result by ID (non-blocking)
-    pub async fn get_result(&self, id: &str) -> Option<SubagentResult> {
-        self.results.read().await.get(id).cloned()
-    }
-
-    /// Get count of collected results so far
-    pub async fn result_count(&self) -> usize {
-        self.results.read().await.len()
-    }
 }
 
 impl Drop for SubagentTracker {

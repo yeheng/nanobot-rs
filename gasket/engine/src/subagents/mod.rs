@@ -7,6 +7,7 @@
 //!
 //! ```ignore
 //! use gasket_engine::subagents::{spawn_subagent, TaskSpec, SimpleSpawner};
+//! use tokio_util::sync::CancellationToken;
 //!
 //! // Simple function-based spawning
 //! let handle = spawn_subagent(
@@ -17,9 +18,10 @@
 //!     Some(event_tx),
 //!     result_tx,
 //!     None,
+//!     CancellationToken::new(),
 //! );
 //!
-//! // Or use the SimpleSpawner for trait-based spawning
+//! // Or use the SimpleSpawner for trait-based spawning (preferred)
 //! let spawner = SimpleSpawner::new(provider, tools, workspace);
 //! let result = spawner.spawn("task".to_string(), None).await?;
 //! ```
