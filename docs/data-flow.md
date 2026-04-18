@@ -162,7 +162,7 @@ mpsc::Receiver<StreamEvent>
 stream_event_to_ws_message()
     │
     ├──▶ StreamEvent::Content ──▶ WebSocketMessage::Text
-    ├──▶ StreamEvent::Reasoning ──▶ WebSocketMessage::Thinking
+    ├──▶ StreamEvent::Thinking ──▶ WebSocketMessage::Thinking
     ├──▶ StreamEvent::ToolStart ──▶ WebSocketMessage::ToolStart
     ├──▶ StreamEvent::ToolEnd ──▶ WebSocketMessage::ToolEnd
     └──▶ StreamEvent::Done ──▶ WebSocketMessage::Done
@@ -381,12 +381,16 @@ chat_stream() ──▶ Stream<ChatStreamChunk>
 
 ```rust
 pub enum StreamEvent {
-    Content(String),           // 流式内容片段
-    Reasoning(String),         // 推理/思考内容
-    ToolStart { name, arguments },  // 工具调用开始
-    ToolEnd { name, output },       // 工具调用结束
-    TokenStats { input, output },   // Token 统计
-    Done,                      // 流结束
+    Thinking { agent_id: Option<Arc<str>>, content: Arc<str> },
+    ToolStart { agent_id: Option<Arc<str>>, name: Arc<str>, arguments: Option<Arc<str>> },
+    ToolEnd { agent_id: Option<Arc<str>>, name: Arc<str>, output: Option<Arc<str>> },
+    Content { agent_id: Option<Arc<str>>, content: Arc<str> },
+    Done { agent_id: Option<Arc<str>> },
+    TokenStats { agent_id: Option<Arc<str>>, input_tokens: usize, output_tokens: usize, total_tokens: usize, cost: f64, currency: Arc<str> },
+    SubagentStarted { agent_id: Arc<str>, task: Arc<str>, index: u32 },
+    SubagentCompleted { agent_id: Arc<str>, index: u32, summary: Arc<str>, tool_count: u32 },
+    SubagentError { agent_id: Arc<str>, index: u32, error: Arc<str> },
+    Text { agent_id: Option<Arc<str>>, content: Arc<str> },
 }
 ```
 
@@ -504,7 +508,7 @@ finalize_response()
 process_history() ──▶ 识别被驱逐消息
     │
     ▼
-ContextCompactor::try_compact(key, estimated_tokens)
+ContextCompactor::try_compact(key, current_tokens)
     │
     ├──▶ token_budget 未超限? ──▶ 返回
     │

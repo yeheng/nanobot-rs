@@ -76,7 +76,7 @@ agents:
 1. **使用 Vault 加密**（最安全）：
 ```bash
 # 设置密码
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # 存储 API Key
 gasket vault set openrouter_api_key sk-or-v1-xxx
@@ -130,8 +130,8 @@ agents:
 # 方式 1: 交互模式中使用命令
 You: /new
 
-# 方式 2: 命令行参数
-gasket agent --new
+# 方式 2: 交互式命令
+在 `gasket agent` 交互模式中输入 `/new`
 
 # 方式 3: 删除数据库（彻底清空）
 rm ~/.gasket/gasket.db
@@ -177,13 +177,10 @@ rm ~/.gasket/gasket.db
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # 只允许列表中的命令
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
-    # 或 deny_list - 只禁止特定命令
+    # 注意：exec 工具的安全策略通过 policy 配置管理
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
     # 或 allow_all - 允许所有（危险！）
 ```
 
@@ -229,7 +226,7 @@ tools:
 channels:
   telegram:
     token: "123456:ABC-DEF..."
-    allowed_users: []  # 留空允许所有人
+    allow_from: []  # 留空允许所有人
 ```
 
 5. 启动：`gasket gateway`
@@ -258,7 +255,7 @@ channels:
 channels:
   telegram:
     token: "..."
-    allowed_users:
+    allow_from:
       - "123456789"   # 你的 Telegram ID
       - "987654321"   # 朋友的 ID
 ```

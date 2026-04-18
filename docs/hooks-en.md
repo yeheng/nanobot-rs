@@ -55,13 +55,13 @@ flowchart TB
     end
 ```
 
-| Hook Point | When It Runs | Can Modify? | Can Stop? |
-|------------|--------------|-------------|-----------|
-| **BeforeRequest** | First thing when request arrives | ✅ Yes | ✅ Yes |
-| **AfterHistory** | After loading conversation history | ✅ Yes | ❌ No |
-| **BeforeLLM** | Before sending to AI | ✅ Yes | ❌ No |
-| **AfterToolCall** | After tool execution | ❌ No (read-only) | ❌ No |
-| **AfterResponse** | After getting response | ❌ No (read-only) | ❌ No |
+| Hook Point | When It Runs | Can Modify? | Can Stop? | Notes |
+|------------|--------------|-------------|-----------|-------|
+| **BeforeRequest** | First thing when request arrives | ✅ Yes | ✅ Yes | |
+| **AfterHistory** | After loading conversation history | ✅ Yes | ❌ No | |
+| **BeforeLLM** | Before sending to AI | ✅ Yes | ❌ No | |
+| **AfterToolCall** | After tool execution | ❌ No (read-only) | ❌ No | Defined but not yet triggered in codebase |
+| **AfterResponse** | After getting response | ❌ No (read-only) | ❌ No | |
 
 ---
 
@@ -378,11 +378,13 @@ Data passed to hooks:
 
 ```rust
 struct HookContext {
-    session_key: SessionKey,    // Who is chatting
-    messages: Vec<ChatMessage>, // Conversation
-    metadata: HashMap,          // Custom data
-    user_input: String,         // Raw input
-    response: Option<String>,   // AI response (if available)
+    session_key: SessionKey,      // Who is chatting
+    messages: Vec<ChatMessage>,   // Conversation
+    user_input: Option<String>,   // Raw input
+    response: Option<String>,     // AI response (if available)
+    tool_calls: Option<Vec<ToolCallInfo>>, // Tool calls made
+    token_usage: Option<TokenUsage>,       // Token usage stats
+    vault_values: Vec<String>,    // Secrets collected for redaction
 }
 ```
 

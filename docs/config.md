@@ -102,7 +102,7 @@ channels:
   # Telegram
   telegram:
     token: your-bot-token
-    allowed_users: []  # 空数组允许所有用户
+    allow_from: []  # 空数组允许所有用户
   
   # Discord
   discord:
@@ -131,19 +131,10 @@ channels:
 tools:
   # Shell 执行配置
   exec:
-    # 命令策略：allow_all / deny_all / allow_list
-    command_policy: allow_list
-    
-    # 允许的命令列表（当 policy 为 allow_list）
-    allowed_commands:
-      - git
-      - cargo
-      - npm
-      - python3
-      - curl
-      - ls
-      - cat
-      - grep
+    # 命令策略：allowlist + denylist
+    policy:
+      allowlist: ["git", "cargo", "npm", "python3", "curl", "ls", "cat", "grep"]
+      denylist: ["rm", "sudo", "dd"]
     
     # 超时设置（秒）
     default_timeout: 30
@@ -290,7 +281,8 @@ agents:
 
 tools:
   exec:
-    command_policy: deny_all  # 生产环境禁用命令执行
+    policy:
+      allowlist: []  # 生产环境禁用命令执行
 ```
 
 使用：
@@ -306,7 +298,7 @@ GASKET_CONFIG=~/.gasket/config.prod.yaml gasket gateway
 | 变量 | 说明 | 优先级 |
 |------|------|--------|
 | `GASKET_CONFIG` | 配置文件路径 | 最高 |
-| `GASKET_VAULT_PASSWORD` | Vault 加密密码 | - |
+| `GASKET_MASTER_PASSWORD` | Vault 加密密码 | - |
 | `RUST_LOG` | 日志级别 | 覆盖配置 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry 端点 | 覆盖配置 |
 | `OPENROUTER_API_KEY` | API Key（可被 config 引用） | - |

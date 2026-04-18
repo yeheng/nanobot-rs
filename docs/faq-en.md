@@ -76,7 +76,7 @@ agents:
 1. **Use Vault encryption** (most secure):
 ```bash
 # Set password
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # Store API Key
 gasket vault set openrouter_api_key sk-or-v1-xxx
@@ -130,8 +130,8 @@ agents:
 # Method 1: Use command in interactive mode
 You: /new
 
-# Method 2: Command line argument
-gasket agent --new
+# Method 2: Interactive command
+Type /new in the gasket agent interactive session
 
 # Method 3: Delete database (complete reset)
 rm ~/.gasket/gasket.db
@@ -177,13 +177,10 @@ You: Remember I prefer spaces over tabs
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # Only allow specific commands
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
-    # Or deny_list - only block specific commands
+    # Note: exec tool safety policy is managed via policy config
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
     # Or allow_all - allow everything (dangerous!)
 ```
 
@@ -229,7 +226,7 @@ Free search options:
 channels:
   telegram:
     token: "123456:ABC-DEF..."
-    allowed_users: []  # Empty allows everyone
+    allow_from: []  # Empty allows everyone
 ```
 
 5. Start: `gasket gateway`
@@ -258,7 +255,7 @@ channels:
 channels:
   telegram:
     token: "..."
-    allowed_users:
+    allow_from:
       - "123456789"   # Your Telegram ID
       - "987654321"   # Friend's ID
 ```

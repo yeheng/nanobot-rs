@@ -34,7 +34,7 @@ rustc --version
 
 ```bash
 # 克隆代码
-git clone https://github.com/YeHeng/gasket-rs.git
+git clone https://github.com/YeHeng/gasket.git
 cd gasket-rs
 
 # 编译（喝杯咖啡，大约需要 2-5 分钟）
@@ -161,8 +161,8 @@ for i in range(10):
 # 单次对话（非交互）
 gasket agent -m "你好"
 
-# 开启新对话
-gasket agent --new
+# 开启新对话（在交互模式中输入 /new）
+gasket agent
 
 # 使用指定模型
 gasket agent --model deepseek/deepseek-chat

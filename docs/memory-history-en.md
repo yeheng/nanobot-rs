@@ -195,12 +195,12 @@ flowchart LR
     Hot --> Warm --> Cold --> Archive
 ```
 
-| Temperature | Load Strategy | Access Frequency |
-|-------------|---------------|------------------|
-| Hot | Always in context | Every conversation |
-| Warm | If topic matches | Often |
-| Cold | Search to find | Rarely |
-| Archived | Not loaded unless asked | Almost never |
+| Temperature | Load Strategy | Access Frequency | Decay Threshold |
+|-------------|---------------|------------------|-----------------|
+| Hot | Always in context | Every conversation | → Warm after 7 days |
+| Warm | If topic matches | Often | → Cold after 30 days |
+| Cold | Search to find | Rarely | → Archived after 90 days |
+| Archived | Not loaded unless asked | Almost never | — |
 
 ### Three-Phase Memory Loading
 
@@ -249,9 +249,9 @@ flowchart TB
         
         subgraph HistCol["📒 History"]
             H1["Automatic recording"]
-            H2["Short-term (last 50 msg)"]
+            H2["Permanent in SQLite"]
             H3["Raw conversation"]
-            H4["Deleted after session"]
+            H4["Survives restart"]
         end
         
         subgraph MemCol["📚 Memory"]
@@ -270,10 +270,10 @@ flowchart TB
 |--------|---------|--------|
 | **What** | Conversation log | Curated knowledge |
 | **When** | Automatic | Extracted/created manually |
-| **How long** | Recent only | Forever |
+| **How long** | Forever (compacted) | Forever |
 | **Format** | Raw messages | Structured files |
-| **Storage** | SQLite | Markdown files |
-| **Persistence** | Session only | Permanent |
+| **Storage** | SQLite (`session_events`) | Markdown files |
+| **Persistence** | Permanent | Permanent |
 | **Growth** | Linear (every message) | Curated (important only) |
 
 ---

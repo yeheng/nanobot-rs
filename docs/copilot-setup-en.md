@@ -1,115 +1,61 @@
 # GitHub Copilot Configuration Guide
 
-> How to use GitHub Copilot as an LLM provider in Gasket
+Gasket supports GitHub Copilot as an LLM provider. We offer two authentication methods: **OAuth Device Flow (Recommended)** and **PAT (Personal Access Token)**.
+
+## Method 1: OAuth Device Flow (Recommended)
+
+Use the OAuth device flow to authenticate with your GitHub account that has a Copilot subscription.
+
+### Steps
+
+1. Run the following command in your terminal:
+   ```bash
+   gasket auth copilot
+   ```
+2. The terminal will output a device code and a GitHub verification URL.
+3. Copy the device code, open the verification URL in your browser, and paste the code.
+4. Authorize the application to access your GitHub account in the browser.
+5. After authorization, the terminal will show `Successfully authenticated!` and automatically save the token to `~/.gasket/config.yaml`.
+
+> **Note**: Some GitHub accounts may restrict third-party clients from obtaining Copilot tokens via OAuth. If this method fails, try Method 2 (PAT) below.
 
 ---
 
-## Overview
+## Method 2: PAT Authorization (Personal Access Token)
 
-GitHub Copilot can be used as an LLM provider in Gasket through two authentication methods:
+If you cannot use OAuth, or need to use Copilot in a headless environment (e.g., a server), you can generate a Personal Access Token (PAT).
 
-1. **PAT (Personal Access Token)** - Easier setup, but rate limited
-2. **OAuth** - More complex setup, higher rate limits
+### Steps
 
----
+1. Log in to GitHub and visit [Personal Access Tokens (Tokens (classic))](https://github.com/settings/tokens).
+2. Click **Generate new token (classic)**.
+3. Fill in the Note (e.g., `gasket-copilot`), and **make sure to check the `copilot` scope**.
+   *(If you don't see the `copilot` option, ensure your account has a GitHub Copilot subscription.)*
+4. Click Generate and copy the token (`ghp_...`).
+5. Run the following command in your terminal to complete the setup:
+   ```bash
+   gasket auth copilot --pat <your-pat-token>
+   ```
 
-## Method 1: Personal Access Token (PAT)
-
-### Step 1: Get GitHub Token
-
-1. Visit [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
-2. Click "Generate new token (classic)"
-3. Select scopes: `read:user`, `repo`
-4. Generate and copy the token
-
-### Step 2: Configure Gasket
-
-```yaml
-providers:
-  copilot:
-    pat: ghp_your_token_here
-```
-
-### Limitations
-
-- Lower rate limits
-- May be subject to Copilot's usage policies
-- Not recommended for production use
+After successful validation, the terminal will show "Token validated successfully" and automatically save the configuration.
 
 ---
 
-## Method 2: OAuth Authentication
+## Switching to Copilot as the Default Model
 
-### Step 1: Register OAuth App
+Regardless of the authentication method, after successful authentication, you can set Copilot as the default model in two ways:
 
-1. Visit [GitHub Settings → Developer settings → OAuth Apps](https://github.com/settings/developers)
-2. Click "New OAuth App"
-3. Fill in:
-   - Application name: `Gasket`
-   - Homepage URL: `http://localhost`
-   - Authorization callback URL: `http://localhost:8080/callback`
-4. Save and note the Client ID and Client Secret
-
-### Step 2: Get OAuth Token
-
-Run Gasket's OAuth flow:
-
+### 1. Temporary Use (Command-line Argument)
 ```bash
-gasket copilot auth
+gasket agent -m copilot/gpt-4o
 ```
 
-This will:
-1. Open browser for GitHub authorization
-2. Save the OAuth token to `~/.gasket/copilot-token.json`
-
-### Step 3: Configure Gasket
-
+### 2. Permanent Configuration (Edit Config File)
+Open `~/.gasket/config.yaml` and set the default model to `copilot/gpt-4o`:
 ```yaml
-providers:
-  copilot:
-    oauth_token_path: ~/.gasket/copilot-token.json
-```
-
----
-
-## Using Copilot in Gasket
-
-### Configuration
-
-```yaml
-providers:
-  copilot:
-    pat: ${COPILOT_PAT}  # or oauth_token_path
-
 agents:
   defaults:
-    model: copilot/copilot-chat
+    model: copilot/gpt-4o
 ```
 
-### Available Models
-
-| Model | Description |
-|-------|-------------|
-| `copilot/copilot-chat` | Standard Copilot chat model |
-| `copilot/copilot-chat-prompt` | Optimized for prompt completion |
-
----
-
-## Troubleshooting
-
-### "Authentication failed"
-
-- Check if token is expired
-- For OAuth, re-run `gasket copilot auth`
-- Verify token has required scopes
-
-### "Rate limit exceeded"
-
-- Switch to OAuth method for higher limits
-- Add rate limiting in your application
-- Consider using other providers as fallback
-
-### "Model not available"
-
-- Ensure your GitHub account has Copilot subscription
-- Check if Copilot is enabled in your account
+Now you can use the powerful GitHub Copilot model in CLI, Telegram, or other channels.

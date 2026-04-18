@@ -95,11 +95,16 @@ pub struct SessionEvent {
 
 // 3. 流式优先设计
 pub enum StreamEvent {
-    Content(String),
-    Reasoning(String),
-    ToolStart { name: String, arguments: String },
-    ToolEnd { name: String, output: Option<String> },
-    TokenStats { input: u32, output: u32, cost: f64 },
+    Thinking { agent_id: Option<Arc<str>>, content: Arc<str> },
+    ToolStart { agent_id: Option<Arc<str>>, name: Arc<str>, arguments: Option<Arc<str>> },
+    ToolEnd { agent_id: Option<Arc<str>>, name: Arc<str>, output: Option<Arc<str>> },
+    Content { agent_id: Option<Arc<str>>, content: Arc<str> },
+    Done { agent_id: Option<Arc<str>> },
+    TokenStats { agent_id: Option<Arc<str>>, input_tokens: usize, output_tokens: usize, total_tokens: usize, cost: f64, currency: Arc<str> },
+    SubagentStarted { agent_id: Arc<str>, task: Arc<str>, index: u32 },
+    SubagentCompleted { agent_id: Arc<str>, index: u32, summary: Arc<str>, tool_count: u32 },
+    SubagentError { agent_id: Arc<str>, index: u32, error: Arc<str> },
+    Text { agent_id: Option<Arc<str>>, content: Arc<str> },
     Done,
 }
 ```
@@ -342,8 +347,7 @@ async fn prepare_pipeline(&self, content: &str, session_key: &SessionKey)
     let hook_ctx = MutableContext { ... };
     match hooks.execute(HookPoint::BeforeRequest, &mut hook_ctx).await? {
         HookAction::Abort(msg) => return Ok(BuildOutcome::Aborted(msg)),
-        HookAction::Modify => { /* 应用修改 */ }
-        HookAction::Continue => {}
+        HookAction::Continue => { /* modifications applied via mutable ctx */ }
     }
     
     // 2. 保存用户消息到 EventStore
@@ -415,7 +419,7 @@ async fn finalize_response(
     
     // 2. 触发上下文压缩（如需要）
     if ctx.estimated_tokens > config.token_budget {
-        compactor.try_compact(ctx.session_key, ctx.estimated_tokens);
+        compactor.try_compact(&ctx.session_key, ctx.current_tokens);
     }
     
     // 3. 执行 AfterResponse Hooks（并行，只读）
@@ -439,7 +443,7 @@ pub struct ContextCompactor {
 
 impl ContextCompactor {
     /// 非阻塞触发压缩检查
-    pub fn try_compact(&self, session_key: &str, estimated_tokens: usize, vault_values: &[String]) {
+    pub fn try_compact(&self, session_key: &SessionKey, current_tokens: usize) -> Option<CompactionResult> {
         if estimated_tokens < self.token_budget {
             return;
         }

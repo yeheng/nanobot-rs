@@ -159,10 +159,10 @@ agents:
 Usage:
 
 ```rust
-// Use alias
-.spawn_with_model(task, "fast")
-.spawn_with_model(task, "coder")
-.spawn_with_model(task, "reasoner")
+// Use alias via TaskSpec::with_model()
+TaskSpec::new("sub-1", task).with_model("fast")
+TaskSpec::new("sub-1", task).with_model("coder")
+TaskSpec::new("sub-1", task).with_model("reasoner")
 ```
 
 ---

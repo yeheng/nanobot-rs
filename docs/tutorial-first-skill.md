@@ -35,7 +35,7 @@
 name: code-review
 description: 专业的代码审查助手，帮助检查代码质量和风格
 tags: [code, review, development]
-always_load: false  # 按需加载
+always: false  # 按需加载
 ---
 
 # 代码审查专家
@@ -276,13 +276,11 @@ const query = `SELECT * FROM users WHERE id = ${userId}`;
 
 ```bash
 # 导出技能
-gasket skill export code-review > code-review.skill
 
 # 分享给朋友
 cp code-review.skill /path/to/share/
 
 # 导入技能
-gasket skill import code-review.skill
 ```
 
 ---

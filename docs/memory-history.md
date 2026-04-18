@@ -79,7 +79,7 @@ flowchart TB
     
     subgraph 压缩后
         C[摘要: 用户要写Python计算器，已实现加减乘除]
-        D[保留最近3轮]
+        D[保留 watermark 之后的事件]
     end
     
     A1 --> B
@@ -164,9 +164,9 @@ flowchart TB
         A1[很久以前的项目]
     end
     
-    H1 -->|7天未访问| W1
-    W1 -->|30天未访问| C1
-    C1 -->|90天未访问| A1
+    H1 -->|7天未访问 → Warm| W1
+    W1 -->|30天未访问 → Cold| C1
+    C1 -->|90天未访问 → Archived| A1
 ```
 
 ### 三阶段记忆加载

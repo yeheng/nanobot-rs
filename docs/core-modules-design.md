@@ -447,7 +447,7 @@ pub struct ContextCompactor {
 
 impl ContextCompactor {
     /// 触发压缩检查（非阻塞）
-    pub fn try_compact(&self, session_key: &str, estimated_tokens: usize, vault_values: &[String]) {
+    pub fn try_compact(&self, session_key: &SessionKey, current_tokens: usize) -> Option<CompactionResult> {
         if estimated_tokens < self.token_budget {
             return;
         }
@@ -1124,7 +1124,7 @@ async fn finalize_response(
     // 3. 触发上下文压缩（非阻塞）
     if ctx.estimated_tokens > 0 {
         if let Some(compactor) = compactor {
-            compactor.try_compact(&ctx.session_key_str, ctx.estimated_tokens, &ctx.local_vault_values);
+            compactor.try_compact(&ctx.session_key, ctx.current_tokens);
         }
     }
 
@@ -1583,8 +1583,6 @@ CREATE TABLE sessions_v2 (
     key TEXT PRIMARY KEY,
     channel TEXT NOT NULL DEFAULT '',
     chat_id TEXT NOT NULL DEFAULT '',
-    current_branch TEXT NOT NULL DEFAULT 'main',
-    branches TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_consolidated_event TEXT,
@@ -1601,7 +1599,6 @@ CREATE TABLE session_events (
     event_type TEXT NOT NULL,
     content TEXT NOT NULL,
     embedding BLOB,
-    branch TEXT DEFAULT 'main',
     tools_used TEXT DEFAULT '[]',
     token_usage TEXT,
     token_len INTEGER NOT NULL DEFAULT 0,
@@ -1656,7 +1653,7 @@ CREATE TABLE kv_store (
 
 | 索引名 | 字段 | 用途 |
 |--------|------|------|
-| `idx_events_session_branch` | `(session_key, branch)` | 快速会话查询 |
+| `idx_events_session_sequence` | `(session_key, sequence)` | 快速会话查询 |
 | `idx_events_session_type_created` | `(session_key, event_type, created_at)` | 查找最新摘要 |
 | `idx_events_session_sequence` | `(session_key, sequence)` | 水位线 GC |
 | `idx_meta_scenario_freq` | `(scenario, frequency)` | 生命周期管理 |
@@ -1684,7 +1681,6 @@ pub fn create_pool(db_path: &str) -> Result<SqlitePool> {
 /// 多维历史查询
 pub struct HistoryQuery {
     pub session_key: String,
-    pub branch: Option<String>,                 // 多分支支持
     pub time_range: Option<TimeRange>,          // 时间范围过滤
     pub event_types: Vec<String>,               // 事件类型过滤
     pub semantic_query: Option<SemanticQuery>,  // 语义搜索
@@ -2780,8 +2776,7 @@ impl HookRegistry {
         for hook in self.hooks_for(point) {
             match hook.run(ctx).await? {
                 HookAction::Abort(msg) => return Ok(HookAction::Abort(msg)),
-                HookAction::Modify => { /* 应用修改 */ }
-                HookAction::Continue => {}
+                HookAction::Continue => { /* modifications applied via mutable ctx */ }
             }
         }
         Ok(HookAction::Continue)

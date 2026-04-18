@@ -1,338 +1,404 @@
 # Cron Module
 
-> AI's Alarm Clock
+> AI's Alarm Clock + To-Do List
 
 ---
 
 ## One-Sentence Understanding
 
-**Cron is AI's alarm clock** - it wakes up the AI at scheduled times to perform tasks automatically.
+**Cron is AI's alarm clock + to-do list.** When the time comes, AI automatically executes preset tasks.
 
-> Analogy: Like setting an alarm to wake you up, or a reminder to take medicine at specific times.
+```mermaid
+flowchart LR
+    A[Set time] --> B[Time's up] --> C[AI executes automatically] --> D[Send result]
+```
 
 ---
 
-## Why Do We Need Cron?
+## Real-Life Examples
+
+| Scenario | Similar to Cron... |
+|----------|--------------------|
+| Phone alarm rings at 7am daily | Send good morning message daily at 7am |
+| Calendar reminder for Monday meeting | Send weekly report reminder every Monday |
+| Timer to turn off stove in 30 min | Remind to check tasks after 30 minutes |
+| Birthday reminder sends wishes yearly | Send wishes automatically every year |
+
+---
+
+## What Cron Can Do
+
+```mermaid
+mindmap
+  root((Cron Scheduled Tasks))
+    Information Retrieval
+      Daily weather query
+      Weekly news fetch
+      Periodic website status check
+    Report Generation
+      Daily data summary
+      Weekly report auto-generation
+      System health report
+    Maintenance Tasks
+      Auto cleanup old files
+      Database backup
+      Log archiving
+    Reminder Notifications
+      Meeting reminders
+      Deadline reminders
+      Anniversary wishes
+```
+
+---
+
+## Composition of Scheduled Tasks
+
+Each scheduled task contains:
 
 ```mermaid
 flowchart TB
-    subgraph Without["❌ Without Cron"]
-        U1["User: Check server status daily"]
-        Forget["User forgets..."] --> Problem["Server down 3 days!"]
+    subgraph A Scheduled Task
+        A[When to execute<br/>Cron expression]
+        B[What to do<br/>Task content]
+        C[Send to whom<br/>Target channel]
+        D[Enabled status<br/>On/Off]
     end
-    
-    subgraph With["✅ With Cron"]
-        U2["User: Set daily check at 9am"]
-        Cron["Cron wakes AI"] --> Check["Auto check server"]
-        Check --> Report["Send report to user"]
+
+    A --> E[Task execution]
+    B --> E
+    C --> E
+    D --> E
+```
+
+### 1. When to Execute? (Cron Expression)
+
+The Cron expression is a time format that tells the system **when** to execute the task:
+
+```mermaid
+flowchart LR
+    subgraph Time Format
+        S[Seconds] --> M[Minute]
+        M --> H[Hour]
+        H --> D[Day]
+        D --> Mo[Month]
+        Mo --> W[Weekday]
     end
 ```
 
-Without Cron: You must remember to do things.
-With Cron: AI automatically does things at scheduled times.
+The implementation supports **6-field** (`sec min hour day month weekday`) or **7-field** (with year) Cron expressions. 5-field input is auto-normalized by prepending `0` for seconds. The `cron` tool explicitly documents the 7-field format.
+
+| Expression | Meaning | Example |
+|------------|---------|---------|
+| `0 0 9 * * *` | Every day at 9:00 | Daily morning report at 9am |
+| `0 0 */6 * * *` | Every 6 hours | Check email every 6 hours |
+| `0 0 9 * * 1` | Every Monday at 9:00 | Weekly report reminder every Monday |
+| `0 0 0 1 * *` | 1st of every month | Monthly report on the 1st |
+| `0 */5 * * * *` | Every 5 minutes | Check system status every 5 minutes |
+
+### 2. What to Do? (Task Content)
+
+Task content tells AI what operation to perform:
+
+```mermaid
+flowchart TB
+    subgraph Task Types
+        A1[Let AI think and process<br/>Send prompt to AI]
+        A2[Execute tool directly<br/>e.g., send email]
+    end
+
+    A1 --> B1[Example: Query today's weather<br/>Compile into report]
+    A2 --> B2[Example: Execute backup script]
+```
+
+### 3. Send to Whom? (Target Channel)
+
+Task execution results can be sent to:
+
+```mermaid
+flowchart LR
+    R[Task result] --> T[Telegram]
+    R --> D[Discord]
+    R --> S[Slack]
+    R --> W[Webhook]
+    R --> L[Local log]
+```
 
 ---
 
-## How It Works
+## System Architecture
+
+### File Storage Design
+
+Cron jobs are defined as Markdown files with YAML frontmatter in `~/.gasket/cron/*.md`:
+
+```mermaid
+flowchart TB
+    subgraph Config Files
+        F1[morning-weather.md]
+        F2[daily-report.md]
+        F3[weekly-backup.md]
+    end
+
+    subgraph Each File Contains
+        C1[Time setting<br/>cron: 0 0 9 * * *]
+        C2[Task content<br/>Query weather and report]
+        C3[Target setting<br/>channel: telegram]
+    end
+
+    F1 --> C1
+    F2 --> C2
+    F3 --> C3
+```
+
+### Execution Flow
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant HEARTBEAT as HEARTBEAT.md
-    participant Service as CronService
-    participant DB[(SQLite)]
-    participant AI as Gasket AI
-    
-    User->>HEARTBEAT: Write scheduled task
-    HEARTBEAT-->Service: File watch detects
-    Service->>DB: Store job
-    
+    participant Clock as System Clock
+    participant Cron as Cron Service
+    participant File as Task Files
+    participant DB as State Storage
+    participant AI as AI Brain
+    participant User as User
+
+    Note over Cron: Check once per minute
+
     loop Every minute
-        Service->>Service: Check due jobs
-        Service->>AI: Trigger execution
-        AI->>AI: Process task
-        AI-->>User: Send result
-        Service->>DB: Update last_run
+        Cron->>File: Read all task configs
+        Cron->>DB: Query last execution time
+        Cron->>Cron: Calculate next execution time
+
+        alt Time to execute
+            Cron->>AI: Trigger task execution
+            AI->>AI: Process task content
+            AI-->>User: Send result
+            Cron->>DB: Update execution state
+        else Not yet time
+            Cron->>Cron: Continue waiting
+        end
     end
 ```
 
 ---
 
-## Cron Expression Format
+## Hybrid Architecture Design
 
-Cron uses a time expression to specify when to run:
-
-```
-┌───────────── minute (0 - 59)
-│ ┌───────────── hour (0 - 23)
-│ │ ┌───────────── day of month (1 - 31)
-│ │ │ ┌───────────── month (1 - 12)
-│ │ │ │ ┌───────────── day of week (0 - 6, Sunday = 0)
-│ │ │ │ │
-│ │ │ │ │
-* * * * *
-```
-
-### Common Patterns
-
-| Expression | Meaning | When It Runs |
-|------------|---------|--------------|
-| `0 9 * * *` | Every day at 9:00 AM | Daily morning |
-| `0 */6 * * *` | Every 6 hours | 00:00, 06:00, 12:00, 18:00 |
-| `0 9 * * 1` | Every Monday at 9:00 AM | Weekly |
-| `0 9 1 * *` | 1st of every month at 9:00 AM | Monthly |
-| `*/5 * * * *` | Every 5 minutes | Frequent checks |
-
-```mermaid
-timeline
-    title Daily Schedule Example (0 9 * * *)
-    section Morning
-        09:00 : Task runs
-    section Afternoon
-        12:00 : (No run)
-    section Evening
-        18:00 : (No run)
-    section Night
-        00:00 : (No run)
-```
-
----
-
-## Defining Cron Jobs
-
-### Method 1: HEARTBEAT.md File
-
-Create `~/.gasket/HEARTBEAT.md`:
-
-```markdown
-## Daily Report
-- cron: 0 9 * * *
-- message: Generate daily summary report
-
-## Weekly Review
-- cron: 0 10 * * 1
-- message: Review weekly progress and plan next week
-
-## Health Check
-- cron: */30 * * * *
-- message: Check server health status
-```
-
-### Method 2: Via Tool Call
-
-```
-User: Set a reminder every morning at 8am
-
-🤖 Gasket uses cron tool:
-```json
-{
-  "action": "create",
-  "name": "morning-reminder",
-  "cron": "0 8 * * *",
-  "message": "Good morning! Start your day with planning."
-}
-```
-```
-
----
-
-## Job Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Created: User defines job
-    Created --> Scheduled: Parse cron expression
-    Scheduled --> Due: Time matches
-    Due --> Executing: Trigger AI
-    Executing --> Success: Complete
-    Executing --> Failed: Error
-    Success --> Scheduled: Update next_run
-    Failed --> Scheduled: Retry later
-    Scheduled --> Disabled: User disables
-    Disabled --> Scheduled: User enables
-    Scheduled --> Deleted: User deletes
-    Deleted --> [*]
-```
-
----
-
-## Architecture
-
-### Hybrid Design
+Cron uses a **file + database** hybrid design:
 
 ```mermaid
 flowchart TB
-    subgraph SSOT["Single Source of Truth"]
-        File[HEARTBEAT.md]
+    subgraph Config Layer (Files)
+        F[Task definition files<br/>.md format]
+        F1[Human-editable]
+        F2[Version control friendly]
+        F3[Hot reload support]
     end
-    
-    subgraph State["State Management"]
-        SQLite[(cron_jobs table)]
+
+    subgraph State Layer (Database)
+        D[SQLite database]
+        D1[Last execution time]
+        D2[Next execution time]
+        D3[Execution count stats]
     end
-    
-    subgraph Execution["Execution"]
-        Service[CronService]
-        AI[Gasket AI]
+
+    subgraph Memory Layer (Runtime)
+        M[Task scheduler]
+        M1[Cache task list]
+        M2[Calculate execution time]
+        M3[Trigger execution]
     end
-    
-    File -->|Sync| SQLite
-    Service -->|Read| SQLite
-    Service -->|Trigger| AI
-    AI -->|Update| SQLite
+
+    F --> M
+    D --> M
+    M --> D
 ```
 
-| Component | Purpose | Why |
-|-----------|---------|-----|
-| HEARTBEAT.md | Human-readable definition | Easy to edit, version control |
-| SQLite | Runtime state | Fast queries, persistence |
-| CronService | Scheduling engine | Accurate timing |
+**Why this design?**
+- **Files store config**: You can edit files directly, manage with Git, clear at a glance
+- **Database stores state**: Records last execution time, won't lose on restart, can detect missed tasks
 
 ### Database Schema
 
 ```sql
-CREATE TABLE cron_jobs (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    cron TEXT NOT NULL,           -- Cron expression
-    message TEXT NOT NULL,        -- Message to send
-    channel TEXT,                 -- Target channel
-    chat_id TEXT,                 -- Target chat
-    last_run TEXT,                -- Last execution time
-    next_run TEXT NOT NULL,       -- Next scheduled time
-    enabled INTEGER DEFAULT 1,    -- Is active?
-    created_at TEXT
+CREATE TABLE cron_state (
+    job_id TEXT PRIMARY KEY,
+    last_run TIMESTAMP,
+    next_run TIMESTAMP
 );
 ```
 
 ---
 
-## Execution Flow
+## Actual Usage Scenarios
+
+### Scenario 1: Daily Weather Report
 
 ```mermaid
 sequenceDiagram
-    participant Cron as CronService
-    participant DB as SQLite
-    participant Router as Router Actor
-    participant Session as Session Actor
-    participant AI as Gasket AI
-    participant User as User
-    
-    loop Every 60 seconds
-        Cron->>DB: Query jobs where next_run <= now
-        DB-->>Cron: List of due jobs
-        
-        loop For each due job
-            Cron->>Cron: Calculate next_run
-            Cron->>DB: Update next_run
-            
-            Cron->>Router: Send InboundMessage
-            Router->>Session: Route to session
-            Session->>AI: Process as normal message
-            AI->>AI: Execute task logic
-            AI-->>User: Send result
-        end
-    end
+    participant Time as Every day 9:00
+    participant Cron as Cron Service
+    participant AI as AI Brain
+    participant API as Weather API
+    participant User as User's Phone
+
+    Time->>Cron: Trigger task
+    Cron->>AI: Execute: query Guangzhou weather
+    AI->>API: Fetch weather data
+    API-->>AI: Return weather info
+    AI->>AI: Format into friendly message
+    AI-->>User: Send: Today Guangzhou is sunny, 25°C...
 ```
 
-Key points:
-1. Cron jobs are treated as **inbound messages**
-2. They go through the same **Router → Session** pipeline
-3. AI processes them **like normal user messages**
-
+**Task file example:**
+```markdown
+---
+name: Daily Weather
+cron: "0 0 9 * * *"
+channel: telegram
+to: "User ID"
 ---
 
-## Use Cases
-
-### Daily Standup Reminder
-
-```markdown
-## Daily Standup
-- cron: 0 9 * * 1-5
-- message: Generate daily standup summary from yesterday's commits
+Query Guangzhou today and next three days' weather,
+send to user in a friendly tone.
 ```
 
-### Weekly Report
-
-```markdown
-## Weekly Report
-- cron: 0 17 * * 5
-- message: Generate weekly work summary and send to manager
-```
-
-### Health Monitoring
-
-```markdown
-## Health Check
-- cron: */5 * * * *
-- message: Check all service health endpoints and alert if issues found
-```
-
-### Data Backup
-
-```markdown
-## Backup Reminder
-- cron: 0 2 * * *
-- message: Remind to backup important data
-```
-
----
-
-## Cron vs Heartbeat
-
-| Feature | Cron | Heartbeat |
-|---------|------|-----------|
-| **Schedule** | Flexible (any cron expression) | Simple interval |
-| **Source** | HEARTBEAT.md or tool calls | HEARTBEAT.md only |
-| **Precision** | Minute-level | Hour-level |
-| **Use case** | Scheduled tasks | Regular check-ins |
+### Scenario 2: System Auto-Maintenance
 
 ```mermaid
 flowchart TB
-    subgraph CronJobs["⏰ Cron Jobs"]
-        C1["Every day at 9am"]
-        C2["Every Monday"]
-        C3["Every 5 minutes"]
+    subgraph System Maintenance Tasks
+        T1[Every 6 hours<br/>Refresh memory index]
+        T2[Every 6 hours<br/>Clean expired memory]
+        T3[Every hour<br/>Check cron config updates]
     end
-    
-    subgraph Heartbeat["💓 Heartbeat"]
-        H1["Every hour"]
-        H2["Check for tasks"]
-    end
+
+    T1 --> M[Memory System]
+    T2 --> M
+    T3 --> C[Cron Service]
+```
+
+These tasks **execute tools directly**, bypassing AI, zero cost:
+- `system-memory-decay`: Clean expired memory
+- `system-memory-refresh`: Refresh memory index
+- `system-cron-refresh`: Reload task configuration
+
+### Scenario 3: Missed Task Catch-up
+
+```mermaid
+sequenceDiagram
+    participant System as System Startup
+    participant Cron as Cron Service
+    participant Task as Daily Backup Task
+    participant User as User
+
+    Note over System: System was down for 8 hours last night
+
+    System->>Cron: Start service
+    Cron->>Task: Check last execution time
+    Task-->>Cron: Executed yesterday at 9:00
+    Cron->>Cron: Next should be today 9:00
+    Cron->>Cron: Now 10:00, already missed!
+    Cron->>Task: Execute catch-up immediately
+    Task->>User: Send backup completion notification
 ```
 
 ---
 
-## Management Commands
+## Task Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: Add task file
+    Created --> Enabled: Enable task
+    Enabled --> Waiting: Calculate next execution time
+    Waiting --> Executing: Time reached
+    Executing --> Completed: Execution successful
+    Completed --> Waiting: Calculate next execution time
+    Executing --> Failed: Execution failed
+    Failed --> Waiting: Log error, wait for next time
+    Enabled --> Disabled: Manual disable
+    Disabled --> Enabled: Manual enable
+    Disabled --> [*]: Delete file
+```
+
+---
+
+## How to Use
+
+### 1. View All Tasks
 
 ```bash
-# List all cron jobs
 gasket cron list
+```
 
-# Create a new job
-gasket cron create --name daily-report --cron "0 9 * * *" \
-  --message "Generate daily report"
+Example output:
+```
+Daily Weather
+  Time: Every day 9:00
+  Status: Enabled ✓
+  Next: Tomorrow 9:00
 
-# Enable/disable a job
-gasket cron disable daily-report
-gasket cron enable daily-report
+Weekly Report
+  Time: Every Monday 9:00
+  Status: Enabled ✓
+  Next: Next Monday 9:00
+```
 
-# Delete a job
-gasket cron delete daily-report
+### 2. Add New Task
+
+```bash
+# CLI method
+gasket cron add "Daily Weather" "0 0 9 * * *" "Query Guangzhou weather and send"
+
+# Or create file ~/.gasket/cron/daily-weather.md
+```
+
+### 3. Enable/Disable Task
+
+```bash
+gasket cron enable daily-weather   # Enable
+gasket cron disable daily-weather  # Disable
+```
+
+### 4. Show Task Details
+
+```bash
+gasket cron show daily-weather
+```
+
+### 5. Remove Task
+
+```bash
+gasket cron remove daily-weather
+```
+
+### 6. Refresh Tasks from Disk
+
+```bash
+gasket cron refresh
+```
+
+### 7. Manually Edit Task File
+
+Edit files directly, the system auto-detects changes:
+
+```bash
+vim ~/.gasket/cron/daily-weather.md
+# Save after editing, takes effect immediately, no restart needed
 ```
 
 ---
 
-## Best Practices
+## FAQ
 
-1. **Idempotent Jobs**: Design jobs to be safe if run multiple times
-2. **Error Handling**: Jobs should handle failures gracefully
-3. **Time Zones**: Be aware of server time zone vs user time zone
-4. **Resource Limits**: Don't schedule too many jobs at the same exact time
+**Q: What if the computer was shut down, what about missed tasks?**
+A: The system remembers the next execution time. After booting, it checks for missed tasks and executes them immediately.
 
----
+**Q: Do I need to restart after modifying task files?**
+A: No! The system monitors file changes, changes take effect immediately after saving.
 
-## Related Modules
+**Q: How many tasks can I set?**
+A: No limit, but plan reasonably to avoid too many tasks executing at the same time.
 
-- **Heartbeat**: Simpler interval-based triggering
-- **Tools**: Cron tool for programmatic job management
-- **Session**: Processes triggered jobs
+**Q: Will failed tasks retry?**
+A: Each task executes independently. On failure, it logs and waits for the next execution time to retry.

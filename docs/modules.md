@@ -92,17 +92,17 @@ trait Tool: Send + Sync {
 | `write_file` | filesystem | 写入文件 |
 | `edit_file` | filesystem | 编辑文件 (search/replace) |
 | `list_dir` | filesystem | 列出目录内容 |
-| `exec` | system | 执行 Shell 命令 (带超时 + command_policy) |
+| `exec` | system | 执行 Shell 命令 (带超时 + policy: allowlist/denylist) |
 | `spawn` | system | 创建子代理执行任务 |
 | `spawn_parallel` | system | 并行创建多个子代理 |
 | `web_fetch` | web | HTTP GET 请求 |
 | `web_search` | web | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
-| `send_message` | communication | 通过 Bus 发消息到渠道 |
+| `MessageTool` | communication | 通过 Broker 发消息到渠道 |
 | `cron` | system | 管理定时任务 (CRUD) |
 | `memory_search` | memory | 通过 SQLite MetadataStore 搜索结构化记忆 |
 | `memorize` | memory | 写入结构化长期记忆 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
-| 插件工具 | plugin | 从 `~/.gasket/scripts/` 加载的外部脚本工具 |
+| 插件工具 | plugin | 从 `~/.gasket/plugins/` 加载的外部脚本工具 |
 
 ### 辅助模块
 
@@ -181,10 +181,9 @@ trait Channel: Send + Sync {
 | Discord | `discord` | WebSocket (serenity) | Discord Gateway |
 | Slack | `slack` | WebSocket (tungstenite) | Slack Socket Mode |
 | 飞书 | `feishu` | HTTP Webhook (axum) | 飞书事件订阅 |
-| 邮件 | `email` | IMAP Polling + SMTP | 邮件收发 |
 | 钉钉 | `dingtalk` | HTTP Webhook (axum) | 钉钉回调 |
 | 企业微信 | `wecom` | HTTP Webhook (axum) | 企微回调 |
-| WebSocket | `webhook` | WebSocket (axum) | 实时双向通信 |
+| WebSocket | `websocket` | WebSocket (axum) | 实时双向通信 |
 
 ### middleware 层
 
@@ -223,7 +222,7 @@ trait Channel: Send + Sync {
 
 ---
 
-## 5. bus/ — 消息总线 (Actor 模型)
+## 5. broker/ — 消息总线 (Actor 模型)
 
 ### 模块结构
 
@@ -321,16 +320,16 @@ trait MemoryStore: Send + Sync {
 | `SessionEvent` | 不可变事件，UUID v7，含 session_key, event_type, content, 可选 embedding |
 | `EventType` | UserMessage, AssistantMessage, ToolCall, ToolResult, Summary |
 | `SummaryType` | TimeWindow, Topic, Compression |
-| `EventMetadata` | branch, tools_used, token_usage, content_token_len, extra |
+| `EventMetadata` | tools_used, token_usage, content_token_len, extra |
 | `SessionMetadata` | created_at, updated_at, last_consolidated_event, total_events, total_tokens |
 
 ### 架构特点
 
 - **事件溯源**: 所有消息以不可变事件存储，支持完整历史重建
-- **EventStore** (storage crate): `append_event()`, `get_branch_history()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
+- **EventStore** (storage crate): `append_event()`, `get_events_after_watermark()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
 - **纯 SQLite**: 无内存缓存，直接查询数据库，利用 SQLite page cache
 - **历史处理**: `process_history()` 基于 token budget, recent_keep, max_events 配置
-- **查询系统**: `HistoryQueryBuilder` 支持 branch, time_range, event_types, semantic_query, tools 过滤
+- **查询系统**: `HistoryQueryBuilder` 支持 time_range, event_types, semantic_query, tools 过滤
 
 ---
 
@@ -359,9 +358,12 @@ pub struct AgentSession {
     system_prompt: String,          // 系统提示
     skills_context: Option<String>, // 技能上下文
     hooks: Arc<HookRegistry>,       // Hook 注册表
+    history_config: gasket_storage::HistoryConfig, // 历史配置
     compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
     memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
     indexing_service: Option<Arc<IndexingService>>, // 索引服务
+    pricing: Option<ModelPricing>,  // 可选价格配置
+    pending_done: tokio_util::task::TaskTracker, // 优雅关闭追踪器
 }
 ```
 
@@ -378,6 +380,7 @@ pub struct PersistentContext {
     pub sqlite_store: Arc<SqliteStore>,
     #[cfg(feature = "local-embedding")]
     pub embedder: Option<Arc<TextEmbedder>>,
+    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 ```
 
@@ -437,7 +440,19 @@ let handle = spawn_subagent(
     Some(event_tx),
     result_tx,
     Some(token_tracker),
+    cancellation_token,
 );
+```
+
+### 子代理结果
+
+```rust
+pub struct SubagentResult {
+    pub id: String,              // 子代理 ID
+    pub task: String,            // 任务描述
+    pub response: SubagentResponse, // 执行结果
+    pub model: Option<String>,   // 使用的模型名称
+}
 ```
 
 ---
@@ -517,7 +532,7 @@ Vault 模块位于 `engine/src/vault/`，不是独立 crate。
 | `cron/` | `CronService` + `CronJob` — 定时任务服务，文件驱动 |
 | `heartbeat/` | `HeartbeatService` — 读取 HEARTBEAT.md，定时触发主动任务 |
 | `skills/` | 技能系统 — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata`（见第 16 节） |
-| `bus_adapter.rs` | `EngineHandler` — 桥接引擎到 Bus Actor 系统 |
+| `bus_adapter.rs` | `EngineHandler` — 桥接引擎到 Broker Actor 系统 |
 | `error.rs` | 统一错误类型（AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError） |
 | `token_tracker.rs` | Token 计数、成本计算、会话统计追踪 |
 

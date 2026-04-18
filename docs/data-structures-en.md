@@ -10,7 +10,7 @@
 
 ```rust
 InboundMessage {
-    channel: ChannelType,             // Enum: Telegram | Discord | Slack | Feishu | Email |
+    channel: ChannelType,             // Enum: Telegram | Discord | Slack | Feishu |
                                       //       DingTalk | WeCom | WebSocket | Cli | Custom(String)
     sender_id: String,                // Sender ID
     chat_id: String,                  // Chat ID
@@ -61,7 +61,6 @@ enum ChannelType {
     Discord,
     Slack,
     Feishu,
-    Email,
     DingTalk,
     WeCom,
     WebSocket,  // WebSocket real-time communication channel
@@ -288,8 +287,6 @@ Extensible metadata container for events.
 ```rust
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventMetadata {
-    /// Branch name (None means main branch)
-    pub branch: Option<String>,
 
     /// List of tools used
     #[serde(default)]
@@ -314,7 +311,6 @@ pub struct TokenUsage {
 ```
 
 **Fields:**
-- **branch**: Git-like branching support; `None` indicates the main branch
 - **tools_used**: Tracks which tools were invoked during this event's processing
 - **token_usage**: LLM token consumption statistics for cost tracking
 - **content_token_len**: Token count computed once at write time, avoids re-calculation on read path
@@ -330,20 +326,12 @@ pub struct Session {
     /// Session identifier
     pub key: String,
 
-    /// Current active branch
-    pub current_branch: String,
-
-    /// All branch pointers (branch_name -> latest_event_id)
-    pub branches: HashMap<String, Uuid>,
-
     /// Session metadata
     pub metadata: SessionMetadata,
 }
 ```
 
 **Responsibilities:**
-- Maintains the current branch context for new events
-- Tracks head commit for each branch
 - Provides session-level metadata and statistics
 
 ### 3.7 SessionMetadata
@@ -452,10 +440,9 @@ impl ContextCompactor {
     /// Non-blocking compaction check
     pub fn try_compact(
         &self,
-        session_key: &str,
-        estimated_tokens: usize,
-        vault_values: &[String],
-    );
+        session_key: &SessionKey,
+        current_tokens: usize,
+    ) -> Option<CompactionResult>;
 }
 ```
 
@@ -677,8 +664,6 @@ InjectionReport {
 │   ├── key TEXT PK          Session identifier (e.g., "cli:interactive", "telegram:12345")
 │   ├── channel TEXT         Channel type (e.g., "telegram", "cli")
 │   ├── chat_id TEXT         Chat ID
-│   ├── current_branch TEXT  Current branch (default "main")
-│   ├── branches TEXT        Branch pointers JSON (branch_name → event_id)
 │   ├── created_at TEXT
 │   ├── updated_at TEXT
 │   ├── last_consolidated_event TEXT
@@ -693,7 +678,6 @@ InjectionReport {
 │   ├── event_type TEXT      "user_message" | "assistant_message" | "tool_call" | "tool_result" | "summary"
 │   ├── content TEXT         Message content
 │   ├── embedding BLOB       Optional f32 vector
-│   ├── branch TEXT          Branch name (default "main")
 │   ├── tools_used TEXT      JSON array
 │   ├── token_usage TEXT     JSON TokenUsage
 │   ├── token_len INTEGER    Content token count (computed at write time)
@@ -757,16 +741,10 @@ InjectionReport {
 │   ├── value TEXT           Workspace file content
 │   └── updated_at TEXT
 │
-├── cron_jobs                Scheduled tasks
-│   ├── id TEXT PK
-│   ├── name TEXT
-│   ├── cron TEXT            Cron expression
-│   ├── message TEXT         Message sent when triggered
-│   ├── channel TEXT
-│   ├── chat_id TEXT
-│   ├── last_run TEXT
-│   ├── next_run TEXT
-│   └── enabled INTEGER     Whether enabled
+├── cron_state               Cron job state (definitions loaded from ~/.gasket/cron/*.md)
+│   ├── job_id TEXT PK       Job identifier
+│   ├── last_run TEXT        Last run timestamp
+│   └── next_run TEXT        Next run timestamp
 │
 │  ─── Advanced Search (migrated to tantivy-mcp MCP service) ───
 │

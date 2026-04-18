@@ -137,7 +137,7 @@ graph TB
         E[执行器<br/>AgentExecutor]
         T[工具执行器<br/>ToolExecutor]
         R[请求处理器<br/>RequestHandler]
-        S[流处理器<br/>StreamHandler]
+        C[运行时上下文<br/>RuntimeContext]
     end
     
     subgraph 输入
@@ -157,13 +157,13 @@ graph TB
     I --> E
     E --> R
     R --> AI
-    AI --> S
-    S --> F
-    S --> O
+    AI --> F
+    AI --> O
     E --> T
     T --> Tools
     Tools --> T
     T --> E
+    C --> E
 ```
 
 ### 1. 执行器 (AgentExecutor)
@@ -199,30 +199,15 @@ flowchart TB
     style Join fill:#FFB6C1
 ```
 
-### 3. 流处理器 (StreamHandler)
+### 3. 运行时上下文 (RuntimeContext)
 
-**职责**：实时显示 AI 正在打字
+**职责**：依赖注入容器，承载所有外部依赖
 
-```mermaid
-sequenceDiagram
-    participant AI as AI模型
-    participant S as 流处理器
-    participant U as 用户屏幕
-    
-    Note over AI,U: 实时显示，不用等全部生成完
-    
-    AI->>S: "今天"
-    S->>U: 显示: 今天
-    
-    AI->>S: "北京"
-    S->>U: 显示: 今天北京
-    
-    AI->>S: "天气"
-    S->>U: 显示: 今天北京天气
-    
-    AI->>S: "晴朗"
-    S->>U: 显示: 今天北京天气晴朗
-```
+| 依赖 | 用途 |
+|------|------|
+| `llm_provider` | 使用哪个 AI 模型 |
+| `tool_registry` | 有哪些可用工具 |
+| `config` | 温度、max_tokens 等参数 |
 
 ---
 
@@ -294,6 +279,13 @@ flowchart LR
 - 可预测
 - 方便重试
 
+**自动重退避策略**：`backoff = (1 << retries).min(15)` 秒
+- 第1次重试：2秒
+- 第2次重试：4秒
+- 第3次重试：8秒
+- 上限：15秒
+- 最大重试次数：3次（`DEFAULT_MAX_RETRIES = 3`）
+
 ### 2. 自动重试
 
 ```mermaid
@@ -304,7 +296,7 @@ sequenceDiagram
     K->>AI: 发送请求
     AI--xK: 网络超时
     
-    Note over K: 等待2秒
+    Note over K: 等待2秒（指数退避）
     
     K->>AI: 第2次尝试
     AI--xK: 服务繁忙

@@ -32,7 +32,7 @@ Vault 使用 **XChaCha20-Poly1305** 进行加密（默认）：
 
 - **算法**: XChaCha20-Poly1305（AEAD 认证加密）
 - **密钥派生**: Argon2id（内存-hard 密钥派生函数）
-- **密码环境变量**: `GASKET_VAULT_PASSWORD`
+- **密码环境变量**: `GASKET_MASTER_PASSWORD`
 
 > **注意**: XChaCha20-Poly1305 是唯一支持的加密算法，提供更强的 nonce 随机性和现代密码学安全性。
 
@@ -315,7 +315,7 @@ chmod 600 ~/.gasket/vault/secrets.json
 设置 vault 密码环境变量以启用加密：
 
 ```bash
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 ```
 
 如果没有设置此环境变量，vault 会提示输入密码。未加密的 vault 文件仍然受文件系统权限保护，但强烈建议启用加密。

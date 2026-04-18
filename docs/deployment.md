@@ -123,7 +123,7 @@ sudo journalctl -u gasket -f
 
 ```dockerfile
 # 构建阶段
-FROM rust:1.75-slim as builder
+FROM rust:1.75-bookworm as builder
 
 WORKDIR /app
 COPY . .
@@ -154,10 +154,10 @@ USER gasket
 # 数据卷
 VOLUME ["/data"]
 
-EXPOSE 8080
+EXPOSE 18790
 
 ENTRYPOINT ["gasket"]
-CMD ["gateway"]
+CMD ["status"]
 ```
 
 ### 2.2 docker-compose.yml
@@ -180,7 +180,7 @@ services:
       - ./config.yaml:/data/config.yaml:ro
     
     ports:
-      - "8080:8080"
+      - "18790:18790"
     
     # 资源限制
     deploy:
@@ -191,13 +191,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-    
-    healthcheck:
-      test: ["CMD", "gasket", "health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 ```
 
 部署：
@@ -230,7 +223,6 @@ data:
     
     gateway:
       session_timeout: 3600
-      max_sessions: 100
 ```
 
 ### 3.2 Secret
@@ -268,7 +260,7 @@ spec:
       - name: gasket
         image: your-registry/gasket:latest
         ports:
-        - containerPort: 8080
+        - containerPort: 18790
         env:
         - name: RUST_LOG
           value: "info"
@@ -295,13 +287,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 18790
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /ready
-            port: 8080
+            port: 18790
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
@@ -325,7 +317,7 @@ spec:
     app: gasket
   ports:
   - port: 80
-    targetPort: 8080
+    targetPort: 18790
   type: ClusterIP
 ```
 
@@ -457,44 +449,19 @@ logging:
     Port              3100
 ```
 
-### 5.3 监控指标
+### 5.3 日志收集 (Fluent Bit)
 
-Gasket 暴露以下 Prometheus 指标：
+```ini
+[INPUT]
+    Name              systemd
+    Tag               gasket
+    Systemd_Filter    _SYSTEMD_UNIT=gasket.service
 
-```
-# 请求计数
-gasket_requests_total{channel="telegram"}
-
-# 响应时间
-gasket_response_duration_seconds_bucket
-
-# Token 使用量
-gasket_tokens_used_total{model="claude-4.5-sonnet"}
-
-# 错误计数
-gasket_errors_total{error_type="llm_timeout"}
-
-# 活跃会话数
-gasket_active_sessions
-```
-
-### 5.4 告警规则
-
-```yaml
-groups:
-- name: gasket
-  rules:
-  - alert: GasketHighErrorRate
-    expr: rate(gasket_errors_total[5m]) > 0.1
-    for: 5m
-    annotations:
-      summary: "Gasket 错误率过高"
-  
-  - alert: GasketLLMTimeout
-    expr: rate(gasket_errors_total{error_type="llm_timeout"}[10m]) > 5
-    for: 5m
-    annotations:
-      summary: "LLM 调用频繁超时"
+[OUTPUT]
+    Name              loki
+    Match             gasket
+    Host              loki.example.com
+    Port              3100
 ```
 
 ---
@@ -571,7 +538,7 @@ sudo ufw enable
 
 ```bash
 # 设置环境变量
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # 或使用 systemd 的 LoadCredential
 # /etc/systemd/system/gasket.service.d/override.conf

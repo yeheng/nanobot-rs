@@ -79,7 +79,7 @@ flowchart TB
 | **BeforeRequest** | 收到请求后 | 修改输入、拦截请求 | 顺序执行 |
 | **AfterHistory** | 加载历史后 | 添加上下文 | 顺序执行 |
 | **BeforeLLM** | 发送给AI前 | 最后修改（如密钥注入） | 顺序执行 |
-| **AfterToolCall** | 工具调用后 | 审计、记录 | 并行执行 |
+| **AfterToolCall** | 工具调用后 | 审计、记录 | 并行执行（定义但未触发） |
 | **AfterResponse** | 生成回复后 | 日志、通知 | 并行执行 |
 
 ```mermaid
@@ -284,7 +284,6 @@ flowchart TB
     
     subgraph 可能的结果
         C[Continue继续]
-        M[Modify修改]
         B[Abort中止]
     end
     
@@ -294,22 +293,18 @@ flowchart TB
     end
     
     A --> C
-    A --> M
     A --> B
     
     C --> Next
-    M --> Next
     B --> Stop
     
     style C fill:#C8E6C9
-    style M fill:#FFD700
     style B fill:#FFCDD2
 ```
 
 | 动作 | 说明 | 使用场景 |
 |------|------|---------|
 | **Continue** | 继续执行 | 一切正常 |
-| **Modify** | 修改后继续 | 格式化输入、注入数据 |
 | **Abort** | 中止流程 | 非法输入、权限不足 |
 
 ---
@@ -370,6 +365,10 @@ sequenceDiagram
 ```
 
 **作用**：调用外部脚本（Shell/Python 等），让开发者能用任何语言扩展功能。
+
+**限制**：
+- 超时：2 秒
+- stdout 上限：1MB
 
 ### HistoryRecallHook - 历史召回
 

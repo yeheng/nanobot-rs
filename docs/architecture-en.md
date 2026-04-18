@@ -1,392 +1,556 @@
-# Architecture Overview
+# System Architecture
 
-> Gasket-RS System Architecture Overview
-
----
-
-## Crate Structure
-
-```
-gasket-rs/                    (Cargo workspace)
-├── engine/                   Core orchestration crate — Agent engine, tools, Hook system
-│   └── src/
-│       ├── kernel/            Pure function execution core (executor, stream)
-│       ├── session/           Session management (AgentSession, context, compactor, memory)
-│       ├── subagents/         Subagent system (manager, tracker, runner)
-│       ├── config/            Configuration loading (YAML → Struct)
-│       ├── cron/              Scheduled task service
-│       ├── heartbeat/         Heartbeat service
-│       ├── hooks/             Pipeline Hook system
-│       ├── skills/            Skills system
-│       ├── tools/             Tool system (14 built-in tools)
-│       └── vault/             Sensitive data isolation module
-├── cli/                      CLI executable
-│   └── src/
-│       ├── main.rs            Command entry + Gateway launcher
-│       ├── cli.rs             CLI interactive mode
-│       ├── provider.rs        Provider factory
-│       └── commands/          Subcommands (onboard, status, agent, gateway, channels, cron, vault, memory)
-├── types/                    Shared type definitions (Tool trait, events, session_event, etc.)
-├── providers/                LLM provider implementations
-├── storage/                  SQLite storage + embedding + memory system
-├── channels/                 Communication channel implementations
-├── sandbox/                  Sandbox execution environment
-└── tantivy/                  Tantivy search MCP server (standalone binary)
-```
+> Gasket overall architecture design — how the components work together
 
 ---
 
-## System Architecture Diagram
+## One-Sentence Summary
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        cli (Binary)                              │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐   │
-│  │ onboard │ │ status  │ │  agent  │ │ gateway  │ │channels │   │
-│  │  (init) │ │ (check) │ │  (CLI)  │ │ (daemon) │ │ status  │   │
-│  └─────────┘ └─────────┘ └────┬────┘ └────┬─────┘ └─────────┘   │
-└────────────────────────────────┼───────────┼─────────────────────┘
-                                 │           │
-─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─┼ ─ ─ ─ ─ ─ ─ ─ ─ ─
-                                 │           │
-┌────────────────────────────────┼───────────┼─────────────────────┐
-│                        engine (Library)                          │
-│                                │           │                     │
-│  ┌─────────────────────────────▼───────────▼──────────────────┐  │
-│  │                   AgentSession (Session Management)          │  │
-│  │  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐   │  │
-│  │  │   Prompt   │  │    kernel    │  │    Session        │   │  │
-│  │  │   Loader   │  │   execute    │  │   Management     │   │  │
-│  │  └────────────┘  └──────────────┘  └──────────────────┘   │  │
-│  │  ┌────────────────────┐  ┌────────────────────────────┐   │  │
-│  │  │  Context Compactor │  │      Hook Registry         │   │  │
-│  │  │  (sync compress)   │  │  (BeforeRequest/AfterResp) │   │  │
-│  │  └────────────────────┘  └────────────────────────────┘   │  │
-│  └──────────┬──────────────┬──────────────────┬──────────────┘  │
-│             │              │                  │                  │
-│  ┌──────────▼──────┐  ┌───▼──────────┐  ┌───▼──────────────┐  │
-│  │  Providers      │  │  Tool        │  │   Memory         │  │
-│  │  (re-export)    │  │  Registry    │  │   Manager        │  │
-│  │                 │  │              │  │                  │  │
-│  │ ┌─────────────┐ │  │ ┌──────────┐ │  │                   │  │
-│  │ │  OpenAI     │ │  │ │Filesystem│ │  │  Long-term       │  │
-│  │ │  Compatible │ │  │ │Shell     │ │  │  Memory System   │  │
-│  │ │  Provider   │ │  │ │WebSearch │ │  │  (Scenario-based)│  │
-│  │ ├─────────────┤ │  │ │WebFetch  │ │  └─────────────────┘  │
-│  │ │  Gemini     │ │  │ │Spawn    │ │                       │
-│  │ │  Provider   │ │  │ │SpawnPar.│ │  ┌─────────────────┐  │
-│  │ │             │ │  │ │Message  │ │  │  EventStore     │  │
-│  │ ├─────────────┤ │  │ │Cron     │ │  │  (SQLite Backend)│  │
-│  │ │  Copilot    │ │  │ │MCP Tools│ │  │                 │  │
-│  │ │  Provider   │ │  │ │Memory   │ │  │  session_events │  │
-│  │ └─────────────┘ │  │ └──────────┘ │  │  memory_metadata│  │
-│  │                 │  │              │  └─────────────────┘  │
-│  │                 │  │              │                       │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │  kernel (Pure Function Execution Core)                  ││
-│  │  ├── executor.rs: AgentExecutor, ToolExecutor          ││
-│  │  ├── stream.rs: StreamEvent streaming output           ││
-│  │  └── context.rs: RuntimeContext, KernelConfig          ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │  subagents (Subagent System)                            ││
-│  │  ├── manager.rs: spawn_subagent, TaskSpec              ││
-│  │  ├── tracker.rs: SubagentTracker, parallel coordination││
-│  │  └── runner.rs: ModelResolver                          ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                             │
-│  │                │                                            │
-│  │  Router Actor  │   ┌───────────────────────────────────┐   │
-│  │  Session Actor │   │   Pipeline Hooks                  │   │
-│  │  Outbound Actor│   │   ~/.gasket/hooks/               │   │
-│  └───────┬────────┘   │   BeforeRequest.sh                │   │
-│          │            │   AfterResponse.sh                │   │
-│  ┌───────▼──────────────────────────┐  └──────────────────┘   │
-│  │        Channel Manager           │                         │
-│  │  ┌──────┐ ┌───────┐ ┌────────┐  │                         │
-│  │  │Tele- │ │Discord│ │ Slack  │  │  ┌───────────────────┐  │
-│  │  │gram  │ │       │ │        │  │  │   Config Loader   │  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │  │   (YAML → Struct) │  │
-│  │  │Feishu│ │ Email │ │DingTalk│  │  └───────────────────┘  │
-│  │  ├──────┤ ├───────┤ ├────────┤  │                         │
-│  │  │WeCom │ │WebSock│ │  CLI   │  │  ┌───────────────────┐  │
-│  │  └──────┘ └───────┘ └────────┘  │  │   Skills Loader   │  │
-│  └─────────────────────────────────┘  │   (MD → Context)  │  │
-│                                                               │
-│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐ │
-│  │  Heartbeat    │  │  Cron Service  │  │  MCP Client      │ │
-│  │  Service      │  │  (file-driven: │  │  (JSON-RPC 2.0)  │ │
-│  │               │  │   ~/.gasket/   │  │                  │ │
-│  │               │  │   cron/*.md)   │  │                  │ │
-│  └───────────────┘  └────────────────┘  └──────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Vault (Sensitive Data Isolation)           │  │
-│  │              (engine internal module)                   │  │
-│  │                                                         │  │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │  │
-│  │  │ VaultStore  │  │ VaultInjector│  │  VaultCrypto  │  │  │
-│  │  │ (JSON Store)│  │ (Runtime Inj)│  │  (XChaCha20)  │  │  │
-│  │  └─────────────┘  └──────────────┘  └───────────────┘  │  │
-│  │                                                         │  │
-│  │  Placeholder syntax: {{vault:key}}                      │  │
-│  │  Log redaction: redact_secrets()                        │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Search (Search Types Module)               │  │
-│  │              (re-export from storage with local-embedding)           │  │
-│  │                                                         │  │
-│  │  SearchQuery: BooleanQuery, FuzzyQuery, DateRange       │  │
-│  │  SearchResult: HighlightedText                          │  │
-│  │  TextEmbedder, cosine_similarity                        │  │
-│  │  Note: Advanced Tantivy full-text search migrated       │  │
-│  │        to standalone tantivy service                │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-
-                    ┌─────────────────────┐
-                    │   External LLM APIs  │
-                    │  OpenAI / Anthropic  │
-                    │  DeepSeek / Gemini   │
-                    │  Ollama / Copilot    │
-                    └─────────────────────┘
-```
-
-### Core Design Principles
-
-| Principle | Implementation |
-|-----------|----------------|
-| **AgentContext enum** | Zero-cost enum dispatch instead of Option<T> pattern, PersistentContext variant (full deps) and Stateless variant (no persistence) |
-| **Kernel pure function design** | `kernel::execute()` and `kernel::execute_streaming()` with no side effects, clear input/output |
-| **Session state management** | `AgentSession` wraps kernel, manages session state, prompt loading, hook registration |
-| **Pipeline Hook extension** | Five execution points (BeforeRequest, AfterHistory, BeforeLLM, AfterToolCall, AfterResponse) with sequential/parallel strategies |
-| **Feature flag compilation** | Communication channels compiled via Cargo feature flags, enable on demand |
-| **No in-memory cache** | Session reads/writes SQLite directly, leverages SQLite page cache to avoid consistency issues |
-| **Vault sensitive data isolation** | Sensitive data completely isolated from LLM-accessible storage, injected only at runtime, supports encrypted storage |
-| **Modular Skills system** | Independent skills/ module, supports Markdown + YAML frontmatter format, progressive loading |
-| **File-driven Cron** | Cron jobs stored in ~/.gasket/cron/*.md, notify watches for hot reload, no SQLite persistence |
-| **Crate separation** | Core types, providers, storage, channels split into independent crates |
+Gasket is like an **operating system for an AI assistant**, connecting user input, AI brain, memory, and tools together.
 
 ---
 
-## Module Dependencies
+## Overall Architecture Diagram
 
-```
-engine
-    │
-    ├── re-exports from types
-    │       └── Tool trait, events (ChannelType, SessionKey, InboundMessage, etc.)
-    │       └── SessionEvent, EventType, Session (event sourcing types)
-    │
-    ├── re-exports from providers
-    │       └── LlmProvider trait, ChatRequest, ChatResponse, etc.
-    │
-    ├── re-exports from storage (as memory module)
-    │       └── SqliteStore, EventStore, StoreError, MemoryStore
-    │       └── memory submodule (MetadataStore, EmbeddingStore, etc.)
-    │
-    ├── session/ (Session management layer)
-    │       └── AgentSession (formerly AgentLoop), AgentContext, ContextCompactor
-    │       └── MemoryManager, MemoryProvider trait
-    │
-    ├── kernel/ (Pure function execution core)
-    │       └── AgentExecutor, ToolExecutor, execute(), execute_streaming()
-    │
-    ├── subagents/ (Subagent system)
-    │       └── spawn_subagent, SubagentTracker
-    │
-    ├── optional: channels (feature flags)
-    │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
-    │
-    └── optional: providers (feature flags)
-            └── Gemini, Copilot
+```mermaid
+flowchart TB
+    subgraph User_Layer["👤 User Layer"]
+        CLI[Command Line]
+        TG[Telegram]
+        DC[Discord]
+        SL[Slack]
+        FS[Feishu]
+        WS[WebSocket]
+    end
+    
+    subgraph Access_Layer["📡 Access Layer"]
+        Router[Message Router]
+    end
+    
+    subgraph Core_Layer["⚙️ Core Layer"]
+        Session[Session Manager]
+        Kernel[AI Brain]
+        Hook[Hook System]
+    end
+    
+    subgraph Capability_Layer["🧰 Capability Layer"]
+        Tools[Toolbox]
+        Memory[Memory Bank]
+        Skills[Skills Library]
+    end
+    
+    subgraph External_Services["🌐 External Services"]
+        LLM[LLM API<br/>GPT/Claude/DeepSeek]
+        Web[The Internet]
+        File[Local Files]
+    end
+    
+    CLI --> Router
+    TG --> Router
+    DC --> Router
+    SL --> Router
+    FS --> Router
+    WS --> Router
+    
+    Router --> Session
+    Session --> Kernel
+    Session --> Hook
+    
+    Kernel --> Tools
+    Kernel --> Memory
+    Session --> Skills
+    
+    Kernel --> LLM
+    Tools --> Web
+    Tools --> File
 ```
 
 ---
 
-## Key Components
+## Layer Responsibilities
 
-### AgentSession (formerly AgentLoop)
+### 1. User Layer: Multiple Entry Points
 
-`AgentSession` is the core session management structure:
-
-```rust
-pub struct AgentSession {
-    runtime_ctx: RuntimeContext,    // Kernel execution context
-    context: AgentContext,          // Persistent/stateless context
-    config: AgentConfig,            // Agent configuration
-    workspace: PathBuf,             // Workspace path
-    system_prompt: String,          // System prompt
-    skills_context: Option<String>, // Skills context
-    hooks: Arc<HookRegistry>,       // Hook registry
-    compactor: Option<Arc<ContextCompactor>>, // Context compactor
-    memory_manager: Option<Arc<MemoryManager>>, // Memory manager
-    indexing_service: Option<Arc<IndexingService>>, // Indexing service
-}
+```mermaid
+flowchart LR
+    subgraph Where_Users_Come_In["Where users come in"]
+        A[Command Line]
+        B[Telegram]
+        C[Discord]
+        D[Others]
+    end
+    
+    subgraph Unified_Processing["Unified processing"]
+        E[Unified Message Format]
+    end
+    
+    A --> E
+    B --> E
+    C --> E
+    D --> E
 ```
 
-**Key methods:**
-- `process_direct()` — Process message and return response
-- `process_direct_streaming_with_channel()` — Streaming processing
+No matter which channel the user comes from, messages are converted into a unified format:
+- User ID
+- Message content
+- Channel type
+- Timestamp
 
-### Kernel Execution Core
+### 2. Access Layer: Message Routing
 
-Pure function design with no side effects:
-
-```rust
-/// Pure function: Execute LLM conversation loop
-pub async fn execute(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-) -> Result<ExecutionResult, KernelError>;
-
-/// Pure function: Streaming LLM conversation loop
-pub async fn execute_streaming(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-    event_tx: mpsc::Sender<StreamEvent>,
-) -> Result<ExecutionResult, KernelError>;
+```mermaid
+flowchart TB
+    subgraph Message_Routing["Message Routing"]
+        R[Router]
+        
+        R -->|User A| S1[Session A]
+        R -->|User B| S2[Session B]
+        R -->|User C| S3[Session C]
+    end
+    
+    S1 --> Out[Outbound]
+    S2 --> Out
+    S3 --> Out
+    
+    Out --> TG[Reply Telegram]
+    Out --> DC[Reply Discord]
 ```
 
-### AgentContext Enum
+**Key Design**:
+- Each user has an independent Session
+- Sessions do not interfere with each other
+- Sessions are automatically created and cleaned up
 
-Zero-cost enum dispatch that replaces `Option<T>` pattern at compile time:
+### 3. Core Layer: The Three Musketeers
 
-```rust
-pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless,
-}
+```mermaid
+flowchart TB
+    subgraph Core_Trio["Core Trio"]
+        Session[Session Manager<br/>The Butler]
+        Kernel[AI Brain<br/>The Thinker]
+        Hook[Hook System<br/>The Checkpoint]
+    end
+    
+    User[User] --> Session
+    Session --> Hook
+    Hook --> Kernel
+    Kernel --> Session
+    Session --> User
+    
+    style Session fill:#E3F2FD
+    style Kernel fill:#FFF3E0
+    style Hook fill:#F3E5F5
 ```
 
-```rust
-pub struct PersistentContext {
-    pub event_store: Arc<EventStore>,
-    pub sqlite_store: Arc<SqliteStore>,
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
-}
+| Component | Analogy | Responsibility |
+|-----------|---------|----------------|
+| Session | Butler | Receives guests, prepares materials, takes notes |
+| Kernel | Brain | Thinks, decides, generates replies |
+| Hook | Checkpoint | Security checks, data injection, logging |
+
+### 4. Capability Layer: Toolbox
+
+```mermaid
+mindmap
+  root((Capability Layer))
+    Toolbox
+      File Operations
+      Web Search
+      Command Execution
+      Subagents
+    Memory Bank
+      Short-term History
+      Long-term Memory
+      User Profile
+    Skills Library
+      Code Review
+      Writing Assistant
+      Data Analysis
 ```
-
-Key methods on AgentContext:
-- `persistent(event_store, sqlite_store) -> Self` — create persistent variant
-- `is_persistent(&self) -> bool` — check variant at runtime
-- `load_session(&self, key) -> Session` — load session from event store
-- `save_event(&self, event) -> Result` — append event to event store
-- `get_history(&self, key, branch) -> Vec<SessionEvent>` — retrieve branch history
-- `recall_history(&self, key, embedding, top_k) -> Vec<String>` — semantic recall
-- `clear_session(&self, key) -> Result` — clear session data
-
-| Variant | Purpose |
-|---------|---------|
-| `Persistent(PersistentContext)` | Main agent, full event sourcing with SQLite |
-| `Stateless` | Subagent, no persistence, pure computation |
-
-### Event Sourcing Architecture
-
-The session system uses Event Sourcing to store immutable facts about conversation history, enabling branching, versioning, and full audit trails.
-
-**SessionEvent** - Immutable event records with UUID v7 (time-ordered):
-```rust
-pub struct SessionEvent {
-    pub id: Uuid,                    // UUID v7 (time-ordered, sortable)
-    pub parent_id: Option<Uuid>,     // For branching/version control
-    pub event_type: EventType,
-    pub payload: JsonValue,
-    pub metadata: EventMetadata,
-}
-```
-
-**EventType** - Core event variants:
-```rust
-pub enum EventType {
-    UserMessage,      // User input message
-    AssistantMessage, // LLM response
-    ToolCall,         // Tool invocation request
-    ToolResult,       // Tool execution result
-    Summary,          // Context summarization
-    Merge,            // Branch merge point
-}
-```
-
-**Session Aggregate** - Aggregate root managing branch state:
-```rust
-pub struct Session {
-    pub id: String,
-    pub branches: HashMap<String, Uuid>,  // branch_name -> head_event_id
-    pub current_branch: String,
-    pub metadata: SessionMetadata,
-}
-```
-
-**Branching Support** - Version control for conversations:
-- `parent_id` links events in a chain (linked list structure)
-- `branches` HashMap tracks multiple branch heads per session
-- Each branch is an independent event chain from a common ancestor
-- Enables time-travel, parallel exploration, and merge operations
-
-```
-Session (Aggregate Root)
-  ├── branches: HashMap<branch_name, event_id>
-  └── metadata: SessionMetadata
-
-SessionEvent (Immutable Fact)
-  ├── id: Uuid (v7 time-ordered)
-  ├── parent_id: Option<Uuid> (for branching)
-  ├── event_type: EventType
-  └── metadata: EventMetadata
-```
-
-### Hook System
-
-```rust
-pub enum HookPoint {
-    BeforeRequest,  // Sequential, can modify/abort
-    AfterHistory,   // Sequential, can modify
-    BeforeLLM,      // Sequential, last chance to modify
-    AfterToolCall,  // Parallel, read-only
-    AfterResponse,  // Parallel, read-only
-}
-```
-
-### Feature Flags
-
-| Crate | Flag | Purpose |
-|-------|------|---------|
-| engine | `local-embedding` | ONNX embedding via fastembed |
-| engine | `telegram` | Telegram channel |
-| engine | `discord` | Discord channel |
-| engine | `slack` | Slack channel |
-| engine | `email` | Email channel |
-| engine | `feishu` | Feishu channel |
-| engine | `dingtalk` | DingTalk channel |
-| engine | `wecom` | WeCom channel |
-| engine | `webhook` | Webhook server |
-| engine | `provider-gemini` | Google Gemini provider |
-| engine | `provider-copilot` | GitHub Copilot provider |
-| storage | `local-embedding` | fastembed ONNX embedding (~20MB) |
-| cli | `full` | All features combined |
-| cli | `telemetry` | OpenTelemetry support |
-
-### Actor Model
-
-| Actor | Responsibility | Characteristics |
-|-------|----------------|-----------------|
-| Router | Distributes messages to Session Actors by SessionKey | Single task, HashMap routing table |
-| Session | Processes single session messages serially | One per session, idle timeout self-destruction |
-| Outbound | HTTP/WebSocket sending | Single task, fire-and-forget sending |
 
 ---
 
-## Extension Crates
+## Data Flow
 
-| Crate | Purpose | Dependencies |
-|-------|---------|--------------|
-| `types` | Shared type definitions, minimal deps | None |
-| `providers` | LLM provider implementations | types, async-trait |
-| `storage` | SQLite storage + embedding + memory system | types, sqlx, fastembed |
-| `channels` | Communication channels | teloxide, serenity, etc. |
-| `sandbox` | Sandbox execution | System process management |
-| `tantivy` | Full-text search MCP server | tantivy |
+### Complete Request Processing Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant R as Router
+    participant S as Session
+    participant H as Hooks
+    participant K as Kernel
+    participant L as LLM
+    participant T as Tools
+    participant M as Memory
+    
+    U->>R: Send message
+    R->>R: Route to corresponding Session
+    
+    activate S
+    S->>M: Load user memory
+    M-->>S: Return memory
+    
+    S->>H: BeforeRequest hook
+    H-->>S: Continue / Abort
+    
+    S->>S: Save user message to history
+    S->>S: Assemble context
+    
+    S->>K: Request processing
+    
+    activate K
+    K->>L: Send prompt
+    L-->>K: Return thinking + possible tool calls
+    
+    alt Needs tool
+        K->>T: Call tool
+        T-->>K: Return result
+        K->>L: Request again with result
+        L-->>K: Final reply
+    end
+    
+    K-->>S: Return result
+    deactivate K
+    
+    S->>H: AfterResponse hook
+    S->>S: Save AI reply
+    S->>M: Update access records
+    
+    S-->>R: Return result
+    deactivate S
+    
+    R-->>U: Display reply
+```
+
+---
+
+## Module Deep Dive
+
+### Session: Session Management
+
+```mermaid
+flowchart TB
+    subgraph Inside_Session["Inside Session"]
+        A[Receive Request]
+        B[Load Context]
+        C[Call Kernel]
+        D[Save Result]
+    end
+    
+    subgraph Context_Composition["Context Composition"]
+        S[System Prompt]
+        SK[Skills]
+        H[History]
+        M[Memory]
+        Q[Current Question]
+    end
+    
+    A --> B
+    B --> S
+    B --> SK
+    B --> H
+    B --> M
+    B --> Q
+    S --> C
+    SK --> C
+    H --> C
+    M --> C
+    Q --> C
+    C --> D
+```
+
+### Kernel: AI Brain
+
+```mermaid
+flowchart TB
+    subgraph Kernel_Thinking_Loop["Kernel Thinking Loop"]
+        Start([Start]) --> Input[Receive Context]
+        Input --> Ask[Ask LLM]
+        Ask --> Analyze{Analyze Reply}
+        
+        Analyze -->|Needs tool| Tool[Execute Tool]
+        Tool --> Result[Tool Result]
+        Result --> Ask
+        
+        Analyze -->|Direct answer| Output[Output Result]
+        Analyze -->|Limit reached| Output
+        
+        Output --> End([End])
+    end
+    
+    style Tool fill:#FFD700
+```
+
+### Memory: Memory System
+
+```mermaid
+flowchart TB
+    subgraph Memory_Hierarchy["Memory Hierarchy"]
+        H[History<br/>Short-term Memory]
+        P[Profile<br/>User Profile]
+        K[Knowledge<br/>Knowledge]
+        A[Active<br/>Current Work]
+    end
+    
+    subgraph Storage["Storage"]
+        S1[SQLite<br/>Session History]
+        S2[Markdown Files<br/>Long-term Memory]
+    end
+    
+    H --> S1
+    P --> S2
+    K --> S2
+    A --> S2
+```
+
+### Tools: Tool System
+
+```mermaid
+flowchart TB
+    subgraph Tool_Registry["Tool Registry"]
+        R[ToolRegistry]
+    end
+    
+    subgraph Tool_Categories["Tool Categories"]
+        F[File Tools]
+        W[Web Tools]
+        E[Execution Tools]
+        S[Subagents]
+        M[Memory Tools]
+    end
+    
+    R --> F
+    R --> W
+    R --> E
+    R --> S
+    R --> M
+    
+    F --> FS[Local Files]
+    W --> Web[The Internet]
+    E --> Shell[Shell Commands]
+    S --> Sub[Create Sub-AI]
+    M --> Mem[Read/Write Memory]
+```
+
+---
+
+## Key Design Decisions
+
+### 1. Pure Function Kernel
+
+```mermaid
+flowchart LR
+    subgraph Input
+        A[Context
+        Config
+        Tools]
+    end
+    
+    subgraph Kernel_Box
+        B[Black Box Processing
+        No Side Effects
+        Predictable]
+    end
+    
+    subgraph Output
+        C[Reply Content
+        Tool Calls]
+    end
+    
+    A --> B --> C
+    
+    style B fill:#C8E6C9
+```
+
+**Benefits**:
+- Same input, same output
+- Easy to test
+- Convenient for retry and caching
+
+### 2. Enum Instead of Option
+
+```mermaid
+flowchart TB
+    subgraph Old_Way
+        O[Option&lt;Context&gt;]
+        O -->|Some| P[Persistent]
+        O -->|None| S[Stateless]
+    end
+    
+    subgraph New_Way
+        E[AgentContext Enum]
+        E -->|Persistent| P2[Persistent Context]
+        E -->|Stateless| S2[Stateless]
+    end
+    
+    style E fill:#C8E6C9
+```
+
+**Benefits**:
+- Type known at compile time
+- Zero runtime overhead
+- Cleaner code
+
+### 3. File + Database Hybrid Storage
+
+```mermaid
+flowchart TB
+    subgraph Cron_Jobs
+        F[Markdown Files
+Human Readable]
+        D[SQLite State
+Machine Efficient]
+    end
+    
+    subgraph Memory
+        F2[Markdown Files
+Human Editable]
+        D2[SQLite Index
+Fast Query]
+    end
+    
+    F <-->|Config| D
+    F2 <-->|Content| D2
+```
+
+**Benefits**:
+- Human editable (Markdown)
+- Machine high performance (SQLite)
+- Version control friendly
+
+---
+
+## Extension Points
+
+### 1. Hooks: Custom Behavior
+
+```mermaid
+flowchart LR
+    A[BeforeRequest] --> B[Processing]
+    B --> C[AfterResponse]
+    
+    A --> A1[Profanity Filter]
+    A --> A2[Input Formatting]
+    
+    C --> C1[Logging]
+    C --> C2[Send Notification]
+```
+
+### 2. Skills: Custom Capabilities
+
+```mermaid
+flowchart TB
+    User[User] --> Core[Core System]
+    
+    subgraph Skill_Plugins["Skill Plugins"]
+        S1[Code Review Skill]
+        S2[Writing Assistant Skill]
+        S3[Data Analysis Skill]
+    end
+    
+    Core --> S1
+    Core --> S2
+    Core --> S3
+    
+    S1 --> Core
+    S2 --> Core
+    S3 --> Core
+```
+
+### 3. MCP: External Tool Services
+
+```mermaid
+flowchart TB
+    Gasket[Gasket Core]
+    MCP[MCP Client]
+    
+    subgraph External_Services["External Services"]
+        S1[Database Service]
+        S2[Image Generation]
+        S3[Enterprise API]
+    end
+    
+    Gasket --> MCP
+    MCP --> S1
+    MCP --> S2
+    MCP --> S3
+```
+
+---
+
+## Deployment Modes
+
+### Mode 1: CLI Interactive Mode
+
+```mermaid
+flowchart LR
+    User[User] --> CLI[gasket agent]
+    CLI --> Engine[Engine Core]
+    Engine --> LLM
+```
+
+### Mode 2: Gateway Service Mode
+
+```mermaid
+flowchart TB
+    subgraph External_Users["External Users"]
+        T[Telegram User]
+        D[Discord User]
+    end
+    
+    subgraph Gasket_Service["Gasket Service"]
+        G[gasket gateway]
+        R[Router]
+        S1[Session 1]
+        S2[Session 2]
+    end
+    
+    T --> G
+    D --> G
+    G --> R
+    R --> S1
+    R --> S2
+```
+
+### Mode 3: Hybrid Mode
+
+```mermaid
+flowchart TB
+    User[User] --> Choice{Choose?}
+    
+    Choice -->|Quick task| CLI[gasket agent]
+    Choice -->|Long-term service| Gateway[gasket gateway]
+    
+    CLI --> Engine
+    Gateway --> Engine
+    
+    Engine --> LLM
+```
+
+---
+
+## Summary
+
+```mermaid
+mindmap
+  root((Gasket Architecture))
+    User Layer
+      Multi-channel Access
+      Unified Message Format
+    Access Layer
+      Router Routing
+      Session Management
+    Core Layer
+      Pure Function Kernel
+      Flexible Hook System
+    Capability Layer
+      Rich Tools
+      Long-term Memory
+      Dynamic Skills
+    Design Philosophy
+      Simple and Predictable
+      Human Friendly
+      Extensible
+```

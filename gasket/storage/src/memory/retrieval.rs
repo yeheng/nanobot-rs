@@ -193,7 +193,7 @@ impl RetrievalEngine {
                     frequency,
                     score: emb_score,
                     tokens: hit.token_count,
-                    id: String::new(), // not stored in embedding table
+                    id: String::new(),          // not stored in embedding table
                     memory_type: String::new(), // not stored in embedding table; will sort as non-skill
                 }
             })

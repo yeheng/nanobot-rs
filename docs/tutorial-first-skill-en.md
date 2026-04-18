@@ -38,7 +38,7 @@ Create file `~/.gasket/skills/code-review.md`:
 name: code-review
 description: Professional code review assistant, helps check code quality and style
 tags: [code, review, development]
-always_load: false  # Load on demand
+always: false  # Load on demand
 ---
 
 # Code Review Expert
@@ -279,13 +279,11 @@ Good skills can be shared with the community:
 
 ```bash
 # Export skill
-gasket skill export code-review > code-review.skill
 
 # Share with friends
 cp code-review.skill /path/to/share/
 
 # Import skill
-gasket skill import code-review.skill
 ```
 
 ---

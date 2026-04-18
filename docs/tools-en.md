@@ -154,7 +154,7 @@ sequenceDiagram
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `send_message` | Send to channel | "Notify user on Telegram" |
+| `send_message` (`MessageTool`) | Send to channel | "Notify user on Telegram" |
 
 ### 5. Memory Tools
 
@@ -170,6 +170,8 @@ flowchart LR
 |------|---------|---------|
 | `memory_search` | Search long-term memory | "What did I learn about DB?" |
 | `memorize` | Create new memory | "Remember my API key is..." |
+| `memory_decay` | Downgrade stale memories | Automated frequency decay |
+| `memory_refresh` | Reindex memory files | Sync or rebuild memory index |
 
 The `memorize` tool accepts a `memory_type` parameter:
 - `"note"` (default) - Facts, observations, learned knowledge
@@ -195,6 +197,7 @@ sequenceDiagram
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `cron` | Create scheduled task | "Remind me daily at 9am" |
+| `script` (`PluginTool`) | External script with YAML manifest | Custom business logic |
 
 ---
 
@@ -288,9 +291,10 @@ Tools receive context about the current session:
 
 ```rust
 struct ToolContext {
-    session_key: SessionKey,    // Who is asking
-    workspace: PathBuf,          // Working directory
-    config: ToolConfig,          // Tool settings
+    session_key: SessionKey,     // Who is asking
+    outbound_tx: Sender<OutboundMessage>, // Real-time message channel
+    spawner: Arc<dyn SubagentSpawner>,    // Subagent spawner
+    token_tracker: Arc<TokenTracker>,     // Token budget tracker
 }
 ```
 
@@ -314,12 +318,24 @@ flowchart TB
         T4["exec"]
         T5["spawn"]
         T6["memory_search"]
+        T7["memory_decay"]
+        T8["memory_refresh"]
+        T9["history_query"]
+        T10["script"]
         TN["...more"]
     end
     
     Kernel -->|Query| Registry
     Registry -->|Return list| Kernel
     Kernel -->|Select| Selected["Appropriate tools"]
+```
+
+### Tool Execution Signature
+
+All tools implement the `Tool` trait. The `ctx` parameter is **required**:
+
+```rust
+async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
 ```
 
 ### Tool Definition Format
@@ -354,12 +370,9 @@ This is the **JSON Schema** that tells AI how to use the tool.
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # Safest option
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
 ```
 
 | Policy | Description | Risk Level |

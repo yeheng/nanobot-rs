@@ -102,7 +102,7 @@ channels:
   # Telegram
   telegram:
     token: your-bot-token
-    allowed_users: []  # Empty allows all users
+    allow_from: []  # Empty allows all users
   
   # Discord
   discord:
@@ -131,19 +131,10 @@ channels:
 tools:
   # Shell execution configuration
   exec:
-    # Command policy: allow_all / deny_all / allow_list
-    command_policy: allow_list
-    
-    # Allowed commands (when policy is allow_list)
-    allowed_commands:
-      - git
-      - cargo
-      - npm
-      - python3
-      - curl
-      - ls
-      - cat
-      - grep
+    # Command policy: allowlist + denylist
+    policy:
+      allowlist: ["git", "cargo", "npm", "python3", "curl", "ls", "cat", "grep"]
+      denylist: ["rm", "sudo", "dd"]
     
     # Timeout settings (seconds)
     default_timeout: 30
@@ -290,7 +281,8 @@ agents:
 
 tools:
   exec:
-    command_policy: deny_all  # Disable commands in production
+    policy:
+      allowlist: []  # Disable commands in production
 ```
 
 Usage:
@@ -306,7 +298,7 @@ GASKET_CONFIG=~/.gasket/config.prod.yaml gasket gateway
 | Variable | Description | Priority |
 |----------|-------------|----------|
 | `GASKET_CONFIG` | Configuration file path | Highest |
-| `GASKET_VAULT_PASSWORD` | Vault encryption password | - |
+| `GASKET_MASTER_PASSWORD` | Vault encryption password | - |
 | `RUST_LOG` | Log level | Overrides config |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry endpoint | Overrides config |
 | `OPENROUTER_API_KEY` | API key (can be referenced in config) | - |

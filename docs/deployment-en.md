@@ -123,7 +123,7 @@ sudo journalctl -u gasket -f
 
 ```dockerfile
 # Build stage
-FROM rust:1.75-slim as builder
+FROM rust:1.75-bookworm as builder
 
 WORKDIR /app
 COPY . .
@@ -154,10 +154,10 @@ USER gasket
 # Data volume
 VOLUME ["/data"]
 
-EXPOSE 8080
+EXPOSE 18790
 
 ENTRYPOINT ["gasket"]
-CMD ["gateway"]
+CMD ["status"]
 ```
 
 ### 2.2 docker-compose.yml
@@ -180,7 +180,7 @@ services:
       - ./config.yaml:/data/config.yaml:ro
     
     ports:
-      - "8080:8080"
+      - "18790:18790"
     
     # Resource limits
     deploy:
@@ -191,13 +191,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-    
-    healthcheck:
-      test: ["CMD", "gasket", "health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 ```
 
 Deploy:
@@ -230,7 +223,6 @@ data:
     
     gateway:
       session_timeout: 3600
-      max_sessions: 100
 ```
 
 ### 3.2 Secret
@@ -268,7 +260,7 @@ spec:
       - name: gasket
         image: your-registry/gasket:latest
         ports:
-        - containerPort: 8080
+        - containerPort: 18790
         env:
         - name: RUST_LOG
           value: "info"
@@ -295,13 +287,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 18790
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /ready
-            port: 8080
+            port: 18790
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
@@ -424,7 +416,7 @@ Production environments should enable Vault encryption:
 
 ```bash
 # Set environment variable
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # Or use systemd LoadCredential
 # /etc/systemd/system/gasket.service.d/override.conf

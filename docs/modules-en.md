@@ -76,7 +76,7 @@ trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;  // JSON Schema
-    async fn execute(&self, args: Value) -> ToolResult;
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
 }
 ```
 
@@ -88,17 +88,17 @@ trait Tool: Send + Sync {
 | `write_file` | filesystem | Write file |
 | `edit_file` | filesystem | Edit file (search/replace) |
 | `list_dir` | filesystem | List directory contents |
-| `exec` | system | Execute shell command (with timeout + command_policy) |
+| `exec` | system | Execute shell command (with timeout + policy: allowlist/denylist) |
 | `spawn` | system | Create subagent to execute task |
 | `spawn_parallel` | system | Execute multiple tasks in parallel with subagents |
 | `web_fetch` | web | HTTP GET request |
 | `web_search` | web | Web search (Brave/Tavily/Exa/Firecrawl) |
-| `send_message` | communication | Send message through Bus to channel |
+| `MessageTool` | communication | Send message through Broker to channel |
 | `cron` | system | Manage scheduled tasks (CRUD) |
 | `memory_search` | memory | Search structured memories via SQLite MetadataStore |
 | `memorize` | memory | Write structured long-term memories |
 | MCP tools | mcp | Dynamic tools provided by MCP servers |
-| Plugin tools | plugin | External script tools loaded from `~/.gasket/scripts/` |
+| Plugin tools | plugin | External script tools loaded from `~/.gasket/plugins/` |
 
 ### Helper Modules
 
@@ -173,10 +173,9 @@ trait Channel: Send + Sync {
 | Discord | `discord` | WebSocket (serenity) | Discord Gateway |
 | Slack | `slack` | WebSocket (tungstenite) | Slack Socket Mode |
 | Feishu | `feishu` | HTTP Webhook (axum) | Feishu event subscription |
-| Email | `email` | IMAP Polling + SMTP | Email send/receive |
 | DingTalk | `dingtalk` | HTTP Webhook (axum) | DingTalk callback |
 | WeCom | `wecom` | HTTP Webhook (axum) | WeCom callback |
-| WebSocket | `webhook` | WebSocket (axum) | Real-time bidirectional communication |
+| WebSocket | `websocket` | WebSocket (axum) | Real-time bidirectional communication |
 
 ### Middleware Layer
 
@@ -213,13 +212,13 @@ trait Channel: Send + Sync {
 
 ---
 
-## 5. bus/ — Message Bus (Actor Model)
+## 5. broker/ — Message Bus (Actor Model)
 
 ### Module Structure
 
 | File | Responsibility |
 |------|----------------|
-| `events.rs` | Event type definitions: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment`, `SessionEvent`, `EventType`, `Session` |
+| `events.rs` | Re-exported from `types`: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
 | `actors.rs` | Three Actors: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
 | `queue.rs` | Message queue encapsulation |
 
@@ -309,16 +308,16 @@ trait MemoryStore: Send + Sync {
 | `SessionEvent` | Immutable events with UUID v7, session_key, event_type, content, optional embedding |
 | `EventType` | UserMessage, AssistantMessage, ToolCall, ToolResult, Summary |
 | `SummaryType` | TimeWindow, Topic, Compression |
-| `EventMetadata` | branch, tools_used, token_usage, content_token_len, extra |
+| `EventMetadata` | tools_used, token_usage, content_token_len, extra |
 | `SessionMetadata` | created_at, updated_at, last_consolidated_event, total_events, total_tokens |
 
 ### Architecture
 
 - **Event Sourcing**: All messages stored as immutable events enabling full history reconstruction
-- **EventStore** (storage crate): `append_event()`, `get_branch_history()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
+- **EventStore** (storage crate): `append_event()`, `get_events_after_watermark()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
 - **Pure SQLite**: No in-memory cache, reads directly from database, leverages SQLite page cache
 - **History Processing**: `process_history()` with token budget, recent_keep, max_events configuration
-- **Query System**: `HistoryQueryBuilder` with branch, time_range, event_types, semantic_query, tools filters
+- **Query System**: `HistoryQueryBuilder` with time_range, event_types, semantic_query, tools filters
 
 ---
 
@@ -347,9 +346,12 @@ pub struct AgentSession {
     system_prompt: String,          // System prompt
     skills_context: Option<String>, // Skills context
     hooks: Arc<HookRegistry>,       // Hook registry
+    history_config: gasket_storage::HistoryConfig, // History configuration
     compactor: Option<Arc<ContextCompactor>>, // Context compactor
     memory_manager: Option<Arc<MemoryManager>>, // Memory manager
     indexing_service: Option<Arc<IndexingService>>, // Indexing service
+    pricing: Option<ModelPricing>,  // Optional pricing for cost calculation
+    pending_done: tokio_util::task::TaskTracker, // Graceful shutdown tracker
 }
 ```
 
@@ -366,6 +368,7 @@ pub struct PersistentContext {
     pub sqlite_store: Arc<SqliteStore>,
     #[cfg(feature = "local-embedding")]
     pub embedder: Option<Arc<TextEmbedder>>,
+    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 ```
 
@@ -425,7 +428,19 @@ let handle = spawn_subagent(
     Some(event_tx),
     result_tx,
     Some(token_tracker),
+    cancellation_token,
 );
+```
+
+### Subagent Result
+
+```rust
+pub struct SubagentResult {
+    pub id: String,              // Subagent ID
+    pub task: String,            // Task description
+    pub response: SubagentResponse, // Execution result
+    pub model: Option<String>,   // Model name used
+}
 ```
 
 ---
