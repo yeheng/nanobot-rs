@@ -19,7 +19,6 @@ members = [
     "providers",
     "channels",
     "sandbox",
-    "tantivy",
 ]
 
 [profile.release]

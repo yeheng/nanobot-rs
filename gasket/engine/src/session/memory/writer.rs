@@ -46,7 +46,8 @@ impl MemoryWriter {
         &self.store
     }
 
-    /// Access the metadata store (for queries in loader and tests).
+    /// Access the metadata store (for tests).
+    #[cfg(test)]
     pub fn metadata_store(&self) -> &MetadataStore {
         &self.metadata_store
     }

@@ -179,6 +179,7 @@ impl MemoryManager {
     }
 
     /// Access the metadata store (for tests).
+    #[cfg(test)]
     pub(crate) fn metadata_store(&self) -> &MetadataStore {
         self.writer.metadata_store()
     }
@@ -286,9 +287,7 @@ mod tests {
             .clone();
 
         let embedder: Box<dyn Embedder> = Box::new(NoopEmbedder::new(384));
-        let manager = MemoryManager::new(base_dir, &pool, embedder)
-            .await
-            .unwrap();
+        let manager = MemoryManager::new(base_dir, &pool, embedder).await.unwrap();
         manager.init().await.unwrap();
 
         (manager, temp_dir)
@@ -478,14 +477,8 @@ mod tests {
         let context = manager.load_for_context(&query).await.unwrap();
 
         assert!(context.tokens_used <= 4000);
-        assert!(context
-            .memories
-            .iter()
-            .any(|m| m.metadata.title == "Hot 1"));
-        assert!(context
-            .memories
-            .iter()
-            .any(|m| m.metadata.title == "Hot 2"));
+        assert!(context.memories.iter().any(|m| m.metadata.title == "Hot 1"));
+        assert!(context.memories.iter().any(|m| m.metadata.title == "Hot 2"));
         assert_eq!(context.phase_breakdown.scenario_tokens, 800);
         assert_eq!(context.phase_breakdown.on_demand_tokens, 800);
     }

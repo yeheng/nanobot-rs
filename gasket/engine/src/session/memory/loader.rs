@@ -74,7 +74,12 @@ impl MemoryLoader {
         let bootstrap_candidates = self.collect_bootstrap_candidates().await?;
         let bootstrap_cap = self.budget.bootstrap.min(self.budget.total_cap);
         phase.bootstrap_tokens = self
-            .load_results(&bootstrap_candidates, bootstrap_cap, &mut seen, &mut memories)
+            .load_results(
+                &bootstrap_candidates,
+                bootstrap_cap,
+                &mut seen,
+                &mut memories,
+            )
             .await;
 
         // Phase 2: Scenario-specific
@@ -250,11 +255,7 @@ impl MemoryLoader {
                             .await;
                         let _ = self
                             .embedding_store
-                            .delete(&format!(
-                                "{}/{}",
-                                r.scenario.dir_name(),
-                                r.memory_path
-                            ))
+                            .delete(&format!("{}/{}", r.scenario.dir_name(), r.memory_path))
                             .await;
                     } else {
                         warn!(
@@ -298,6 +299,6 @@ impl MemoryLoader {
         error
             .root_cause()
             .downcast_ref::<std::io::Error>()
-            .map_or(false, |io| io.kind() == std::io::ErrorKind::NotFound)
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
     }
 }
