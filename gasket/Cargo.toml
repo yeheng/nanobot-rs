@@ -27,7 +27,7 @@ opt-level = "z"
 lto = true
 strip = true
 codegen-units = 1
-# panic = 'abort'
+panic = 'abort'
 
 [workspace.dependencies]
 # Async runtime
@@ -79,6 +79,15 @@ serenity = { version = "0.12", default-features = false, features = ["rustls_bac
 
 # WebSocket (for Slack)
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+
+# Token counting
+tiktoken-rs = "0.11"
+
+# File watcher
+notify = "8"
+
+# YAML
+serde_yaml = "0.9"
 
 # Cron
 cron = "0.15"

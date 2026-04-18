@@ -55,7 +55,7 @@ dashmap = { workspace = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-serde_yaml = "0.9"
+serde_yaml.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux-specific dependencies
