@@ -109,13 +109,16 @@ pub struct SkillsLoader {
     /// User skills directory (e.g., ~/.gasket/skills/)
     user_skills_dir: PathBuf,
 
-    /// Built-in skills directory
-    builtin_skills_dir: PathBuf,
+    /// Built-in skills directory (None when not found)
+    builtin_skills_dir: Option<PathBuf>,
 }
 
 impl SkillsLoader {
-    /// Create a new skills loader
-    pub fn new(user_skills_dir: PathBuf, builtin_skills_dir: PathBuf) -> Self {
+    /// Create a new skills loader.
+    ///
+    /// `builtin_skills_dir` is `None` when no built-in directory exists; user
+    /// skills are still loaded from `user_skills_dir` in that case.
+    pub fn new(user_skills_dir: PathBuf, builtin_skills_dir: Option<PathBuf>) -> Self {
         Self {
             user_skills_dir,
             builtin_skills_dir,
@@ -126,14 +129,13 @@ impl SkillsLoader {
     pub async fn load_all(&self) -> Result<Vec<Skill>> {
         let mut skills = Vec::new();
 
-        // Load built-in skills
-        debug!("Loading built-in skills from {:?}", self.builtin_skills_dir);
-        if self.builtin_skills_dir.exists() {
-            self.load_from_dir(&self.builtin_skills_dir, &mut skills)
-                .await?;
+        if let Some(ref dir) = self.builtin_skills_dir {
+            debug!("Loading built-in skills from {:?}", dir);
+            if dir.exists() {
+                self.load_from_dir(dir, &mut skills).await?;
+            }
         }
 
-        // Load user skills
         debug!("Loading user skills from {:?}", self.user_skills_dir);
         if self.user_skills_dir.exists() {
             self.load_from_dir(&self.user_skills_dir, &mut skills)
@@ -203,9 +205,9 @@ impl SkillsLoader {
         &self.user_skills_dir
     }
 
-    /// Get builtin skills directory
-    pub fn builtin_skills_dir(&self) -> &Path {
-        &self.builtin_skills_dir
+    /// Get builtin skills directory, if one exists
+    pub fn builtin_skills_dir(&self) -> Option<&Path> {
+        self.builtin_skills_dir.as_deref()
     }
 }
 

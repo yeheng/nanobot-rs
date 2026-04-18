@@ -106,19 +106,15 @@ pub async fn load_skills(workspace: &Path) -> Option<String> {
     let user_skills_dir = workspace.join("skills");
     let builtin_skills_dir = find_builtin_skills_dir();
 
-    let builtin_dir = match builtin_skills_dir {
-        Some(dir) => dir,
-        None => {
-            debug!("Built-in skills directory not found, loading user skills only");
-            if !user_skills_dir.exists() {
-                debug!("No skills directories found");
-                return None;
-            }
-            PathBuf::from("/nonexistent")
+    if builtin_skills_dir.is_none() {
+        debug!("Built-in skills directory not found, loading user skills only");
+        if !user_skills_dir.exists() {
+            debug!("No skills directories found");
+            return None;
         }
-    };
+    }
 
-    let loader = SkillsLoader::new(user_skills_dir, builtin_dir);
+    let loader = SkillsLoader::new(user_skills_dir, builtin_skills_dir);
     match SkillsRegistry::from_loader(loader).await {
         Ok(registry) => {
             let summary = registry.generate_context_summary().await;
@@ -398,7 +394,7 @@ impl AgentSession {
         if let Some(ref compactor) = self.compactor {
             compactor
                 .is_compressing_flag()
-                .load(std::sync::atomic::Ordering::SeqCst)
+                .load(std::sync::atomic::Ordering::Acquire)
         } else {
             false
         }

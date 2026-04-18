@@ -375,7 +375,7 @@ impl ContextCompactor {
     fn try_acquire_lock(&self, session_key: &str) -> bool {
         if self
             .is_compressing
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             debug!(
@@ -428,7 +428,7 @@ struct CompactionGuard(Arc<AtomicBool>);
 
 impl Drop for CompactionGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -622,16 +622,16 @@ mod tests {
 
         // First compare_exchange succeeds
         assert!(flag
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok());
 
         // Second compare_exchange fails (already true)
         assert!(flag
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err());
 
         // Reset
-        flag.store(false, Ordering::SeqCst);
+        flag.store(false, Ordering::Release);
         assert!(!flag.load(Ordering::Relaxed));
     }
 
