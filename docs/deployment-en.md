@@ -416,7 +416,7 @@ Production environments should enable Vault encryption:
 
 ```bash
 # Set environment variable
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # Or use systemd LoadCredential
 # /etc/systemd/system/gasket.service.d/override.conf

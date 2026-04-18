@@ -370,12 +370,9 @@ This is the **JSON Schema** that tells AI how to use the tool.
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # Safest option
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
 ```
 
 | Policy | Description | Risk Level |

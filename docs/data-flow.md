@@ -508,7 +508,7 @@ finalize_response()
 process_history() ──▶ 识别被驱逐消息
     │
     ▼
-ContextCompactor::try_compact(key, estimated_tokens)
+ContextCompactor::try_compact(key, current_tokens)
     │
     ├──▶ token_budget 未超限? ──▶ 返回
     │

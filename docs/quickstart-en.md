@@ -161,8 +161,8 @@ You: /new
 # Single message (non-interactive)
 gasket agent -m "Hello"
 
-# Start fresh
-gasket agent --new
+# Start fresh (type /new in interactive mode)
+gasket agent
 
 # Use specific model
 gasket agent --model deepseek/deepseek-chat

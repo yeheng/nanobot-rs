@@ -88,7 +88,7 @@ trait Tool: Send + Sync {
 | `write_file` | filesystem | Write file |
 | `edit_file` | filesystem | Edit file (search/replace) |
 | `list_dir` | filesystem | List directory contents |
-| `exec` | system | Execute shell command (with timeout + command_policy) |
+| `exec` | system | Execute shell command (with timeout + policy: allowlist/denylist) |
 | `spawn` | system | Create subagent to execute task |
 | `spawn_parallel` | system | Execute multiple tasks in parallel with subagents |
 | `web_fetch` | web | HTTP GET request |
@@ -308,16 +308,16 @@ trait MemoryStore: Send + Sync {
 | `SessionEvent` | Immutable events with UUID v7, session_key, event_type, content, optional embedding |
 | `EventType` | UserMessage, AssistantMessage, ToolCall, ToolResult, Summary |
 | `SummaryType` | TimeWindow, Topic, Compression |
-| `EventMetadata` | branch, tools_used, token_usage, content_token_len, extra |
+| `EventMetadata` | tools_used, token_usage, content_token_len, extra |
 | `SessionMetadata` | created_at, updated_at, last_consolidated_event, total_events, total_tokens |
 
 ### Architecture
 
 - **Event Sourcing**: All messages stored as immutable events enabling full history reconstruction
-- **EventStore** (storage crate): `append_event()`, `get_branch_history()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
+- **EventStore** (storage crate): `append_event()`, `get_events_after_watermark()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
 - **Pure SQLite**: No in-memory cache, reads directly from database, leverages SQLite page cache
 - **History Processing**: `process_history()` with token budget, recent_keep, max_events configuration
-- **Query System**: `HistoryQueryBuilder` with branch, time_range, event_types, semantic_query, tools filters
+- **Query System**: `HistoryQueryBuilder` with time_range, event_types, semantic_query, tools filters
 
 ---
 

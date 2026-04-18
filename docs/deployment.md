@@ -538,7 +538,7 @@ sudo ufw enable
 
 ```bash
 # 设置环境变量
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # 或使用 systemd 的 LoadCredential
 # /etc/systemd/system/gasket.service.d/override.conf

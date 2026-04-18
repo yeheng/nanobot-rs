@@ -443,11 +443,11 @@ match result_rx.recv().await {
 
 ```yaml
 # config.yaml
+# Note: subagent_limits is not currently implemented.
+# Subagent timeout defaults to 600 seconds.
 agents:
-  subagent_limits:
-    max_concurrent: 10      # Max parallel subagents
-    timeout_seconds: 300    # 5 minute timeout
-    max_tokens: 2000        # Token limit per subagent
+  defaults:
+    max_tokens: 2000        # Token limit per request
 ```
 
 ### 4. Result Aggregation

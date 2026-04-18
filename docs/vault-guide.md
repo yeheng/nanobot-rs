@@ -315,7 +315,7 @@ chmod 600 ~/.gasket/vault/secrets.json
 设置 vault 密码环境变量以启用加密：
 
 ```bash
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 ```
 
 如果没有设置此环境变量，vault 会提示输入密码。未加密的 vault 文件仍然受文件系统权限保护，但强烈建议启用加密。

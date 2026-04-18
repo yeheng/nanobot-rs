@@ -410,147 +410,48 @@ InjectionReport {
 
 ---
 
-## 7. Event Sourcing Flow
+## 7. Subagent Spawning Patterns
 
-### Event Persistence Flow
-
-```
-AgentSession::process_direct()
-  │
-  ├── User message ──▶ SessionEvent {
-  │       event_type: UserMessage,
-  │       parent_id: current_head,
-  │       content: "user input",
-  │       metadata: { branch: current_branch },
-  │       ...
-  │   } ──▶ SQLite storage
-  │
-  ├── Assistant response ──▶ SessionEvent {
-  │       event_type: AssistantMessage,
-  │       parent_id: previous_event_id,
-  │       content: "assistant reply",
-  │       metadata: { tools_used, token_usage },
-  │       ...
-  │   } ──▶ SQLite storage
-  │
-  ├── Tool calls ──▶ SessionEvent {
-  │       event_type: ToolCall { tool_name, arguments },
-  │       parent_id: assistant_event_id,
-  │       content: JSON(args),
-  │       ...
-  │   } ──▶ SQLite storage
-  │
-  └── Tool results ──▶ SessionEvent {
-          event_type: ToolResult { tool_call_id, tool_name, is_error },
-          parent_id: tool_call_event_id,
-          content: result_or_error,
-          ...
-      } ──▶ SQLite storage
-```
-
-### Branching and Version Control
+### Pure Function Creation (Recommended)
 
 ```
-Session Structure
-┌─────────────────────────────────────────────────────────────┐
-│  Session {                                                  │
-│      key: "telegram:123:456",                               │
-│      current_branch: "main",                                │
-│      branches: HashMap {                                    │
-│          "main"    ──▶ event_id_003,                        │
-│          "feature" ──▶ event_id_007,                        │
-│      },                                                     │
-│      metadata: { ... }                                      │
-│  }                                                          │
-└─────────────────────────────────────────────────────────────┘
-
-Event Chain (parent_id links)
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│ event_001│────▶│ event_002│────▶│ event_003│     │ event_007│
-│ UserMsg  │     │ ToolCall │     │ ToolRslt │     │ Summary  │
-│ "hello"  │     │ exec()   │     │ "ok"     │     │ {...}    │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
-      │                                                   ^
-      │                                                   │
-      └───────────────────(main branch head)──────────────┘
-
-Branch Creation
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│ event_003│────▶│ event_004│────▶│ event_005│
-│ ToolRslt │     │ UserMsg  │     │ AsstMsg  │
-│          │     │ "feature"│     │ "done"   │
-└──────────┘     └──────────┘     └──────────┘
-      ^                                 │
-      │                                 │
-      └────(fork point)                 └────(feature branch head)
-
-Merge Event
-┌──────────┐
-│ event_008│
-│ Merge {  │
-│   source_branch: "feature",
-│   source_head: event_005,
-│ } ──▶ combines feature into main
-└──────────┘
+Caller ──▶ TaskSpec::new(id, prompt)
+              │
+              ├──▶ .with_model()
+              ├──▶ .with_system_prompt()
+              │
+              ▼
+    spawn_subagent(provider, tools, workspace, task, event_tx, result_tx, token_tracker, cancellation_token)
+              │
+              ▼
+    tokio::spawn(async {
+        AgentSession::process_direct_streaming()
+    })
+              │
+              ▼
+    StreamEvent ──▶ mpsc::channel ──▶ SubagentTracker
 ```
 
-### Summary Events
+### Fire-and-Forget Mode
 
 ```
-ContextCompactor::compact()
+Caller ──▶ spawn_subagent(task, result_tx, ..., cancellation_token)
   │
-  ├── Detect token budget exceeded
+  │  Returns JoinHandle
   │
-  ├── Select evicted messages (oldest non-recent)
-  │
-  ├── Generate summary via LLM
-  │   "3 messages about API design..."
-  │
-  └── Create SessionEvent {
-          event_type: Summary {
-              summary_type: Compression { token_budget: 4000 },
-              covered_event_ids: [event_001, event_002, event_003],
-          },
-          content: "summary text",
-          parent_id: last_evicted_event_id,
-          ...
-      } ──▶ SQLite storage
-
-Query with Summary
-┌─────────────────────────────────────────────────────────────┐
-│  Build Prompt:                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ [Summary event] "3 messages about API design..."    │    │
-│  │ (replaces evicted messages in context window)       │    │
-│  ├─────────────────────────────────────────────────────┤    │
-│  │ [Recent messages] (kept within token budget)        │    │
-│  ├─────────────────────────────────────────────────────┤    │
-│  │ [Current user message]                              │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+  ▼
+tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
+                     │                              │
+                     │  10-minute timeout           │  via outbound_tx
+                     │                              │  sent to channel
+                     ▼                              ▼
+               (runs in background)          (result routed to chat)
 ```
 
----
-
-## 8. Subagent Spawning Patterns
+### Sync Wait Mode
 
 ```
-─── spawn_subagent() (async fire-and-forget) ───
-
-Caller ──▶ spawn_subagent(task, result_tx, ...)
-  │              │
-  │  Returns     │  tokio::spawn
-  │  JoinHandle  │  │
-  │              ▼  │
-  │        AgentSession::process_direct()
-  │              │
-  ▼              ▼
-(don't wait)  OutboundMessage ──▶ channel
-
-
-─── Sync wait via channel ───
-
-Caller ──▶ spawn_subagent(task, result_tx, ...)
+Caller ──▶ spawn_subagent(task, result_tx, ..., cancellation_token)
   │              │
   │  await rx    │  tokio::spawn
   │  (blocking)  │  │
@@ -559,4 +460,85 @@ Caller ──▶ spawn_subagent(task, result_tx, ...)
  SubagentResult)   │
                     ▼
               result_tx.send(result)
+                    │
+                    ▼
+              (returns result to caller)
 ```
+
+---
+
+## 8. Context Compaction Flow
+
+```
+finalize_response()
+    │
+    ▼
+process_history() ──▶ identify evicted messages
+    │
+    ▼
+ContextCompactor::try_compact(key, current_tokens)
+    │
+    ├──▶ token_budget not exceeded? ──▶ return
+    │
+    ▼
+async execution {
+    │
+    ▼
+    LLM generates summary
+    │
+    ▼
+    EventStore::save_summary()
+    │
+    ▼
+    SQLite stores Summary event
+}
+```
+
+### Compaction Execution Strategy
+
+- Non-blocking compaction triggered in `finalize_response`
+- Compaction runs in background, does not block response
+- Checked after every response (if needed)
+
+---
+
+## 9. Hook System Data Flow
+
+```
+AgentSession::process_direct()
+    │
+    ├──▶ BeforeRequest Hook ──▶ can modify/abort request
+    │
+    ▼
+Load Session / Save User Message
+    │
+    ├──▶ AfterHistory Hook ──▶ can add context
+    │
+    ▼
+Process History
+    │
+    ├──▶ BeforeLLM Hook ──▶ last-chance modifications (e.g., Vault injection)
+    │
+    ▼
+LLM Provider
+    │
+    ├──▶ AfterToolCall Hook ──▶ parallel execution, read-only audit
+    │
+    ▼
+Return Response
+    │
+    ├──▶ AfterResponse Hook ──▶ parallel execution, read-only audit
+    │
+    ▼
+Save Assistant Message
+```
+
+### Hook Execution Strategy
+
+| Hook Point | Strategy | Can Modify? | Can Abort? |
+|------------|----------|-------------|------------|
+| BeforeRequest | Sequential | ✓ | ✓ |
+| AfterHistory | Sequential | ✓ | ✗ |
+| BeforeLLM | Sequential | ✓ | ✗ |
+| AfterToolCall | Parallel | ✗ | ✗ |
+| AfterResponse | Parallel | ✗ | ✗ |

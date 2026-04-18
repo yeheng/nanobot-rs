@@ -406,7 +406,7 @@ pub struct SessionMetadata {
 
 ## 4. 会话与历史结构（旧版）
 
-### 3.1 Session
+### 4.1 Session (Legacy)
 
 > **来源**: `gasket-types::session_event::Session`
 
@@ -425,7 +425,7 @@ SessionMessage {
 }
 ```
 
-### 3.2 历史处理配置
+### 4.2 历史处理配置
 
 > **来源**: `gasket_storage::history`
 
@@ -443,7 +443,7 @@ ProcessedHistory {
 }
 ```
 
-### 4.8 AgentContext (基于枚举)
+### 4.3 AgentContext (基于枚举)
 
 零成本枚举分发 — 无运行时开销。
 
@@ -494,7 +494,7 @@ pub struct PersistentContext {
 - 更好的缓存局部性（枚举变体内联）
 - 编译时穷举检查
 
-### 4.9 ContextCompactor
+### 4.4 ContextCompactor
 
 上下文压缩器 — 在 token 预算超限时触发摘要生成。
 
@@ -791,16 +791,10 @@ InjectionReport {
 │   ├── value TEXT           工作空间文件内容
 │   └── updated_at TEXT
 │
-├── cron_jobs                定时任务
-│   ├── id TEXT PK
-│   ├── name TEXT
-│   ├── cron TEXT            cron 表达式
-│   ├── message TEXT         触发时发送的消息
-│   ├── channel TEXT
-│   ├── chat_id TEXT
-│   ├── last_run TEXT
-│   ├── next_run TEXT
-│   └── enabled INTEGER     是否启用
+├── cron_state               定时任务状态（任务定义来自 ~/.gasket/cron/*.md）
+│   ├── job_id TEXT PK       任务标识
+│   ├── last_run TEXT        上次运行时间
+│   └── next_run TEXT        下次运行时间
 │
 │  ─── 高级搜索 (已迁移到 tantivy-mcp MCP 服务) ───
 │
@@ -815,7 +809,7 @@ InjectionReport {
 写入路径:
   append_event() → 自动生成 sequence (MAX + 1)
                   → 写入 session_events
-                  → 更新 sessions_v2.branches JSON
+                  → 更新 sessions_v2 元数据
 
 读取路径（压缩恢复）:
   1. get_latest_summary() → 获取最新摘要事件
@@ -894,28 +888,24 @@ pub fn spawn_subagent(
     event_tx: Option<mpsc::Sender<StreamEvent>>,
     result_tx: mpsc::Sender<SubagentResult>,
     token_tracker: Option<Arc<TokenTracker>>,
+    cancellation_token: CancellationToken,
 ) -> JoinHandle<()>
 ```
 
-### 8.3 SubagentEvent
+### 8.3 SubagentResult
 
 > **来源**: `gasket-engine::subagents::tracker`
 
 ```rust
-pub enum SubagentEvent {
-    Thinking { subagent_id: String, content: String },
-    ToolStart { subagent_id: String, name: String, arguments: String },
-    ToolEnd { subagent_id: String, name: String, output: String },
-    Content { subagent_id: String, content: String },
-    Completed { subagent_id: String, result: SubagentResult },
-}
-
 pub struct SubagentResult {
-    pub subagent_id: String,
-    pub content: String,
-    pub success: bool,
+    pub id: String,
+    pub task: String,
+    pub response: AgentResponse,
+    pub model: Option<String>,
 }
 ```
+
+> **Note**: There is no separate `SubagentEvent` enum. The unified `StreamEvent` is used for both main agent and subagent events. Subagent events are distinguished by `agent_id: Some(subagent_uuid)`.
 
 ---
 
@@ -948,19 +938,22 @@ pub enum HookAction {
 ### 9.2 HookContext
 
 ```rust
-pub struct HookContext {
-    pub session_key: SessionKey,
-    pub messages: Vec<ChatMessage>,
-    pub metadata: HashMap<String, String>,
+pub struct HookContext<'a, M> {
+    pub session_key: &'a str,
+    pub messages: M,
+    pub user_input: Option<&'a str>,
+    pub response: Option<&'a str>,
+    pub tool_calls: Option<&'a [ToolCallInfo]>,
+    pub token_usage: Option<&'a TokenUsage>,
+    pub vault_values: Vec<String>,
 }
 
-pub struct MutableContext<'a> {
-    pub messages: &'a mut Vec<ChatMessage>,
-    pub metadata: &'a mut HashMap<String, String>,
+pub struct ToolCallInfo {
+    pub id: String,
+    pub name: String,
+    pub arguments: Option<String>,
 }
 
-pub struct ReadonlyContext<'a> {
-    pub messages: &'a [ChatMessage],
-    pub metadata: &'a HashMap<String, String>,
-}
+pub type MutableContext<'a> = HookContext<'a, &'a mut Vec<ChatMessage>>;
+pub type ReadonlyContext<'a> = HookContext<'a, &'a [ChatMessage>>;
 ```

@@ -76,7 +76,7 @@ agents:
 1. **Use Vault encryption** (most secure):
 ```bash
 # Set password
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # Store API Key
 gasket vault set openrouter_api_key sk-or-v1-xxx
@@ -130,8 +130,8 @@ agents:
 # Method 1: Use command in interactive mode
 You: /new
 
-# Method 2: Command line argument
-gasket agent --new
+# Method 2: Interactive command
+Type /new in the gasket agent interactive session
 
 # Method 3: Delete database (complete reset)
 rm ~/.gasket/gasket.db
@@ -177,14 +177,10 @@ You: Remember I prefer spaces over tabs
 ```yaml
 tools:
   exec:
-    # Note: exec tool safety policy is managed via sandbox config,
-    # see docs/tools.md or docs/tools-en.md for details
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
-    # Or deny_list - only block specific commands
+    # Note: exec tool safety policy is managed via policy config
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
     # Or allow_all - allow everything (dangerous!)
 ```
 

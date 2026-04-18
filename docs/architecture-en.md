@@ -289,16 +289,19 @@ Key methods on AgentContext:
 
 ### Event Sourcing Architecture
 
-The session system uses Event Sourcing to store immutable facts about conversation history, enabling branching, versioning, and full audit trails.
+The session system uses Event Sourcing to store immutable facts about conversation history, enabling versioning and full audit trails.
 
 **SessionEvent** - Immutable event records with UUID v7 (time-ordered):
 ```rust
 pub struct SessionEvent {
     pub id: Uuid,                    // UUID v7 (time-ordered, sortable)
-    pub parent_id: Option<Uuid>,     // For branching/version control
+    pub session_key: String,         // "channel:chat_id"
     pub event_type: EventType,
-    pub payload: JsonValue,
+    pub content: String,
+    pub embedding: Option<Vec<f32>>,
     pub metadata: EventMetadata,
+    pub created_at: DateTime<Utc>,
+    pub sequence: i64,               // monotonic sequence for watermark
 }
 ```
 
@@ -322,22 +325,23 @@ pub struct Session {
 }
 ```
 
-**Branching Support** - Version control for conversations:
-- `parent_id` links events in a chain (linked list structure)
-- `branches` HashMap tracks multiple branch heads per session
-- Each branch is an independent event chain from a common ancestor
-- Enables time-travel, parallel exploration, and merge operations
+**Event Sourcing** - Immutable fact records:
+- Events are append-only, modifications create new events
+- Monotonic `sequence` enables watermark-based compaction
+- Enables full audit trails and versioning
 
 ```
 Session (Aggregate Root)
-  ├── branches: HashMap<branch_name, event_id>
+  ├── key: String
   └── metadata: SessionMetadata
 
 SessionEvent (Immutable Fact)
   ├── id: Uuid (v7 time-ordered)
-  ├── parent_id: Option<Uuid> (for branching)
+  ├── session_key: String
   ├── event_type: EventType
-  └── metadata: EventMetadata
+  ├── content: String
+  ├── metadata: EventMetadata
+  └── sequence: i64
 ```
 
 ### Hook System

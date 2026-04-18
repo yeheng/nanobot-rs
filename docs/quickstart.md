@@ -161,8 +161,8 @@ for i in range(10):
 # 单次对话（非交互）
 gasket agent -m "你好"
 
-# 开启新对话
-gasket agent --new
+# 开启新对话（在交互模式中输入 /new）
+gasket agent
 
 # 使用指定模型
 gasket agent --model deepseek/deepseek-chat

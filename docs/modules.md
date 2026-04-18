@@ -92,7 +92,7 @@ trait Tool: Send + Sync {
 | `write_file` | filesystem | 写入文件 |
 | `edit_file` | filesystem | 编辑文件 (search/replace) |
 | `list_dir` | filesystem | 列出目录内容 |
-| `exec` | system | 执行 Shell 命令 (带超时 + command_policy) |
+| `exec` | system | 执行 Shell 命令 (带超时 + policy: allowlist/denylist) |
 | `spawn` | system | 创建子代理执行任务 |
 | `spawn_parallel` | system | 并行创建多个子代理 |
 | `web_fetch` | web | HTTP GET 请求 |
@@ -320,16 +320,16 @@ trait MemoryStore: Send + Sync {
 | `SessionEvent` | 不可变事件，UUID v7，含 session_key, event_type, content, 可选 embedding |
 | `EventType` | UserMessage, AssistantMessage, ToolCall, ToolResult, Summary |
 | `SummaryType` | TimeWindow, Topic, Compression |
-| `EventMetadata` | branch, tools_used, token_usage, content_token_len, extra |
+| `EventMetadata` | tools_used, token_usage, content_token_len, extra |
 | `SessionMetadata` | created_at, updated_at, last_consolidated_event, total_events, total_tokens |
 
 ### 架构特点
 
 - **事件溯源**: 所有消息以不可变事件存储，支持完整历史重建
-- **EventStore** (storage crate): `append_event()`, `get_branch_history()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
+- **EventStore** (storage crate): `append_event()`, `get_events_after_watermark()`, `get_events_by_ids()`, `clear_session()`, `get_latest_summary()`
 - **纯 SQLite**: 无内存缓存，直接查询数据库，利用 SQLite page cache
 - **历史处理**: `process_history()` 基于 token budget, recent_keep, max_events 配置
-- **查询系统**: `HistoryQueryBuilder` 支持 branch, time_range, event_types, semantic_query, tools 过滤
+- **查询系统**: `HistoryQueryBuilder` 支持 time_range, event_types, semantic_query, tools 过滤
 
 ---
 

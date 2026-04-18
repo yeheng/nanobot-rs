@@ -79,7 +79,7 @@ flowchart TB
     
     subgraph 压缩后
         C[摘要: 用户要写Python计算器，已实现加减乘除]
-        D[保留最近3轮]
+        D[保留 watermark 之后的事件]
     end
     
     A1 --> B

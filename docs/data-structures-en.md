@@ -311,7 +311,6 @@ pub struct TokenUsage {
 ```
 
 **Fields:**
-- **branch**: Git-like branching support; `None` indicates the main branch
 - **tools_used**: Tracks which tools were invoked during this event's processing
 - **token_usage**: LLM token consumption statistics for cost tracking
 - **content_token_len**: Token count computed once at write time, avoids re-calculation on read path
@@ -742,16 +741,10 @@ InjectionReport {
 │   ├── value TEXT           Workspace file content
 │   └── updated_at TEXT
 │
-├── cron_jobs                Scheduled tasks
-│   ├── id TEXT PK
-│   ├── name TEXT
-│   ├── cron TEXT            Cron expression
-│   ├── message TEXT         Message sent when triggered
-│   ├── channel TEXT
-│   ├── chat_id TEXT
-│   ├── last_run TEXT
-│   ├── next_run TEXT
-│   └── enabled INTEGER     Whether enabled
+├── cron_state               Cron job state (definitions loaded from ~/.gasket/cron/*.md)
+│   ├── job_id TEXT PK       Job identifier
+│   ├── last_run TEXT        Last run timestamp
+│   └── next_run TEXT        Next run timestamp
 │
 │  ─── Advanced Search (migrated to tantivy-mcp MCP service) ───
 │

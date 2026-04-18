@@ -76,7 +76,7 @@ agents:
 1. **使用 Vault 加密**（最安全）：
 ```bash
 # 设置密码
-export GASKET_VAULT_PASSWORD="your-strong-password"
+export GASKET_MASTER_PASSWORD="your-strong-password"
 
 # 存储 API Key
 gasket vault set openrouter_api_key sk-or-v1-xxx
@@ -177,14 +177,10 @@ rm ~/.gasket/gasket.db
 ```yaml
 tools:
   exec:
-    # 注意：exec 工具的安全策略通过 sandbox 配置管理，
-    # 具体参见 docs/tools.md 或 docs/tools-en.md
-    allowed_commands:
-      - git
-      - cargo
-      - ls
-      - cat
-    # 或 deny_list - 只禁止特定命令
+    # 注意：exec 工具的安全策略通过 policy 配置管理
+    policy:
+      allowlist: ["git", "cargo", "ls", "cat"]
+      denylist: ["rm", "sudo"]
     # 或 allow_all - 允许所有（危险！）
 ```
 
