@@ -155,6 +155,19 @@ mindmap
 | Episodes | Experiences | "Debugged a tricky async bug on 2024-01-15" |
 | Reference | External info | "API docs: https://..." |
 
+### Memory Types: Note vs Skill
+
+Memories have a `memory_type` field that controls how they are loaded and prioritized:
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `note` | Facts, observations, learned knowledge | "User prefers dark mode" |
+| `skill` | Procedures, workflows, reusable patterns | "How to deploy a Rust service" |
+
+**Skill memories are prioritized during loading** - they are loaded before `note` memories within each phase, ensuring procedural knowledge is always available.
+
+---
+
 ### Memory Temperature
 
 ```mermaid
@@ -193,23 +206,23 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Phase1["Phase 1: Bootstrap (~700 tokens)"]
+    subgraph Phase1["Phase 1: Bootstrap (~1500 tokens)"]
         P1[Load all Profile]
         P2[Load Active (hot only)]
     end
-    
+
     subgraph Phase2["Phase 2: Scenario-aware (~1500 tokens)"]
         S1[Query hot items]
         S2[Query warm items<br/>with tag matching]
     end
-    
+
     subgraph Phase3["Phase 3: On-demand (~1000 tokens)"]
         O1[Semantic search]
         O2[Load top results]
     end
-    
+
     Phase1 --> Phase2 --> Phase3
-    
+
     style Phase1 fill:#90EE90
     style Phase2 fill:#FFD700
     style Phase3 fill:#FFB6C1
@@ -219,7 +232,7 @@ flowchart TB
 2. **Scenario-aware** (likely relevant): Topic-matched memories
 3. **On-demand** (search for): Specific query matching
 
-**Hard limit**: 3200 tokens total
+**Hard limit**: ~4000 tokens total. Results are injected as a **User Message** (not appended to the system prompt) to preserve Prompt Cache.
 
 ---
 

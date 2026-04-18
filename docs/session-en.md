@@ -93,21 +93,21 @@ Before the "brain" (Kernel) starts working:
 flowchart LR
     subgraph Assembly["Context Assembly"]
         direction TB
-        Sys["System Prompt"] --> Combine
-        Profile["User Profile"] --> Combine
-        History["Recent History"] --> Combine
-        Memory["Relevant Memory"] --> Combine
-        Skills["Skill Context"] --> Combine
-        Current["Current Input"] --> Combine
+        Sys["[system] PROFILE.md + SOUL.md + AGENTS.md + BOOTSTRAP.md + skills"] --> Combine
+        Mem["[user] Dynamic memory (relevant memories + summary)"] --> Combine
+        History["[user/assistant] Recent History"] --> Combine
+        Current["[user] Current Input"] --> Combine
         Combine["Combine & Truncate"] --> Final["Final Context"]
     end
 ```
 
 **Assembly order** (like making a sandwich):
-1. Bottom: System prompt (who AI is)
-2. Layer: User profile and memories
-3. Layer: Conversation history
-4. Top: Current user message
+1. Bottom: `[system]` - Static workspace markdown (PROFILE.md, SOUL.md, etc.)
+2. Layer: `[user]` - Dynamic memory content (relevant memories, summary)
+3. Layer: `[user/assistant]` - Conversation history
+4. Top: `[user]` - Current user message
+
+> **Prompt Cache Protection**: Dynamic memory is injected as a User Message rather than appended to the system prompt. This preserves the Prompt Cache for the static system content, reducing token costs and latency.
 
 ### 3. Delegation Phase
 

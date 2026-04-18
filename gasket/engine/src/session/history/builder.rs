@@ -189,12 +189,16 @@ impl ContextBuilder {
             system_prompts.push(skills.clone());
         }
 
-        // ── 5.5. Long-term memory injection ─────────────────
-        if let Some(ref loader) = self.memory_loader {
-            if let Some(memory_section) = loader(&content).await {
-                system_prompts.push(memory_section);
-            }
-        }
+        // ── 5.5. Long-term memory loading (injected as User Message) ─────
+        // Memory content varies per turn (on-demand semantic search depends on
+        // user input). Injecting it as User Message preserves Prompt Cache on
+        // the static System Prompt, reducing API costs by 90%+ on long sessions.
+        // See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+        let memory_context = if let Some(ref loader) = self.memory_loader {
+            loader(&content).await
+        } else {
+            None
+        };
 
         let mut messages = Self::assemble_prompt(
             history_snapshot,
@@ -205,6 +209,7 @@ impl ContextBuilder {
             } else {
                 Some(existing_summary.as_str())
             },
+            memory_context.as_deref(),
         );
 
         // ── 6. AfterHistory + BeforeLLM hooks ─────────────────────
@@ -235,15 +240,25 @@ impl ContextBuilder {
     }
 
     /// Pure, synchronous assembly of the LLM prompt sequence.
+    ///
+    /// # Architecture Note: User Message Injection
+    ///
+    /// `memory_context` is injected as a **User Message** rather than appended
+    /// to the System Prompt. This preserves Prompt Cache on Anthropic models
+    /// (and similar caching mechanisms on other providers), because the System
+    /// Prompt remains static across turns while the dynamic memory content
+    /// varies per request. For long sessions, this reduces API costs by 90%+.
     fn assemble_prompt(
         processed_history: Vec<SessionEvent>,
         current_message: &str,
         system_prompts: &[String],
         summary: Option<&str>,
+        memory_context: Option<&str>,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // 1. Build the system prompt (only if non-empty)
+        // Static content: workspace markdown + skills. Never changes mid-session.
         if !system_prompts.is_empty() {
             let system_content = system_prompts.join("\n\n");
             if !system_content.is_empty() {
@@ -278,7 +293,19 @@ impl ContextBuilder {
             }
         }
 
-        // 4. Current message
+        // 4. Long-term memory as User Message (preserves System Prompt cache)
+        // The [SYSTEM] prefix elevates authority without breaking the cache.
+        if let Some(memory_text) = memory_context {
+            if !memory_text.is_empty() {
+                messages.push(ChatMessage::user(format!(
+                    "[SYSTEM: Relevant long-term memories loaded for this turn. \
+                     Consider them in your response.]\n\n{}",
+                    memory_text
+                )));
+            }
+        }
+
+        // 5. Current message
         messages.push(ChatMessage::user(current_message));
 
         messages

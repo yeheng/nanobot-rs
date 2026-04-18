@@ -9,6 +9,20 @@ read_when:
 You can persist important state to disk using the `memorize` tool, and perform vector and tag-based retrieval via `memory_search`.
 Storage space is precious. Do not write garbage to disk.
 
+## Memory vs Skill — Know the Boundary
+
+| | **Memory** | **Skill** |
+|---|---|---|
+| Answers | "What" (facts, preferences, events) | "How" (procedures, workflows, SOPs) |
+| Stored in | `~/.gasket/memory/<scenario>/` | `workspace/skills/<name>.md` |
+| Format | YAML frontmatter + Markdown | YAML frontmatter + Markdown |
+| Type field | `note` (default) | `skill` |
+| Trigger | Always loaded if relevant | Loaded on demand via `read_file` or `skill_view` |
+
+**Rule of thumb**: If it's a fact about the user or the world → Memory. If it's a reusable procedure with steps and pitfalls → Skill.
+
+When writing a Skill-level procedure to memory, pass `"memory_type": "skill"` to the `memorize` tool. The system prioritizes skill-type memories during context loading — they are treated as actionable procedural knowledge and ranked above plain facts.
+
 ## Memory Partitions (Scenarios)
 
 When calling `memorize`, you must accurately use one of the following lowercase enum values as the `scenario` parameter:
@@ -23,6 +37,7 @@ When calling `memorize`, you must accurately use one of the following lowercase 
 ## Memory Writing Rules
 
 - Each time you use `memorize`, you must provide at least 2 high signal-to-noise `tags`.
+- Use `memory_type: "skill"` when the content is a reusable procedure (steps, pitfalls, verification). Default is `"note"` for facts.
 - If the user tells you "remember this", default to writing to `knowledge` or `profile`.
 - The `title` must be brief and descriptive (similar to a Git commit message).
 - **Always read before writing** — use `memory_search` or `read_file` first to avoid duplicates.
@@ -60,8 +75,10 @@ Memories have access-frequency tiers affecting retention priority:
 
 Memory is injected into agent context via three phases (total cap: 4000 tokens):
 
-1. **Bootstrap**: All `profile` + `active` hot/warm memories
-2. **Scenario**: Current scenario hot + tag-matched warm memories
-3. **On-demand**: Semantic/tag search to fill remaining budget
+1. **Bootstrap** (~1500 tokens): All `profile` + `active` hot/warm memories
+2. **Scenario** (~1500 tokens): Current scenario hot + tag-matched warm memories
+3. **On-demand** (~1000 tokens): Semantic/tag search to fill remaining budget
 
-Sort priority: exempt scenarios first → higher frequency → higher similarity.
+**Architecture Note**: Loaded memories are injected as a **User Message** (not appended to the System Prompt). This preserves Prompt Cache on Anthropic and similar providers, because the System Prompt stays static across turns while dynamic memory content varies per request. For long sessions, this reduces API costs by 90%+.
+
+Sort priority: exempt scenarios first → skill-type memories → higher frequency → higher similarity.

@@ -63,6 +63,11 @@ struct MemorizeArgs {
     #[serde(default = "default_scenario")]
     scenario: String,
 
+    /// Memory type: "note" (default) for facts, "skill" for reusable procedures.
+    /// Use "skill" when the content describes a workflow with steps and pitfalls.
+    #[serde(default = "default_memory_type")]
+    memory_type: String,
+
     /// Optional tags for categorization and retrieval.
     #[serde(default)]
     tags: Vec<String>,
@@ -70,6 +75,10 @@ struct MemorizeArgs {
 
 fn default_scenario() -> String {
     "knowledge".to_string()
+}
+
+fn default_memory_type() -> String {
+    "note".to_string()
 }
 
 /// Parse a scenario string, falling back to Knowledge for invalid values.
@@ -110,6 +119,12 @@ impl Tool for MemorizeTool {
                 "string",
                 false,
                 "Memory category: profile, active, knowledge (default), decisions, episodes, reference",
+            ),
+            (
+                "memory_type",
+                "string",
+                false,
+                "Memory type: 'note' (default) for facts, 'skill' for reusable procedures with steps and pitfalls",
             ),
             (
                 "tags",
@@ -156,8 +171,9 @@ impl Tool for MemorizeTool {
             ToolError::ExecutionError(format!("Failed to initialize memory store: {}", e))
         })?;
 
+        let memory_type = parsed.memory_type.trim();
         let filename = store
-            .create(scenario, title, "note", &parsed.tags, content)
+            .create(scenario, title, memory_type, &parsed.tags, content)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to create memory: {}", e)))?;
 
@@ -168,8 +184,8 @@ impl Tool for MemorizeTool {
         };
 
         Ok(format!(
-            "Memory saved: {} [{}] in {} — {}",
-            title, tags_display, scenario, filename
+            "Memory saved: {} [{}] in {} (type: {}) — {}",
+            title, tags_display, scenario, memory_type, filename
         ))
     }
 }

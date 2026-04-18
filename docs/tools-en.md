@@ -171,6 +171,25 @@ flowchart LR
 | `memory_search` | Search long-term memory | "What did I learn about DB?" |
 | `memorize` | Create new memory | "Remember my API key is..." |
 
+The `memorize` tool accepts a `memory_type` parameter:
+- `"note"` (default) - Facts, observations, learned knowledge
+- `"skill"` - Procedures, workflows, reusable patterns (prioritized during loading)
+
+```mermaid
+sequenceDiagram
+    participant AI
+    participant Tool as memorize Tool
+    participant Store as MemoryStore
+
+    AI->>Tool: memorize(content, memory_type)
+    Note over Tool: Determine type:
+    Note over Tool: "how to..." / "steps..." → skill
+    Note over Tool: "user likes..." / "learned..." → note
+    Tool->>Store: Save with type tag
+    Store-->>Tool: OK
+    Tool-->>AI: Memory created
+```
+
 ### 6. Schedule Tools
 
 | Tool | Purpose | Example |

@@ -245,16 +245,22 @@ User Input
                  │                                        │
                  │  ┌──────────────────────────────────┐  │
                  │  │ [system] PROFILE.md + SOUL.md +  │  │
-                 │  │          AGENTS.md + MEMORY.md + │  │
-                 │  │          BOOTSTRAP.md +          │  │
-                 │  │          skills_context          │  │
+                 │  │          AGENTS.md + BOOTSTRAP.  │  │
+                 │  │          md + skills_context     │  │
                  │  ├──────────────────────────────────┤  │
-                 │  │ [assistant] Summary (if any)     │  │
+                 │  │ [user] [SYSTEM: dynamic memory]  │  │
+                 │  │        Relevant memories +       │  │
+                 │  │        summary (if any)          │  │
                  │  ├──────────────────────────────────┤  │
-                 │  │ [History messages × N] (processed)│  │
+                 │  │ [assistant/user] History         │  │
+                 │  │        messages (processed)      │  │
                  │  ├──────────────────────────────────┤  │
                  │  │ [user] Current input             │  │
                  │  └──────────────────────────────────┘  │
+                 │                                        │
+                 │  Note: Dynamic memory is injected as   │
+                 │  a User Message to preserve Prompt     │
+                 │  Cache for static system content.      │
                  └───────────────────┬───────────────────┘
                                      │
                               ┌──────▼───────┐

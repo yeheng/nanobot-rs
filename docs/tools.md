@@ -221,9 +221,10 @@ sequenceDiagram
     
     Note over AI: 判断这是重要信息
     
-    AI->>M: 保存记忆
-    M->>Store: 写入Profile抽屉
-    M-->>AI: 保存成功
+    AI->>M: 保存记忆 (type: note/skill)
+    Note over M: 判断类型：事实→note，流程→skill
+    M->>Store: 写入对应抽屉
+    M-->>AI: 保存成功 (type: note)
     
     ...第二天...
     
@@ -240,7 +241,7 @@ sequenceDiagram
 
 **包含的工具：**
 - `memory_search` - 搜索记忆
-- `memorize` - 保存新记忆
+- `memorize` - 保存新记忆（支持 `memory_type`: `"note"` 或 `"skill"`）
 - `memory_decay` - 清理旧记忆
 - `memory_refresh` - 刷新记忆索引
 

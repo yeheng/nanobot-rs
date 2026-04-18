@@ -20,8 +20,9 @@ use std::cmp::Ordering;
 ///
 /// Sort order (via `Ord`):
 /// 1. Exempt scenarios (Profile, Decisions, Reference) always first
-/// 2. Higher frequency (Hot > Warm > Cold)
-/// 3. Higher score (when available)
+/// 2. Skill-type memories before note-type (procedural knowledge is actionable)
+/// 3. Higher frequency (Hot > Warm > Cold)
+/// 4. Higher score (when available)
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub memory_path: String,
@@ -32,6 +33,7 @@ pub struct SearchResult {
     pub score: f32,
     pub tokens: u32,
     pub id: String,
+    pub memory_type: String,
 }
 
 impl PartialEq for SearchResult {
@@ -46,13 +48,17 @@ impl Ord for SearchResult {
     fn cmp(&self, other: &Self) -> Ordering {
         let self_exempt = self.scenario.is_exempt_from_decay();
         let other_exempt = other.scenario.is_exempt_from_decay();
+        let self_skill = self.memory_type == "skill";
+        let other_skill = other.memory_type == "skill";
 
         // 1. Exempt scenarios first
         other_exempt
             .cmp(&self_exempt)
-            // 2. Higher frequency first
+            // 2. Skill-type memories before note-type (procedural knowledge is actionable)
+            .then_with(|| other_skill.cmp(&self_skill))
+            // 3. Higher frequency first
             .then_with(|| other.frequency.cmp(&self.frequency))
-            // 3. Higher score first
+            // 4. Higher score first
             .then_with(|| {
                 other
                     .score
@@ -79,6 +85,7 @@ impl From<MemoryIndexEntry> for SearchResult {
             score: 0.0,
             tokens: entry.tokens,
             id: entry.id,
+            memory_type: entry.memory_type,
         }
     }
 }
@@ -146,6 +153,7 @@ impl RetrievalEngine {
                     score: tag_score,
                     tokens: entry.tokens,
                     id: entry.id,
+                    memory_type: entry.memory_type,
                 }
             })
             .collect();
@@ -186,6 +194,7 @@ impl RetrievalEngine {
                     score: emb_score,
                     tokens: hit.token_count,
                     id: String::new(), // not stored in embedding table
+                    memory_type: String::new(), // not stored in embedding table; will sort as non-skill
                 }
             })
             .collect();
