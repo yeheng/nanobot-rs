@@ -1,7 +1,7 @@
 //! SQLite-backed storage, history processing, and semantic embedding for gasket.
 //!
 //! This crate provides:
-//! - **Persistence:** Sessions, conversation messages, summaries, cron jobs, key-value store
+//! - **Persistence:** Sessions, conversation messages, summaries, cron jobs
 //! - **History:** Token-budget-aware history truncation and multi-dimensional retrieval
 //! - **Search:** Full-text search types and semantic embedding
 //! - **Vector math:** Cosine similarity and top-K retrieval
@@ -12,7 +12,6 @@
 
 mod event_store;
 pub mod fs;
-mod kv;
 pub mod memory;
 
 // ── Merged from gasket-history ──
@@ -323,13 +322,13 @@ impl SqliteStore {
             anyhow::bail!("SQLite integrity check failed: {}", integrity);
         }
 
-        // Write check — try inserting and deleting a sentinel row in kv_store
+        // Write check — try inserting and deleting a sentinel row in cron_state
         sqlx::query(
-            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('__health_check__', '1', datetime('now'))",
+            "INSERT OR REPLACE INTO cron_state (job_id, last_run_at, next_run_at) VALUES ('__health_check__', NULL, NULL)",
         )
         .execute(&self.pool)
         .await?;
-        sqlx::query("DELETE FROM kv_store WHERE key = '__health_check__'")
+        sqlx::query("DELETE FROM cron_state WHERE job_id = '__health_check__'")
             .execute(&self.pool)
             .await?;
 
@@ -340,7 +339,6 @@ impl SqliteStore {
     /// Create all tables, indexes, triggers, and virtual tables.
     ///
     /// Only machine-state tables are created here:
-    /// - `kv_store` — generic key-value persistence
     /// - `sessions_v2` / `session_events` / `session_summaries` — conversation history
     /// - `cron_state` — scheduled tasks
     /// - `session_embeddings` — semantic history recall
@@ -348,18 +346,6 @@ impl SqliteStore {
     /// Explicit long-term memory lives exclusively in `~/.gasket/memory/*.md` files
     /// (Single Source of Truth — no SQLite `memories` table).
     async fn init_db(&self) -> anyhow::Result<()> {
-        // ── Key-value store ──
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS kv_store (
-                key         TEXT PRIMARY KEY,
-                value       TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
         // ── Session summaries ──
         // Stores the rolling summary with a sequence watermark (high-water mark)
         // indicating which events are already covered by the summary.
@@ -671,41 +657,6 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("gasket_sqlite_test_{}.db", uuid::Uuid::new_v4()));
         SqliteStore::with_path(path).await.unwrap()
-    }
-
-    // ── Key-value store tests ──
-
-    #[tokio::test]
-    async fn test_sqlite_kv_read_write() {
-        let store = temp_store().await;
-
-        store.write_raw("MEMORY.md", "# Memory").await.unwrap();
-        assert_eq!(
-            store.read_raw("MEMORY.md").await.unwrap(),
-            Some("# Memory".to_string())
-        );
-
-        assert!(store.delete_raw("MEMORY.md").await.unwrap());
-        assert_eq!(store.read_raw("MEMORY.md").await.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_kv_upsert() {
-        let store = temp_store().await;
-
-        store.write_raw("key1", "v1").await.unwrap();
-        store.write_raw("key1", "v2").await.unwrap();
-
-        assert_eq!(
-            store.read_raw("key1").await.unwrap(),
-            Some("v2".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_kv_nonexistent() {
-        let store = temp_store().await;
-        assert_eq!(store.read_raw("nope").await.unwrap(), None);
     }
 
     // ── Session Summary tests ──
