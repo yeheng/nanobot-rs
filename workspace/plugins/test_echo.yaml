@@ -1,5 +1,6 @@
 name: "test_echo"
 description: "Echoes back the input (simple mode)"
+version: "1.0.0"
 parameters:
   type: object
   properties:

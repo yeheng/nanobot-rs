@@ -10,18 +10,19 @@ import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../types';
 import MessageThoughtsPanel from './MessageThoughtsPanel.vue';
 
-const props = defineProps<{
-  message: Message;
-  isLastBotMessage: boolean;
-  isThinking: boolean;
-  isReceiving: boolean;
-}>();
+// Module-level marked setup — runs once, shared by all instances
+const customRenderer = new marked.Renderer();
+customRenderer.code = (codeObj: any) => {
+  const code = typeof codeObj === 'string' ? codeObj : codeObj.text || '';
+  const lang = typeof codeObj === 'string' ? '' : codeObj.lang || '';
+  const trimmed = code.trim();
+  if (lang === 'mermaid' || trimmed.startsWith('graph ') || trimmed.startsWith('sequenceDiagram') || trimmed.startsWith('classDiagram')) {
+    return `<div class="mermaid-diagram my-2 flex justify-center" data-source="${encodeURIComponent(trimmed)}"></div>`;
+  }
+  const highlighted = hljs.highlightAuto(code).value;
+  return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 hover:bg-black/30 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
+};
 
-const emit = defineEmits<{
-  (e: 'retry'): void;
-}>();
-
-// Setup marked
 marked.use(
   markedHighlight({
     emptyLangClass: 'hljs',
@@ -36,7 +37,19 @@ marked.use(
 marked.setOptions({
   breaks: true,
   gfm: true,
+  renderer: customRenderer,
 });
+
+const props = defineProps<{
+  message: Message;
+  isLastBotMessage: boolean;
+  isThinking: boolean;
+  isReceiving: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: 'retry'): void;
+}>();
 
 // Mermaid rendering
 const mermaidContainerRef = ref<HTMLDivElement | null>(null);
@@ -58,18 +71,6 @@ const renderMermaid = async () => {
   }
 };
 
-const customRenderer = new marked.Renderer();
-customRenderer.code = (codeObj: any) => {
-  const code = typeof codeObj === 'string' ? codeObj : codeObj.text || '';
-  const lang = typeof codeObj === 'string' ? '' : codeObj.lang || '';
-  const trimmed = code.trim();
-  if (lang === 'mermaid' || trimmed.startsWith('graph ') || trimmed.startsWith('sequenceDiagram') || trimmed.startsWith('classDiagram')) {
-    return `<div class="mermaid-diagram my-2 flex justify-center" data-source="${encodeURIComponent(trimmed)}"></div>`;
-  }
-  const highlighted = hljs.highlightAuto(code).value;
-  return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 hover:bg-black/30 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-white/80 text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
-};
-
 const unescapeRecursive = (str: string): string => {
   const decoded = str
     .replace(/&amp;/g, '&')
@@ -84,7 +85,7 @@ const unescapeRecursive = (str: string): string => {
 const parsedContent = computed(() => {
   if (!props.message.content) return '';
   const decoded = unescapeRecursive(props.message.content);
-  const raw = marked.parse(decoded, { renderer: customRenderer }) as string;
+  const raw = marked.parse(decoded) as string;
   return DOMPurify.sanitize(raw);
 });
 
@@ -164,7 +165,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
         <!-- Content -->
         <div v-if="message.content || isStreaming"
           class="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-white dark:bg-slate-700/50 text-gray-900 dark:text-slate-100 text-sm border border-gray-200 dark:border-white/5 shadow-sm min-w-0 w-full">
-          <div class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
+          <div ref="mermaidContainerRef" class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
           <!-- Streaming cursor -->
           <span v-if="isStreaming" class="inline-block w-2 h-4 bg-blue-500/80 dark:bg-blue-400/80 ml-0.5 align-middle animate-pulse rounded-sm" />
         </div>

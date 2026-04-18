@@ -195,6 +195,19 @@ impl Tool for PluginTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
 
+        // JSON-RPC plugin that hasn't been linked with engine resources yet.
+        // This can happen when plugins are discovered before `link_engine_refs()`
+        // is called. Return a clear error instead of panicking.
+        if matches!(
+            (&self.manifest.protocol, &self.config),
+            (PluginProtocol::JsonRpc, PluginConfig::Simple)
+        ) {
+            return Err(ToolError::ExecutionError(format!(
+                "JSON-RPC plugin '{}' has not been initialized with engine resources. Ensure link_engine_refs() is called before execution.",
+                self.manifest.name
+            )));
+        }
+
         let result = match (&self.manifest.protocol, &self.config) {
             (PluginProtocol::Simple, _) => {
                 run_simple(
@@ -210,9 +223,7 @@ impl Tool for PluginTool {
                 let daemon = self.get_or_spawn_daemon(&dispatch_ctx).await?;
                 daemon.call("initialize", Some(args)).await
             }
-            // PluginConfig::Simple is only created for Simple-protocol manifests,
-            // so this arm is unreachable. JsonRpc plugins are configured via
-            // with_engine_refs() before registration.
+            // Handled by the early return above.
             (PluginProtocol::JsonRpc, PluginConfig::Simple) => unreachable!(),
         };
 
@@ -324,7 +335,9 @@ pub fn discover_plugins_in_dir(plugins_dir: &Path) -> anyhow::Result<Vec<PluginT
 ///
 /// * `registry` - Tool registry to register discovered tools
 /// * `engine` - Optional engine resources for JSON-RPC plugins.
-///   If `None`, JSON-RPC plugins are silently skipped.
+///   If provided, JSON-RPC plugins are pre-configured with engine resources.
+///   If `None`, they are still registered but require `link_engine_refs()`
+///   before they can be executed.
 ///
 /// # Returns
 ///
@@ -351,16 +364,12 @@ pub fn discover_plugins(
     for tool in &tools {
         let mut tool = tool.clone();
 
-        // JSON-RPC plugins require engine resources; skip if unavailable.
+        // JSON-RPC plugins are pre-configured with engine resources when
+        // available. Otherwise they are registered unlinked and will be
+        // configured later via `link_engine_refs()`.
         if tool.manifest.protocol == PluginProtocol::JsonRpc {
             if let Some(ref res) = engine {
                 tool = tool.with_engine_refs(res.clone());
-            } else {
-                warn!(
-                    "Skipping JSON-RPC plugin '{}' - no engine resources provided",
-                    tool.name()
-                );
-                continue;
             }
         }
 

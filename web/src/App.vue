@@ -1,70 +1,20 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useResizableSidebar } from './composables/useResizableSidebar';
 import { MessageSquare, Pencil, Plus, X, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next';
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { onUnmounted, ref, watch } from 'vue';
 import ChatArea from './components/ChatArea.vue';
 import { useChatStore } from './stores/chatStore';
+
 const chatStore = useChatStore();
 
-// Sidebar width (persisted)
-const MIN_WIDTH = 200;
-const MAX_WIDTH = 480;
-const DEFAULT_WIDTH = 280;
-const COLLAPSED_WIDTH = 48;
-const sidebarWidth = ref(DEFAULT_WIDTH);
 const isCollapsed = ref(false);
-
-onMounted(() => {
-  const saved = localStorage.getItem('gasket_sidebar_width');
-  if (saved) sidebarWidth.value = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, parseInt(saved, 10)));
-  const savedCollapsed = localStorage.getItem('gasket_sidebar_collapsed');
-  if (savedCollapsed) isCollapsed.value = savedCollapsed === 'true';
-});
-
-// Resize logic
-const isResizing = ref(false);
-const startX = ref(0);
-const startWidth = ref(0);
-
-const onResizeStart = (e: MouseEvent) => {
-  if (isCollapsed.value) return;
-  isResizing.value = true;
-  startX.value = e.clientX;
-  startWidth.value = sidebarWidth.value;
-  document.body.style.cursor = 'col-resize';
-  document.body.style.userSelect = 'none';
-};
-
-const onResizeMove = (e: MouseEvent) => {
-  if (!isResizing.value) return;
-  const delta = e.clientX - startX.value;
-  const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth.value + delta));
-  sidebarWidth.value = newWidth;
-};
-
-const onResizeEnd = () => {
-  if (!isResizing.value) return;
-  isResizing.value = false;
-  document.body.style.cursor = '';
-  document.body.style.userSelect = '';
-  localStorage.setItem('gasket_sidebar_width', String(sidebarWidth.value));
-};
-
-onMounted(() => {
-  window.addEventListener('mousemove', onResizeMove);
-  window.addEventListener('mouseup', onResizeEnd);
-});
+const { sidebarWidth, isResizing, onResizeStart } = useResizableSidebar(isCollapsed);
 
 onUnmounted(() => {
-  window.removeEventListener('mousemove', onResizeMove);
-  window.removeEventListener('mouseup', onResizeEnd);
+  if (saveTimer) clearTimeout(saveTimer);
 });
-
-const toggleSidebar = () => {
-  isCollapsed.value = !isCollapsed.value;
-  localStorage.setItem('gasket_sidebar_collapsed', String(isCollapsed.value));
-};
 
 // Persist to localStorage
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -109,14 +59,19 @@ const handleRenameKeydown = (event: KeyboardEvent, chatId: string) => {
   }
 };
 
+const toggleSidebar = () => {
+  isCollapsed.value = !isCollapsed.value;
+  localStorage.setItem('gasket_sidebar_collapsed', String(isCollapsed.value));
+};
+
 // Session rename state
 const editingChatId = ref<string | null>(null);
 const editingName = ref('');
-const connectionStatus = ref<boolean>(false);
 
-onUnmounted(() => {
-  if (saveTimer) clearTimeout(saveTimer);
-});
+const formatDate = (ts?: number) => {
+  if (!ts) return '';
+  return new Date(ts).toLocaleDateString();
+};
 </script>
 
 <template>
@@ -125,7 +80,7 @@ onUnmounted(() => {
     <aside
       class="relative flex flex-col bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-r border-gray-200 dark:border-white/10 shrink-0 transition-all duration-300 ease-in-out"
       :class="isCollapsed ? 'items-center overflow-hidden' : ''"
-      :style="{ width: (isCollapsed ? COLLAPSED_WIDTH : sidebarWidth) + 'px' }"
+      :style="{ width: (isCollapsed ? 48 : sidebarWidth) + 'px' }"
     >
       <!-- Collapsed view -->
       <template v-if="isCollapsed">
@@ -202,9 +157,9 @@ onUnmounted(() => {
                     <span class="text-sm font-medium text-gray-800 dark:text-slate-200 truncate">{{ chat.name }}</span>
                   </template>
                 </div>
-                  <span class="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5">
-                    {{ chat.messages[chat.messages.length - 1]?.timestamp ? new Date(chat.messages[chat.messages.length - 1].timestamp).toLocaleDateString() : '' }}
-                  </span>
+                <span class="text-[10px] text-gray-400 dark:text-slate-500">
+                  {{ formatDate(chat.messages[chat.messages.length - 1]?.timestamp) }}
+                </span>
               </div>
 
               <div class="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
@@ -249,7 +204,6 @@ onUnmounted(() => {
       <ChatArea
         v-if="chatStore.activeChatId"
         :chat-id="chatStore.activeChatId"
-        @connection-status="connectionStatus = $event"
       />
     </main>
   </div>

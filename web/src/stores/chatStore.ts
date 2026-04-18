@@ -71,6 +71,13 @@ export const useChatStore = defineStore('chat', () => {
   const activeChat = computed(() => chats.value.find(c => c.id === activeChatId.value));
   const activeMessages = computed(() => activeChat.value?.messages || []);
 
+  const getChat = (chatId: string) => chats.value.find(c => c.id === chatId);
+
+  const withChat = (chatId: string, fn: (chat: Chat) => void) => {
+    const chat = getChat(chatId);
+    if (chat) fn(chat);
+  };
+
   const createChat = () => {
     const newChat: Chat = {
       id: 'chat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
@@ -107,7 +114,7 @@ export const useChatStore = defineStore('chat', () => {
   };
 
   const getOrCreateBotMessage = (chatId: string): Message | null => {
-    const chat = chats.value.find(c => c.id === chatId);
+    const chat = getChat(chatId);
     if (!chat) return null;
 
     const lastMsg = chat.messages[chat.messages.length - 1];
@@ -127,8 +134,7 @@ export const useChatStore = defineStore('chat', () => {
   };
 
   const appendMessage = (chatId: string, message: Message) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (chat) {
+    withChat(chatId, (chat) => {
       chat.messages.push(message);
       chat.updatedAt = Date.now();
       if (chat.name === 'New Chat' && message.role === 'user' && message.content) {
@@ -139,96 +145,102 @@ export const useChatStore = defineStore('chat', () => {
           .slice(0, 50);
         chat.name = sanitizedName + (message.content.length > 50 ? '...' : '');
       }
-    }
+    });
   };
 
   const updateMessageStatus = (chatId: string, messageId: string, status: MessageStatus) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg) {
-      msg.status = status;
-      chat.updatedAt = Date.now();
-    }
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg) {
+        msg.status = status;
+        chat.updatedAt = Date.now();
+      }
+    });
   };
 
   const appendToMessage = (chatId: string, messageId: string, content: string, field: 'content' | 'thinking' = 'content') => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg) {
-      if (field === 'thinking') {
-        msg.thinking = (msg.thinking || '') + content;
-      } else {
-        msg.content = (msg.content || '') + content;
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg) {
+        if (field === 'thinking') {
+          msg.thinking = (msg.thinking || '') + content;
+        } else {
+          msg.content = (msg.content || '') + content;
+        }
+        chat.updatedAt = Date.now();
       }
-      chat.updatedAt = Date.now();
-    }
+    });
   };
 
   const updateMessage = (chatId: string, messageId: string, updates: Partial<Message>) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg) {
-      Object.assign(msg, updates);
-      chat.updatedAt = Date.now();
-    }
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg) {
+        Object.assign(msg, updates);
+        chat.updatedAt = Date.now();
+      }
+    });
   };
 
   const ensureToolCalls = (chatId: string, messageId: string) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg && !msg.toolCalls) {
-      msg.toolCalls = [];
-    }
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg && !msg.toolCalls) {
+        msg.toolCalls = [];
+      }
+    });
   };
 
   const pushToolCall = (chatId: string, messageId: string, toolCall: any) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg) {
-      if (!msg.toolCalls) msg.toolCalls = [];
-      msg.toolCalls.push(toolCall);
-      chat.updatedAt = Date.now();
-    }
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg) {
+        if (!msg.toolCalls) msg.toolCalls = [];
+        msg.toolCalls.push(toolCall);
+        chat.updatedAt = Date.now();
+      }
+    });
   };
 
   const updateToolCall = (chatId: string, messageId: string, toolId: string, updates: any) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (!chat) return;
-    const msg = chat.messages.find(m => m.id === messageId);
-    if (msg && msg.toolCalls) {
-      const tool = msg.toolCalls.find(t => t.id === toolId);
-      if (tool) {
-        Object.assign(tool, updates);
-        chat.updatedAt = Date.now();
+    withChat(chatId, (chat) => {
+      const msg = chat.messages.find(m => m.id === messageId);
+      if (msg && msg.toolCalls) {
+        const tool = msg.toolCalls.find(t => t.id === toolId);
+        if (tool) {
+          Object.assign(tool, updates);
+          chat.updatedAt = Date.now();
+        }
       }
-    }
+    });
   };
 
   const clearChatMessages = (chatId: string) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (chat) {
+    withChat(chatId, (chat) => {
       chat.messages = [];
       chat.updatedAt = Date.now();
-    }
+    });
   };
 
   const setContextStats = (chatId: string, stats: any) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (chat) {
-      chat.contextStats = stats;
-    }
+    const chat = getChat(chatId);
+    if (chat) chat.contextStats = stats;
   };
 
   const setWatermarkInfo = (chatId: string, info: any) => {
-    const chat = chats.value.find(c => c.id === chatId);
-    if (chat) {
-      chat.watermarkInfo = info;
-    }
+    const chat = getChat(chatId);
+    if (chat) chat.watermarkInfo = info;
+  };
+
+  const abortToolCalls = (chatId: string) => {
+    withChat(chatId, (chat) => {
+      const lastMsg = chat.messages[chat.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'bot' && lastMsg.toolCalls) {
+        lastMsg.toolCalls.forEach(tc => {
+          if (tc.status === 'running') tc.status = 'error';
+        });
+      }
+    });
   };
 
   // Initialize
@@ -257,6 +269,7 @@ export const useChatStore = defineStore('chat', () => {
     updateToolCall,
     clearChatMessages,
     setContextStats,
-    setWatermarkInfo
+    setWatermarkInfo,
+    abortToolCalls
   };
 });
