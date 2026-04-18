@@ -21,7 +21,7 @@ async-trait.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9"
+serde_yaml.workspace = true
 
 # Logging & Tracing
 tracing.workspace = true
@@ -47,14 +47,14 @@ directories.workspace = true
 bytemuck = "1"
 
 # Token counting (from gasket-history)
-tiktoken-rs = "0.9"
+tiktoken-rs.workspace = true
 
 # Optional: Local ONNX embedding (from gasket-semantic)
 fastembed = { version = "5.13.0", optional = true }
 parking_lot = { version = "0.12", optional = true }
 
 # Optional: File watcher for memory directory changes
-notify = { version = "7", optional = true }
+notify = { workspace = true, optional = true }
 
 # Internal crates
 gasket-types = { path = "../types" }

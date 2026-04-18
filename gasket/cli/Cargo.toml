@@ -11,7 +11,7 @@ name = "gasket"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-providers", "workspace-download", "websocket"]
+default = ["markdown", "websocket"]
 
 # Rendering
 markdown = ["termimad"]
@@ -41,8 +41,8 @@ all-providers = ["provider-gemini", "provider-copilot"]
 # Workspace template download (now in CLI, not core)
 workspace-download = ["dep:tar", "dep:flate2"]
 
-# Full build (equivalent to old default)
-full = ["default", "all-channels", "telemetry"]
+# Full build (all optional features enabled)
+full = ["default", "all-providers", "workspace-download", "all-channels", "telemetry"]
 
 [dependencies]
 gasket-engine = { path = "../engine" }

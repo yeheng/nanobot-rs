@@ -32,7 +32,7 @@ futures-util = { workspace = true }
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9.33"
+serde_yaml.workspace = true
 
 # HTTP (for stateless senders)
 reqwest.workspace = true
