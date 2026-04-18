@@ -8,7 +8,6 @@ use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::session::memory::MemoryManager;
-use crate::session::store::MemoryProvider;
 
 /// Tool for refreshing memory index and reindexing files
 pub struct MemoryRefreshTool {
