@@ -14,8 +14,8 @@ fn test_scripts_dir() -> PathBuf {
         .unwrap()
         .parent()
         .unwrap()
-        .join("tests")
-        .join("scripts")
+        .join("workspace")
+        .join("plugins")
 }
 
 struct MockSpawner;
