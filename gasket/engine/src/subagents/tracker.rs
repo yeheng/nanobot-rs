@@ -216,7 +216,6 @@ impl SubagentTracker {
             }
         }
     }
-
 }
 
 impl Drop for SubagentTracker {

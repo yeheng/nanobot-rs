@@ -783,12 +783,31 @@ impl StreamEvent {
     /// are returned unchanged — they already carry a fixed id.
     pub fn with_agent_id(self, id: Arc<str>) -> Self {
         match self {
-            Self::Thinking { content, .. } => Self::Thinking { agent_id: Some(id), content },
-            Self::Content { content, .. } => Self::Content { agent_id: Some(id), content },
-            Self::ToolStart { name, arguments, .. } => Self::ToolStart { agent_id: Some(id), name, arguments },
-            Self::ToolEnd { name, output, .. } => Self::ToolEnd { agent_id: Some(id), name, output },
+            Self::Thinking { content, .. } => Self::Thinking {
+                agent_id: Some(id),
+                content,
+            },
+            Self::Content { content, .. } => Self::Content {
+                agent_id: Some(id),
+                content,
+            },
+            Self::ToolStart {
+                name, arguments, ..
+            } => Self::ToolStart {
+                agent_id: Some(id),
+                name,
+                arguments,
+            },
+            Self::ToolEnd { name, output, .. } => Self::ToolEnd {
+                agent_id: Some(id),
+                name,
+                output,
+            },
             Self::Done { .. } => Self::Done { agent_id: Some(id) },
-            Self::Text { content, .. } => Self::Text { agent_id: Some(id), content },
+            Self::Text { content, .. } => Self::Text {
+                agent_id: Some(id),
+                content,
+            },
             other => other,
         }
     }
