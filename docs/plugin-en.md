@@ -6,7 +6,7 @@
 
 ## What is a Plugin?
 
-Gasket's plugin system lets you add custom tools without writing Rust. You write a script in your favorite language, declare a YAML manifest, and drop it into `~/.gasket/scripts/`. Gasket automatically discovers it and exposes it as a native tool.
+Gasket's plugin system lets you add custom tools without writing Rust. You write a script in your favorite language, declare a YAML manifest, and drop it into `~/.gasket/plugins/`. Gasket automatically discovers it and exposes it as a native tool.
 
 Plugins support two communication protocols:
 
@@ -18,7 +18,7 @@ Plugins support two communication protocols:
 ## Quick Example
 
 ```yaml
-# ~/.gasket/scripts/weather.yaml
+# ~/.gasket/plugins/weather.yaml
 name: "weather"
 description: "Get current weather for a city"
 version: "1.0.0"
@@ -36,7 +36,7 @@ parameters:
 ```
 
 ```python
-# ~/.gasket/scripts/weather.py
+# ~/.gasket/plugins/weather.py
 import json, sys
 
 args = json.load(sys.stdin)
@@ -54,14 +54,14 @@ That's it. Gasket will now offer `weather` as a tool to the AI.
 ## Directory Layout
 
 ```
-~/.gasket/scripts/
+~/.gasket/plugins/
 ├── weather.yaml
 ├── weather.py
 ├── translate.yaml
 └── translate.js
 ```
 
-Gasket scans `~/.gasket/scripts/` at startup and loads every `.yaml` / `.yml` file as a plugin manifest.
+Gasket scans `~/.gasket/plugins/` at startup and loads every `.yaml` / `.yml` file as a plugin manifest.
 
 ---
 

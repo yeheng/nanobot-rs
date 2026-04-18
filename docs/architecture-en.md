@@ -108,7 +108,7 @@ gasket-rs/                    (Cargo workspace)
 │  │  │Tele- │ │Discord│ │ Slack  │  │  ┌───────────────────┐  │
 │  │  │gram  │ │       │ │        │  │  │   Config Loader   │  │
 │  │  ├──────┤ ├───────┤ ├────────┤  │  │   (YAML → Struct) │  │
-│  │  │Feishu│ │ Email │ │DingTalk│  │  └───────────────────┘  │
+│  │  │Feishu│ │       │ │DingTalk│  │  └───────────────────┘  │
 │  │  ├──────┤ ├───────┤ ├────────┤  │                         │
 │  │  │WeCom │ │WebSock│ │  CLI   │  │  ┌───────────────────┐  │
 │  │  └──────┘ └───────┘ └────────┘  │  │   Skills Loader   │  │
@@ -198,7 +198,7 @@ engine
     │       └── spawn_subagent, SubagentTracker
     │
     ├── optional: channels (feature flags)
-    │       └── Telegram, Discord, Slack, Feishu, Email, DingTalk, WeCom, Webhook, WebSocket
+    │       └── Telegram, Discord, Slack, Feishu, DingTalk, WeCom, WebSocket
     │
     └── optional: providers (feature flags)
             └── Gemini, Copilot
@@ -221,9 +221,12 @@ pub struct AgentSession {
     system_prompt: String,          // System prompt
     skills_context: Option<String>, // Skills context
     hooks: Arc<HookRegistry>,       // Hook registry
+    history_config: gasket_storage::HistoryConfig, // History configuration
     compactor: Option<Arc<ContextCompactor>>, // Context compactor
     memory_manager: Option<Arc<MemoryManager>>, // Memory manager
     indexing_service: Option<Arc<IndexingService>>, // Indexing service
+    pricing: Option<ModelPricing>,  // Optional pricing for cost calculation
+    pending_done: tokio_util::task::TaskTracker, // Graceful shutdown tracker
 }
 ```
 
@@ -275,7 +278,7 @@ Key methods on AgentContext:
 - `is_persistent(&self) -> bool` — check variant at runtime
 - `load_session(&self, key) -> Session` — load session from event store
 - `save_event(&self, event) -> Result` — append event to event store
-- `get_history(&self, key, branch) -> Vec<SessionEvent>` — retrieve branch history
+- `get_events_after_watermark(&self, key, watermark) -> Vec<SessionEvent>` — retrieve events after watermark
 - `recall_history(&self, key, embedding, top_k) -> Vec<String>` — semantic recall
 - `clear_session(&self, key) -> Result` — clear session data
 
@@ -307,16 +310,14 @@ pub enum EventType {
     ToolCall,         // Tool invocation request
     ToolResult,       // Tool execution result
     Summary,          // Context summarization
-    Merge,            // Branch merge point
+    // Note: Branching is not currently implemented
 }
 ```
 
 **Session Aggregate** - Aggregate root managing branch state:
 ```rust
 pub struct Session {
-    pub id: String,
-    pub branches: HashMap<String, Uuid>,  // branch_name -> head_event_id
-    pub current_branch: String,
+    pub key: String,
     pub metadata: SessionMetadata,
 }
 ```
@@ -359,11 +360,11 @@ pub enum HookPoint {
 | engine | `telegram` | Telegram channel |
 | engine | `discord` | Discord channel |
 | engine | `slack` | Slack channel |
-| engine | `email` | Email channel |
+| engine | - | - |
 | engine | `feishu` | Feishu channel |
 | engine | `dingtalk` | DingTalk channel |
 | engine | `wecom` | WeCom channel |
-| engine | `webhook` | Webhook server |
+| engine | `websocket` | WebSocket channel |
 | engine | `provider-gemini` | Google Gemini provider |
 | engine | `provider-copilot` | GitHub Copilot provider |
 | storage | `local-embedding` | fastembed ONNX embedding (~20MB) |

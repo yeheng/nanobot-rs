@@ -177,7 +177,8 @@ You: Remember I prefer spaces over tabs
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # Only allow specific commands
+    # Note: exec tool safety policy is managed via sandbox config,
+    # see docs/tools.md or docs/tools-en.md for details
     allowed_commands:
       - git
       - cargo
@@ -229,7 +230,7 @@ Free search options:
 channels:
   telegram:
     token: "123456:ABC-DEF..."
-    allowed_users: []  # Empty allows everyone
+    allow_from: []  # Empty allows everyone
 ```
 
 5. Start: `gasket gateway`
@@ -258,7 +259,7 @@ channels:
 channels:
   telegram:
     token: "..."
-    allowed_users:
+    allow_from:
       - "123456789"   # Your Telegram ID
       - "987654321"   # Friend's ID
 ```

@@ -130,8 +130,8 @@ agents:
 # 方式 1: 交互模式中使用命令
 You: /new
 
-# 方式 2: 命令行参数
-gasket agent --new
+# 方式 2: 交互式命令
+在 `gasket agent` 交互模式中输入 `/new`
 
 # 方式 3: 删除数据库（彻底清空）
 rm ~/.gasket/gasket.db
@@ -177,7 +177,8 @@ rm ~/.gasket/gasket.db
 ```yaml
 tools:
   exec:
-    command_policy: allow_list  # 只允许列表中的命令
+    # 注意：exec 工具的安全策略通过 sandbox 配置管理，
+    # 具体参见 docs/tools.md 或 docs/tools-en.md
     allowed_commands:
       - git
       - cargo
@@ -229,7 +230,7 @@ tools:
 channels:
   telegram:
     token: "123456:ABC-DEF..."
-    allowed_users: []  # 留空允许所有人
+    allow_from: []  # 留空允许所有人
 ```
 
 5. 启动：`gasket gateway`
@@ -258,7 +259,7 @@ channels:
 channels:
   telegram:
     token: "..."
-    allowed_users:
+    allow_from:
       - "123456789"   # 你的 Telegram ID
       - "987654321"   # 朋友的 ID
 ```

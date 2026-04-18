@@ -79,7 +79,7 @@ mindmap
       创建子代理
       定时任务
     通信
-      发送消息
+      发送消息 (MessageTool)
 ```
 
 ---
@@ -242,8 +242,9 @@ sequenceDiagram
 **包含的工具：**
 - `memory_search` - 搜索记忆
 - `memorize` - 保存新记忆（支持 `memory_type`: `"note"` 或 `"skill"`）
-- `memory_decay` - 清理旧记忆
-- `memory_refresh` - 刷新记忆索引
+- `memory_decay` - 运行记忆频率衰减（Hot→Warm→Cold→Archived）
+- `memory_refresh` - 刷新并重新索引记忆文件
+- `history_query` (`HistoryQueryTool`) - 查询 SQLite 中的对话历史
 
 ### 5. 子代理工具
 
@@ -284,6 +285,14 @@ sequenceDiagram
 - `spawn` - 创建单个子代理
 - `spawn_parallel` - 并行创建多个子代理
 
+### 工具执行签名
+
+所有工具通过统一的 `Tool` trait 执行，`ctx` 参数是**必需**的：
+
+```rust
+async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
+```
+
 ### 6. 定时任务工具
 
 让 AI 能管理定时任务：
@@ -310,6 +319,7 @@ sequenceDiagram
 
 **包含的工具：**
 - `cron` - 管理定时任务（增删改查）
+- `script` (`PluginTool`) - 外部脚本工具（通过 YAML manifest 声明）
 
 ---
 
@@ -327,6 +337,8 @@ flowchart TB
         R --> T4[记忆工具]
         R --> T5[子代理工具]
         R --> T6[定时任务]
+        R --> T7[历史查询]
+        R --> T8[外部脚本]
     end
     
     AI[AI大脑] --> R
@@ -334,6 +346,8 @@ flowchart TB
     AI -->|需要查资料| T2
     AI -->|需要改文件| T1
     AI -->|需要执行命令| T3
+    AI -->|需要查历史| T7
+    AI -->|需要扩展功能| T8
 ```
 
 ### 语义路由

@@ -152,11 +152,11 @@ flowchart LR
 
 ### AgentExecutor
 
-The "coordinator" that manages the AI thinking loop:
+The "coordinator" that manages the AI thinking loop (max 20 iterations by default):
 
 ```rust
 // Pseudo-code showing the logic
-while iterations < max_iterations {
+while iterations < DEFAULT_MAX_ITERATIONS {
     // Ask AI what to do
     response = llm.chat(messages);
     
@@ -245,7 +245,7 @@ flowchart TB
     Try -->|LLM Error| Retry{"Retry?"}
     Try -->|Tool Error| ToolErr["Tool Returns Error"]
     
-    Retry -->|Yes (< 3 times)| Backoff["Exponential Backoff"]
+    Retry -->|Yes (<= 3 times)| Backoff["Exponential Backoff<br/>2s, 4s, 8s, cap 15s"]
     Backoff --> Try
     Retry -->|No| Fail["Return Error"]
     

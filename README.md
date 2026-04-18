@@ -63,7 +63,7 @@ flowchart TB
 
 ```bash
 # Clone the code
-git clone https://github.com/YeHeng/gasket-rs.git
+git clone https://github.com/YeHeng/gasket.git
 cd gasket-rs
 
 # Build (requires Rust, as simple as installing Node.js)

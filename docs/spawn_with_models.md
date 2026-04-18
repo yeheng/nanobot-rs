@@ -49,22 +49,19 @@ agents:
     fast:
       provider: zhipu
       model: glm-4-flash
-      description: "Fast responses for simple tasks"
-      capabilities: ["fast", "simple"]
+      # ModelProfile fields: model, provider, temperature, max_tokens, thinking_enabled
       temperature: 0.7
 
     reasoning:
       provider: anthropic
       model: claude-opus-4
-      description: "Deep reasoning and analysis"
-      capabilities: ["reasoning", "analysis"]
+      # ModelProfile fields: model, provider, temperature, max_tokens, thinking_enabled
       temperature: 0.3
 
     coder:
       provider: openai
       model: gpt-4o
-      description: "Code generation expert"
-      capabilities: ["code", "documentation"]
+      # ModelProfile fields: model, provider, temperature, max_tokens, thinking_enabled
       temperature: 0.2
 ```
 
@@ -74,8 +71,11 @@ agents:
 |------|------|------|
 | `provider` | string | 提供商 ID (openai, anthropic, zhipu 等) |
 | `model` | string | 模型 ID (gpt-4o, claude-opus-4 等) |
-| `description` | string | 模型描述 |
-| `capabilities` | string[] | 能力标签 (code, reasoning, fast, creative 等) |
+| `model` | string | 模型 ID (如 `openrouter/anthropic/claude-4.5-sonnet`) |
+| `provider` | string | 提供商 ID |
+| `temperature` | number | 可选，采样温度 |
+| `max_tokens` | number | 可选，最大生成 token 数 |
+| `thinking_enabled` | boolean | 可选，是否启用思考模式 |
 | `temperature` | float | 采样温度 (0.0-2.0) |
 | `thinking_enabled` | bool | 是否启用推理模式 |
 | `max_tokens` | int | 最大生成 token 数 |

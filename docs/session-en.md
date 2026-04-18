@@ -142,7 +142,7 @@ When conversation gets too long, compress it:
 flowchart TB
     Check{"History too long?"} -->|Yes| Summarize["LLM Summarization"]
     Check -->|No| Done["Done"]
-    Summarize --> Store["Store summary"]
+    Summarize --> Store["Store summary + watermark"]
     Store --> Clean["Clean old messages"]
     Clean --> Done
 ```
@@ -209,14 +209,13 @@ flowchart TB
 Like a suitcase with limited space:
 
 ```
-Total Budget: 4096 tokens
+Memory Token Budgets (defaults):
 
-Recent messages:  1500 tokens ████████░░
-Summary:          1000 tokens █████░░░░░
-Relevant memory:   800 tokens ████░░░░░░
-Reserved:          796 tokens ████░░░░░░
+Bootstrap:        1500 tokens ████████░░
+Scenario:         1500 tokens ████████░░
+On-demand:        1000 tokens █████░░░░░
+Total Cap:        4000 tokens ██████████
 ────────────────────────────────────────
-Total:            4096 tokens
 ```
 
 ---
@@ -271,15 +270,19 @@ The butler's toolkit:
 
 ```rust
 struct AgentSession {
-    runtime_ctx: RuntimeContext,      // Execution dependencies
-    context: AgentContext,             // Persistent or stateless
-    config: AgentConfig,               // Behavior settings
-    workspace: PathBuf,                // Working directory
-    system_prompt: String,             // AI personality
-    skills_context: Option<String>,    // Loaded skills
-    hooks: HookRegistry,               // Extension points
+    runtime_ctx: RuntimeContext,         // Execution dependencies
+    context: AgentContext,               // Persistent or stateless
+    config: AgentConfig,                 // Behavior settings
+    workspace: PathBuf,                  // Working directory
+    system_prompt: String,               // AI personality
+    skills_context: Option<String>,      // Loaded skills
+    hooks: HookRegistry,                 // Extension points
+    history_config: HistoryConfig,       // History loading config
     compactor: Option<ContextCompactor>, // Compression
     memory_manager: Option<MemoryManager>, // Long-term memory
+    indexing_service: Option<Arc<IndexingService>>, // Search indexing
+    pricing: Option<ModelPricing>,       // Cost calculation
+    pending_done: TaskTracker,           // Graceful shutdown tracker
 }
 ```
 

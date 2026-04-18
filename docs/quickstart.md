@@ -34,7 +34,7 @@ rustc --version
 
 ```bash
 # 克隆代码
-git clone https://github.com/YeHeng/gasket-rs.git
+git clone https://github.com/YeHeng/gasket.git
 cd gasket-rs
 
 # 编译（喝杯咖啡，大约需要 2-5 分钟）

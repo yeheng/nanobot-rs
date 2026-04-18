@@ -97,12 +97,12 @@ trait Tool: Send + Sync {
 | `spawn_parallel` | system | 并行创建多个子代理 |
 | `web_fetch` | web | HTTP GET 请求 |
 | `web_search` | web | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
-| `send_message` | communication | 通过 Bus 发消息到渠道 |
+| `MessageTool` | communication | 通过 Broker 发消息到渠道 |
 | `cron` | system | 管理定时任务 (CRUD) |
 | `memory_search` | memory | 通过 SQLite MetadataStore 搜索结构化记忆 |
 | `memorize` | memory | 写入结构化长期记忆 |
 | MCP tools | mcp | MCP 服务器提供的动态工具 |
-| 插件工具 | plugin | 从 `~/.gasket/scripts/` 加载的外部脚本工具 |
+| 插件工具 | plugin | 从 `~/.gasket/plugins/` 加载的外部脚本工具 |
 
 ### 辅助模块
 
@@ -181,10 +181,9 @@ trait Channel: Send + Sync {
 | Discord | `discord` | WebSocket (serenity) | Discord Gateway |
 | Slack | `slack` | WebSocket (tungstenite) | Slack Socket Mode |
 | 飞书 | `feishu` | HTTP Webhook (axum) | 飞书事件订阅 |
-| 邮件 | `email` | IMAP Polling + SMTP | 邮件收发 |
 | 钉钉 | `dingtalk` | HTTP Webhook (axum) | 钉钉回调 |
 | 企业微信 | `wecom` | HTTP Webhook (axum) | 企微回调 |
-| WebSocket | `webhook` | WebSocket (axum) | 实时双向通信 |
+| WebSocket | `websocket` | WebSocket (axum) | 实时双向通信 |
 
 ### middleware 层
 
@@ -223,7 +222,7 @@ trait Channel: Send + Sync {
 
 ---
 
-## 5. bus/ — 消息总线 (Actor 模型)
+## 5. broker/ — 消息总线 (Actor 模型)
 
 ### 模块结构
 
@@ -359,9 +358,12 @@ pub struct AgentSession {
     system_prompt: String,          // 系统提示
     skills_context: Option<String>, // 技能上下文
     hooks: Arc<HookRegistry>,       // Hook 注册表
+    history_config: gasket_storage::HistoryConfig, // 历史配置
     compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
     memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
     indexing_service: Option<Arc<IndexingService>>, // 索引服务
+    pricing: Option<ModelPricing>,  // 可选价格配置
+    pending_done: tokio_util::task::TaskTracker, // 优雅关闭追踪器
 }
 ```
 
@@ -378,6 +380,7 @@ pub struct PersistentContext {
     pub sqlite_store: Arc<SqliteStore>,
     #[cfg(feature = "local-embedding")]
     pub embedder: Option<Arc<TextEmbedder>>,
+    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 ```
 
@@ -437,7 +440,19 @@ let handle = spawn_subagent(
     Some(event_tx),
     result_tx,
     Some(token_tracker),
+    cancellation_token,
 );
+```
+
+### 子代理结果
+
+```rust
+pub struct SubagentResult {
+    pub id: String,              // 子代理 ID
+    pub task: String,            // 任务描述
+    pub response: SubagentResponse, // 执行结果
+    pub model: Option<String>,   // 使用的模型名称
+}
 ```
 
 ---
@@ -517,7 +532,7 @@ Vault 模块位于 `engine/src/vault/`，不是独立 crate。
 | `cron/` | `CronService` + `CronJob` — 定时任务服务，文件驱动 |
 | `heartbeat/` | `HeartbeatService` — 读取 HEARTBEAT.md，定时触发主动任务 |
 | `skills/` | 技能系统 — `SkillsLoader`, `SkillsRegistry`, `Skill`, `SkillMetadata`（见第 16 节） |
-| `bus_adapter.rs` | `EngineHandler` — 桥接引擎到 Bus Actor 系统 |
+| `bus_adapter.rs` | `EngineHandler` — 桥接引擎到 Broker Actor 系统 |
 | `error.rs` | 统一错误类型（AgentError, ProviderError, ChannelError, PipelineError, ConfigValidationError） |
 | `token_tracker.rs` | Token 计数、成本计算、会话统计追踪 |
 

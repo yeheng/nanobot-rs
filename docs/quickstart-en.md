@@ -34,7 +34,7 @@ rustc --version
 
 ```bash
 # Clone the code
-git clone https://github.com/YeHeng/gasket-rs.git
+git clone https://github.com/YeHeng/gasket.git
 cd gasket-rs
 
 # Build (grab a coffee, takes 2-5 minutes)

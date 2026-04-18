@@ -32,7 +32,7 @@ Vault 使用 **XChaCha20-Poly1305** 进行加密（默认）：
 
 - **算法**: XChaCha20-Poly1305（AEAD 认证加密）
 - **密钥派生**: Argon2id（内存-hard 密钥派生函数）
-- **密码环境变量**: `GASKET_VAULT_PASSWORD`
+- **密码环境变量**: `GASKET_MASTER_PASSWORD`
 
 > **注意**: XChaCha20-Poly1305 是唯一支持的加密算法，提供更强的 nonce 随机性和现代密码学安全性。
 

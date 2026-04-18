@@ -355,7 +355,7 @@ chat_stream() ──▶ Stream<ChatStreamChunk>
            │            │            │
            ▼            ▼            ▼
     StreamEvent::   StreamEvent::   tool_calls_map
-    Content(text)   Reasoning(text) (accumulate until stream ends)
+    Content(text)   Thinking(text)  (accumulate until stream ends)
            │            │            │
            ▼            ▼            ▼
     callback()      callback()    Parse to Vec<ToolCall>

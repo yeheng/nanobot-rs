@@ -148,10 +148,10 @@ sequenceDiagram
     par Result Collection
         Tracker->>Tracker: wait_for_all()
     and Event Streaming
-        S1-->>Tracker: SubagentEvent::Thinking
-        S1-->>Tracker: SubagentEvent::Completed
-        S2-->>Tracker: SubagentEvent::Thinking
-        S2-->>Tracker: SubagentEvent::Completed
+        S1-->>Tracker: StreamEvent::Thinking
+        S1-->>Tracker: StreamEvent::SubagentCompleted
+        S2-->>Tracker: StreamEvent::Thinking
+        S2-->>Tracker: StreamEvent::SubagentCompleted
     and WebSocket Forward
         Tracker-->>User: Forward events
     end
@@ -205,6 +205,7 @@ spawn_subagent(
     None,
     result_tx,
     None,
+    CancellationToken::new(),
 );
 // Returns immediately, runs in background
 ```
@@ -222,6 +223,7 @@ spawn_subagent(
     None,
     result_tx,
     None,
+    CancellationToken::new(),
 );
 let result = result_rx.recv().await;
 // Use result in main agent
@@ -243,6 +245,7 @@ for (id, task) in tasks {
         Some(tracker.event_sender()),
         tracker.result_sender(),
         Some(token_tracker.clone()),
+        tracker.cancellation_token(),
     );
 }
 let results = tracker.wait_for_all(tasks.len()).await?;
@@ -260,32 +263,26 @@ sequenceDiagram
     participant Tracker
     participant User
     
-    Sub->>Tracker: SubagentEvent::Thinking
+    Sub->>Tracker: StreamEvent::Thinking
     Tracker-->>User: "Thinking..."
     
-    Sub->>Tracker: SubagentEvent::ToolStart
+    Sub->>Tracker: StreamEvent::ToolStart
     Tracker-->>User: "Using tool: read_file"
     
-    Sub->>Tracker: SubagentEvent::ToolEnd
+    Sub->>Tracker: StreamEvent::ToolEnd
     Tracker-->>User: "Tool completed"
     
-    Sub->>Tracker: SubagentEvent::Content
+    Sub->>Tracker: StreamEvent::Content
     Tracker-->>User: "Partial result..."
     
-    Sub->>Tracker: SubagentEvent::Completed
+    Sub->>Tracker: StreamEvent::SubagentCompleted
     Tracker-->>User: "Task done!"
 ```
 
 ### Event Types
 
 ```rust
-enum SubagentEvent {
-    Thinking { subagent_id, content },     // Reasoning
-    ToolStart { subagent_id, name, args }, // Tool started
-    ToolEnd { subagent_id, name, output }, // Tool completed
-    Content { subagent_id, content },      // Partial output
-    Completed { subagent_id, result },     // Task done
-}
+// Unified StreamEvent is used for both main agent and subagent.n// Subagent events have agent_id set to Some(subagent_uuid).n// See docs/data-structures-en.md for the full StreamEvent definition.n
 ```
 
 ---
@@ -397,6 +394,7 @@ pub fn spawn_subagent(
     event_tx: Option<mpsc::Sender<StreamEvent>>,
     result_tx: mpsc::Sender<SubagentResult>,
     token_tracker: Option<Arc<TokenTracker>>,
+    cancellation_token: CancellationToken,
 ) -> JoinHandle<()>
 ```
 
@@ -406,9 +404,11 @@ Monitors all running subagents:
 
 ```rust
 pub struct SubagentTracker {
-    results: Arc<RwLock<HashMap<String, SubagentResult>>>,
     result_tx: mpsc::Sender<SubagentResult>,
-    event_tx: mpsc::Sender<SubagentEvent>,
+    result_rx: Option<mpsc::Receiver<SubagentResult>>,
+    event_tx: mpsc::Sender<StreamEvent>,
+    event_rx: Option<mpsc::Receiver<StreamEvent>>,
+    cancellation_token: CancellationToken,
 }
 ```
 

@@ -241,6 +241,17 @@ flowchart TB
 
 ---
 
+## 记忆 Token 预算默认值
+
+| 阶段 | 预算 | 用途 |
+|------|------|------|
+| **Bootstrap** | 1500 tokens | Profile + Active (Hot/Warm) |
+| **Scenario** | 1500 tokens | 当前场景 Hot + tag 匹配 |
+| **On-demand** | 1000 tokens | 语义搜索补充 |
+| **Total Cap** | 4000 tokens | 总上限 |
+
+---
+
 ## 两种类型的 Session
 
 ```mermaid
@@ -305,7 +316,7 @@ flowchart TB
     
     subgraph 压缩后
         S[摘要: 用户让讲童话故事<br/>故事内容：王子救公主]
-        R[保留最近3轮]
+        R[保留 watermark 之后的事件]
     end
     
     A1 --> C
@@ -316,9 +327,9 @@ flowchart TB
     style S fill:#FFD700
 ```
 
-**压缩策略：**
-- 老旧消息 → 生成摘要
-- 最近消息 → 保留完整
+**压缩策略（基于 watermark）：**
+- 老旧消息 → 生成摘要，并更新 sequence watermark
+- watermark 之后的事件 → 保留完整，按 token 预算加载
 - 关键信息 → 提取保存
 
 ---
