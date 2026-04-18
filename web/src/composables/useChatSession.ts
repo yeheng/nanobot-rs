@@ -23,9 +23,9 @@ export function useChatSession(chatId: { value: string }) {
 
   const usageColor = computed(() => {
     const pct = contextStats.value?.usage_percent || 0;
-    if (pct < 80) return 'bg-emerald-500';
+    if (pct < 80) return 'bg-primary';
     if (pct < 100) return 'bg-amber-500';
-    return 'bg-red-500';
+    return 'bg-destructive';
   });
 
   type SessionStatus = 'disconnected' | 'idle' | 'sending' | 'receiving';

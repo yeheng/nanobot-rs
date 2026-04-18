@@ -2,48 +2,127 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════
+   Shadcn Theme System — Light & Dark
+   Based on shadcn-vue zinc base color palette
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Light ───────────────────────────────────────────────── */
 :root {
-  --bg-color: #f8fafc;
-  --panel-bg: rgba(255, 255, 255, 0.8);
-  --panel-border: rgba(0, 0, 0, 0.08);
-
-  --chat-bg: #ffffff;
-  --text-main: #0f172a;
-  --text-muted: #64748b;
-
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-light: rgba(59, 130, 246, 0.1);
-
-  --success: #10b981;
-  --warning: #f59e0b;
-  --error: #ef4444;
-  --purple: #8b5cf6;
-
-  --user-msg: linear-gradient(135deg, #3b82f6, #2563eb);
-  --bot-msg: rgba(241, 245, 249, 0.8);
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --radius: 0.5rem;
 
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color-scheme: light;
 }
 
+/* ── Dark ────────────────────────────────────────────────── */
 .dark {
-  --bg-color: #0f172a;
-  --panel-bg: rgba(30, 41, 59, 0.7);
-  --panel-border: rgba(255, 255, 255, 0.08);
-
-  --chat-bg: #1e293b;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-light: rgba(59, 130, 246, 0.15);
-
-  --user-msg: linear-gradient(135deg, #3b82f6, #2563eb);
-  --bot-msg: rgba(30, 41, 59, 0.8);
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+  --radius: 0.5rem;
 
   color-scheme: dark;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Hue Overrides — primary / ring colors
+   Based on shadcn-vue theme presets
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Blue ────────────────────────────────────────────────── */
+:root[data-hue="blue"] {
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 210 40% 98%;
+  --ring: 221.2 83.2% 53.3%;
+}
+.dark[data-hue="blue"] {
+  --primary: 217.2 91.2% 59.8%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --ring: 224.3 76.3% 48%;
+}
+
+/* ── Rose ────────────────────────────────────────────────── */
+:root[data-hue="rose"] {
+  --primary: 346.8 77.2% 49.8%;
+  --primary-foreground: 355.7 100% 97.3%;
+  --ring: 346.8 77.2% 49.8%;
+}
+.dark[data-hue="rose"] {
+  --primary: 346.8 77.2% 59.8%;
+  --primary-foreground: 355.7 100% 97.3%;
+  --ring: 346.8 77.2% 49.8%;
+}
+
+/* ── Emerald ─────────────────────────────────────────────── */
+:root[data-hue="emerald"] {
+  --primary: 160.1 84.1% 39.4%;
+  --primary-foreground: 355.7 100% 97.3%;
+  --ring: 160.1 84.1% 39.4%;
+}
+.dark[data-hue="emerald"] {
+  --primary: 158.1 64.4% 51.6%;
+  --primary-foreground: 151.8 81% 95.9%;
+  --ring: 160.1 84.1% 39.4%;
+}
+
+/* ── Amber ───────────────────────────────────────────────── */
+:root[data-hue="amber"] {
+  --primary: 37.7 92.1% 50.2%;
+  --primary-foreground: 37.7 92.1% 10%;
+  --ring: 37.7 92.1% 50.2%;
+}
+.dark[data-hue="amber"] {
+  --primary: 43.3 96.4% 56.3%;
+  --primary-foreground: 37.7 92.1% 10%;
+  --ring: 37.7 92.1% 50.2%;
+}
+
+/* ── Violet ──────────────────────────────────────────────── */
+:root[data-hue="violet"] {
+  --primary: 263.4 70% 50.4%;
+  --primary-foreground: 270 50% 98%;
+  --ring: 263.4 70% 50.4%;
+}
+.dark[data-hue="violet"] {
+  --primary: 263.4 70% 66.4%;
+  --primary-foreground: 270 50% 98%;
+  --ring: 263.4 70% 50.4%;
 }
 
 * {
@@ -53,21 +132,43 @@
 }
 
 body {
-  background-color: var(--bg-color);
-  color: var(--text-main);
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
   height: 100vh;
   overflow: hidden;
   display: flex;
-}
-
-.dark body {
-  background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 70%);
 }
 
 #app {
   width: 100%;
   height: 100%;
   display: flex;
+}
+
+/* ── Theme Utility Classes ────────────────────────────────── */
+
+.th-app-bg       { background-color: hsl(var(--background)); }
+.th-sidebar-bg   { background-color: hsl(var(--card)); }
+.th-header-bg    { background-color: hsl(var(--card)); }
+.th-main-bg      { background-color: hsl(var(--background)); }
+.th-bubble-bg    { background-color: hsl(var(--secondary)); }
+.th-typing-bg    { background-color: hsl(var(--muted)); }
+.th-input-bg     { background-color: hsl(var(--card)); }
+.th-hover:hover  { background-color: hsl(var(--accent)); }
+.th-active-bg    { background-color: hsl(var(--accent)); }
+.th-border       { border-color: hsl(var(--border)); }
+.th-text         { color: hsl(var(--foreground)); }
+.th-text-secondary { color: hsl(var(--secondary-foreground)); }
+.th-text-muted   { color: hsl(var(--muted-foreground)); }
+.th-text-dim     { color: hsl(var(--muted-foreground) / 0.6); }
+.th-surface      { background-color: hsl(var(--muted)); }
+.th-surface-raised { background-color: hsl(var(--secondary)); }
+
+.th-gradient-brand {
+  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
+}
+.th-gradient-user {
+  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary) / 0.75) 100%);
 }
 
 /* Scrollbar */
@@ -81,57 +182,28 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: hsl(var(--border));
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(0, 0, 0, 0.35);
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.15);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.25);
+  background-color: hsl(var(--muted-foreground) / 0.4);
 }
 
 /* Utility Animations */
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 @keyframes pulse {
-
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-
-  50% {
-    opacity: 0.6;
-    transform: scale(1.1);
-  }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
 }
 
 /* Mermaid Diagram Styles */
@@ -139,13 +211,8 @@ body {
   margin: 1rem 0;
   border-radius: 8px;
   overflow: hidden;
-  background: rgba(241, 245, 249, 0.5);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-.dark .mermaid-container {
-  background: rgba(30, 41, 59, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
 }
 
 .mermaid {
@@ -155,8 +222,8 @@ body {
 }
 
 .mermaid-error {
-  border: 2px dashed rgba(239, 68, 68, 0.5);
-  background: rgba(239, 68, 68, 0.1) !important;
+  border: 2px dashed hsl(var(--destructive) / 0.5);
+  background: hsl(var(--destructive) / 0.1) !important;
   position: relative;
 }
 
@@ -166,7 +233,7 @@ body {
   top: -1.5rem;
   left: 0;
   font-size: 0.75rem;
-  color: #ef4444;
+  color: hsl(var(--destructive));
   font-weight: 600;
 }
 
@@ -174,17 +241,13 @@ body {
   white-space: pre-wrap;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 0.875rem;
-  color: #64748b;
+  color: hsl(var(--muted-foreground));
   padding: 1rem;
-}
-
-.dark .mermaid-error.show-raw {
-  color: #94a3b8;
 }
 
 /* Markdown Styles */
 .prose {
-  color: var(--text-main);
+  color: hsl(var(--foreground));
   line-height: 1.6;
 }
 
@@ -197,7 +260,7 @@ body {
 }
 
 .prose a {
-  color: var(--accent-hover);
+  color: hsl(var(--primary));
   text-decoration: none;
 }
 
@@ -221,14 +284,7 @@ body {
 .prose h4 {
   margin: 1em 0 0.5em 0;
   font-weight: 600;
-  color: #0f172a;
-}
-
-.dark .prose h1,
-.dark .prose h2,
-.dark .prose h3,
-.dark .prose h4 {
-  color: #ffffff;
+  color: hsl(var(--foreground));
 }
 
 .prose h1:first-child,
@@ -238,49 +294,35 @@ body {
 }
 
 .prose pre {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: hsl(var(--muted));
   padding: 12px;
   border-radius: 8px;
   overflow-x: auto;
   margin: 0.75em 0;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-.dark .prose pre {
-  background-color: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--panel-border);
+  border: 1px solid hsl(var(--border));
 }
 
 .prose code {
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: hsl(var(--muted));
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.85em;
-  color: #334155;
-}
-
-.dark .prose code {
-  background-color: rgba(0, 0, 0, 0.3);
-  color: #e2e8f0;
+  color: hsl(var(--foreground));
 }
 
 .prose pre code {
   background-color: transparent;
   padding: 0;
   font-size: 0.9em;
-  color: #334155;
-}
-
-.dark .prose pre code {
-  color: #e2e8f0;
+  color: hsl(var(--foreground));
 }
 
 .prose blockquote {
   margin: 0 0 1em 0;
   padding-left: 12px;
-  border-left: 4px solid var(--accent);
-  color: var(--text-muted);
+  border-left: 4px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
   font-style: italic;
 }
 
@@ -292,21 +334,12 @@ body {
 
 .prose th,
 .prose td {
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid hsl(var(--border));
   padding: 8px 12px;
   text-align: left;
 }
 
-.dark .prose th,
-.dark .prose td {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
 .prose th {
-  background-color: rgba(0, 0, 0, 0.03);
+  background-color: hsl(var(--muted));
   font-weight: 600;
-}
-
-.dark .prose th {
-  background-color: rgba(255, 255, 255, 0.05);
 }

@@ -1,7 +1,7 @@
 ---
 name: cron
 description: Schedule and manage recurring tasks using file-driven cron system
-always: true
+always: false
 ---
 
 # Cron Task Management

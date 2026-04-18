@@ -27,38 +27,38 @@ const isActive = computed(() => props.isLastBotMessage && (props.isThinking || r
       class="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border transition-all"
       :class="[
         isActive
-          ? 'bg-blue-50/50 dark:bg-slate-800/40 border-blue-200 dark:border-blue-500/20'
-          : 'bg-gray-50 dark:bg-slate-800/30 border-gray-200 dark:border-white/5 hover:border-gray-300 dark:hover:border-white/10'
+          ? 'bg-primary/5 border-primary/20'
+          : 'th-surface-raised th-border th-hover'
       ]"
     >
       <div class="flex items-center gap-2">
         <span class="relative flex h-2 w-2">
           <span
             v-if="isActive"
-            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"
+            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"
           />
           <span
             class="relative inline-flex rounded-full h-2 w-2"
-            :class="isActive ? 'bg-blue-500' : 'bg-gray-400 dark:bg-slate-500'"
+            :class="isActive ? 'bg-primary' : 'bg-muted-foreground'"
           />
         </span>
-        <Sparkles class="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
-        <span class="text-[11px] font-medium text-gray-700 dark:text-slate-200">
+        <Sparkles class="w-3.5 h-3.5 text-primary" />
+        <span class="text-[11px] font-medium th-text-secondary">
           Thoughts
         </span>
         <span
           v-if="hasTools"
-          class="text-[10px] text-gray-500 dark:text-slate-400 flex items-center gap-1"
+          class="text-[10px] th-text-muted flex items-center gap-1"
         >
           <Wrench class="w-3 h-3" />
           {{ completedToolCount }}/{{ totalToolCount }}
         </span>
       </div>
 
-      <div class="flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-slate-400">
+      <div class="flex items-center gap-1.5 text-[10px] th-text-muted">
         <span v-if="!expanded" class="hidden sm:inline">Expand to view model thoughts</span>
         <ChevronDown
-          class="w-4 h-4 text-gray-400 dark:text-slate-500 transition-transform"
+          class="w-4 h-4 text-muted-foreground transition-transform"
           :class="{ 'rotate-180': expanded }"
         />
       </div>
@@ -67,57 +67,57 @@ const isActive = computed(() => props.isLastBotMessage && (props.isThinking || r
     <!-- Expanded content -->
     <div
       v-show="expanded"
-      class="mt-1 px-3 py-2 rounded-xl border bg-white dark:bg-slate-800/20 border-gray-200 dark:border-white/5 text-xs space-y-2"
+      class="mt-1 px-3 py-2 rounded-xl border th-surface th-border text-xs space-y-2"
     >
       <!-- Thinking content -->
       <div v-if="hasThinking">
-        <div class="text-[10px] font-medium text-gray-500 dark:text-slate-400 mb-1 flex items-center gap-1">
+        <div class="text-[10px] font-medium th-text-muted mb-1 flex items-center gap-1">
           <Sparkles class="w-3 h-3" /> Reasoning
         </div>
-        <div class="text-gray-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+        <div class="th-text-secondary whitespace-pre-wrap leading-relaxed">
           {{ message.thinking }}
         </div>
       </div>
 
       <!-- Tool calls -->
-      <div v-if="hasTools" :class="{ 'pt-2 border-t border-gray-100 dark:border-white/5': hasThinking }">
-        <div class="text-[10px] font-medium text-gray-500 dark:text-slate-400 mb-1 flex items-center gap-1">
+      <div v-if="hasTools" :class="{ 'pt-2 border-t border-border': hasThinking }">
+        <div class="text-[10px] font-medium th-text-muted mb-1 flex items-center gap-1">
           <Wrench class="w-3 h-3" /> Tool Calls
         </div>
         <div class="space-y-1.5">
           <div
             v-for="tool in message.toolCalls"
             :key="tool.id"
-            class="flex items-start gap-2 p-1.5 rounded-lg bg-gray-50 dark:bg-slate-700/20"
+            class="flex items-start gap-2 p-1.5 rounded-lg th-active-bg"
           >
             <component
               :is="tool.status === 'running' ? Loader2 : (tool.status === 'error' ? XCircle : CheckCircle)"
               class="w-3.5 h-3.5 shrink-0 mt-0.5"
               :class="{
-                'text-amber-500 dark:text-amber-400 animate-spin': tool.status === 'running',
-                'text-emerald-500 dark:text-emerald-400': tool.status === 'complete',
-                'text-red-500 dark:text-red-400': tool.status === 'error'
+                'text-primary animate-spin': tool.status === 'running',
+                'text-primary': tool.status === 'complete',
+                'text-destructive': tool.status === 'error'
               }"
             />
             <div class="flex-1 min-w-0">
               <div class="flex items-center justify-between gap-2">
-                <span class="font-medium text-gray-800 dark:text-slate-200 truncate">{{ tool.name }}</span>
+                <span class="font-medium th-text-secondary truncate">{{ tool.name }}</span>
                 <span
                   v-if="tool.duration"
-                  class="text-[10px] text-gray-400 dark:text-slate-500 shrink-0"
+                  class="text-[10px] th-text-dim shrink-0"
                 >
                   {{ tool.duration }}
                 </span>
               </div>
               <div
                 v-if="tool.arguments"
-                class="text-[10px] text-gray-500 dark:text-slate-400 font-mono truncate mt-0.5"
+                class="text-[10px] th-text-muted font-mono truncate mt-0.5"
               >
                 {{ tool.arguments }}
               </div>
               <div
                 v-if="tool.result"
-                class="text-[10px] text-gray-700 dark:text-slate-300 mt-1"
+                class="text-[10px] th-text-secondary mt-1"
               >
                 {{ tool.result }}
               </div>

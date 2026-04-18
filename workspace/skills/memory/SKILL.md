@@ -1,206 +1,139 @@
 ---
 name: memory
-description: Manage long-term memory using gasket's hybrid file + SQLite system
-always: true
+description: Operational guide for gasket's long-term memory system
+always: false
 ---
 
-# Memory Management Skill
+# Memory Skill
 
-This skill provides guidance on using gasket's long-term memory system with file-backed storage and SQLite indexing.
+Operational guide for reading, writing, and managing long-term memories.
+For the memory ABI (scenarios, writing rules, frequency lifecycle), see `workspace/MEMORY.md`.
 
-## Overview
+## Choosing the Right Scenario
 
-Gasket uses a **hybrid memory system** combining Markdown files (human-readable) with SQLite (fast retrieval):
+| User Says | Scenario | Example |
+|-----------|----------|---------|
+| "remember my preference" | `profile` | timezone, language, coding style |
+| "I'm working on X" | `active` | current sprint, ongoing refactor |
+| "I learned that..." | `knowledge` | a framework quirk, a useful pattern |
+| "we decided to..." | `decisions` | chose PostgreSQL over MongoDB because... |
+| "yesterday we fixed..." | `episodes` | debugged auth timeout, root cause was... |
+| "bookmark this link" | `reference` | API docs URL, Grafana dashboard |
 
-### Storage Locations
+## Common Operations
 
-1. **Bootstrap Files** (loaded once at startup from workspace):
-   - `workspace/MEMORY.md` — Human-written guidelines (~2048 token hard limit)
-   - `workspace/PROFILE.md`, `SOUL.md`, `AGENTS.md` — Identity files
-   - `workspace/skills/*/SKILL.md` — Skill definitions
-
-2. **Long-term Memory** (persistent, at `~/.gasket/memory/`):
-   ```
-   ~/.gasket/memory/
-   ├── profile/           # User preferences (exempt from decay)
-   ├── active/            # Current projects (subject to decay)
-   ├── knowledge/         # Learned facts (subject to decay)  
-   ├── decisions/         # Architecture decisions (exempt from decay)
-   ├── episodes/          # Past events (subject to decay)
-   ├── reference/         # External resources (exempt from decay)
-   └── .history/          # Versioned backups of edits
-   ```
-
-3. **SQLite Index** (at `~/.gasket/gasket.db`):
-   - `memory_metadata` table — indexed metadata for fast queries
-   - `memory_embeddings` table — vector embeddings for semantic search
-
-### File Format
-
-Memory files use UUID naming with YAML frontmatter:
-
-```markdown
----
-id: mem_019d6784-60c8-7a33-b10a-19069d1d9f5b
-title: 用户偏好：城市与时区
-type: note
-scenario: profile
-tags: [user, timezone, guangzhou, preference]
-frequency: warm
-access_count: 0
-created: 2026-04-07T10:37:02.025032+00:00
-updated: 2026-04-07T10:37:02.025032+00:00
-tokens: 19
----
-
-## Content here
-```
-
-## When to Use Memory
-
-Use the memory system to store and retrieve:
-- **Important user preferences** (e.g., timezone, language preferences)
-- **Key project facts** (e.g., "Project uses PostgreSQL database")
-- **Recurring patterns or decisions** (e.g., "Always use async/await for I/O operations")
-- **Architecture decisions** and their rationale
-- **Daily notes** and conversation summaries
-
-## How to Write to Memory
-
-### Using the MemorizeTool (Recommended)
-
-Agents use the `memorize` tool to write memories:
+### Write a Memory
 
 ```rust
 memorize(
-    title: "用户偏好：城市与时区",
-    content: "用户位于广州，使用 GMT+8 时区...",
-    scenario: "profile",  // profile | active | knowledge | decisions | episodes | reference
-    tags: ["user", "timezone", "preference"]
+    title: "User codes in Rust",
+    content: "User prefers Rust for backend, TypeScript for frontend...",
+    scenario: "profile",
+    tags: ["user", "language", "preference"]
 )
 ```
 
-This automatically:
-- Generates a UUID for the memory
-- Adds YAML frontmatter with metadata
-- Writes to `~/.gasket/memory/<scenario>/mem_<UUID>.md`
-- Updates SQLite metadata index
-- Creates backup in `.history/`
-
-### Manual File Operations
-
-You can also manually edit files in `~/.gasket/memory/`:
-
-```bash
-# Reindex after manual edits
-gasket memory reindex
-```
-
-**Always read before writing** — use `memory_search` or `read_file` first to avoid duplicates.
-
-## How to Read Memory
-
-### Three-Phase Loading (Automatic)
-
-Memory is loaded automatically based on context:
-
-1. **Phase 1 (Bootstrap, 1500 tokens):** Always loads profile + active memories
-2. **Phase 2 (Scenario, 1500 tokens):** Scenario-specific hot/warm items
-3. **Phase 3 (On-demand, 1000 tokens):** Fills remaining budget via semantic search
-
-Total never exceeds 4000 tokens default budget. You can customize these budgets in `config.yaml`:
-
-```yaml
-agents:
-  defaults:
-    memory_budget:
-      bootstrap: 1500
-      scenario: 1500
-      on_demand: 1000
-      total_cap: 4000
-```
-
-### Using MemorySearchTool
-
-Agents use the `memory_search` tool:
+### Search Memories
 
 ```rust
-memory_search(
-    query: "timezone preferences",
-    tags: ["user", "preference"],
-    limit: 10
+// By tags
+memory_search(tags: ["user", "preference"], limit: 5)
+
+// By text query
+memory_search(query: "timezone preferences", limit: 10)
+
+// By scenario + tags
+memory_search(query: "database choice", tags: ["architecture"], limit: 5)
+```
+
+### Update a Memory
+
+```rust
+update_memory(
+    scenario: "active",
+    filename: "mem_019d6784.md",
+    content: "Updated project status: Phase 2 complete..."
 )
 ```
 
-This queries the SQLite metadata store for fast retrieval, with fallback to filesystem scan.
+### Delete a Memory
 
-### Manual Reading
+```rust
+delete_memory(
+    scenario: "active",
+    filename: "mem_019d6784.md"
+)
+```
+
+## Examples
+
+### Store a decision record
+
+```rust
+memorize(
+    title: "ADR-001: Use event sourcing for sessions",
+    content: "## Context\nSession history needs replay capability.\n\n## Decision\nEventStore with linear sequence numbers.\n\n## Consequences\n- Enables session restoration\n- Requires periodic compaction",
+    scenario: "decisions",
+    tags: ["adr", "event-sourcing", "session"]
+)
+```
+
+### Store a debugging episode
+
+```rust
+memorize(
+    title: "Fixed: CronService compilation error",
+    content: "## Problem\nMissing `clone_box` method on TextEmbedder trait.\n## Root Cause\nTrait object needs boxed clone support.\n## Fix\nAdded `fn clone_box(&self) -> Box<dyn TextEmbedder>`.",
+    scenario: "episodes",
+    tags: ["debug", "trait-objects", "rust"]
+)
+```
+
+### Store a reference
+
+```rust
+memorize(
+    title: "Grafana: API Latency Dashboard",
+    content: "URL: grafana.internal/d/api-latency\nUsed by oncall team. Alert threshold: p99 > 500ms.",
+    scenario: "reference",
+    tags: ["monitoring", "grafana", "api-latency"]
+)
+```
+
+## Manual Operations
 
 ```bash
-# Browse memory files directly
+# Browse memory files
 ls ~/.gasket/memory/profile/
 cat ~/.gasket/memory/knowledge/mem_*.md
 
-# Search with grep
-grep -r "timezone" ~/.gasket/memory/
-```
+# Search across all memories
+grep -r "keyword" ~/.gasket/memory/
 
-## Best Practices
-
-1. **Use Appropriate Scenarios**:
-   - `profile/` — User preferences (persistent, never decays)
-   - `active/` — Current project context (decays when inactive)
-   - `knowledge/` — General facts (decays if unused)
-   - `decisions/` — Architecture decisions (persistent)
-   - `episodes/` — Past events/conversations (decays)
-   - `reference/` — External resources (persistent)
-
-2. **Write Descriptive Titles**: Titles are indexed and used for quick scanning.
-
-3. **Use Tags Liberally**: Tags enable fast filtering (`user`, `project-alpha`, `preference`, etc.).
-
-4. **Track Frequency**: Set `frequency: hot|warm|cold` to control retention priority.
-
-5. **Keep Atomic**: One concept per memory file for easier retrieval.
-
-## Memory Lifecycle
-
-### Decay System
-
-Memories have a lifecycle based on usage:
-
-- **Hot** (`frequency: hot`) — Recently accessed, never decays
-- **Warm** (`frequency: warm`) — Used occasionally, slow decay
-- **Cold** (`frequency: cold`) — Unused, eligible for pruning
-
-Access count is tracked automatically. Use `gasket memory reindex` to refresh metadata.
-
-### Token Budgets
-
-Memory loading respects token limits:
-- `MEMORY.md` in workspace: ~2048 tokens (hard truncation)
-- Runtime context injection: ~3200 tokens total (three-phase loading)
-
-## Important Notes
-
-- **Persistence**: Memory at `~/.gasket/memory/` persists across sessions and system restarts.
-- **Human-Readable**: All memories are Markdown files (git-friendly, editable with any text editor).
-- **SQLite Index**: Metadata and embeddings are cached in `~/.gasket/gasket.db` for fast queries.
-- **Graceful Degradation**: System works even if `~/.gasket/memory/` doesn't exist (skips memory loading).
-- **History Tracking**: All edits are backed up to `.history/` for versioning.
-
-## CLI Commands
-
-```bash
-# Rebuild SQLite index from filesystem
+# Rebuild SQLite cache after manual edits
 gasket memory reindex
 
-# View memory statistics
+# View statistics
 gasket memory stats
 ```
 
-## Integration with Agent Loop
+After manual file edits, always run `gasket memory reindex` to sync the SQLite cache.
 
-- **At startup**: `AgentLoop::build_internal()` initializes `MemoryManager` if `~/.gasket/memory/` exists
-- **Per request**: `AgentLoop::load_memory_context()` queries memories based on user message
-- **Injection**: Results formatted as "## Memories" section in prompt escalation
+## Best Practices
+
+1. **Read before write** — use `memory_search` first to avoid duplicates.
+2. **One concept per memory** — easier retrieval and lifecycle management.
+3. **At least 2 tags** — tags drive filtering in Phase 2 scenario loading.
+4. **Descriptive titles** — indexed and shown in search results.
+5. **Use exempt scenarios freely** — `profile`, `decisions`, `reference` never decay.
+6. **Don't rely on filenames** — the system sorts by frequency, not name patterns.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Memory not showing in context | Check frequency tier; cold memories only load via search |
+| Duplicate memories found | Always `memory_search` before `memorize` |
+| SQLite out of sync | Run `gasket memory reindex` |
+| Embeddings missing | Reindex will recompute; or check embedder config |
+| File corrupted | Skipped automatically; check `.history/` for backup |

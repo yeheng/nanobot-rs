@@ -2,9 +2,9 @@
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Menu as HeadlessMenu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue';
-import { AlertCircle, ArrowDown, Bot, Cpu, Loader2, Moon, MoreVertical, RotateCcw, Send, Sparkles, Square, Sun, Trash2, X as XIcon } from 'lucide-vue-next';
+import { AlertCircle, ArrowDown, Bot, Check, Cpu, Loader2, Moon, MoreVertical, Palette, RotateCcw, Send, Sparkles, Square, Sun, Trash2, X as XIcon } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useTheme } from '../composables/useTheme';
+import { useTheme, type ThemeHue } from '../composables/useTheme';
 import { useChatSession } from '../composables/useChatSession';
 import { useChatStore } from '../stores/chatStore';
 import ChatTimeDivider from './ChatTimeDivider.vue';
@@ -15,7 +15,16 @@ const props = defineProps<{ chatId: string }>();
 const emit = defineEmits<{ (e: 'connection-status', status: boolean): void }>();
 
 const chatStore = useChatStore();
-const { theme, toggle: toggleTheme } = useTheme();
+const { mode, hue, setMode, setHue, hues } = useTheme();
+
+const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
+  zinc:    { label: 'Zinc',    dot: 'bg-zinc-500' },
+  blue:    { label: 'Blue',    dot: 'bg-blue-500' },
+  rose:    { label: 'Rose',    dot: 'bg-rose-500' },
+  emerald: { label: 'Emerald', dot: 'bg-emerald-500' },
+  amber:   { label: 'Amber',   dot: 'bg-amber-500' },
+  violet:  { label: 'Violet',  dot: 'bg-violet-500' },
+};
 
 const session = useChatSession(computed(() => props.chatId));
 
@@ -143,24 +152,23 @@ const clearHistory = () => {
   <div class="flex h-full w-full relative">
     <div class="flex flex-col flex-1 min-w-0">
       <!-- Header -->
-      <header class="py-3 px-5 bg-white/80 dark:bg-slate-800/80 border-b border-gray-200 dark:border-white/10 flex justify-between items-center shrink-0">
+      <header class="py-3 px-5 th-header-bg border-b th-border flex justify-between items-center shrink-0">
         <div class="flex items-center gap-3">
           <div class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
             <Bot class="w-5 h-5 text-white" />
           </div>
           <div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-slate-100">Model</div>
-            <div class="text-[10px] text-gray-500 dark:text-slate-400 flex items-center gap-1.5">
-              <span class="w-1.5 h-1.5 rounded-full" :class="session.isConnected ? 'bg-emerald-500' : 'bg-red-500'" />
+            <div class="text-sm font-semibold th-text">Model</div>
+            <div class="text-[10px] th-text-muted flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full" :class="session.isConnected ? 'bg-primary' : 'bg-destructive'" />
               {{ session.isConnected ? 'Online' : 'Offline' }}
-              <span class="text-gray-300 dark:text-slate-600">|</span>
+              <span class="th-text-dim">|</span>
               <span
                 class="flex items-center gap-1"
                 :class="{
-                  'text-red-500 dark:text-red-400': session.sessionStatus === 'disconnected',
-                  'text-blue-600 dark:text-blue-400': session.sessionStatus === 'sending',
-                  'text-violet-600 dark:text-violet-400': session.sessionStatus === 'receiving',
-                  'text-gray-400 dark:text-slate-500': session.sessionStatus === 'idle'
+                  'text-destructive': session.sessionStatus === 'disconnected',
+                  'text-primary': session.sessionStatus === 'sending' || session.sessionStatus === 'receiving',
+                  'th-text-dim': session.sessionStatus === 'idle'
                 }"
               >
                 <Loader2 v-if="session.sessionStatus === 'sending' || session.sessionStatus === 'receiving'" class="w-3 h-3 animate-spin" />
@@ -176,16 +184,16 @@ const clearHistory = () => {
         <div class="flex items-center gap-2">
           <!-- Context stats inline -->
           <div v-if="session.contextStats" class="hidden md:flex items-center gap-2 mr-1">
-            <div class="text-[10px] text-gray-600 dark:text-slate-400 font-medium whitespace-nowrap">
+            <div class="text-[10px] th-text-secondary font-medium whitespace-nowrap">
               Context: {{ session.contextStats.usage_percent.toFixed(1) }}%
             </div>
-            <div class="w-20 lg:w-28 h-1.5 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
+            <div class="w-20 lg:w-28 h-1.5 bg-muted rounded-full overflow-hidden">
               <div class="h-full rounded-full transition-all duration-500" :class="session.usageColor" :style="{ width: Math.min(session.contextStats.usage_percent, 100) + '%' }" />
             </div>
-            <div v-if="session.watermarkInfo" class="hidden lg:block text-[10px] text-gray-500 dark:text-slate-500 whitespace-nowrap">
+            <div v-if="session.watermarkInfo" class="hidden lg:block text-[10px] th-text-muted whitespace-nowrap">
               {{ session.watermarkInfo.watermark }}/{{ session.watermarkInfo.max_sequence }}
             </div>
-            <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-slate-300"
+            <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 th-surface th-border th-hover th-text-secondary"
               :disabled="session.isCompacting" @click="session.forceCompact">
               <Cpu v-if="!session.isCompacting" class="w-3 h-3 mr-1" />
               <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
@@ -194,13 +202,13 @@ const clearHistory = () => {
           </div>
 
           <Button v-if="session.showReconnectButton" variant="outline" size="sm" @click="session.manualReconnect"
-            class="text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10 text-xs h-8">
+            class="text-primary border-primary/30 hover:bg-primary/10 text-xs h-8">
             <RotateCcw class="w-3.5 h-3.5 mr-1.5" />
             Reconnect
           </Button>
 
           <HeadlessMenu as="div" class="relative">
-            <MenuButton as="button" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-white/10 text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 transition-colors">
+            <MenuButton as="button" class="p-2 rounded-md th-hover th-text-muted hover:th-text transition-colors">
               <MoreVertical class="w-4 h-4" />
             </MenuButton>
             <transition
@@ -211,10 +219,10 @@ const clearHistory = () => {
               leave-from-class="transform scale-100 opacity-100"
               leave-to-class="transform scale-95 opacity-0"
             >
-              <MenuItems class="absolute right-0 top-10 z-30 w-40 origin-top-right rounded-lg bg-white dark:bg-slate-800 border border-gray-200 dark:border-white/10 shadow-lg focus:outline-none py-1">
+              <MenuItems class="absolute right-0 top-10 z-30 w-40 origin-top-right rounded-lg bg-popover border border-border shadow-lg focus:outline-none py-1">
                 <MenuItem v-slot="{ active }">
-                  <button @click="clearHistory" :class="[active ? 'bg-gray-100 dark:bg-white/10' : '', 'group flex w-full items-center px-3 py-2 text-xs text-gray-700 dark:text-slate-300']">
-                    <Trash2 class="w-3.5 h-3.5 mr-2 text-gray-400 dark:text-slate-400" />
+                  <button @click="clearHistory" :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']">
+                    <Trash2 class="w-3.5 h-3.5 mr-2 th-text-dim" />
                     Clear History
                   </button>
                 </MenuItem>
@@ -222,19 +230,66 @@ const clearHistory = () => {
             </transition>
           </HeadlessMenu>
 
-          <Button variant="ghost" size="icon" class="text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200" @click="toggleTheme">
-            <Sun v-if="theme === 'dark'" class="w-4 h-4" />
-            <Moon v-else class="w-4 h-4" />
-          </Button>
+          <HeadlessMenu as="div" class="relative">
+            <MenuButton as="button" class="p-2 rounded-md th-hover th-text-muted hover:th-text transition-colors">
+              <Palette class="w-4 h-4" />
+            </MenuButton>
+            <transition
+              enter-active-class="transition duration-100 ease-out"
+              enter-from-class="transform scale-95 opacity-0"
+              enter-to-class="transform scale-100 opacity-100"
+              leave-active-class="transition duration-75 ease-in"
+              leave-from-class="transform scale-100 opacity-100"
+              leave-to-class="transform scale-95 opacity-0"
+            >
+              <MenuItems class="absolute right-0 top-10 z-30 w-44 origin-top-right rounded-lg bg-popover border border-border shadow-lg focus:outline-none py-1">
+                <!-- Mode -->
+                <div class="px-3 py-1.5 text-[10px] font-semibold th-text-muted uppercase tracking-wider">Mode</div>
+                <MenuItem v-slot="{ active }">
+                  <button
+                    @click="setMode('light')"
+                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
+                  >
+                    <Sun class="w-3.5 h-3.5 mr-2 th-text-dim" />
+                    <span class="flex-1 text-left">Light</span>
+                    <Check v-if="mode === 'light'" class="w-3 h-3 th-text-muted shrink-0" />
+                  </button>
+                </MenuItem>
+                <MenuItem v-slot="{ active }">
+                  <button
+                    @click="setMode('dark')"
+                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
+                  >
+                    <Moon class="w-3.5 h-3.5 mr-2 th-text-dim" />
+                    <span class="flex-1 text-left">Dark</span>
+                    <Check v-if="mode === 'dark'" class="w-3 h-3 th-text-muted shrink-0" />
+                  </button>
+                </MenuItem>
+                <div class="my-1 border-t border-border" />
+                <!-- Hue -->
+                <div class="px-3 py-1.5 text-[10px] font-semibold th-text-muted uppercase tracking-wider">Hue</div>
+                <MenuItem v-for="h in hues" :key="h" v-slot="{ active }">
+                  <button
+                    @click="setHue(h)"
+                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
+                  >
+                    <span class="w-3 h-3 rounded-full mr-2 shrink-0" :class="hueMeta[h].dot" />
+                    <span class="flex-1 text-left">{{ hueMeta[h].label }}</span>
+                    <Check v-if="hue === h" class="w-3 h-3 th-text-muted shrink-0" />
+                  </button>
+                </MenuItem>
+              </MenuItems>
+            </transition>
+          </HeadlessMenu>
         </div>
       </header>
 
       <!-- Error Banner -->
       <div v-if="session.errorBanner"
-        class="mx-4 mt-2 flex items-center gap-2 bg-red-500/15 border border-red-500/30 text-red-600 dark:text-red-300 px-3 py-2 rounded-lg text-xs animate-in fade-in slide-in-from-top-2 duration-300 shrink-0">
-        <AlertCircle class="w-4 h-4 shrink-0 text-red-500 dark:text-red-400" />
+        class="mx-4 mt-2 flex items-center gap-2 bg-destructive/15 border border-destructive/30 text-destructive px-3 py-2 rounded-lg text-xs animate-in fade-in slide-in-from-top-2 duration-300 shrink-0">
+        <AlertCircle class="w-4 h-4 shrink-0 text-destructive" />
         <span class="flex-1">{{ session.errorBanner }}</span>
-        <button @click="session.dismissError" class="p-0.5 hover:bg-red-500/20 rounded transition-colors">
+        <button @click="session.dismissError" class="p-0.5 hover:bg-destructive/20 rounded transition-colors text-destructive">
           <XIcon class="w-3.5 h-3.5" />
         </button>
       </div>
@@ -243,16 +298,16 @@ const clearHistory = () => {
       <ScrollArea class="flex-1 p-4" ref="scrollAreaRef">
         <!-- Empty State -->
         <div v-if="!hasUserMessages"
-          class="flex flex-col items-center justify-center h-full max-w-full md:max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto text-center py-16">
-          <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center mb-5 shadow-lg shadow-blue-500/20">
+          class="flex flex-col items-center justify-center h-full max-w-full md:max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto text-center py-16 th-text">
+          <div class="w-14 h-14 rounded-2xl th-gradient-brand flex items-center justify-center mb-5 shadow-lg shadow-primary/20">
             <Sparkles class="w-7 h-7 text-white" />
           </div>
-          <h2 class="text-xl font-semibold text-gray-900 dark:text-slate-100 mb-2">How can I help you today?</h2>
-          <p class="text-gray-500 dark:text-slate-400 mb-6 text-xs">Ask me anything about your code, project, or ideas.</p>
+          <h2 class="text-xl font-semibold th-text mb-2">How can I help you today?</h2>
+          <p class="th-text-muted mb-6 text-xs">Ask me anything about your code, project, or ideas.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
             <button v-for="(prompt, idx) in suggestedPrompts" :key="idx" @click="sendPrompt(prompt.text)"
               :disabled="!session.isConnected"
-              class="flex items-center gap-2 p-3 bg-white dark:bg-slate-800/60 border border-gray-200 dark:border-white/5 hover:border-gray-300 dark:hover:border-white/15 rounded-xl text-left text-xs text-gray-700 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group shadow-sm">
+              class="flex items-center gap-2 p-3 th-surface th-border th-hover rounded-xl text-left text-xs th-text-secondary hover:th-text transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed group shadow-sm">
               <span class="text-base flex-shrink-0 group-hover:scale-110 transition-transform">{{ prompt.icon }}</span>
               <span>{{ prompt.text }}</span>
             </button>
@@ -280,10 +335,10 @@ const clearHistory = () => {
             <div class="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
               <Bot class="w-3.5 h-3.5 text-white" />
             </div>
-            <div class="px-3 py-2 rounded-2xl rounded-bl-sm bg-gray-200 dark:bg-slate-700/60 text-gray-600 dark:text-slate-300 text-xs flex items-center gap-1">
-              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 0ms" />
-              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 150ms" />
-              <span class="w-1.5 h-1.5 bg-gray-500 dark:bg-slate-400 rounded-full animate-bounce" style="animation-delay: 300ms" />
+            <div class="px-3 py-2 rounded-2xl rounded-bl-sm th-typing-bg th-text-secondary text-xs flex items-center gap-1">
+              <span class="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce" style="animation-delay: 0ms" />
+              <span class="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce" style="animation-delay: 150ms" />
+              <span class="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce" style="animation-delay: 300ms" />
             </div>
           </div>
 
@@ -299,7 +354,7 @@ const clearHistory = () => {
       <Transition enter-active-class="transition-all duration-200 ease-out" leave-active-class="transition-all duration-150 ease-in"
         enter-from-class="opacity-0 translate-y-2" leave-to-class="opacity-0 translate-y-2">
         <button v-if="showScrollButton" @click="forceScrollToBottom"
-          class="absolute bottom-28 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-700/90 hover:bg-gray-100 dark:hover:bg-slate-600/90 border border-gray-200 dark:border-white/10 rounded-full text-gray-700 dark:text-slate-300 text-xs shadow-lg backdrop-blur-sm transition-colors">
+          class="absolute bottom-28 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-popover hover:bg-accent border border-border rounded-full text-foreground text-xs shadow-lg backdrop-blur-sm transition-colors">
           <ArrowDown class="w-3.5 h-3.5" />
           New messages
         </button>
@@ -308,30 +363,29 @@ const clearHistory = () => {
       <!-- Input Area -->
       <div class="p-4 bg-transparent shrink-0">
         <div class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full relative">
-          <div class="flex items-end bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
+          <div class="flex items-end th-input-bg border th-border rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
             :class="{
-              'focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20': session.sessionStatus === 'idle' || session.sessionStatus === 'disconnected',
-              'border-violet-500/30 ring-2 ring-violet-500/20': session.sessionStatus === 'receiving',
-              'border-blue-500/30 ring-2 ring-blue-500/20': session.sessionStatus === 'sending'
+              'focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/20': session.sessionStatus === 'idle' || session.sessionStatus === 'disconnected',
+              'border-primary/30 ring-2 ring-primary/20': session.sessionStatus === 'receiving' || session.sessionStatus === 'sending'
             }">
             <textarea ref="inputRef" v-model="inputValue" @keydown="handleKeydown" @input="autoResize"
               :placeholder="session.sessionStatus === 'receiving' ? 'AI is processing...' : 'Type a message...'"
               :disabled="!session.isConnected || session.sessionStatus === 'receiving' || session.sessionStatus === 'sending'"
               autofocus rows="1"
-              class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 text-gray-900 dark:text-slate-100 px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
+              class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 th-text px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
 
             <Button v-if="session.sessionStatus === 'receiving' || session.isThinking" @click="session.stopGenerating"
-              class="w-9 h-9 rounded-xl bg-red-500/80 hover:bg-red-500 text-white shrink-0 ml-2 transition-all" size="icon" title="Stop generating">
+              class="w-9 h-9 rounded-xl bg-destructive/80 hover:bg-destructive text-white shrink-0 ml-2 transition-all" size="icon" title="Stop generating">
               <Square class="w-3.5 h-3.5 fill-current" />
             </Button>
             <Button v-else @click="submit" :disabled="!inputValue.trim() || !session.isConnected || session.sessionStatus === 'sending'"
               class="w-9 h-9 rounded-xl text-white shrink-0 ml-2 transition-all"
-              :class="{ 'bg-blue-500 hover:bg-blue-400': session.sessionStatus === 'idle', 'bg-slate-300 dark:bg-slate-600 cursor-not-allowed': session.sessionStatus !== 'idle' }"
+              :class="{ 'bg-primary hover:opacity-90': session.sessionStatus === 'idle', 'bg-muted cursor-not-allowed': session.sessionStatus !== 'idle' }"
               size="icon">
               <Send class="w-4 h-4" />
             </Button>
           </div>
-          <div class="flex items-center justify-center text-[10px] text-gray-400 dark:text-slate-500 mt-2 px-1">
+          <div class="flex items-center justify-center text-[10px] th-text-dim mt-2 px-1">
             <span>Shift+Enter for new line</span>
           </div>
         </div>

@@ -1,37 +1,80 @@
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
-const STORAGE_KEY = 'gasket_theme'
+const STORAGE_KEY = 'gasket_theme_v2'
+const LEGACY_KEY = 'gasket_theme'
 
-type Theme = 'light' | 'dark'
+export type ThemeMode = 'light' | 'dark'
+export type ThemeHue = 'zinc' | 'blue' | 'rose' | 'emerald' | 'amber' | 'violet'
 
-function getInitialTheme(): Theme {
-  const stored = localStorage.getItem(STORAGE_KEY) as Theme | null
-  if (stored === 'light' || stored === 'dark') return stored
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+export interface ThemeState {
+  mode: ThemeMode
+  hue: ThemeHue
+}
+
+const HUES: ThemeHue[] = ['zinc', 'blue', 'rose', 'emerald', 'amber', 'violet']
+
+function getInitialState(): ThemeState {
+  // Try new format first
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (parsed.mode && parsed.hue && HUES.includes(parsed.hue)) {
+        return { mode: parsed.mode, hue: parsed.hue }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Migrate from legacy single-value theme
+  const legacy = localStorage.getItem(LEGACY_KEY) as ThemeMode | null
+  if (legacy === 'light' || legacy === 'dark') {
+    return { mode: legacy, hue: 'zinc' }
+  }
+
+  // System preference
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+  return { mode: prefersDark ? 'dark' : 'light', hue: 'zinc' }
 }
 
 export function useTheme() {
-  const theme = ref<Theme>(getInitialTheme())
+  const state = ref<ThemeState>(getInitialState())
 
-  const apply = (t: Theme) => {
+  const apply = (s: ThemeState) => {
     const root = document.documentElement
-    if (t === 'dark') {
-      root.classList.add('dark')
-    } else {
+    if (s.mode === 'light') {
       root.classList.remove('dark')
+    } else {
+      root.classList.add('dark')
     }
-    localStorage.setItem(STORAGE_KEY, t)
+    root.setAttribute('data-hue', s.hue)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
   }
 
-  apply(theme.value)
+  apply(state.value)
 
-  watch(theme, (t) => {
-    apply(t)
-  })
+  watch(state, (s) => {
+    apply(s)
+  }, { deep: true })
 
-  const toggle = () => {
-    theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  const setMode = (mode: ThemeMode) => {
+    state.value.mode = mode
   }
 
-  return { theme, toggle }
+  const setHue = (hue: ThemeHue) => {
+    state.value.hue = hue
+  }
+
+  const cycleMode = () => {
+    state.value.mode = state.value.mode === 'light' ? 'dark' : 'light'
+  }
+
+  return {
+    mode: computed(() => state.value.mode),
+    hue: computed(() => state.value.hue),
+    state,
+    setMode,
+    setHue,
+    cycleMode,
+    hues: HUES,
+  }
 }
