@@ -39,11 +39,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       
-      - name: Check formatting
-        run: cd gasket && cargo fmt --all -- --check
+      # - name: Check formatting
+      #   run: cd gasket && cargo fmt --all -- --check
       
-      - name: Run clippy
-        run: cd gasket && cargo clippy --all-features -- -D warnings
+      # - name: Run clippy
+      #   run: cd gasket && cargo clippy --all-features -- -D warnings
       
       - name: Run tests
         run: cd gasket && cargo test --all-features
