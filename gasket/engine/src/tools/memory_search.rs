@@ -15,6 +15,16 @@ use tracing::debug;
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 use gasket_storage::memory::{memory_base_dir, MetadataStore, Scenario};
 
+/// Skip YAML frontmatter (between `---` delimiters) and return the body.
+fn skip_frontmatter(content: &str) -> &str {
+    if content.trim_start().starts_with("---") {
+        if let Some(end) = content[3..].find("\n---") {
+            return content[(end + 7)..].trim();
+        }
+    }
+    content.trim()
+}
+
 // ── Memory Search Tool ─────────────────────────────────────────
 
 /// Memory search tool backed by SQLite MetadataStore.
@@ -258,17 +268,7 @@ impl MemorySearchTool {
     async fn read_snippet(&self, path: &std::path::Path, max_lines: usize) -> String {
         match fs::read_to_string(path).await {
             Ok(content) => {
-                // Skip frontmatter (between --- delimiters)
-                let body = if content.trim_start().starts_with("---") {
-                    if let Some(end) = content[3..].find("\n---") {
-                        content[(end + 7)..].trim()
-                    } else {
-                        &content
-                    }
-                } else {
-                    &content
-                };
-
+                let body = skip_frontmatter(&content);
                 let lines: Vec<&str> = body.lines().take(max_lines).collect();
                 if body.lines().count() > max_lines {
                     format!("{}\n  ...", lines.join("\n  "))
@@ -343,15 +343,7 @@ impl MemorySearchTool {
                     .to_string_lossy()
                     .to_string();
                 let snippet = {
-                    let body = if content.trim_start().starts_with("---") {
-                        if let Some(end) = content[3..].find("\n---") {
-                            content[(end + 7)..].trim()
-                        } else {
-                            &content
-                        }
-                    } else {
-                        &content
-                    };
+                    let body = skip_frontmatter(&content);
                     body.lines().take(4).collect::<Vec<_>>().join("\n  ")
                 };
 

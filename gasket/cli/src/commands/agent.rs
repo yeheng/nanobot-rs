@@ -96,8 +96,6 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             subagent_spawner: None,
             extra_tools: vec![],
             sqlite_store: None,
-            model_registry: None,
-            provider_registry: None,
         });
 
     let mut tools = common_tools.clone();

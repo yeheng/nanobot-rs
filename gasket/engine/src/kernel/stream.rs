@@ -69,6 +69,15 @@ impl Default for ToolCallAccumulator {
     }
 }
 
+/// Helper: convert empty String to None.
+fn optional_string(s: String) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 /// Accumulator for streaming response data.
 struct StreamAccumulator {
     content: String,
@@ -108,17 +117,9 @@ impl StreamAccumulator {
 
     fn finalize(self) -> ChatResponse {
         ChatResponse {
-            content: if self.content.is_empty() {
-                None
-            } else {
-                Some(self.content)
-            },
+            content: optional_string(self.content),
             tool_calls: self.tool_acc.finalize(),
-            reasoning_content: if self.reasoning_content.is_empty() {
-                None
-            } else {
-                Some(self.reasoning_content)
-            },
+            reasoning_content: optional_string(self.reasoning_content),
             usage: self.accumulated_usage,
         }
     }
@@ -137,11 +138,9 @@ pub fn stream_events(
     tokio::spawn(async move {
         debug!("[StreamEvents] Producer task started");
         let mut llm_stream = llm_stream;
-        let mut content = String::new();
-        let mut reasoning_content = String::new();
-        let mut tool_acc = ToolCallAccumulator::new();
-        let mut accumulated_usage = None;
+        let mut acc = StreamAccumulator::new();
         let mut chunk_count = 0usize;
+        let mut closed = false;
 
         while let Some(chunk_result) = llm_stream.next().await {
             match chunk_result {
@@ -157,59 +156,34 @@ pub fn stream_events(
                         chunk.delta.tool_calls.len()
                     );
 
-                    if let Some(ref text) = chunk.delta.content {
-                        if !text.is_empty() {
-                            content.push_str(text);
-                            if tx.send(StreamEvent::content(text.clone())).await.is_err() {
+                    // Extract deltas before feeding to accumulator
+                    let content_delta = chunk.delta.content.clone().filter(|s| !s.is_empty());
+                    let reasoning_delta = chunk
+                        .delta
+                        .reasoning_content
+                        .clone()
+                        .filter(|s| !s.is_empty());
+
+                    acc.feed(&chunk);
+
+                    if !closed {
+                        if let Some(text) = content_delta {
+                            if tx.send(StreamEvent::content(text)).await.is_err() {
                                 debug!(
-                                    "[StreamEvents] Channel closed, aborting after {} chunks",
+                                    "[StreamEvents] Channel closed, aborting event send after {} chunks",
                                     chunk_count
                                 );
-                                let _ = response_tx.send(Ok(ChatResponse {
-                                    content: Some(content),
-                                    tool_calls: tool_acc.finalize(),
-                                    reasoning_content: if reasoning_content.is_empty() {
-                                        None
-                                    } else {
-                                        Some(reasoning_content)
-                                    },
-                                    usage: accumulated_usage,
-                                }));
-                                return;
+                                closed = true;
                             }
                         }
-                    }
-
-                    if let Some(ref reasoning) = chunk.delta.reasoning_content {
-                        if !reasoning.is_empty() {
-                            reasoning_content.push_str(reasoning);
-                            if tx
-                                .send(StreamEvent::thinking(reasoning.clone()))
-                                .await
-                                .is_err()
-                            {
-                                debug!("[StreamEvents] Channel closed during reasoning");
-                                let _ = response_tx.send(Ok(ChatResponse {
-                                    content: Some(content),
-                                    tool_calls: tool_acc.finalize(),
-                                    reasoning_content: if reasoning_content.is_empty() {
-                                        None
-                                    } else {
-                                        Some(reasoning_content)
-                                    },
-                                    usage: accumulated_usage,
-                                }));
-                                return;
+                        if !closed {
+                            if let Some(reasoning) = reasoning_delta {
+                                if tx.send(StreamEvent::thinking(reasoning)).await.is_err() {
+                                    debug!("[StreamEvents] Channel closed during reasoning");
+                                    closed = true;
+                                }
                             }
                         }
-                    }
-
-                    for tc_delta in &chunk.delta.tool_calls {
-                        tool_acc.feed(tc_delta);
-                    }
-
-                    if let Some(ref usage) = chunk.usage {
-                        accumulated_usage = Some(usage.clone());
                     }
                 }
                 Err(e) => {
@@ -223,25 +197,10 @@ pub fn stream_events(
         debug!(
             "[StreamEvents] Stream completed, {} chunks, content len: {}",
             chunk_count,
-            content.len()
+            acc.content.len()
         );
 
-        let response = ChatResponse {
-            content: if content.is_empty() {
-                None
-            } else {
-                Some(content)
-            },
-            tool_calls: tool_acc.finalize(),
-            reasoning_content: if reasoning_content.is_empty() {
-                None
-            } else {
-                Some(reasoning_content)
-            },
-            usage: accumulated_usage,
-        };
-
-        let _ = response_tx.send(Ok(response));
+        let _ = response_tx.send(Ok(acc.finalize()));
     });
 
     let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);

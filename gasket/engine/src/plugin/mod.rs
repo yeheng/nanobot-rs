@@ -188,6 +188,10 @@ impl Tool for PluginTool {
         self
     }
 
+    fn clone_box(&self) -> Option<Box<dyn Tool>> {
+        Some(Box::new(self.clone()))
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
 
@@ -253,33 +257,33 @@ impl Tool for PluginTool {
 ///
 /// # Arguments
 ///
-/// * `scripts_dir` - Directory to scan for manifest files
+/// * `plugins_dir` - Directory to scan for manifest files
 ///
 /// # Returns
 ///
 /// * `Ok(Vec<PluginTool>)` - Vector of discovered plugins
 /// * `Err(anyhow::Error)` - Directory read error or manifest parse error
-pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginTool>> {
+pub fn discover_plugins_in_dir(plugins_dir: &Path) -> anyhow::Result<Vec<PluginTool>> {
     let mut tools = Vec::new();
 
     // Check if directory exists
-    if !scripts_dir.exists() {
+    if !plugins_dir.exists() {
         info!(
             "Plugins directory does not exist: {:?}, skipping discovery",
-            scripts_dir
+            plugins_dir
         );
         return Ok(tools);
     }
 
     // Read directory entries
-    let entries = std::fs::read_dir(scripts_dir).map_err(|e| {
-        anyhow::anyhow!("Failed to read scripts directory {:?}: {}", scripts_dir, e)
+    let entries = std::fs::read_dir(plugins_dir).map_err(|e| {
+        anyhow::anyhow!("Failed to read plugins directory {:?}: {}", plugins_dir, e)
     })?;
 
     // Process each YAML file
     for entry in entries {
         let entry = entry.map_err(|e| {
-            anyhow::anyhow!("Failed to read directory entry in {:?}: {}", scripts_dir, e)
+            anyhow::anyhow!("Failed to read directory entry in {:?}: {}", plugins_dir, e)
         })?;
 
         let path = entry.path();
@@ -298,7 +302,7 @@ pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginT
         match load_manifest(&path) {
             Ok(manifest) => {
                 info!("Discovered plugin '{}' from {:?}", manifest.name, path);
-                let tool = PluginTool::new(manifest, scripts_dir.to_path_buf());
+                let tool = PluginTool::new(manifest, plugins_dir.to_path_buf());
                 tools.push(tool);
             }
             Err(e) => {
@@ -310,10 +314,10 @@ pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginT
     Ok(tools)
 }
 
-/// Discover and register all plugins in the Gasket scripts directory.
+/// Discover and register all plugins in the Gasket plugins directory.
 ///
 /// This is the main entry point for plugin discovery. It reads
-/// `~/.gasket/scripts/` and registers all valid manifests with the
+/// `~/.gasket/plugins/` and registers all valid manifests with the
 /// provided tool registry.
 ///
 /// # Arguments
@@ -329,19 +333,19 @@ pub fn discover_plugins_in_dir(scripts_dir: &Path) -> anyhow::Result<Vec<PluginT
 ///
 /// # Note
 ///
-/// If the scripts directory does not exist, this function returns `Ok(())`
+/// If the plugins directory does not exist, this function returns `Ok(())`
 /// without error. Missing directories are treated as empty tool sets.
 pub fn discover_plugins(
     registry: &mut ToolRegistry,
     engine: Option<EngineResources>,
 ) -> anyhow::Result<()> {
-    // Resolve scripts directory: ~/.gasket/scripts/
-    let scripts_dir = dirs::home_dir()
-        .map(|home| home.join(".gasket/scripts"))
+    // Resolve plugins directory: ~/.gasket/plugins/
+    let plugins_dir = dirs::home_dir()
+        .map(|home| home.join(".gasket/plugins"))
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve home directory"))?;
 
     // Discover tools
-    let tools = discover_plugins_in_dir(&scripts_dir)?;
+    let tools = discover_plugins_in_dir(&plugins_dir)?;
 
     // Register each tool
     for tool in &tools {
@@ -367,7 +371,7 @@ pub fn discover_plugins(
     info!(
         "Discovered and registered {} plugins from {:?}",
         tools.len(),
-        scripts_dir
+        plugins_dir
     );
 
     Ok(())

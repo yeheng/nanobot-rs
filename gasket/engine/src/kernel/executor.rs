@@ -14,21 +14,16 @@ use tracing::{debug, info, instrument, warn};
 use super::context::KernelConfig;
 use super::error::KernelError;
 use super::stream::{self};
-use crate::token_tracker::{ModelPricing, TokenTracker, TokenUsage};
+use crate::token_tracker::TokenUsage;
 use crate::tools::{SubagentSpawner, ToolContext, ToolRegistry};
 use crate::vault::redact_secrets;
 use gasket_providers::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError, ThinkingConfig,
-    ToolCall,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
 };
 use gasket_types::StreamEvent;
 
 /// Default response when no content is available
 const DEFAULT_NO_RESPONSE: &str = "I've completed processing but have no response to give.";
-/// Default response when max iterations reached
-const DEFAULT_MAX_ITERATIONS: &str = "Maximum iterations reached.";
-/// Maximum retries for transient provider errors.
-const MAX_RETRIES: u32 = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ToolExecutor
@@ -154,43 +149,9 @@ impl<'a> RequestHandler<'a> {
         }
     }
 
-    /// Determine if an error is retryable.
-    #[allow(dead_code)]
-    fn is_retryable_error(error: &anyhow::Error) -> bool {
-        if let Some(provider_err) = error.downcast_ref::<ProviderError>() {
-            return provider_err.is_retryable();
-        }
-
-        let error_str = error.to_string().to_lowercase();
-        let patterns = [
-            "connection refused",
-            "connection reset",
-            "connection timed out",
-            "timed out",
-            "timeout",
-            "dns error",
-            "name resolution failed",
-            "no route to host",
-            "network unreachable",
-            "broken pipe",
-            "unexpected eof",
-            "ssl error",
-            "tls error",
-            "certificate",
-            "hyper::error",
-        ];
-
-        for pattern in &patterns {
-            if error_str.contains(pattern) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     pub async fn send_with_retry(&self, request: ChatRequest) -> Result<ChatStream> {
         let mut retries = 0u32;
+        let max_retries = self.config.max_retries;
         loop {
             match self.provider.chat_stream(request.clone()).await {
                 Ok(stream) => return Ok(stream),
@@ -200,16 +161,18 @@ impl<'a> RequestHandler<'a> {
                         return Err(e.context("Provider request failed (non-retryable)"));
                     }
 
-                    if retries >= MAX_RETRIES {
+                    if retries >= max_retries {
                         return Err(e.context("Provider request failed after retries"));
                     }
                     retries += 1;
                     warn!(
                         "Provider error (retryable): {}. Retrying {}/{}",
-                        e, retries, MAX_RETRIES
+                        e, retries, max_retries
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(2_u64.pow(retries).min(15)))
-                        .await;
+                    // Safe exponential backoff: 2^retries seconds, capped at 15s.
+                    // Use shift to avoid u64::pow overflow on high retry counts.
+                    let backoff_secs = (1u64 << retries.min(63)).min(15);
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 }
             }
         }
@@ -223,9 +186,7 @@ impl<'a> RequestHandler<'a> {
 /// Options for executor behavior
 #[derive(Default)]
 pub struct ExecutorOptions<'a> {
-    pub pricing: Option<ModelPricing>,
     pub vault_values: &'a [String],
-    pub token_tracker: Option<Arc<TokenTracker>>,
 }
 
 impl<'a> ExecutorOptions<'a> {
@@ -233,18 +194,8 @@ impl<'a> ExecutorOptions<'a> {
         Self::default()
     }
 
-    pub fn with_pricing(mut self, pricing: ModelPricing) -> Self {
-        self.pricing = Some(pricing);
-        self
-    }
-
     pub fn with_vault_values(mut self, values: &'a [String]) -> Self {
         self.vault_values = values;
-        self
-    }
-
-    pub fn with_token_tracker(mut self, tracker: Arc<TokenTracker>) -> Self {
-        self.token_tracker = Some(tracker);
         self
     }
 }
@@ -278,18 +229,18 @@ impl ExecutionState {
         }
     }
 
-    fn into_result(
-        self,
+    fn to_result(
+        &self,
         content: String,
         reasoning_content: Option<String>,
-        ledger: TokenLedger,
+        ledger: &TokenLedger,
     ) -> ExecutionResult {
         ExecutionResult {
             content,
             reasoning_content,
-            tools_used: self.tools_used,
-            token_usage: ledger.total_usage,
-            cost: ledger.total_cost,
+            tools_used: self.tools_used.clone(),
+            token_usage: ledger.total_usage.clone(),
+            cost: 0.0,
         }
     }
 }
@@ -300,22 +251,14 @@ impl ExecutionState {
 /// them across the full execution lifecycle.
 struct TokenLedger {
     total_usage: Option<TokenUsage>,
-    total_cost: f64,
 }
 
 impl TokenLedger {
     fn new() -> Self {
-        Self {
-            total_usage: None,
-            total_cost: 0.0,
-        }
+        Self { total_usage: None }
     }
 
-    fn accumulate(&mut self, usage: &TokenUsage, pricing: Option<&ModelPricing>) {
-        let cost = pricing
-            .map(|p| p.calculate_cost(usage.input_tokens, usage.output_tokens))
-            .unwrap_or(0.0);
-
+    fn accumulate(&mut self, usage: &TokenUsage) {
         self.total_usage = Some(match self.total_usage.take() {
             Some(mut acc) => {
                 acc.input_tokens += usage.input_tokens;
@@ -325,53 +268,45 @@ impl TokenLedger {
             }
             None => usage.clone(),
         });
-        self.total_cost += cost;
     }
-}
-
-/// Result of a single LLM iteration
-enum IterationOutcome {
-    FinalResponse {
-        content: String,
-        reasoning_content: Option<String>,
-    },
-    ContinueWithTools,
-    MaxIterationsReached,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AgentExecutor
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Agent executor - core LLM loop
-pub struct AgentExecutor<'a> {
+/// Kernel executor - core LLM loop
+pub struct KernelExecutor<'a> {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
     config: &'a KernelConfig,
     spawner: Option<Arc<dyn SubagentSpawner>>,
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
 }
 
-impl<'a> AgentExecutor<'a> {
+impl<'a> KernelExecutor<'a> {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         tools: Arc<ToolRegistry>,
         config: &'a KernelConfig,
     ) -> Self {
-        Self::with_spawner(provider, tools, config, None)
-    }
-
-    pub fn with_spawner(
-        provider: Arc<dyn LlmProvider>,
-        tools: Arc<ToolRegistry>,
-        config: &'a KernelConfig,
-        spawner: Option<Arc<dyn SubagentSpawner>>,
-    ) -> Self {
         Self {
             provider,
             tools,
             config,
-            spawner,
+            spawner: None,
+            token_tracker: None,
         }
+    }
+
+    pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
+    }
+
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
+        self.token_tracker = Some(tracker);
+        self
     }
 
     pub async fn execute_with_options(
@@ -400,103 +335,67 @@ impl<'a> AgentExecutor<'a> {
     ) -> Result<ExecutionResult, KernelError> {
         let mut state = ExecutionState::new(messages);
         let mut ledger = TokenLedger::new();
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+
+        let result = self
+            .run_loop(&mut state, &mut ledger, event_tx.as_ref(), options)
+            .await;
+
+        // Ensure Done is sent exactly once
+        if let Some(ref tx) = event_tx {
+            let _ = tx.send(StreamEvent::done()).await;
+        }
+
+        result
+    }
+
+    async fn run_loop(
+        &self,
+        state: &mut ExecutionState,
+        ledger: &mut TokenLedger,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<ExecutionResult, KernelError> {
         let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
+        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
         for iteration in 1..=self.config.max_iterations {
             debug!("[Kernel] iteration {}", iteration);
 
-            let outcome = self
-                .process_iteration(
-                    iteration,
-                    &mut state,
-                    &mut ledger,
-                    &executor,
-                    &request_handler,
-                    event_tx.as_ref(),
-                    options,
-                )
-                .await?;
+            let request = request_handler.build_chat_request(&state.messages);
+            let stream_result = request_handler
+                .send_with_retry(request)
+                .await
+                .map_err(|e| KernelError::Provider(e.to_string()))?;
 
-            match outcome {
-                IterationOutcome::FinalResponse {
-                    content,
-                    reasoning_content,
-                } => {
-                    if let Some(ref tx) = event_tx {
-                        let _ = tx.send(StreamEvent::done()).await;
-                    }
-                    return Ok(state.into_result(content, reasoning_content, ledger));
-                }
-                IterationOutcome::ContinueWithTools => {}
-                IterationOutcome::MaxIterationsReached => {
-                    if let Some(ref tx) = event_tx {
-                        let _ = tx.send(StreamEvent::done()).await;
-                    }
-                    return Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger));
-                }
+            let response = self.get_response(stream_result, event_tx, ledger).await?;
+
+            Self::log_token_usage(ledger, iteration);
+            Self::log_response(&response, iteration, options.vault_values);
+
+            if let Some((content, reasoning_content)) = Self::check_final_response(&response) {
+                return Ok(state.to_result(content, reasoning_content, ledger));
+            }
+
+            self.handle_tool_calls(&response, &executor, state, event_tx)
+                .await;
+
+            if iteration >= self.config.max_iterations {
+                info!(
+                    "[Kernel] Max iterations ({}) reached",
+                    self.config.max_iterations
+                );
+                return Err(KernelError::MaxIterations(self.config.max_iterations));
             }
         }
 
-        if let Some(ref tx) = event_tx {
-            let _ = tx.send(StreamEvent::done()).await;
-        }
-        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None, ledger))
+        Err(KernelError::MaxIterations(self.config.max_iterations))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn process_iteration(
-        &self,
-        iteration: u32,
-        state: &mut ExecutionState,
-        ledger: &mut TokenLedger,
-        executor: &ToolExecutor<'_>,
-        request_handler: &RequestHandler<'_>,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        options: &ExecutorOptions<'_>,
-    ) -> Result<IterationOutcome, KernelError> {
-        let request = request_handler.build_chat_request(&state.messages);
-        let stream_result = request_handler
-            .send_with_retry(request)
-            .await
-            .map_err(|e| KernelError::Provider(e.to_string()))?;
-
-        let response = self
-            .get_response(stream_result, event_tx, ledger, options)
-            .await?;
-
-        Self::log_token_usage(ledger, &options.pricing, iteration);
-        Self::log_response(&response, iteration, options.vault_values);
-
-        if let Some(outcome) = Self::check_final_response(&response) {
-            return Ok(outcome);
-        }
-
-        self.handle_tool_calls(&response, executor, state, event_tx, options)
-            .await;
-
-        if let Some(outcome) = self.check_max_iterations(iteration) {
-            return Ok(outcome);
-        }
-
-        Ok(IterationOutcome::ContinueWithTools)
-    }
-
-    fn log_token_usage(ledger: &TokenLedger, pricing: &Option<ModelPricing>, iteration: u32) {
+    fn log_token_usage(ledger: &TokenLedger, iteration: u32) {
         if let Some(ref usage) = ledger.total_usage {
-            let currency = pricing
-                .as_ref()
-                .map(|p| p.currency.as_str())
-                .unwrap_or("USD");
             info!(
-                "[Token] iter={} {}",
-                iteration,
-                crate::token_tracker::format_request_stats(
-                    usage,
-                    ledger.total_cost,
-                    currency,
-                    pricing.as_ref()
-                )
+                "[Token] iter={} input={} output={} total={}",
+                iteration, usage.input_tokens, usage.output_tokens, usage.total_tokens
             );
         }
     }
@@ -530,7 +429,6 @@ impl<'a> AgentExecutor<'a> {
         executor: &ToolExecutor<'_>,
         state: &mut ExecutionState,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        options: &ExecutorOptions<'_>,
     ) {
         if response.tool_calls.is_empty() {
             if let Some(ref c) = response.content {
@@ -559,7 +457,7 @@ impl<'a> AgentExecutor<'a> {
         if let Some(ref spawner) = self.spawner {
             ctx = ctx.spawner(spawner.clone());
         }
-        if let Some(ref tracker) = options.token_tracker {
+        if let Some(ref tracker) = self.token_tracker {
             ctx = ctx.token_tracker(tracker.clone());
         }
 
@@ -625,7 +523,6 @@ impl<'a> AgentExecutor<'a> {
         stream_result: ChatStream,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         ledger: &mut TokenLedger,
-        options: &ExecutorOptions<'_>,
     ) -> Result<ChatResponse, KernelError> {
         // Always use the streaming pipeline — "Everything is a Stream".
         // For non-streaming callers, events are silently drained.
@@ -662,61 +559,22 @@ impl<'a> AgentExecutor<'a> {
                 api_usage.input_tokens,
                 api_usage.output_tokens,
             );
-            ledger.accumulate(&usage, options.pricing.as_ref());
-            Self::send_token_stats_event(ledger, event_tx, options).await;
+            ledger.accumulate(&usage);
         }
 
         Ok(response)
     }
 
-    async fn send_token_stats_event(
-        ledger: &TokenLedger,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        options: &ExecutorOptions<'_>,
-    ) {
-        if let Some(tx) = event_tx {
-            if let Some(ref total_usage) = ledger.total_usage {
-                let currency = options
-                    .pricing
-                    .as_ref()
-                    .map(|p| p.currency.as_str())
-                    .unwrap_or("USD");
-                let _ = tx
-                    .send(StreamEvent::token_stats(
-                        total_usage.input_tokens,
-                        total_usage.output_tokens,
-                        total_usage.total_tokens,
-                        ledger.total_cost,
-                        currency,
-                    ))
-                    .await;
-            }
+    fn check_final_response(response: &ChatResponse) -> Option<(String, Option<String>)> {
+        if response.has_tool_calls() {
+            return None;
         }
-    }
-
-    fn check_final_response(response: &ChatResponse) -> Option<IterationOutcome> {
-        if !response.has_tool_calls() {
-            info!("[Kernel] No tool calls, returning final response");
-            return Some(IterationOutcome::FinalResponse {
-                content: response
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
-                reasoning_content: response.reasoning_content.clone(),
-            });
-        }
-        None
-    }
-
-    fn check_max_iterations(&self, iteration: u32) -> Option<IterationOutcome> {
-        if iteration >= self.config.max_iterations {
-            info!(
-                "[Kernel] Max iterations ({}) reached",
-                self.config.max_iterations
-            );
-            return Some(IterationOutcome::MaxIterationsReached);
-        }
-        None
+        info!("[Kernel] No tool calls, returning final response");
+        let content = response
+            .content
+            .clone()
+            .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
+        Some((content, response.reasoning_content.clone()))
     }
 }
 
@@ -728,48 +586,25 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn test_model_pricing_calculate_cost() {
-        let pricing = ModelPricing::new(3.0, 15.0, "USD");
-        let cost = pricing.calculate_cost(1000, 500);
-        assert!((cost - 0.0105).abs() < 0.0001);
-    }
-
-    #[test]
     fn test_token_ledger_accumulate_usage() {
         let mut ledger = TokenLedger::new();
-        let pricing = ModelPricing::new(1.0, 2.0, "USD");
+        assert!(ledger.total_usage.is_none());
 
         let usage1 = gasket_types::TokenUsage::new(100, 50);
-        ledger.accumulate(&usage1, Some(&pricing));
+        ledger.accumulate(&usage1);
         assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 100);
-        assert!((ledger.total_cost - 0.0002).abs() < 0.00001);
+        assert_eq!(ledger.total_usage.as_ref().unwrap().output_tokens, 50);
 
         let usage2 = gasket_types::TokenUsage::new(200, 100);
-        ledger.accumulate(&usage2, Some(&pricing));
+        ledger.accumulate(&usage2);
         assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 300);
         assert_eq!(ledger.total_usage.as_ref().unwrap().output_tokens, 150);
-        assert!((ledger.total_cost - 0.0006).abs() < 0.00001);
-    }
-
-    #[test]
-    fn test_token_ledger_no_pricing() {
-        let mut ledger = TokenLedger::new();
-        let usage = gasket_types::TokenUsage::new(100, 50);
-        ledger.accumulate(&usage, None);
-        assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 100);
-        assert_eq!(ledger.total_cost, 0.0);
     }
 
     #[test]
     fn test_executor_options_builder() {
-        let pricing = ModelPricing::new(1.0, 2.0, "USD");
         let vault = vec!["secret".to_string()];
-
-        let opts = ExecutorOptions::new()
-            .with_pricing(pricing)
-            .with_vault_values(&vault);
-
-        assert!(opts.pricing.is_some());
+        let opts = ExecutorOptions::new().with_vault_values(&vault);
         assert_eq!(opts.vault_values.len(), 1);
     }
 
@@ -892,29 +727,17 @@ mod tests {
     }
 
     #[test]
-    fn test_max_retries_constant() {
-        assert_eq!(MAX_RETRIES, 3);
-    }
-
-    #[test]
-    fn test_is_retryable_error_network() {
-        let err = anyhow::anyhow!("connection timed out");
-        assert!(RequestHandler::is_retryable_error(&err));
-
-        let err = anyhow::anyhow!("dns error: name resolution failed");
-        assert!(RequestHandler::is_retryable_error(&err));
-    }
-
-    #[test]
     fn test_kernel_config_builder() {
         let config = KernelConfig::new("test-model".to_string())
             .with_max_iterations(10)
+            .with_max_retries(5)
             .with_temperature(0.5)
             .with_max_tokens(4096)
             .with_thinking(true);
 
         assert_eq!(config.model, "test-model");
         assert_eq!(config.max_iterations, 10);
+        assert_eq!(config.max_retries, 5);
         assert_eq!(config.temperature, 0.5);
         assert_eq!(config.max_tokens, 4096);
         assert!(config.thinking_enabled);

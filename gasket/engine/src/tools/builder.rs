@@ -7,9 +7,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::config::{Config, ModelRegistry};
+use crate::config::Config;
 use crate::memory::{MetadataStore, SqliteStore};
-use crate::providers::ProviderRegistry;
 use crate::SubagentSpawner;
 
 use super::{
@@ -58,10 +57,6 @@ pub struct ToolRegistryConfig {
     pub extra_tools: Vec<(Box<dyn Tool>, ToolMetadata)>,
     /// SQLite store for history search (optional).
     pub sqlite_store: Option<SqliteStore>,
-    /// Model registry for the `switch_model` tool (optional).
-    pub model_registry: Option<Arc<ModelRegistry>>,
-    /// Provider registry for the `switch_model` tool (optional).
-    pub provider_registry: Option<Arc<ProviderRegistry>>,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
@@ -75,12 +70,10 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         subagent_spawner,
         extra_tools,
         sqlite_store,
-        model_registry,
-        provider_registry,
     } = registry_config;
 
     // Suppress unused warnings when tool-spawn feature is disabled
-    let _ = (&subagent_spawner, &model_registry, &provider_registry);
+    let _ = &subagent_spawner;
 
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -270,7 +263,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 ///
 /// This overwrites the default `memory_search` with a store-backed variant
 /// and adds `query_history` when a SQLite store is available.
-#[allow(dead_code)]
 pub fn register_sqlite_tools(registry: &mut ToolRegistry, sqlite_store: &SqliteStore) {
     registry.register_with_metadata(
         Box::new(MemorySearchTool::with_store(MetadataStore::new(

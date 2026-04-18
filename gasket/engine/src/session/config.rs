@@ -14,6 +14,8 @@ pub const DEFAULT_MAX_TOKENS: u32 = 65536;
 pub const DEFAULT_MEMORY_WINDOW: usize = 50;
 /// Default maximum characters for tool result output
 pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 8000;
+/// Default maximum retries for transient provider errors
+pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Default subagent execution timeout in seconds (10 minutes)
 pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 /// Default session idle timeout in seconds (1 hour)
@@ -31,6 +33,8 @@ pub struct AgentConfig {
     pub memory_window: usize,
     /// Maximum characters for tool result output (0 = unlimited)
     pub max_tool_result_chars: usize,
+    /// Maximum retries for transient provider errors
+    pub max_retries: u32,
     /// Enable thinking/reasoning mode for deep reasoning models
     pub thinking_enabled: bool,
     /// Enable streaming mode for progressive output
@@ -57,6 +61,7 @@ impl Default for AgentConfig {
             max_tokens: DEFAULT_MAX_TOKENS,
             memory_window: DEFAULT_MEMORY_WINDOW,
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
+            max_retries: DEFAULT_MAX_RETRIES,
             thinking_enabled: false,
             streaming: true,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
@@ -77,6 +82,7 @@ impl AgentConfigExt for AgentConfig {
     fn to_kernel_config(&self) -> KernelConfig {
         KernelConfig::new(self.model.clone())
             .with_max_iterations(self.max_iterations)
+            .with_max_retries(self.max_retries)
             .with_temperature(self.temperature)
             .with_max_tokens(self.max_tokens)
             .with_thinking(self.thinking_enabled)

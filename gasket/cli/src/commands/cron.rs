@@ -23,10 +23,7 @@ pub async fn cmd_cron_list() -> Result<()> {
     println!("{}\n", "Scheduled Jobs".bold());
 
     let service = create_cron_service().await?;
-    let jobs = service
-        .list_jobs()
-        .await
-        .context("Failed to list cron jobs")?;
+    let jobs = service.list_jobs();
 
     if jobs.is_empty() {
         println!("No scheduled jobs found.");
@@ -122,10 +119,7 @@ pub async fn cmd_cron_remove(id: String) -> Result<()> {
     let service = create_cron_service().await?;
 
     // Try to get job info first for better feedback
-    let job = service
-        .get_job(&id)
-        .await
-        .context("Failed to get job info")?;
+    let job = service.get_job(&id);
 
     let removed = service
         .remove_job(&id)
@@ -154,11 +148,7 @@ pub async fn cmd_cron_remove(id: String) -> Result<()> {
 pub async fn cmd_cron_enable(id: String) -> Result<()> {
     let service = create_cron_service().await?;
 
-    let job = service
-        .get_job(&id)
-        .await
-        .context("Job not found")?
-        .context("Job not found")?;
+    let job = service.get_job(&id).context("Job not found")?;
 
     if job.enabled {
         println!("Job '{}' is already enabled.", job.name);
@@ -184,11 +174,7 @@ pub async fn cmd_cron_enable(id: String) -> Result<()> {
 pub async fn cmd_cron_disable(id: String) -> Result<()> {
     let service = create_cron_service().await?;
 
-    let job = service
-        .get_job(&id)
-        .await
-        .context("Job not found")?
-        .context("Job not found")?;
+    let job = service.get_job(&id).context("Job not found")?;
 
     if !job.enabled {
         println!("Job '{}' is already disabled.", job.name);
@@ -214,11 +200,7 @@ pub async fn cmd_cron_disable(id: String) -> Result<()> {
 pub async fn cmd_cron_show(id: String) -> Result<()> {
     let service = create_cron_service().await?;
 
-    let job = service
-        .get_job(&id)
-        .await
-        .context("Failed to get job")?
-        .context("Job not found")?;
+    let job = service.get_job(&id).context("Job not found")?;
 
     let status = if job.enabled {
         "enabled".green()

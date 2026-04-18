@@ -189,6 +189,16 @@ pub trait Tool: Send + Sync {
 
     /// Return as `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Deep-clone this tool into a new boxed trait object.
+    ///
+    /// Tools that hold mutable state (e.g. engine references) should override
+    /// this so that each `ToolRegistry` clone receives an independent copy.
+    /// Stateless tools can rely on the default `None`, in which case the
+    /// registry will fall back to a cheap `Arc` clone.
+    fn clone_box(&self) -> Option<Box<dyn Tool>> {
+        None
+    }
 }
 
 /// Metadata describing a tool's capabilities, tags, and permission requirements.

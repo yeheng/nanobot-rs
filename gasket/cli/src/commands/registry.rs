@@ -89,6 +89,7 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
             v => v,
         },
         max_tool_result_chars: defaults.max_tool_result_chars,
+        max_retries: defaults.max_retries,
         thinking_enabled: config.agents.defaults.thinking_enabled,
         streaming: config.agents.defaults.streaming,
         subagent_timeout_secs: defaults.subagent_timeout_secs,

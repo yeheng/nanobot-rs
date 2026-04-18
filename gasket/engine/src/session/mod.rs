@@ -185,6 +185,8 @@ pub struct AgentSession {
     compactor: Option<Arc<ContextCompactor>>,
     memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
+    /// Optional pricing configuration for cost calculation.
+    pricing: Option<ModelPricing>,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
     /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
     /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
@@ -258,7 +260,6 @@ impl AgentSession {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
-            pricing: pricing.clone(),
         };
 
         let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
@@ -293,6 +294,7 @@ impl AgentSession {
             compactor: Some(compactor),
             memory_manager,
             indexing_service: Some(indexing_service),
+            pricing,
             pending_done: tokio_util::task::TaskTracker::new(),
         })
     }
@@ -523,6 +525,7 @@ impl AgentSession {
         let context = self.context.clone();
         let model = self.config.model.clone();
         let compactor = self.compactor.clone();
+        let pricing = self.pricing.clone();
 
         let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
@@ -542,11 +545,30 @@ impl AgentSession {
 
         // Spawn via TaskTracker so graceful shutdown can await this task.
         let result_handle = self.pending_done.spawn(async move {
-            let result = kernel::execute_streaming(&runtime_ctx, messages, kernel_tx).await?;
+            let result = match kernel::execute_streaming(&runtime_ctx, messages, kernel_tx).await {
+                Ok(r) => r,
+                Err(crate::kernel::KernelError::MaxIterations(n)) => {
+                    crate::kernel::ExecutionResult {
+                        content: format!("Maximum iterations ({}) reached.", n),
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        token_usage: None,
+                        cost: 0.0,
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            };
 
-            let response =
-                finalize_response(result, &fctx, &context, &hooks, &model, compactor.as_ref())
-                    .await;
+            let response = finalize_response(
+                result,
+                &fctx,
+                &context,
+                &hooks,
+                &model,
+                compactor.as_ref(),
+                pricing.as_ref(),
+            )
+            .await;
 
             Ok(response)
         });
@@ -674,6 +696,7 @@ async fn finalize_response(
     hooks: &HookRegistry,
     model: &str,
     compactor: Option<&Arc<ContextCompactor>>,
+    pricing: Option<&ModelPricing>,
 ) -> AgentResponse {
     let session_key_str = &ctx.session_key_str;
     let local_vault_values = &ctx.local_vault_values;
@@ -738,10 +761,16 @@ async fn finalize_response(
         warn!("AfterResponse hook failed (ignored): {}", e);
     }
 
+    let cost = if let (Some(usage), Some(pricing)) = (result.token_usage.as_ref(), pricing) {
+        pricing.calculate_cost(usage.input_tokens, usage.output_tokens)
+    } else {
+        0.0
+    };
+
     if let Some(ref usage) = result.token_usage {
         info!(
             "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-            usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+            usage.input_tokens, usage.output_tokens, usage.total_tokens, cost
         );
     }
 
@@ -751,6 +780,6 @@ async fn finalize_response(
         tools_used: result.tools_used,
         model: Some(model.to_string()),
         token_usage: result.token_usage,
-        cost: result.cost,
+        cost,
     }
 }
