@@ -9,6 +9,7 @@
 
 use gasket_storage::SqlitePool;
 use gasket_storage::SqliteStore;
+use tracing::info;
 
 /// Memory store — thin wrapper over `SqliteStore` for machine-state.
 ///
@@ -27,7 +28,7 @@ impl MemoryStore {
         let store = SqliteStore::new()
             .await
             .expect("Failed to open SqliteStore");
-
+        info!("MemoryStore initialized");
         Self { store }
     }
 

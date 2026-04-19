@@ -29,7 +29,7 @@
 //! ```
 
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use gasket_storage::EventStore;
@@ -136,7 +136,7 @@ impl AgentContext {
                     Ok(Some((content, watermark))) => (content, watermark),
                     Ok(None) => (String::new(), 0),
                     Err(e) => {
-                        debug!("Failed to load summary for {}: {}", session_key, e);
+                        warn!("Failed to load summary for {}: {}", session_key, e);
                         (String::new(), 0)
                     }
                 }
@@ -162,7 +162,7 @@ impl AgentContext {
                         .get_session_history(session_key)
                         .await
                         .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to load history for '{}': {}", session_key, e);
+                            warn!("Failed to load history for '{}': {}", session_key, e);
                             Vec::new()
                         })
                 } else {
@@ -170,10 +170,9 @@ impl AgentContext {
                         .get_events_after_sequence(session_key, watermark)
                         .await
                         .unwrap_or_else(|e| {
-                            tracing::warn!(
+                            warn!(
                                 "Failed to load events after watermark for '{}': {}",
-                                session_key,
-                                e
+                                session_key, e
                             );
                             Vec::new()
                         })
@@ -201,6 +200,7 @@ impl AgentContext {
 
                 let mut session = Session::new(key.to_string());
                 session.update_from_events(&events);
+                debug!("Loaded session {} with {} events", key, events.len());
                 session
             }
             Self::Stateless => Session::new(key.to_string()),
@@ -223,8 +223,11 @@ impl AgentContext {
                     .await
                     .map_err(|e| AgentError::Other(format!("Failed to persist event: {}", e)))?;
 
-                // Embedding generation is handled directly via IndexingService — no need to
-                // generate inline on the hot path.
+                debug!(
+                    "Saved event type={} for session={}",
+                    event.event_type.role_str(),
+                    event.session_key
+                );
 
                 Ok(())
             }
@@ -274,7 +277,14 @@ impl AgentContext {
 
                 scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-                Ok(scored.into_iter().take(top_k).map(|(_, c)| c).collect())
+                let results: Vec<String> = scored.into_iter().take(top_k).map(|(_, c)| c).collect();
+                debug!(
+                    "Recalled {} history items for {} (top_k={})",
+                    results.len(),
+                    key,
+                    top_k
+                );
+                Ok(results)
             }
             Self::Stateless => Ok(Vec::new()),
         }
@@ -282,7 +292,8 @@ impl AgentContext {
 
     /// Clear session data from the event store.
     ///
-    /// For `Persistent` context, clears all events and session data from the EventStore.
+    /// For `Persistent` context, clears all events and session data from the EventStore,
+    /// and also removes the evolution watermark from SqliteStore to keep machine state consistent.
     /// For `Stateless` context, this is a no-op.
     ///
     /// # Arguments
@@ -299,6 +310,8 @@ impl AgentContext {
                     .clear_session(session_key)
                     .await
                     .map_err(|e| AgentError::Other(format!("Failed to clear session: {}", e)))?;
+
+                info!("Cleared session: {}", session_key);
                 Ok(())
             }
             Self::Stateless => Ok(()),

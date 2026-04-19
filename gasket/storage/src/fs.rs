@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use tracing::debug;
 
 /// Write data to a file atomically using temp-file + rename.
 ///
@@ -50,6 +51,11 @@ pub async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
         )
     })?;
 
+    debug!(
+        "Atomic write: {} ({} bytes)",
+        path.display(),
+        data.as_ref().len()
+    );
     Ok(())
 }
 

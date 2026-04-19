@@ -7,6 +7,7 @@ use crate::session::config::{AgentConfig, AgentConfigExt};
 use crate::tools::ToolRegistry;
 use anyhow::Result;
 use gasket_providers::{ChatMessage, LlmProvider};
+use tracing::{info, warn};
 
 /// Trait for resolving model IDs to providers and configs.
 ///
@@ -27,11 +28,15 @@ pub async fn run_subagent(
     tools: Arc<ToolRegistry>,
     config: &AgentConfig,
 ) -> Result<ExecutionResult, anyhow::Error> {
+    info!("Running subagent with model={}", config.model);
     let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
     let kernel_config = config.to_kernel_config();
     let executor = KernelExecutor::new(provider, tools, &kernel_config);
     executor
         .execute_with_options(messages, &crate::kernel::ExecutorOptions::new())
         .await
-        .map_err(|e| anyhow::anyhow!("{}", e))
+        .map_err(|e| {
+            warn!("Subagent execution failed: {}", e);
+            anyhow::anyhow!("{}", e)
+        })
 }

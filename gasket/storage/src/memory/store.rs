@@ -5,6 +5,7 @@ use crate::fs::atomic_write;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info};
 
 /// Filesystem-backed memory store.
 #[derive(Clone)]
@@ -96,6 +97,7 @@ impl FileMemoryStore {
             let dir = history_base.join(scenario.dir_name());
             tokio::fs::create_dir_all(&dir).await?;
         }
+        info!("Initialized memory store at {:?}", self.base_dir);
         Ok(())
     }
 
@@ -139,6 +141,12 @@ impl FileMemoryStore {
         let path = dir.join(&filename);
         atomic_write(&path, file_content).await?;
 
+        debug!(
+            "Created memory: {}/{} ({} tokens)",
+            scenario.dir_name(),
+            filename,
+            tokens
+        );
         Ok(filename)
     }
 
@@ -150,6 +158,12 @@ impl FileMemoryStore {
             .await
             .with_context(|| format!("Failed to read memory file: {}", filename))?;
         let (meta, body) = parse_memory_file(&content)?;
+        debug!(
+            "Read memory: {}/{} ({} tokens)",
+            scenario.dir_name(),
+            filename,
+            meta.tokens
+        );
         Ok(MemoryFile {
             metadata: meta,
             content: body,
@@ -188,6 +202,11 @@ impl FileMemoryStore {
 
         // Write new content atomically
         atomic_write(&path, &new_content).await?;
+        debug!(
+            "Updated memory: {}/{} (history saved)",
+            scenario.dir_name(),
+            filename
+        );
         Ok(())
     }
 
@@ -197,7 +216,9 @@ impl FileMemoryStore {
         self.validate_path(&path)?;
         tokio::fs::remove_file(&path)
             .await
-            .with_context(|| format!("Failed to delete memory file: {}", filename))
+            .with_context(|| format!("Failed to delete memory file: {}", filename))?;
+        info!("Deleted memory: {}/{}", scenario.dir_name(), filename);
+        Ok(())
     }
 
     /// List all memory files in a scenario (excluding README.md and dotfiles).
@@ -215,6 +236,11 @@ impl FileMemoryStore {
             }
         }
         files.sort();
+        debug!(
+            "Listed {} memory files in {}",
+            files.len(),
+            scenario.dir_name()
+        );
         Ok(files)
     }
 

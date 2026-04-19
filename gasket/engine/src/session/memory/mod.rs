@@ -9,6 +9,7 @@ use anyhow::Result;
 use gasket_storage::memory::*;
 use gasket_storage::SqlitePool;
 use std::path::PathBuf;
+use tracing::{debug, info};
 
 mod access;
 mod loader;
@@ -83,6 +84,7 @@ impl MemoryManager {
     }
 
     /// Create a MemoryManager with pre-built components (for testing).
+    #[allow(clippy::too_many_arguments)]
     pub fn with_components(
         store: FileMemoryStore,
         index_manager: FileIndexManager,
@@ -119,6 +121,7 @@ impl MemoryManager {
     pub async fn init(&self) -> Result<()> {
         self.writer.store().init().await?;
         self.writer.sync_all().await?;
+        info!("Memory manager initialized");
         Ok(())
     }
 
@@ -165,12 +168,27 @@ impl MemoryManager {
 
     /// Three-phase memory loading for context injection.
     pub async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext> {
-        self.loader.load_for_context(query).await
+        let ctx = self.loader.load_for_context(query).await?;
+        debug!(
+            "Memory context loaded: {} memories, {} tokens (bootstrap={}, scenario={}, on_demand={})",
+            ctx.memories.len(),
+            ctx.tokens_used,
+            ctx.phase_breakdown.bootstrap_tokens,
+            ctx.phase_breakdown.scenario_tokens,
+            ctx.phase_breakdown.on_demand_tokens,
+        );
+        Ok(ctx)
     }
 
     /// Semantic search with real relevance scores.
     pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>> {
-        self.loader.search(query, top_k).await
+        let results = self.loader.search(query, top_k).await?;
+        debug!(
+            "Memory search returned {} results (top_k={})",
+            results.len(),
+            top_k
+        );
+        Ok(results)
     }
 
     /// Flush access log entries on graceful shutdown.

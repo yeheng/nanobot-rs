@@ -9,6 +9,7 @@ use gasket_storage::memory::{MemoryHit, MemoryQuery};
 use gasket_storage::{EventFilter, EventStoreTrait, SqliteStore};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use crate::session::compactor::ContextCompactor;
 use crate::session::memory::MemoryContext;
@@ -115,11 +116,14 @@ impl HistoryCoordinator {
                         ..Default::default()
                     })
                     .await
-                    .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
+                    .map_err(|e| {
+                        warn!("Event store error in SessionContext query: {}", e);
+                        anyhow::anyhow!("event store error: {}", e)
+                    })?;
 
                 let mut selected = Vec::new();
                 let mut tokens_used = 0;
-                for event in events.into_iter().rev() {
+                for event in events.iter().rev() {
                     let event_tokens = event.metadata.content_token_len;
                     if tokens_used + event_tokens > token_budget {
                         break;
@@ -128,10 +132,16 @@ impl HistoryCoordinator {
                     let role = event.event_type.role_str().to_string();
                     selected.push(ContextMessage {
                         role,
-                        content: event.content,
+                        content: event.content.clone(),
                     });
                 }
                 selected.reverse();
+                debug!(
+                    "SessionContext: {} messages, {} tokens used (budget={})",
+                    selected.len(),
+                    tokens_used,
+                    token_budget
+                );
                 Ok(HistoryResult::Context(selected))
             }
             HistoryQuery::LatestSummary { session_key } => {
@@ -143,7 +153,15 @@ impl HistoryCoordinator {
                     .sqlite_store
                     .load_session_summary(&key)
                     .await
-                    .map_err(|e| anyhow::anyhow!("sqlite store error: {}", e))?;
+                    .map_err(|e| {
+                        warn!("SQLite error in LatestSummary query: {}", e);
+                        anyhow::anyhow!("sqlite store error: {}", e)
+                    })?;
+                debug!(
+                    "LatestSummary for {}: found={}",
+                    session_key,
+                    summary.is_some()
+                );
                 Ok(HistoryResult::Summary(summary))
             }
             HistoryQuery::SemanticSearch { query, top_k } => {
@@ -177,7 +195,17 @@ impl HistoryCoordinator {
                         ..Default::default()
                     })
                     .await
-                    .map_err(|e| anyhow::anyhow!("event store error: {}", e))?;
+                    .map_err(|e| {
+                        warn!("Event store error in TimeRange query: {}", e);
+                        anyhow::anyhow!("event store error: {}", e)
+                    })?;
+                debug!(
+                    "TimeRange: {} events for {} [{}, {}]",
+                    events.len(),
+                    session_key,
+                    start,
+                    end
+                );
                 Ok(HistoryResult::Events(events))
             }
         }
@@ -189,6 +217,7 @@ impl HistoryCoordinator {
         event: &gasket_types::session_event::SessionEvent,
     ) -> Result<()> {
         self.event_store.append(event).await?;
+        debug!("Coordinator saved event for session {}", event.session_key);
         Ok(())
     }
 }

@@ -18,7 +18,7 @@ use gasket_providers::ChatMessage;
 use gasket_types::{SessionEvent, SessionKey};
 
 use crate::error::AgentError;
-use crate::hooks::{HookAction, HookPoint, HookRegistry, MutableContext, VaultHook};
+use crate::hooks::{HookAction, HookBuilder, HookPoint, HookRegistry, MutableContext, VaultHook};
 use crate::session::context::AgentContext;
 use crate::vault::{VaultInjector, VaultStore};
 use gasket_storage::process_history;
@@ -312,13 +312,15 @@ impl ContextBuilder {
     }
 }
 
-/// Build the default hook registry for main agents.
+/// Build the default `HookBuilder` for main agents.
 ///
 /// Creates:
 /// - ExternalShellHook at BeforeRequest and AfterResponse
 /// - VaultHook at BeforeLLM (if vault is available)
-pub fn build_default_hooks() -> Arc<HookRegistry> {
-    use crate::hooks::{ExternalHookRunner, ExternalShellHook, HookBuilder, HookPoint};
+///
+/// Callers can append additional hooks before calling `.build_shared()`.
+pub fn build_default_hooks_builder() -> HookBuilder {
+    use crate::hooks::{ExternalHookRunner, ExternalShellHook, HookPoint};
     use std::path::PathBuf;
 
     let hooks_dir = dirs::home_dir()
@@ -349,5 +351,12 @@ pub fn build_default_hooks() -> Arc<HookRegistry> {
         tracing::debug!("[ContextBuilder] Vault not available, skipping vault injector");
     }
 
-    builder.build_shared()
+    builder
+}
+
+/// Build the default hook registry for main agents.
+///
+/// Convenience wrapper around `build_default_hooks_builder().build_shared()`.
+pub fn build_default_hooks() -> Arc<HookRegistry> {
+    build_default_hooks_builder().build_shared()
 }

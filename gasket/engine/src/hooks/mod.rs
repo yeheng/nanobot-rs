@@ -22,6 +22,7 @@
 //! - **Parallel** (AfterToolCall, AfterResponse):
 //!   Hooks run concurrently with readonly access, fire-and-forget.
 
+mod evolution;
 mod external;
 #[cfg(feature = "local-embedding")]
 mod history;
@@ -29,6 +30,7 @@ mod registry;
 mod types;
 mod vault;
 
+pub use evolution::EvolutionHook;
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
 #[cfg(feature = "local-embedding")]
 pub use history::HistoryRecallHook;

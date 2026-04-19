@@ -5,7 +5,6 @@ import 'highlight.js/styles/github-dark.css';
 import { AlertCircle, Bot, Check, CheckCheck, User } from 'lucide-vue-next';
 import { marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
-import mermaid from 'mermaid';
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../types';
 import MessageThoughtsPanel from './MessageThoughtsPanel.vue';
@@ -51,46 +50,112 @@ const emit = defineEmits<{
   (e: 'retry'): void;
 }>();
 
-// Mermaid rendering
+// Mermaid rendering — lazy loaded to avoid init-time crashes
 const mermaidContainerRef = ref<HTMLDivElement | null>(null);
+let mermaidModule: typeof import('mermaid') | null = null;
 
 const renderMermaid = async () => {
   await nextTick();
   if (!mermaidContainerRef.value) return;
   const elements = mermaidContainerRef.value.querySelectorAll('.mermaid-diagram');
-  for (const el of elements) {
+  if (elements.length === 0) return;
+
+  // Lazy-load mermaid only when needed
+  if (!mermaidModule) {
     try {
-      const { svg } = await mermaid.render(
+      mermaidModule = await import('mermaid');
+      mermaidModule.default.initialize({ startOnLoad: false, securityLevel: 'strict' });
+    } catch (e) {
+      console.error('Failed to load mermaid:', e);
+      return;
+    }
+  }
+
+  for (const el of elements) {
+    // Skip already rendered diagrams
+    if ((el as HTMLElement).dataset.rendered === 'true') continue;
+    try {
+      const source = decodeURIComponent((el as HTMLElement).dataset.source || '');
+      if (!source) continue;
+      const { svg } = await mermaidModule.default.render(
         `mermaid-${Math.random().toString(36).substr(2, 9)}`,
-        decodeURIComponent((el as HTMLElement).dataset.source || '')
+        source
       );
       (el as HTMLElement).innerHTML = svg;
+      (el as HTMLElement).dataset.rendered = 'true';
     } catch (e) {
       console.error('Mermaid render error:', e);
+      (el as HTMLElement).dataset.rendered = 'true';
     }
   }
 };
 
-const unescapeRecursive = (str: string): string => {
-  const decoded = str
+// Fast HTML entity decoder — no DOM creation to avoid perf hit on streaming.
+const decodeHtmlEntities = (str: string): string => {
+  return str
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#x27;/g, "'");
-  return decoded === str ? str : unescapeRecursive(decoded);
 };
+
+// Maximum characters to parse as markdown; beyond this render as plain text.
+const MAX_MARKDOWN_LENGTH = 50000;
+
+const escapeHtml = (str: string): string => {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+};
+
+// Cache parsed content to avoid re-parsing on every micro-update during streaming.
+let lastParsed = '';
+let lastSource = '';
 
 const parsedContent = computed(() => {
   if (!props.message.content) return '';
-  const decoded = unescapeRecursive(props.message.content);
-  const raw = marked.parse(decoded) as string;
-  return DOMPurify.sanitize(raw);
+
+  // While streaming: show plain text with basic formatting only.
+  // marked.parse + DOMPurify are expensive; running them on every
+  // chunk update causes the renderer to freeze.
+  if (props.isReceiving) {
+    return escapeHtml(decodeHtmlEntities(props.message.content)).replace(/\n/g, '<br>');
+  }
+
+  // Once streaming ends: do a single markdown parse.
+  const decoded = decodeHtmlEntities(props.message.content);
+
+  // Fallback for oversized messages.
+  if (decoded.length > MAX_MARKDOWN_LENGTH) {
+    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(decoded)}</pre>`;
+  }
+
+  // Simple memoization for the final parse.
+  if (decoded === lastSource) return lastParsed;
+
+  try {
+    const raw = marked.parse(decoded) as string;
+    const sanitized = DOMPurify.sanitize(raw);
+    lastSource = decoded;
+    lastParsed = sanitized;
+    return sanitized;
+  } catch (e) {
+    console.error('Markdown parse failed, falling back to plain text:', e);
+    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(decoded)}</pre>`;
+  }
 });
 
-watch(() => props.message.content, async () => {
-  await renderMermaid();
+// Render mermaid when the component is mounted/updated and not actively streaming.
+// We skip rendering during streaming to avoid flooding the renderer with
+// partial diagram sources that may be syntactically invalid.
+const shouldRenderMermaid = computed(() => !props.isReceiving);
+
+watch(shouldRenderMermaid, (canRender) => {
+  if (canRender) renderMermaid();
 }, { immediate: true });
 
 const copyCode = (event: MouseEvent) => {

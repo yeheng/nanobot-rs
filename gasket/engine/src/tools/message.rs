@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::channels::ChannelType;
@@ -95,6 +95,11 @@ impl Tool for MessageTool {
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+
+        debug!(
+            "Message tool invoked: channel={}, chat_id={}",
+            params.channel, params.chat_id
+        );
 
         // Create outbound message (broadcast if chat_id is "*")
         let channel_name = params.channel.to_string();

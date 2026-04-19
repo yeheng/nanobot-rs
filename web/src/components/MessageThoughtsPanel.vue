@@ -17,6 +17,15 @@ const runningToolCount = computed(() => props.message.toolCalls?.filter(t => t.s
 const completedToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'complete').length || 0);
 const totalToolCount = computed(() => props.message.toolCalls?.length || 0);
 const isActive = computed(() => props.isLastBotMessage && (props.isThinking || runningToolCount.value > 0));
+
+/** Hard limit for tool result display to avoid UI clutter. */
+const TOOL_RESULT_MAX_CHARS = 200;
+
+const truncateResult = (text: string): string => {
+  const chars = Array.from(text);
+  if (chars.length <= TOOL_RESULT_MAX_CHARS) return text;
+  return chars.slice(0, TOOL_RESULT_MAX_CHARS).join('') + '...';
+};
 </script>
 
 <template>
@@ -115,11 +124,13 @@ const isActive = computed(() => props.isLastBotMessage && (props.isThinking || r
               >
                 {{ tool.arguments }}
               </div>
+
+              <!-- Tool result — hard-truncated to 200 chars -->
               <div
                 v-if="tool.result"
-                class="text-[10px] th-text-secondary mt-1"
+                class="text-[10px] th-text-secondary mt-1 whitespace-pre-wrap break-words leading-relaxed bg-muted/30 rounded p-1.5"
               >
-                {{ tool.result }}
+                {{ truncateResult(tool.result) }}
               </div>
             </div>
           </div>

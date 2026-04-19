@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::Row;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
 use gasket_storage::SqlitePool;
@@ -77,6 +77,12 @@ impl Tool for HistoryQueryTool {
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
         let args: QueryArgs = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+
+        debug!(
+            "History query tool invoked: keywords={:?}, limit={}",
+            args.keywords,
+            args.limit.unwrap_or(20)
+        );
 
         let limit = args.limit.unwrap_or(20).min(100) as i64;
         let pattern = args

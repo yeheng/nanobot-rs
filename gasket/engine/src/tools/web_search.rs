@@ -29,18 +29,28 @@ trait SearchProvider: Send + Sync {
     ) -> Result<Vec<SearchHit>, ToolError>;
 }
 
+/// Maximum characters per search-hit snippet to keep output compact.
+const MAX_SNIPPET_LEN: usize = 300;
+
 /// Format a list of search hits into a human-readable string.
+/// Snippets are truncated to MAX_SNIPPET_LEN so that more results fit within
+/// the global max_tool_result_chars budget.
 fn format_hits(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return "No results found.".to_string();
     }
     let mut out = String::new();
     for (i, h) in hits.iter().enumerate() {
+        let snippet = if h.snippet.len() > MAX_SNIPPET_LEN {
+            format!("{}...", &h.snippet[..MAX_SNIPPET_LEN])
+        } else {
+            h.snippet.clone()
+        };
         out.push_str(&format!(
             "{}. **{}**\n   {}\n   URL: {}\n\n",
             i + 1,
             h.title,
-            h.snippet,
+            snippet,
             h.url
         ));
     }

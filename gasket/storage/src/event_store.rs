@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -195,6 +196,7 @@ pub struct EventStore {
 impl EventStore {
     pub fn new(pool: SqlitePool) -> Self {
         let (tx, _) = broadcast::channel(64);
+        info!("EventStore created");
         Self { pool, tx }
     }
 
@@ -304,6 +306,11 @@ impl EventStore {
         // Notify subscribers (ignore send errors — no subscribers is normal)
         let _ = self.tx.send(event.clone());
 
+        debug!(
+            "Appended event: type={}, session={}, seq={}",
+            event_type_tag, event.session_key, sequence
+        );
+
         Ok(())
     }
 
@@ -330,6 +337,7 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
+        debug!("Loaded {} events for session {}", rows.len(), session_key);
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
@@ -358,6 +366,12 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
+        debug!(
+            "Loaded {} events after seq {} for {}",
+            rows.len(),
+            after_sequence,
+            session_key
+        );
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
@@ -386,6 +400,12 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
 
+        debug!(
+            "Loaded {} events up to seq {} for {} (excl. summaries)",
+            rows.len(),
+            target_sequence,
+            session_key
+        );
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
@@ -431,6 +451,7 @@ impl EventStore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        info!("Cleared session {}", session_key);
         Ok(())
     }
 
@@ -470,7 +491,12 @@ impl EventStore {
         .bind(target_sequence)
         .execute(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        let deleted = result.rows_affected();
+        info!(
+            "GC'd {} events up to seq {} for {}",
+            deleted, target_sequence, session_key
+        );
+        Ok(deleted)
     }
 
     /// Get the most recent summary event for a session.
@@ -495,7 +521,10 @@ impl EventStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        row.map(|r| r.try_into()).transpose()
+        let found = row.is_some();
+        let result = row.map(|r| r.try_into()).transpose();
+        debug!("Latest summary for {}: found={}", session_key, found);
+        result
     }
 
     /// Query all sessions for a given channel.
@@ -569,6 +598,7 @@ impl EventStoreTrait for EventStore {
         if let Some(limit) = filter.limit {
             events.truncate(limit);
         }
+        debug!("Query returned {} events for {}", events.len(), session_key);
         Ok(events)
     }
 

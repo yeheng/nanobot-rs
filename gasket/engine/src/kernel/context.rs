@@ -50,7 +50,7 @@ impl KernelConfig {
             max_retries: 3,
             temperature: 1.0,
             max_tokens: 65536,
-            max_tool_result_chars: 8000,
+            max_tool_result_chars: 16000,
             thinking_enabled: false,
         }
     }

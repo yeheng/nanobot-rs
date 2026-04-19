@@ -7,7 +7,7 @@
 use std::sync::OnceLock;
 
 use tiktoken_rs::CoreBPE;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use gasket_types::SessionEvent;
 
@@ -108,6 +108,14 @@ pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> Pr
     result.extend(protected);
 
     let filtered_count = total - result.len();
+
+    debug!(
+        "Processed history: {} input, {} kept, {} evicted, {} tokens",
+        total,
+        result.len(),
+        filtered_count,
+        current_tokens
+    );
 
     ProcessedHistory {
         events: result,

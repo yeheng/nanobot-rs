@@ -79,6 +79,7 @@ impl TaskSpec {
 /// # Returns
 /// A `JoinHandle` for the spawned task.
 #[instrument(name = "subagent.spawn", skip_all, fields(subagent_id = %task.id))]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_subagent(
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,

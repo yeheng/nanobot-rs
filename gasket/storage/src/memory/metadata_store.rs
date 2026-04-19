@@ -9,6 +9,7 @@ use super::index::MemoryIndexEntry;
 use super::types::*;
 use anyhow::Result;
 use sqlx::{Row, SqlitePool};
+use tracing::debug;
 
 /// SQLite-backed metadata store for memory files.
 ///
@@ -77,6 +78,11 @@ impl MetadataStore {
             .await?;
         }
 
+        debug!(
+            "Synced {} entries for scenario {}",
+            entries.len(),
+            scenario.dir_name()
+        );
         Ok(())
     }
 
@@ -105,6 +111,11 @@ impl MetadataStore {
         .execute(&self.pool)
         .await?;
 
+        debug!(
+            "Upserted metadata: {}/{}",
+            entry.scenario.dir_name(),
+            entry.filename
+        );
         Ok(())
     }
 
@@ -136,6 +147,13 @@ impl MetadataStore {
         .execute(&self.pool)
         .await?;
 
+        debug!(
+            "Updated runtime state: {}/{} freq={:?} +{} accesses",
+            scenario.dir_name(),
+            filename,
+            frequency,
+            access_count_delta
+        );
         Ok(result.rows_affected() > 0)
     }
 
@@ -210,6 +228,11 @@ impl MetadataStore {
         .bind(filename)
         .execute(&self.pool)
         .await?;
+        debug!(
+            "Marked embedding done: {}/{}",
+            scenario.dir_name(),
+            filename
+        );
         Ok(())
     }
 
@@ -287,6 +310,12 @@ impl MetadataStore {
         q = q.bind(limit as i64);
 
         let rows = q.fetch_all(&self.pool).await?;
+        debug!(
+            "Tag query: {} tags, scenario={:?}, {} results",
+            query_tags.len(),
+            scenario,
+            rows.len()
+        );
         Ok(Self::parse_rows(rows))
     }
 
@@ -364,6 +393,12 @@ impl MetadataStore {
         }
 
         let rows = q.fetch_all(&self.pool).await?;
+        debug!(
+            "Loading query: scenario={}, {} tags, {} results",
+            scenario.dir_name(),
+            tags.len(),
+            rows.len()
+        );
         Ok(Self::parse_rows(rows))
     }
 
@@ -389,7 +424,7 @@ impl MetadataStore {
 
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
-        let candidates = rows
+        let candidates: Vec<_> = rows
             .into_iter()
             .map(|row| {
                 let scen_str: String = row.get("scenario");
@@ -403,6 +438,11 @@ impl MetadataStore {
             })
             .collect();
 
+        debug!(
+            "Found {} decay candidates (>{} days old)",
+            candidates.len(),
+            older_than_days
+        );
         Ok(candidates)
     }
 

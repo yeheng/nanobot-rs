@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::instrument;
+use tracing::{debug, instrument};
 use uuid::Uuid;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
@@ -92,6 +92,8 @@ impl Tool for CronTool {
 
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+
+        debug!("Cron tool invoked: action={}", args.action);
 
         match args.action.as_str() {
             "add" => {

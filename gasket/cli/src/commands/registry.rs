@@ -97,5 +97,6 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         summarization_prompt: None,
         embedding_config: Some(config.embedding.clone()),
         memory_budget: config.agents.defaults.memory_budget,
+        evolution: defaults.evolution,
     }
 }

@@ -15,6 +15,7 @@ use super::metadata_store::MetadataStore;
 use super::types::*;
 use anyhow::Result;
 use std::cmp::Ordering;
+use tracing::debug;
 
 /// A search result with combined scoring.
 ///
@@ -161,6 +162,11 @@ impl RetrievalEngine {
         // Sort using unified Ord impl (exempt > frequency > score)
         results.sort();
 
+        debug!(
+            "Tag search: {} query tags, {} results",
+            query_tags.len(),
+            results.len()
+        );
         Ok(results)
     }
 
@@ -202,6 +208,7 @@ impl RetrievalEngine {
         // Sort using unified Ord impl (exempt > frequency > score)
         results.sort();
 
+        debug!("Embedding search: {} results", results.len());
         Ok(results)
     }
 
@@ -262,6 +269,7 @@ impl RetrievalEngine {
             return Ok(Vec::new());
         }
 
+        debug!("Combined search: {} results", emb_results.len());
         Ok(emb_results)
     }
 }

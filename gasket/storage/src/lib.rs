@@ -645,7 +645,49 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
+        // ── Generic KV store for machine-state (e.g. evolution watermarks) ──
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS kv_store (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
+    }
+
+    // ── Generic KV API ──
+
+    /// Read a raw string value by key.
+    pub async fn read_raw(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    /// Write (or overwrite) a raw string value by key.
+    pub async fn write_raw(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        sqlx::query("INSERT OR REPLACE INTO kv_store (key, value) VALUES ($1, $2)")
+            .bind(key)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a raw key-value entry.
+    ///
+    /// Returns `true` if a row was actually deleted.
+    pub async fn delete_raw(&self, key: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM kv_store WHERE key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -710,5 +752,41 @@ mod tests {
         assert!(store.delete_session_summary(&key).await.unwrap());
         assert!(!store.delete_session_summary(&key).await.unwrap());
         assert!(store.load_session_summary(&key).await.unwrap().is_none());
+    }
+
+    // ── Generic KV tests ──
+
+    #[tokio::test]
+    async fn test_kv_roundtrip() {
+        let store = temp_store().await;
+
+        assert!(store.read_raw("test_key").await.unwrap().is_none());
+        store.write_raw("test_key", "test_value").await.unwrap();
+        assert_eq!(
+            store.read_raw("test_key").await.unwrap(),
+            Some("test_value".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kv_overwrite() {
+        let store = temp_store().await;
+
+        store.write_raw("key1", "v1").await.unwrap();
+        store.write_raw("key1", "v2").await.unwrap();
+        assert_eq!(
+            store.read_raw("key1").await.unwrap(),
+            Some("v2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kv_delete() {
+        let store = temp_store().await;
+
+        store.write_raw("del_key", "val").await.unwrap();
+        assert!(store.delete_raw("del_key").await.unwrap());
+        assert!(!store.delete_raw("del_key").await.unwrap());
+        assert!(store.read_raw("del_key").await.unwrap().is_none());
     }
 }

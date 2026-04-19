@@ -12,7 +12,7 @@ pub mod prompt;
 pub mod store;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
-pub use config::AgentConfig;
+pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
 pub use memory::{MemoryContext, MemoryManager};
 pub use store::{MemoryProvider, MemoryStore};
@@ -217,6 +217,11 @@ impl AgentSession {
         let sqlite_store = Arc::new(memory_store.sqlite_store().clone());
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
+        // Keep clones for evolution hook (before moving into compactor/context)
+        let sqlite_store_for_evo = sqlite_store.clone();
+        let event_store_for_evo = event_store.clone();
+        let provider_for_evo = provider.clone();
+
         // Create IndexingService
         let mut indexing_service = IndexingService::new(sqlite_store.clone());
 
@@ -277,10 +282,17 @@ impl AgentSession {
         let compactor = Arc::new(compactor);
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-        let hooks = Self::build_hooks();
         let memory_manager =
             Self::try_init_memory_manager(&memory_store, shared_embedder, config.memory_budget)
                 .await;
+
+        let hooks = Self::build_hooks(
+            memory_manager.as_ref(),
+            &config,
+            sqlite_store_for_evo,
+            event_store_for_evo,
+            provider_for_evo,
+        );
 
         Ok(Self {
             runtime_ctx,
@@ -318,8 +330,36 @@ impl AgentSession {
         Ok((system_prompt, skills_context))
     }
 
-    fn build_hooks() -> Arc<HookRegistry> {
-        history::builder::build_default_hooks()
+    fn build_hooks(
+        memory_manager: Option<&Arc<MemoryManager>>,
+        config: &AgentConfig,
+        sqlite_store: Arc<gasket_storage::SqliteStore>,
+        event_store: Arc<EventStore>,
+        provider: Arc<dyn gasket_providers::LlmProvider>,
+    ) -> Arc<HookRegistry> {
+        use crate::hooks::EvolutionHook;
+
+        let mut builder = history::builder::build_default_hooks_builder();
+
+        if let (Some(mm), Some(evo_config)) = (memory_manager, config.evolution.as_ref()) {
+            if evo_config.enabled {
+                let evo_hook = Arc::new(EvolutionHook::new(
+                    mm.clone(),
+                    sqlite_store,
+                    event_store,
+                    provider,
+                    config.model.clone(),
+                    evo_config.clone(),
+                ));
+                builder = builder.with_hook(evo_hook);
+                tracing::info!(
+                    "EvolutionHook registered (batch_messages={})",
+                    evo_config.batch_messages
+                );
+            }
+        }
+
+        builder.build_shared()
     }
 
     /// Set the subagent spawner.

@@ -13,7 +13,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 65536;
 /// Default memory window size
 pub const DEFAULT_MEMORY_WINDOW: usize = 50;
 /// Default maximum characters for tool result output
-pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 8000;
+pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 16000;
 /// Default maximum retries for transient provider errors
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Default subagent execution timeout in seconds (10 minutes)
@@ -22,6 +22,24 @@ pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECS: u64 = 3600;
 /// Default wait timeout for subagent results in seconds (12 minutes)
 pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 720;
+
+/// Configuration for the self-evolution hook.
+#[derive(Clone, Debug)]
+pub struct EvolutionConfig {
+    /// Whether the evolution hook is enabled.
+    pub enabled: bool,
+    /// Number of messages to accumulate before triggering reflection.
+    pub batch_messages: usize,
+}
+
+impl Default for EvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            batch_messages: 10,
+        }
+    }
+}
 
 /// Agent loop configuration
 #[derive(Clone)]
@@ -50,6 +68,8 @@ pub struct AgentConfig {
     pub embedding_config: Option<crate::config::EmbeddingConfig>,
     /// Memory token budget for three-phase context loading.
     pub memory_budget: Option<gasket_storage::memory::TokenBudget>,
+    /// Self-evolution configuration (auto-learning from conversations).
+    pub evolution: Option<EvolutionConfig>,
 }
 
 impl Default for AgentConfig {
@@ -69,6 +89,7 @@ impl Default for AgentConfig {
             summarization_prompt: None,
             embedding_config: None,
             memory_budget: None,
+            evolution: Some(EvolutionConfig::default()),
         }
     }
 }

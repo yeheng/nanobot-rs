@@ -94,12 +94,16 @@ impl<'a> ToolExecutor<'a> {
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
+            let original_len = result_str.len();
             let mut end = self.max_result_chars;
             while !result_str.is_char_boundary(end) {
                 end -= 1;
             }
             result_str.truncate(end);
-            result_str.push_str("\n\n[... truncated]");
+            result_str.push_str(&format!(
+                "\n\n[OUTPUT TRUNCATED: original {} chars exceeded limit of {} chars]",
+                original_len, self.max_result_chars
+            ));
         }
 
         ToolCallResult {

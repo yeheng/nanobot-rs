@@ -1,6 +1,7 @@
 use super::types::*;
 use anyhow::Result;
 use sqlx::{Row, SqlitePool};
+use tracing::debug;
 
 /// Embedding store for memory files, backed by SQLite.
 pub struct EmbeddingStore {
@@ -51,6 +52,10 @@ impl EmbeddingStore {
         .execute(&self.pool)
         .await?;
 
+        debug!(
+            "Upserted embedding: path={}, scenario={}, freq={}, tokens={}",
+            memory_path, scenario, freq_str, token_count
+        );
         Ok(())
     }
 
@@ -60,6 +65,7 @@ impl EmbeddingStore {
             .bind(memory_path)
             .execute(&self.pool)
             .await?;
+        debug!("Deleted embedding: {}", memory_path);
         Ok(())
     }
 
@@ -71,6 +77,7 @@ impl EmbeddingStore {
         sqlx::query("DELETE FROM memory_embeddings")
             .execute(&self.pool)
             .await?;
+        debug!("Deleted all embeddings (reindex wipe)");
         Ok(())
     }
 
@@ -152,6 +159,11 @@ impl EmbeddingStore {
                 token_count: tokens as u32,
             });
         }
+        debug!(
+            "Tag search: {} query tags, {} results",
+            tags.len(),
+            hits.len()
+        );
         Ok(hits)
     }
 
@@ -203,12 +215,18 @@ impl EmbeddingStore {
             });
         }
 
+        let candidates = scored.len();
         scored.sort_by(|a, b| {
             b.similarity
                 .partial_cmp(&a.similarity)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         scored.truncate(limit);
+        debug!(
+            "Embedding search: {} candidates, {} results",
+            candidates,
+            scored.len()
+        );
         Ok(scored)
     }
 
