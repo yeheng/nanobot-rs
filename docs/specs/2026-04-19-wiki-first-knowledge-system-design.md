@@ -76,24 +76,35 @@ The Wiki system introduces three layers (Raw Sources, Compiled Wiki, Schema) and
 
 ### 3.1 Wiki Page Format
 
-Every wiki page uses Markdown with YAML frontmatter:
+**SQLite is the single source of truth.** Markdown files on disk are a derived cache, written from SQLite and regenerated on demand. This eliminates the dual-truth bug class entirely.
+
+Every wiki page is stored as a SQLite row with a `content` column. Markdown files are optionally written to disk for human readability and git-friendliness, but they are never read back as authoritative data.
+
+**SQLite row (authoritative):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `path` | TEXT PK | Relative path: `entities/projects/gasket` |
+| `title` | TEXT | "Gasket Project" |
+| `type` | TEXT | `entity` \| `topic` \| `source` |
+| `category` | TEXT | Optional subcategory |
+| `tags` | TEXT | JSON array |
+| `content` | TEXT | Full markdown body |
+| `created` | TEXT | ISO 8601 |
+| `updated` | TEXT | ISO 8601 |
+| `source_count` | INTEGER | Number of sources that contributed |
+| `confidence` | REAL | 0.0-1.0 |
+| `checksum` | TEXT | Content hash for change detection |
+
+**Derived markdown file (cache, at `~/.gasket/wiki/entities/projects/gasket.md`):**
 
 ```markdown
 ---
-id: wiki://entities/projects/gasket
 title: "Gasket Project"
 type: entity
 category: project
 tags: [rust, agent, llm, mcp]
-created: 2026-04-19T10:00:00Z
 updated: 2026-04-19T15:30:00Z
-source_count: 12
-confidence: 0.95
-outgoing_links:
-  - wiki://entities/concepts/actor-model
-  - wiki://entities/people/yeheng
-incoming_links:
-  - wiki://topics/architecture-overview
 ---
 
 # Gasket Project
@@ -104,47 +115,48 @@ Gasket is a Rust LLM Agent framework...
 ## Key Decisions
 - 2026-03: Chose Actor Model as core architecture...
 
-## Related Entities
+## Related
 - [[actor-model]] - Core architecture pattern
 - [[yeheng]] - Project lead
-
-## Sources
-- [karpathy-llm-wiki](source://2026-04-19-karpathy-llm-wiki)
 ```
 
-### 3.2 URI Scheme
+**Key simplification:** No custom URI scheme (`wiki://`). Page identity is the `path` string (e.g., `"entities/projects/gasket"`). This is just a relative filesystem path — no parser needed, no edge cases.
+
+### 3.2 Page Identity (Path-Based)
+
+Pages are identified by their relative path string under the wiki root:
 
 ```
-wiki://entities/projects/gasket    -> Wiki page
-wiki://entities/people/yeheng      -> Wiki page
-wiki://topics/architecture-overview -> Wiki page
-wiki://sources/2026-04-19-xxx      -> Source summary page
-wiki://index                       -> Index page
-wiki://log                         -> Log page
-source://uploads/2026-04-19-paper  -> Raw source reference
+"entities/projects/gasket"        -> Page about Gasket project
+"entities/people/yeheng"          -> Page about a person
+"topics/architecture-overview"    -> Topic page
+"sources/2026-04-19-karpathy"     -> Source summary page
+"_index"                          -> Index page (underscore-prefixed = system)
+"_log"                            -> Log page
 ```
 
-URI resolution maps to filesystem paths under `~/.gasket/wiki/` or `~/.gasket/sources/`.
+Resolution: `PathBuf::from(wiki_root).join(format!("{}.md", path))`. No URI parser, no custom scheme.
 
 ### 3.3 SQLite Schema
 
 ```sql
--- Wiki page metadata
+-- Wiki pages: SINGLE SOURCE OF TRUTH. Content lives here.
+-- Markdown files on disk are derived cache.
 CREATE TABLE wiki_pages (
-    id          TEXT PRIMARY KEY,
-    path        TEXT NOT NULL UNIQUE,
+    path        TEXT PRIMARY KEY,       -- "entities/projects/gasket"
     title       TEXT NOT NULL,
     type        TEXT NOT NULL,           -- entity | topic | source
     category    TEXT,
     tags        TEXT,                    -- JSON array
+    content     TEXT NOT NULL DEFAULT '',-- Full markdown body
     created     TEXT NOT NULL,
     updated     TEXT NOT NULL,
     source_count INTEGER DEFAULT 0,
     confidence  REAL DEFAULT 1.0,
-    checksum    TEXT
+    checksum    TEXT                     -- Content hash for cache invalidation
 );
 
--- Raw source registry
+-- Raw source registry (ingestion queue)
 CREATE TABLE raw_sources (
     id          TEXT PRIMARY KEY,
     path        TEXT NOT NULL,
@@ -158,15 +170,15 @@ CREATE TABLE raw_sources (
 
 -- Inter-page relations (graph edges)
 CREATE TABLE wiki_relations (
-    from_page   TEXT NOT NULL,
-    to_page     TEXT NOT NULL,
+    from_page   TEXT NOT NULL REFERENCES wiki_pages(path),
+    to_page     TEXT NOT NULL REFERENCES wiki_pages(path),
     relation    TEXT NOT NULL,           -- references | contradicts | supersedes | related
     confidence  REAL DEFAULT 1.0,
     created     TEXT NOT NULL,
     PRIMARY KEY (from_page, to_page, relation)
 );
 
--- Structured operation log (mirrors log.md)
+-- Structured operation log
 CREATE TABLE wiki_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     action      TEXT NOT NULL,           -- ingest | query | lint | create | update | delete
@@ -179,6 +191,8 @@ CREATE TABLE wiki_log (
 -- session_events, session_summaries, session_embeddings, cron_state
 ```
 
+**Key change from original design:** `wiki_pages.path` is now the PRIMARY KEY (not a separate `id` column). The `content` column lives in SQLite, not on disk. This makes SQLite the canonical data store and eliminates all sync problems.
+
 ---
 
 ## 4. Core Operations
@@ -189,7 +203,51 @@ Ingest converts raw information into structured wiki pages.
 
 **Two-tier strategy:**
 - **Quick Ingest** (1 page per item): Used for conversation extraction and agent exploration. Low LLM cost. Creates one page + updates index.
-- **Deep Ingest** (up to 15 pages per source): Used for explicit file/document import. Higher LLM cost. Full integration with entity/topic cross-referencing.
+- **Deep Ingest** (up to 15 pages per source): Used for explicit file/document import. Higher LLM cost. Full integration with entity/topic cross-referencing. **Requires cost validation gate before execution.**
+
+**Deep Ingest cost validation gate:**
+
+Before executing a Deep Ingest, the system estimates LLM token consumption and compares against a configurable budget:
+
+```rust
+impl WikiIntegrator {
+    /// Estimate token cost for a deep ingest before executing it
+    pub fn estimate_cost(&self, source: &ParsedSource, wiki: &PageStore) -> CostEstimate {
+        let source_tokens = estimate_tokens(&source.content);
+        let affected_pages = wiki.list_relevant_pages(&source.entities);
+        let update_tokens = affected_pages.len() as u32 * 2000; // ~2k tokens per page update
+        let relation_tokens = affected_pages.len() as u32 * 500; // ~500 tokens per relation extraction
+
+        CostEstimate {
+            estimated_input_tokens: source_tokens + update_tokens + relation_tokens,
+            estimated_pages_affected: affected_pages.len(),
+            estimated_cost_usd: self.pricing.calculate(&self.model, estimated_input_tokens),
+        }
+    }
+
+    pub async fn deep_ingest(&self, source: &ParsedSource, wiki: &PageStore) -> Result<IngestReport> {
+        // Gate: validate cost before proceeding
+        let estimate = self.estimate_cost(source, wiki);
+        if estimate.estimated_cost_usd > self.max_cost_per_ingest {
+            return Err(anyhow::anyhow!(
+                "Deep ingest estimated cost ${:.4} exceeds budget ${:.4}. \
+                 Affected pages: {}. Use quick_ingest instead or increase budget.",
+                estimate.estimated_cost_usd, self.max_cost_per_ingest,
+                estimate.estimated_pages_affected
+            ));
+        }
+        // ... proceed with ingest
+    }
+}
+```
+
+**Configuration:**
+```yaml
+wiki:
+  ingest:
+    max_cost_per_ingest: 0.10  # USD, default 10 cents
+    cost_warning_threshold: 0.05  # Warn but proceed above this
+```
 
 ```
 Source Ingestion (Phase 1) -> Wiki Integration (Phase 2) -> Index & Log (Phase 3)
@@ -293,38 +351,38 @@ pub async fn update_index_and_log(wiki: &WikiStore, report: &IngestReport) -> Re
 
 ### 4.2 Query Pipeline
 
-Query replaces the existing MemoryLoader with unified wiki retrieval.
+Query replaces the existing MemoryLoader with unified wiki retrieval from SQLite.
 
 ```rust
 pub struct WikiQueryEngine {
-    tantivy: TantivySearch,
-    fts5: SqliteFts,
-    embedding: EmbeddingStore,
-    page_resolver: PageResolver,
+    index: PageIndex,
+    store: PageStore,
 }
 
 impl WikiQueryEngine {
     pub async fn query(&self, query: &str, budget: TokenBudget) -> Result<QueryResult> {
         // Phase 1: Candidate retrieval (Tantivy hybrid search)
-        let candidates = self.tantivy.search(query, 50).await?;
+        let candidates = self.index.search(query, 50).await?;
 
-        // Phase 2: Semantic reranking (embedding similarity)
-        let reranked = self.embedding.rerank(query, &candidates).await?;
+        // Phase 2: Budget-aware selection
+        let selected = self.apply_budget(&candidates, budget);
 
-        // Phase 3: Budget-aware selection
-        let selected = self.apply_budget(reranked, budget);
-
-        // Load full page content
-        let pages = self.load_pages(&selected).await?;
+        // Phase 3: Load full page content from SQLite (not disk)
+        let mut pages = Vec::with_capacity(selected.len());
+        for summary in &selected {
+            if let Ok(page) = self.store.read(&summary.path).await {
+                pages.push(page);
+            }
+        }
 
         Ok(QueryResult { pages, total_candidates: candidates.len() })
     }
 
     /// File a good answer back into the wiki as a new topic page
-    pub async fn file_answer(&self, question: &str, answer: &str, wiki: &WikiStore) -> Result<()> {
-        let page = WikiPage::new_topic(question, answer);
-        wiki.write_page(&page.id, &page).await?;
-        wiki.rebuild_index().await?;
+    pub async fn file_answer(&self, question: &str, answer: &str, store: &PageStore) -> Result<()> {
+        let path = format!("topics/{}", slugify(question));
+        let page = WikiPage::new(path, question.to_string(), PageType::Topic, answer.to_string());
+        store.write(&page).await?;
         Ok(())
     }
 }
@@ -332,7 +390,7 @@ impl WikiQueryEngine {
 
 ### 4.3 Lint Pipeline
 
-Lint is a new capability for wiki health checking.
+Lint is a new capability for wiki health checking. Operates directly on SQLite data.
 
 ```rust
 pub struct WikiLinter {
@@ -348,34 +406,34 @@ pub struct LintReport {
 }
 
 impl WikiLinter {
-    pub async fn lint(&self, wiki: &WikiStore) -> Result<LintReport> {
-        let all_pages = wiki.list_all_pages().await?;
+    pub async fn lint(&self, store: &PageStore) -> Result<LintReport> {
+        let all_pages = store.list(PageFilter::default()).await?;
+        let all_relations = store.list_all_relations().await?;
 
-        // Structural checks (fast, no LLM)
-        let orphans = Self::find_orphans(&all_pages)?;
-        let missing_pages = Self::find_missing_pages(&all_pages)?;
-        let weak_relations = Self::find_weak_relations(&all_pages)?;
+        // Structural checks (fast, no LLM) — pure SQL
+        let orphans = Self::find_orphans(&all_pages, &all_relations)?;
+        let missing_pages = Self::find_missing_pages(&all_pages, &all_relations)?;
+        let weak_relations = Self::find_weak_relations(&all_relations)?;
 
-        // Semantic checks (slow, LLM-driven)
-        let contradictions = self.llm_find_contradictions(&all_pages).await?;
-        let stale_claims = self.llm_find_stale_claims(&all_pages).await?;
+        // Semantic checks (slow, LLM-driven) — only if semantic_checks enabled
+        let (contradictions, stale_claims) = if self.semantic_enabled {
+            let c = self.llm_find_contradictions(&all_pages).await?;
+            let s = self.llm_find_stale_claims(&all_pages).await?;
+            (c, s)
+        } else {
+            (vec![], vec![])
+        };
 
         let report = LintReport { contradictions, stale_claims, orphans, missing_pages, weak_relations };
-
-        wiki.append_log(&format!(
-            "## [{}] lint | {} issues found\n",
-            chrono::now().format("%Y-%m-%d"),
-            report.total_issues(),
-        )).await?;
-
         Ok(report)
     }
 
-    pub async fn auto_fix(&self, report: &LintReport, wiki: &WikiStore) -> Result<FixReport> {
-        // Auto-fix: link orphans, create missing page stubs
+    pub async fn auto_fix(&self, report: &LintReport, store: &PageStore) -> Result<FixReport> {
+        // Auto-fix: create missing page stubs, link orphans
         // ...
     }
 }
+```
 ```
 
 ---
@@ -387,9 +445,11 @@ impl WikiLinter {
 ```
 gasket/engine/src/
 +-- wiki/                          # Wiki module (replaces memory/)
-|   +-- mod.rs                     # WikiStore facade
-|   +-- page.rs                    # WikiPage data model
-|   +-- uri.rs                     # wiki:// URI scheme
+|   +-- mod.rs                     # Re-exports
+|   +-- page.rs                    # WikiPage data model (one struct, one new())
+|   +-- store.rs                   # PageStore: CRUD + disk sync
+|   +-- index.rs                   # PageIndex: search (Tantivy + FTS5)
+|   +-- log.rs                     # WikiLog: structured operation log
 |   +-- ingest/
 |   |   +-- mod.rs                 # IngestPipeline
 |   |   +-- parser.rs              # SourceParser trait + implementations
@@ -404,8 +464,6 @@ gasket/engine/src/
 |   |   +-- mod.rs                 # WikiLinter
 |   |   +-- structural.rs          # Structural checks (fast)
 |   |   +-- semantic.rs            # Semantic checks (LLM)
-|   +-- index.rs                   # index.md maintenance
-|   +-- log.rs                     # log.md maintenance
 |
 +-- hooks/
 |   +-- evolution.rs               # Refactored: outputs to Wiki Ingest
@@ -421,88 +479,125 @@ gasket/engine/src/
 +-- lib.rs                         # pub mod wiki; memory refs removed
 ```
 
+**Simplification from original design:**
+- Removed `uri.rs` — pages identified by `String` path, no custom URI scheme
+- Split God Object `WikiStore` into three focused structs: `PageStore`, `PageIndex`, `WikiLog`
+- Each struct owns one responsibility, one `SqlitePool` reference
+- No `index.md`/`log.md` file maintenance — data lives in SQLite, files are optional export
+
 ### 5.2 Key Interfaces
 
 ```rust
-// wiki/mod.rs - Core facade
-
-pub struct WikiStore {
-    base_path: PathBuf,
-    db: SqliteStore,
-    tantivy: TantivyIndex,
-}
-
-impl WikiStore {
-    // CRUD
-    pub async fn read_page(&self, id: &WikiUri) -> Result<WikiPage>;
-    pub async fn write_page(&self, id: &WikiUri, page: &WikiPage) -> Result<()>;
-    pub async fn delete_page(&self, id: &WikiUri) -> Result<()>;
-    pub async fn list_pages(&self, filter: PageFilter) -> Result<Vec<PageSummary>>;
-
-    // Relations
-    pub async fn add_relation(&self, from: &WikiUri, to: &WikiUri, rel: Relation) -> Result<()>;
-    pub async fn get_relations(&self, id: &WikiUri) -> Result<Vec<WikiRelation>>;
-
-    // Sources
-    pub async fn register_source(&self, source: RawSource) -> Result<SourceId>;
-    pub async fn mark_ingested(&self, id: &SourceId) -> Result<()>;
-
-    // Index & Log
-    pub async fn rebuild_index(&self) -> Result<()>;
-    pub async fn append_log(&self, entry: &str) -> Result<()>;
-
-    // Search
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<PageSummary>>;
-}
-
-// wiki/uri.rs
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum WikiUri {
-    Page { path: String },
-    Source { id: String },
-    Index,
-    Log,
-}
-
-// wiki/page.rs
-
-#[derive(Debug, Clone)]
-pub struct WikiPage {
-    pub id: WikiUri,
-    pub frontmatter: PageFrontmatter,
-    pub content: String,
-}
+// wiki/page.rs — One data struct, one constructor
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PageFrontmatter {
+pub struct WikiPage {
+    pub path: String,               // "entities/projects/gasket"
     pub title: String,
-    #[serde(rename = "type")]
     pub page_type: PageType,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    pub content: String,
     pub created: DateTime<Utc>,
     pub updated: DateTime<Utc>,
-    pub source_count: Option<u32>,
-    pub confidence: Option<f64>,
-    pub outgoing_links: Vec<WikiUri>,
-    pub incoming_links: Vec<WikiUri>,
+    pub source_count: u32,
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PageType { Entity, Topic, Source }
 
+impl WikiPage {
+    /// One constructor. No special cases.
+    pub fn new(path: String, title: String, page_type: PageType, content: String) -> Self {
+        let now = Utc::now();
+        Self {
+            path, title, page_type, content,
+            category: None,
+            tags: vec![],
+            created: now,
+            updated: now,
+            source_count: 0,
+            confidence: 1.0,
+        }
+    }
+}
+
+// wiki/store.rs — PageStore: CRUD + disk sync
+
+pub struct PageStore {
+    pool: SqlitePool,
+    wiki_root: PathBuf,
+}
+
+impl PageStore {
+    pub async fn read(&self, path: &str) -> Result<WikiPage>;
+    pub async fn write(&self, page: &WikiPage) -> Result<()>;
+    pub async fn delete(&self, path: &str) -> Result<()>;
+    pub async fn list(&self, filter: PageFilter) -> Result<Vec<PageSummary>>;
+    pub async fn exists(&self, path: &str) -> Result<bool>;
+
+    /// Sync a page to disk as markdown (optional, for human readability)
+    pub async fn sync_to_disk(&self, page: &WikiPage) -> Result<()>;
+
+    /// Rebuild disk cache from SQLite (after migration or corruption)
+    pub async fn rebuild_disk_cache(&self) -> Result<usize>;
+}
+
+// wiki/index.rs — PageIndex: search
+
+pub struct PageIndex {
+    pool: SqlitePool,
+    tantivy: TantivyIndex,
+}
+
+impl PageIndex {
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<PageSummary>>;
+    pub async fn upsert_document(&self, page: &WikiPage) -> Result<()>;
+    pub async fn delete_document(&self, path: &str) -> Result<()>;
+    pub async fn rebuild(&self, store: &PageStore) -> Result<()>;
+}
+
+// wiki/log.rs — WikiLog: audit trail
+
+pub struct WikiLog {
+    pool: SqlitePool,
+}
+
+impl WikiLog {
+    pub async fn append(&self, action: &str, target: &str, detail: &str) -> Result<()>;
+    pub async fn list_recent(&self, limit: usize) -> Result<Vec<LogEntry>>;
+}
+
+// Relations (in PageStore)
+
+impl PageStore {
+    pub async fn add_relation(&self, from: &str, to: &str, relation: &str) -> Result<()>;
+    pub async fn get_outgoing(&self, path: &str) -> Result<Vec<RelationRow>>;
+    pub async fn get_incoming(&self, path: &str) -> Result<Vec<RelationRow>>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Relation { References, Contradicts, Supersedes, Related }
 ```
 
+**Key differences from original design:**
+
+| Original | Revised | Why |
+|----------|---------|-----|
+| `WikiUri` enum with custom URI parser | `String` path + `PathBuf` for resolution | YAGNI — PathBuf already does everything |
+| `WikiStore` God Object (7+ responsibilities) | 3 structs: `PageStore`, `PageIndex`, `WikiLog` | Single responsibility |
+| `new_entity()` / `new_topic()` / `new_source()` | One `new(path, title, type, content)` | No special cases |
+| Frontmatter with `outgoing_links`/`incoming_links` | Relations in separate table, no frontmatter duplication | Single truth source |
+| `index.md` / `log.md` file maintenance | Data in SQLite, files are optional export | No sync problems |
+
 ### 5.3 Hook Integration
 
 ```
-Hook Pipeline (extended):
+Hook Pipeline (updated):
 
 BeforeRequest
-  +-- WikiQueryHook           <- Replaces MemoryLoader
+  +-- WikiQueryHook           <- Replaces MemoryLoader, reads from PageStore
 
 AfterHistory
   +-- (unchanged)
@@ -514,12 +609,14 @@ AfterToolCall
   +-- WikiExplorerHook        <- NEW: agent exploratory learning
 
 AfterResponse
-  +-- EvolutionHook           <- Refactored: Quick Ingest (1 page per item)
-  +-- ChannelArchiveHook      <- NEW: channel message archiving -> Quick Ingest
+  +-- EvolutionHook           <- Refactored: writes WikiPage to PageStore
+  +-- ChannelArchiveHook      <- NEW: channel message archiving
 
 PeriodicLint (cron)
   +-- WikiLintHook            <- NEW: periodic wiki health check
 ```
+
+**All hooks receive `Arc<PageStore>` + `Arc<PageIndex>` instead of `Arc<MemoryManager>`.** No hook receives a monolithic `WikiStore` — they get only the component they need.
 
 ---
 
@@ -538,6 +635,8 @@ wiki:
     auto_ingest: true
     dedup_threshold: 0.85
     max_pages_per_ingest: 15
+    max_cost_per_ingest: 0.10       # USD, Deep Ingest cost cap
+    cost_warning_threshold: 0.05    # Warn but proceed above this
 
   query:
     default_limit: 10
@@ -569,24 +668,27 @@ Query flow: Tantivy retrieves top-50 candidates -> embedding reranks by semantic
 
 ## 8. Implementation Phases
 
-### Phase 1: Foundation
-- Create `engine/src/wiki/` module with `WikiStore`, `WikiPage`, `WikiUri`
+### Phase 1: Foundation (CRUD only)
+- Create `engine/src/wiki/` module with `WikiPage`, `PageStore`, `PageIndex`, `WikiLog`
 - Create SQLite tables (`wiki_pages`, `raw_sources`, `wiki_relations`, `wiki_log`)
-- Implement basic CRUD operations
+- Implement basic CRUD operations (read/write/delete/list)
+- Implement disk sync (optional markdown export from SQLite)
+- Update session config to use `WikiConfig`
+- Replace memory tools with wiki-backed tools (keep tool names: `memorize`, `memory_search`, `memory_refresh`)
+- Refactor `EvolutionHook` to use `PageStore` instead of `MemoryManager`
 - Remove `engine/src/session/memory/` module
-- Update all `MemoryManager` references to `WikiStore`
+- Add `gasket wiki migrate` CLI command (one-time data migration)
+- **NOT in Phase 1:** Ingest pipeline, Lint pipeline, Tantivy integration
 
 ### Phase 2: Ingest Pipeline
 - Implement `SourceParser` for each format
 - Implement `KnowledgeExtractor` (LLM-driven)
-- Implement `WikiIntegrator` (affects 10-15 pages per source)
+- Implement `WikiIntegrator` with cost validation gate
 - Implement `SemanticDeduplicator`
-- Refactor `EvolutionHook` to use Wiki Ingest
 - Add `ChannelArchiveHook` and `WikiExplorerHook`
-- Implement `index.md` and `log.md` auto-maintenance
 
 ### Phase 3: Query Pipeline
-- Implement `WikiQueryEngine` with Tantivy + embedding hybrid search
+- Implement `PageIndex` with Tantivy + embedding hybrid search
 - Implement `WikiQueryHook` (replaces `MemoryLoader` hook)
 - Implement answer filing (good answers -> new wiki pages)
 - Update agent loop to use wiki-based context loading
@@ -606,18 +708,37 @@ Query flow: Tantivy retrieves top-50 candidates -> embedding reranks by semantic
 
 ---
 
-## 9. What Gets Removed
+## 9. Migration from Memory to Wiki
 
-The following are cleanly removed (no backward compatibility, no migration):
+**One-time migration command:** `gasket wiki migrate`
 
-- `engine/src/session/memory/` - entire directory
-- `MemoryManager`, `MemoryWriter`, `MemoryLoader` - all types
+The old memory system is removed, but a migration CLI command provides a smooth transition:
+
+```bash
+# One-time migration: reads old memory_metadata table → creates wiki pages
+gasket wiki migrate
+
+# What it does:
+# 1. Reads all rows from memory_metadata table
+# 2. Creates wiki_pages rows with appropriate paths
+# 3. Converts MemoryConfig settings to WikiConfig
+# 4. Logs migration summary to wiki_log
+```
+
+**Removed code:**
+- `engine/src/session/memory/` — entire directory
+- `MemoryManager`, `MemoryWriter`, `MemoryLoader` — all types
 - `MemoryConfig` in session config
-- `memory_metadata` SQLite table (replaced by `wiki_pages`)
 - `~/.gasket/memory/` directory (replaced by `~/.gasket/wiki/`)
-- All `MemoryManager` references in agent loop, hooks, and session code
 
-**Design decision:** No migration path from old memory files. This is a clean architectural break. Users start fresh with the wiki system.
+**Preserved code:**
+- `gasket/storage/src/memory/` — kept for `EmbeddingStore`, `FileMemoryStore` patterns
+- Tool names `memorize`, `memory_search`, `memory_refresh` — kept for backward compatibility
+
+**After migration, old tables can be dropped:**
+```sql
+DROP TABLE IF EXISTS memory_metadata;
+```
 
 ---
 
@@ -629,18 +750,17 @@ The following are cleanly removed (no backward compatibility, no migration):
 pub fn wiki_schema() -> Schema {
     let mut builder = Schema::builder();
 
-    // Identity fields
-    builder.add_text_field("id", STRING | STORED);           // wiki:// URI
-    builder.add_text_field("path", STRING | STORED);         // filesystem path
-    builder.add_text_field("title", TEXT | STORED);          // page title
+    // Identity (path is the PK, matches wiki_pages.path)
+    builder.add_text_field("path", STRING | STORED);         // "entities/projects/gasket"
+    builder.add_text_field("title", TEXT | STORED);
 
     // Content (full-text indexed for BM25)
-    builder.add_text_field("content", TEXT);                  // markdown body
+    builder.add_text_field("content", TEXT);                  // markdown body from SQLite
     builder.add_text_field("summary", TEXT | STORED);         // first 200 chars
 
     // Classification
     builder.add_text_field("type", STRING | STORED);          // entity | topic | source
-    builder.add_text_field("category", STRING | STORED);      // subcategory
+    builder.add_text_field("category", STRING | STORED);
     builder.add_text_field("tags", TEXT | STORED);            // comma-separated tags
 
     // Temporal
@@ -655,80 +775,91 @@ pub fn wiki_schema() -> Schema {
 }
 ```
 
-**Document creation:** Every `write_page()` call also upserts a Tantivy document. The `content` field receives the full markdown body (without frontmatter). The `summary` field receives the first 200 characters for snippet display.
+**Document creation:** Every `PageStore::write()` call also upserts a Tantivy document via `PageIndex::upsert_document()`. Data is read from the `WikiPage` struct (which came from SQLite), not from disk files.
+
+**Index location:** `~/.gasket/wiki/.tantivy/`
 
 ---
 
 ## 11. Concurrency Control
 
-Wiki pages are updated concurrently from multiple ingest sources. A file-level advisory locking mechanism prevents lost updates.
+Since SQLite is the single truth source, concurrency control is much simpler than the original design:
+
+- **SQLite handles write serialization** via its built-in locking (WAL mode)
+- **No separate advisory lock table needed** — SQLite `INSERT OR REPLACE` is atomic
+- **Disk sync is lazy** — markdown files are best-effort, regenerated from SQLite on demand
 
 ```rust
-// wiki/mod.rs - concurrency control
+impl PageStore {
+    /// Write is a single SQLite UPSERT (atomic)
+    pub async fn write(&self, page: &WikiPage) -> Result<()> {
+        let tags_str = serde_json::to_string(&page.tags)?;
+        sqlx::query(
+            r#"INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                   title = excluded.title, type = excluded.type, category = excluded.category,
+                   tags = excluded.tags, content = excluded.content, updated = excluded.updated,
+                   source_count = excluded.source_count, confidence = excluded.confidence,
+                   checksum = excluded.checksum"#
+        )
+        .bind(&page.path).bind(&page.title).bind(page.page_type.as_str())
+        .bind(&page.category).bind(&tags_str).bind(&page.content)
+        .bind(&page.created.to_rfc3339()).bind(&page.updated.to_rfc3339())
+        .bind(page.source_count).bind(page.confidence).bind(calculate_checksum(&page.content))
+        .execute(&self.pool)
+        .await?;
 
-impl WikiStore {
-    /// Write a page with advisory locking
-    pub async fn write_page(&self, id: &WikiUri, page: &WikiPage) -> Result<()> {
-        let path = id.to_file_path(&self.base_path);
-
-        // 1. Acquire file-level lock (SQLite-backed, async-safe)
-        let lock = self.db.acquire_page_lock(id.as_str()).await?;
-
-        // 2. Read current version
-        let current = self.read_page_raw(&path).await.ok();
-
-        // 3. Merge frontmatter links (SQLite is truth for links)
-        let merged = self.merge_link_metadata(page, current.as_ref()).await?;
-
-        // 4. Write to filesystem
-        self.write_page_raw(&path, &merged).await?;
-
-        // 5. Update SQLite metadata
-        self.db.upsert_page_metadata(&merged.frontmatter).await?;
-
-        // 6. Update Tantivy index
-        self.tantivy.upsert_document(id, &merged).await?;
-
-        // 7. Release lock
-        drop(lock);
-
+        // Lazy disk sync (fire-and-forget, best effort)
+        let _ = self.sync_to_disk(page).await;
         Ok(())
     }
 }
 ```
 
-**Lock implementation:** Uses a `wiki_page_locks` SQLite table with `page_id` as PK and `locked_at` timestamp. Locks auto-expire after 30 seconds to handle crashes.
+**No more:**
+- `wiki_page_locks` table — not needed, SQLite WAL handles it
+- 7-step write pipeline — reduced to 1 UPSERT + 1 optional file write
+- Lock acquisition/release — SQLite does this for us
 
 ---
 
-## 12. Link Truth Model
+## 12. Single Truth Model
 
-**SQLite is the source of truth for links.** Frontmatter `outgoing_links` and `incoming_links` are derived fields, synchronized from SQLite.
+**SQLite is the single source of truth.** No dual-write, no sync problems.
+
+- **Page content + metadata:** Lives in `wiki_pages` table
+- **Relations:** Lives in `wiki_relations` table
+- **Disk files:** Optional derived cache, regenerated from SQLite on demand
 
 ```rust
-/// Sync links from SQLite → filesystem frontmatter
-/// Called after every batch of relation writes and during Lint
-pub async fn sync_links_to_disk(&self, page_id: &WikiUri) -> Result<()> {
-    let outgoing = self.db.get_outgoing_relations(page_id).await?;
-    let incoming = self.db.get_incoming_relations(page_id).await?;
-
-    let mut page = self.read_page(page_id).await?;
-    page.frontmatter.outgoing_links = outgoing;
-    page.frontmatter.incoming_links = incoming;
-    page.frontmatter.updated = Utc::now();
-
-    self.write_page_raw(&page_id.to_file_path(&self.base_path), &page).await?;
-    Ok(())
+/// Sync a page from SQLite to disk (optional, for human readability)
+/// Called lazily — not on every write
+impl PageStore {
+    pub async fn sync_to_disk(&self, page: &WikiPage) -> Result<()> {
+        let path = self.wiki_root.join(format!("{}.md", page.path));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&path, page.to_markdown()).await?;
+        Ok(())
+    }
 }
 ```
 
-**Lifecycle:** Ingest writes relations to SQLite -> `sync_links_to_disk()` updates frontmatter for affected pages -> Lint verifies consistency.
+**No more:**
+- Link sync between frontmatter and SQLite
+- `sync_links_to_disk()` on every write
+- Frontmatter `outgoing_links`/`incoming_links` fields
+- Cache invalidation headaches
+
+**Relations are queried from `wiki_relations` directly.** No denormalization.
 
 ---
 
 ## 13. EvolutionHook Integration
 
-The current `EvolutionHook` extracts structured knowledge from conversations. It is refactored to output `IngestRequest` objects instead of calling `MemoryManager.create_memory()` directly.
+The current `EvolutionHook` extracts structured knowledge from conversations. It is refactored to write `WikiPage` objects to `PageStore` instead of calling `MemoryManager.create_memory()`.
 
 ```rust
 // hooks/evolution.rs - refactored flow
@@ -737,35 +868,39 @@ The current `EvolutionHook` extracts structured knowledge from conversations. It
 //   Conversation batch -> LLM extract JSON -> MemoryManager.create_memory()
 //
 // AFTER (wiki):
-//   Conversation batch -> LLM extract JSON -> IngestRequest -> WikiIntegrator
-
-pub struct IngestRequest {
-    pub title: String,
-    pub content: String,
-    pub source_type: SourceFormat::Conversation,
-    pub tags: Vec<String>,
-    pub category: Option<String>,
-    pub entities: Vec<String>,      // extracted entity names
-    pub relations: Vec<String>,     // related topic names
-}
+//   Conversation batch -> LLM extract JSON -> WikiPage::new() -> PageStore::write()
 
 impl EvolutionHook {
-    async fn process_batch(&self, events: &[SessionEvent], wiki: &WikiStore) -> Result<()> {
-        // 1. Extract knowledge (same LLM prompt as current, unchanged)
+    async fn process_batch(&self, events: &[SessionEvent], store: &PageStore) -> Result<()> {
+        // 1. Extract knowledge (same LLM prompt as current, UNCHANGED)
         let items = self.llm_extract(events).await?;
 
         if items.is_empty() { return Ok(()); }
 
-        // 2. Deduplicate against existing wiki pages
-        let deduped = self.dedup.filter(items, wiki).await?;
+        // 2. Quick dedup: check if page already exists by title
+        for item in &items {
+            let path = format!("entities/{}/{}", slugify(&item.category), slugify(&item.title));
+            if store.exists(&path).await? {
+                continue; // Skip duplicate
+            }
 
-        // 3. Convert to IngestRequest (lightweight, no 10-15 page expansion)
-        for item in deduped {
-            let request = IngestRequest::from_evolution_item(&item);
+            // 3. One constructor. No special cases.
+            let mut page = WikiPage::new(
+                path,
+                item.title.clone(),
+                match item.scenario {
+                    Scenario::Profile => PageType::Entity,
+                    Scenario::Knowledge => PageType::Topic,
+                    Scenario::Decisions => PageType::Entity,
+                    _ => PageType::Topic,
+                },
+                item.content.clone(),
+            );
+            page.tags = item.tags.clone();
+            page.tags.push("auto_learned".to_string());
 
-            // Quick ingest: creates 1 entity/topic page + updates index
-            // Does NOT trigger full 10-15 page expansion
-            wiki.quick_ingest(request).await?;
+            // 4. Write to SQLite (single truth)
+            store.write(&page).await?;
         }
 
         Ok(())
@@ -774,8 +909,8 @@ impl EvolutionHook {
 ```
 
 **Two-tier ingest strategy:**
-- **Quick ingest** (conversation/agent exploration): Creates 1 page per item, updates index. Low LLM cost. Used by EvolutionHook.
-- **Deep ingest** (file/document import): Full 10-15 page integration. Higher LLM cost. Used by explicit `/ingest` command.
+- **Quick ingest** (conversation/agent exploration): Creates 1 page per item. No LLM cost beyond initial extraction. Used by EvolutionHook.
+- **Deep ingest** (file/document import): Full 10-15 page integration with cost validation gate. Higher LLM cost. Used by explicit `/ingest` command.
 
 ---
 
@@ -815,13 +950,17 @@ The agent decides when to file based on its own judgment (the tool description g
 
 ## 15. Tool Migration Path
 
-| Old Tool | New Tool | Notes |
-|----------|----------|-------|
-| `memory_search` | `wiki_search` | Same interface, backed by Tantivy |
-| `memory_refresh` | `wiki_refresh` | Rebuilds index from filesystem |
-| `memorize` | `wiki_ingest` | Enhanced: creates page + updates related pages |
-| (new) | `wiki_file_answer` | Save good answers as wiki pages |
-| (new) | `wiki_lint` | Trigger manual lint check |
+**Tool names are preserved for backward compatibility.** The LLM's existing tool-use patterns (trained on `memorize`, `memory_search`) continue to work without any prompt changes.
+
+| Tool Name | Implementation Change | Notes |
+|-----------|----------------------|-------|
+| `memorize` | Backed by `PageStore::write()` instead of `MemoryManager` | Same interface, writes to wiki_pages |
+| `memory_search` | Backed by `PageIndex::search()` (SQLite FTS5, later Tantivy) | Same interface, better results |
+| `memory_refresh` | Backed by `PageIndex::rebuild()` | Same interface, rebuilds from SQLite |
+| `wiki_file_answer` (new) | Backed by `PageStore::write()` | Save good answers as wiki pages |
+| `wiki_lint` (new) | Backed by `WikiLinter` | Trigger manual lint check |
+
+**Why keep old tool names:** LLM agents develop muscle memory for tool names. Renaming `memorize` to `wiki_ingest` breaks existing prompt templates, system prompts, and agent behaviors for zero technical benefit. The implementation change is invisible to the caller.
 
 ---
 
@@ -847,11 +986,11 @@ Key metrics exposed via OpenTelemetry:
 | Risk | Mitigation |
 |------|-----------|
 | Large refactor scope (memory removal) | Phase 1 is strictly CRUD + replace; pipelines added later |
-| LLM cost for Deep Ingest (10-15 pages) | Two-tier ingest: Quick (1 page, cheap) vs Deep (15 pages, explicit only) |
-| Tantivy integration complexity | Already have `gasket/tantivy` crate in workspace |
+| LLM cost for Deep Ingest (10-15 pages) | **Cost validation gate** with configurable budget; falls back to Quick Ingest if over budget |
+| Tantivy integration complexity | Already have `gasket/tantivy` crate in workspace; Phase 3 (after CRUD works) |
 | Wiki quality degradation over time | Lint pipeline with auto-fix catches issues early |
-| URI resolution edge cases | Comprehensive test suite for `WikiUri` parser |
-| Concurrent writes causing lost updates | SQLite-backed advisory locking with auto-expiry |
-| Frontmatter/SQLite link inconsistency | SQLite is truth; `sync_links_to_disk()` on write and lint |
+| SQLite content storage performance | SQLite handles GB-scale text well; Tantivy provides fast search. Benchmark at 2000 pages |
+| Concurrent writes | SQLite WAL mode handles serialization; no custom lock table needed |
+| Migration from old memory system | One-time `gasket wiki migrate` CLI command |
 | LLM rate limiting from 4 concurrent sources | Serial ingest queue per source type; configurable concurrency |
-| Cost runaway | `wiki.ingest.llm_tokens` telemetry + configurable daily budget |
+| Cost runaway | Cost validation gate + `wiki.ingest.llm_tokens` telemetry + configurable daily budget |

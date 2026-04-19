@@ -78,7 +78,4 @@ tower-http = { workspace = true, optional = true }
 bytes = "1"
 dashmap = { version = "6.1", optional = true }
 
-# TUI
-ratatui = "0.29"
-crossterm = "0.28"
-unicode-width = "0.2"
+

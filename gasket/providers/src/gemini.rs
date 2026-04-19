@@ -394,7 +394,8 @@ impl LlmProvider for GeminiProvider {
 /// a Gemini-format JSON response (with `candidates[].content.parts`).
 fn parse_gemini_sse_stream(
     byte_stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-) -> impl futures_util::Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send + 'static {
+) -> impl futures_util::Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send + 'static
+{
     // Re-use the generic SSE line splitter from the streaming module,
     // but parse the JSON payload as Gemini format instead of OpenAI.
     let lines = sse_lines(byte_stream);

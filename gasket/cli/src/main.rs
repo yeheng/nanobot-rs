@@ -9,8 +9,6 @@ use opentelemetry_otlp::WithExportConfig;
 use rustls::crypto::ring::default_provider;
 #[cfg(feature = "telemetry")]
 use tracing::info;
-#[cfg(feature = "telemetry")]
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
@@ -32,29 +30,36 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
+    // Parse CLI first so we can choose the right logging destination
+    let cli = Cli::parse();
+
+    let log_to_file = std::env::var("GASKET_LOG_FILE")
+        .is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
+
     // Initialize logging and OpenTelemetry
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
     #[cfg(feature = "telemetry")]
-    let otel_initialized = init_telemetry(env_filter.clone());
+    let otel_initialized = init_telemetry(env_filter.clone(), log_to_file);
     #[cfg(not(feature = "telemetry"))]
     let otel_initialized = false;
 
     if !otel_initialized {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_ansi(true)
-            .init();
+        if log_to_file {
+            init_file_logging(env_filter);
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_ansi(true)
+                .init();
+        }
     }
-
-    let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Onboard) => commands::cmd_onboard().await,
         Some(Commands::Status) => commands::cmd_status().await,
         Some(Commands::Agent(opts)) => commands::cmd_agent(opts).await,
-        Some(Commands::Tui(opts)) => commands::cmd_tui(opts).await,
         Some(Commands::Gateway) => commands::cmd_gateway().await,
         Some(Commands::Channels { command }) => match command {
             ChannelsCommands::Status => commands::cmd_channels_status().await,
@@ -106,7 +111,6 @@ async fn main() -> Result<()> {
             println!("  onboard   Initialize configuration");
             println!("  status    Show status");
             println!("  agent     Chat with the agent (REPL)");
-            println!("  tui       Chat with the agent (TUI)");
             println!("  channels  Manage chat channels");
             println!("  gateway   Start the gateway");
             println!("  auth      Authentication commands");
@@ -127,8 +131,32 @@ async fn main() -> Result<()> {
 /// Environment variables:
 /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL (e.g., http://localhost:4317)
 /// - `OTEL_SDK_DISABLED=true`: Disable OpenTelemetry completely
+/// Initialize file-based logging (avoids polluting the terminal).
+fn init_file_logging(env_filter: EnvFilter) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let log_dir = dirs::home_dir()
+        .map(|p| p.join(".gasket").join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".gasket/logs"));
+
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::daily(log_dir, "gasket.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard so the background thread lives for the process lifetime.
+    // This is fine for a CLI binary.
+    std::mem::forget(_guard);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+        .init();
+}
+
 #[cfg(feature = "telemetry")]
-fn init_telemetry(env_filter: EnvFilter) -> bool {
+fn init_telemetry(env_filter: EnvFilter, log_to_file: bool) -> bool {
+    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
     // Check if OTEL is disabled
@@ -165,11 +193,24 @@ fn init_telemetry(env_filter: EnvFilter) -> bool {
     // Create tracing layer and initialize
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer())
-        .with(otel_layer)
-        .init();
+        .with(otel_layer);
+
+    if log_to_file {
+        let log_dir = dirs::home_dir()
+            .map(|p| p.join(".gasket").join("logs"))
+            .unwrap_or_else(|| std::path::PathBuf::from(".gasket/logs"));
+        std::fs::create_dir_all(&log_dir).ok();
+        let file_appender = tracing_appender::rolling::daily(log_dir, "gasket.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        std::mem::forget(_guard);
+        registry
+            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
+            .init();
+    } else {
+        registry.with(tracing_subscriber::fmt::layer()).init();
+    }
 
     info!("OpenTelemetry tracing enabled: {}", endpoint);
     true

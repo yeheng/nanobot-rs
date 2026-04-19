@@ -59,28 +59,6 @@ pub enum Commands {
         command: MemoryCommands,
     },
 
-    /// Launch TUI chat interface
-    Tui(TuiOptions),
-}
-
-/// Options for the `tui` command.
-#[derive(Args, Debug)]
-pub struct TuiOptions {
-    /// Show logs during chat
-    #[arg(long)]
-    pub logs: bool,
-
-    /// Disable Markdown rendering
-    #[arg(long)]
-    pub no_markdown: bool,
-
-    /// Enable thinking/reasoning mode for deep reasoning models
-    #[arg(long)]
-    pub thinking: bool,
-
-    /// Disable streaming output (stream is enabled by default)
-    #[arg(long)]
-    pub no_stream: bool,
 }
 
 /// Options for the `agent` command.
