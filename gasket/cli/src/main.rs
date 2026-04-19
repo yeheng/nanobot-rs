@@ -33,8 +33,8 @@ async fn main() -> Result<()> {
     // Parse CLI first so we can choose the right logging destination
     let cli = Cli::parse();
 
-    let log_to_file = std::env::var("GASKET_LOG_FILE")
-        .is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
+    let log_to_file =
+        std::env::var("GASKET_LOG_FILE").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
 
     // Initialize logging and OpenTelemetry
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

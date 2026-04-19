@@ -58,7 +58,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
-
 }
 
 /// Options for the `agent` command.

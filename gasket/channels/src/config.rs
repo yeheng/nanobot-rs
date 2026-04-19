@@ -35,7 +35,6 @@ pub struct ChannelsConfig {
     /// WebSocket channel
     #[serde(default)]
     pub websocket: Option<WebSocketConfig>,
-
 }
 
 // ── Telegram ─────────────────────────────────────────────────────────────
