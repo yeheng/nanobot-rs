@@ -3,7 +3,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::stream::{self, Stream};
+use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Type alias for a boxed stream of chat stream chunks

@@ -208,7 +208,7 @@ impl HookRegistry {
         hooks: &[Arc<dyn PipelineHook>],
         ctx: &ReadonlyContext<'_>,
     ) -> Result<HookAction, AgentError> {
-        let results = futures::future::join_all(hooks.iter().map(|h| {
+        let results = futures_util::future::join_all(hooks.iter().map(|h| {
             debug!("[Hook] Running {} at {:?}", h.name(), h.point());
             h.run_parallel(ctx)
         }))

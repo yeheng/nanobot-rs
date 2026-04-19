@@ -4,8 +4,8 @@
 //! Uses the unified `StreamEvent` from `gasket_types` - no local event type.
 
 use anyhow::Result;
-use futures::stream::Stream;
-use futures::StreamExt;
+use futures_util::stream::Stream;
+use futures_util::StreamExt;
 use tracing::{debug, trace};
 
 use gasket_providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};

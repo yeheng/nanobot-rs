@@ -1,7 +1,7 @@
 //! SSE (Server-Sent Events) parsing utilities for LLM streaming responses
 
 use bytes::Bytes;
-use futures::stream::{Stream, StreamExt};
+use futures_util::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use tracing::{debug, trace};
 
@@ -77,7 +77,7 @@ pub fn sse_lines(
 ) -> impl Stream<Item = Result<String, anyhow::Error>> + Send + 'static {
     debug!("[SSE] Starting to parse byte stream");
 
-    futures::stream::unfold(
+    futures_util::stream::unfold(
         (byte_stream.boxed(), Vec::<u8>::new(), false),
         |(mut stream, mut buffer, mut received_data)| async move {
             loop {

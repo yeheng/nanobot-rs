@@ -6,7 +6,7 @@ use crate::streaming::sse_lines;
 use crate::{ChatRequest, ChatResponse, LlmProvider};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::StreamExt;
+use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, instrument};
@@ -393,8 +393,8 @@ impl LlmProvider for GeminiProvider {
 /// Gemini with `alt=sse` returns SSE events where each `data:` payload is
 /// a Gemini-format JSON response (with `candidates[].content.parts`).
 fn parse_gemini_sse_stream(
-    byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-) -> impl futures::Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send + 'static {
+    byte_stream: impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> impl futures_util::Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send + 'static {
     // Re-use the generic SSE line splitter from the streaming module,
     // but parse the JSON payload as Gemini format instead of OpenAI.
     let lines = sse_lines(byte_stream);

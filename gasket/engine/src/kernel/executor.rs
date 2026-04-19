@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
@@ -510,7 +510,7 @@ impl<'a> KernelExecutor<'a> {
             })
             .collect();
 
-        let mut results = futures::future::join_all(futures).await;
+        let mut results = futures_util::future::join_all(futures).await;
         // 按原始顺序排序，确保消息顺序一致
         results.sort_by_key(|(idx, _, _, _)| *idx);
 

@@ -52,7 +52,7 @@ gasket-types = { path = "../types" }
 # Async
 tokio.workspace = true
 async-trait.workspace = true
-futures = "0.3"
+futures-util.workspace = true
 
 # CLI
 clap.workspace = true
@@ -100,7 +100,7 @@ termimad = { workspace = true, optional = true }
 teloxide = { workspace = true, optional = true }
 
 # TLS
-rustls = { version = "0.23", features = ["ring"] }
+rustls.workspace = true
 
 # HTTP server
 axum = { workspace = true, features = ["ws"], optional = true }

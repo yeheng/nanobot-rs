@@ -23,10 +23,12 @@ members = [
 
 [profile.release]
 opt-level = "z"
-lto = true
+lto = "fat"
 strip = true
 codegen-units = 1
-panic = 'abort'
+panic = "abort"
+debug = false
+incremental = false
 
 [workspace.dependencies]
 # Async runtime
@@ -34,7 +36,7 @@ tokio = { version = "1", features = [
     "rt-multi-thread", "macros", "sync", "time",
     "fs", "io-util", "net", "process", "signal",
 ] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "codec"] }
 async-trait = "0.1"
 futures-util = "0.3.32"
 
@@ -43,7 +45,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 url = "2"
 
 # CLI
@@ -100,7 +103,6 @@ gasket-storage = { path = "storage" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }
-gasket-bus = { path = "bus" }
 gasket-broker = { path = "broker" }
 gasket-engine = { path = "engine" }
 

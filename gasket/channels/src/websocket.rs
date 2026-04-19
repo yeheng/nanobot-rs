@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use dashmap::DashMap;
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures_util::{sink::SinkExt, stream::StreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 

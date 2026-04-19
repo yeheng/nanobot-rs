@@ -26,8 +26,7 @@ gasket-broker = { workspace = true }
 # Async
 tokio.workspace = true
 async-trait.workspace = true
-futures = "0.3"
-futures-util = { workspace = true }
+futures-util.workspace = true
 
 # Serialization
 serde.workspace = true
