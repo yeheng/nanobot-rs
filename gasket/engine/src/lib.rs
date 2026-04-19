@@ -31,6 +31,7 @@ pub mod subagents;
 pub mod token_tracker;
 pub mod tools;
 pub mod vault;
+pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
