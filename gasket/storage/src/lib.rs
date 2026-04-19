@@ -13,6 +13,7 @@
 mod event_store;
 pub mod fs;
 pub mod memory;
+pub mod wiki;
 
 // ── Merged from gasket-history ──
 pub mod processor;
