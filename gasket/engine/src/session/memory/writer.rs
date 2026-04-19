@@ -88,6 +88,72 @@ impl MemoryWriter {
             info!("Reindexed {}: {} files", scenario.dir_name(), file_count);
         }
 
+        // Rebuild embeddings for all entries that need them.
+        let needs_embedding = self.metadata_store.query_needs_embedding().await?;
+        if !needs_embedding.is_empty() {
+            info!(
+                "Rebuilding embeddings for {} entries",
+                needs_embedding.len()
+            );
+            for entry in needs_embedding {
+                let body = match self.store.read(entry.scenario, &entry.filename).await {
+                    Ok(memory_file) => memory_file.content,
+                    Err(e) => {
+                        warn!(
+                            "Failed to read {}/{} for embedding rebuild: {}",
+                            entry.scenario.dir_name(),
+                            entry.filename,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                match self.embedder.embed(&body).await {
+                    Ok(embedding) => {
+                        if let Err(e) = self
+                            .embedding_store
+                            .upsert(
+                                &entry.filename,
+                                entry.scenario.dir_name(),
+                                &entry.tags,
+                                entry.frequency,
+                                &embedding,
+                                entry.tokens,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to upsert embedding for {}/{}: {}",
+                                entry.scenario.dir_name(),
+                                entry.filename,
+                                e
+                            );
+                        } else if let Err(e) = self
+                            .metadata_store
+                            .mark_embedding_done(entry.scenario, &entry.filename)
+                            .await
+                        {
+                            warn!(
+                                "Failed to mark embedding done for {}/{}: {}",
+                                entry.scenario.dir_name(),
+                                entry.filename,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Embedding failed for {}/{}: {}",
+                            entry.scenario.dir_name(),
+                            entry.filename,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
         info!(
             "Reindex complete: {} files, {} errors",
             total_files, total_errors

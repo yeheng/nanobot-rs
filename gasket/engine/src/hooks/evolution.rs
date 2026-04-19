@@ -197,11 +197,14 @@ impl PipelineHook for EvolutionHook {
         let conversation = Self::format_events(&events);
         let system_prompt = "You are a structured data extraction engine. Your ONLY output must be a valid JSON array. Do not include markdown code blocks, explanations, or any text outside the JSON.";
         let user_prompt = format!(
-            "Analyze the following conversation. Extract: \
-             1. Persistent facts about the user (preferences, environment). \
-             2. Reusable operational skills/procedures. \
-             Output strict JSON array: [{{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\", \"content\": string, \"tags\": [string]}}]. \
-             If nothing valuable, return [].\n\n{}",
+            "You are a memory extraction sub-system.\n\
+             Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.\n\n\
+             CRITICAL RULES:\n\
+             1. DO NOT extract transient context (e.g., 'User said hello', 'User asked about a bug').\n\
+             2. DO NOT extract information that is likely already known.\n\
+             3. Focus on concrete nouns: names, explicit architectural choices, strict preferences.\n\
+             4. If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
+             Output strict JSON array: [{{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\", \"content\": string, \"tags\": [string]}}].\n\n{}",
             conversation
         );
 
@@ -252,6 +255,20 @@ impl PipelineHook for EvolutionHook {
 
         // 8. Write each extracted item into long-term memory.
         for mem in memories {
+            // 8.1 Semantic deduplication: search for highly similar existing memories.
+            let query_text = format!("{} {}", mem.title, mem.content);
+            if let Ok(hits) = self.memory_manager.search(&query_text, 1).await {
+                if let Some(hit) = hits.first() {
+                    if hit.score > 0.85 {
+                        debug!(
+                            "EvolutionHook: Memory '{}' is too similar to existing '{}' (score: {:.2}). Skipping duplicate.",
+                            mem.title, hit.title, hit.score
+                        );
+                        continue;
+                    }
+                }
+            }
+
             let scenario = match mem.scenario.as_str() {
                 "profile" => Scenario::Profile,
                 _ => Scenario::Knowledge,

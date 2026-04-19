@@ -35,6 +35,10 @@ pub struct ChannelsConfig {
     /// WebSocket channel
     #[serde(default)]
     pub websocket: Option<WebSocketConfig>,
+
+    /// TUI channel
+    #[serde(default)]
+    pub tui: Option<TuiConfig>,
 }
 
 // ── Telegram ─────────────────────────────────────────────────────────────
@@ -271,6 +275,14 @@ impl std::fmt::Debug for WeComConfig {
 /// WebSocket channel configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebSocketConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// TUI channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiConfig {
     /// Enable this channel
     #[serde(default = "default_true")]
     pub enabled: bool,

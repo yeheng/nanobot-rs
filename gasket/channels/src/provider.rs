@@ -32,6 +32,7 @@ pub enum ImProvider {
     Feishu(crate::feishu::FeishuAdapter),
     #[cfg(feature = "wecom")]
     Wecom(crate::wecom::WeComAdapter),
+    Tui(crate::tui::TuiAdapter),
 }
 
 impl ImProvider {
@@ -52,6 +53,7 @@ impl ImProvider {
             Self::Feishu(_) => ChannelType::Feishu,
             #[cfg(feature = "wecom")]
             Self::Wecom(_) => ChannelType::Wecom,
+            Self::Tui(_) => ChannelType::Custom("tui".to_string()),
         }
     }
 
@@ -72,6 +74,7 @@ impl ImProvider {
             Self::Feishu(a) => a.name(),
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.name(),
+            Self::Tui(a) => a.name(),
         }
     }
 
@@ -92,6 +95,7 @@ impl ImProvider {
             Self::Feishu(a) => a.start(inbound).await,
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.start(inbound).await,
+            Self::Tui(a) => a.start(inbound).await,
         }
     }
 
@@ -127,6 +131,7 @@ impl ImProvider {
             Self::Feishu(a) => a.send(msg).await,
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.send(msg).await,
+            Self::Tui(a) => a.send(msg).await,
         }
     }
 }
@@ -208,6 +213,13 @@ impl ImProviders {
         // ChannelType::Cli are gracefully absorbed instead of dropped with a warning.
         providers.push(ImProvider::Cli(crate::websocket::CliAdapter));
 
+        // Register TUI adapter if enabled
+        if config.tui.as_ref().is_some_and(|c| c.enabled) {
+            providers.push(ImProvider::Tui(crate::tui::TuiAdapter::from_config(
+                config.tui.as_ref().unwrap(),
+            )));
+        }
+
         Self { providers }
     }
 
@@ -246,6 +258,7 @@ impl ImProviders {
                 #[cfg(feature = "websocket")]
                 ImProvider::WebSocket(a) => ImProvider::WebSocket(a.clone()),
                 ImProvider::Cli(a) => ImProvider::Cli(*a),
+                ImProvider::Tui(a) => ImProvider::Tui(a.clone()),
                 #[cfg(feature = "dingtalk")]
                 ImProvider::DingTalk(a) => ImProvider::DingTalk(a.clone()),
                 #[cfg(feature = "feishu")]

@@ -36,7 +36,7 @@ impl Default for EvolutionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            batch_messages: 10,
+            batch_messages: 20,
         }
     }
 }

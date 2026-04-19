@@ -145,6 +145,7 @@ pub mod channels {
     pub use gasket_channels::slack;
     #[cfg(feature = "telegram")]
     pub use gasket_channels::telegram;
+    pub use gasket_channels::tui;
     #[cfg(any(
         feature = "websocket",
         feature = "dingtalk",
@@ -161,7 +162,7 @@ pub mod channels {
         DingTalkConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider, ImProviders,
         InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
-        WeComConfig, WebSocketMessage,
+        TuiConfig, WeComConfig, WebSocketMessage,
     };
     pub use gasket_types::events::ChatEvent;
 }

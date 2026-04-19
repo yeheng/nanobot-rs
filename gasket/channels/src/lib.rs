@@ -24,6 +24,7 @@ pub mod error;
 pub mod events;
 pub mod middleware;
 pub mod provider;
+pub mod tui;
 
 // Webhook HTTP server infrastructure
 // Enabled when any platform that needs webhooks is enabled, or when webhook feature is explicitly enabled
@@ -55,7 +56,7 @@ pub mod wecom;
 pub use adapter::ImAdapter;
 pub use config::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
-    WeComConfig, WebSocketConfig,
+    TuiConfig, WeComConfig, WebSocketConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{
