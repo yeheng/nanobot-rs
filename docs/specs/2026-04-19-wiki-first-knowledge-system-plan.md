@@ -83,8 +83,13 @@ gasket/storage/src/lib.rs                   # pub mod wiki; memory module kept f
 ### Deleted Files (Phase 1 end)
 
 ```
-gasket/engine/src/session/memory/           # Entire directory
+gasket/engine/src/session/memory/           # Entire directory (MemoryManager facade)
+gasket/engine/src/tools/memorize.rs         # Replaced by wiki_ingest tool
+gasket/engine/src/tools/memory_search.rs    # Replaced by wiki_search tool
+gasket/engine/src/tools/memory_refresh.rs   # Replaced by wiki_refresh tool
 ```
+
+**IMPORTANT:** `gasket/storage/src/memory/` is KEPT. It provides `EmbeddingStore`, `FileMemoryStore` patterns that the wiki storage layer reuses. Only the engine-level `session/memory/` facade is removed.
 
 ---
 
@@ -368,6 +373,29 @@ impl From<&PageFrontmatter> for PageSummary {
             tags: fm.tags.clone(),
             updated: fm.updated,
             confidence: fm.confidence,
+        }
+    }
+}
+
+impl PageSummary {
+    /// Convert from SQLite PageRow (string dates → DateTime)
+    pub fn from_row(r: &crate::storage::wiki::page_store::PageRow) -> Self {
+        Self {
+            id: r.id.clone(),
+            title: r.title.clone(),
+            page_type: match r.page_type.as_str() {
+                "entity" => PageType::Entity,
+                "topic" => PageType::Topic,
+                _ => PageType::Source,
+            },
+            category: r.category.clone(),
+            tags: r.tags.as_ref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+            updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            confidence: Some(r.confidence),
         }
     }
 }
@@ -963,9 +991,32 @@ git commit -m "feat(wiki): add WikiStore facade with CRUD, relations, and lockin
 Add to `gasket/engine/src/session/config.rs`:
 
 ```rust
+use std::path::PathBuf;
+
+// Default helper functions
+fn default_true() -> bool { true }
+fn default_batch_size() -> usize { 20 }
+fn default_dedup_threshold() -> f64 { 0.85 }
+fn default_max_pages() -> usize { 15 }
+fn default_limit() -> usize { 10 }
+fn default_lint_interval() -> String { "24h".to_string() }
+
+fn default_wiki_base() -> String {
+    dirs::home_dir()
+        .map(|p| p.join(".gasket/wiki").to_str().unwrap().to_string())
+        .unwrap_or_else(|| "~/.gasket/wiki".to_string())
+}
+
+fn default_sources_base() -> String {
+    dirs::home_dir()
+        .map(|p| p.join(".gasket/sources").to_str().unwrap().to_string())
+        .unwrap_or_else(|| "~/.gasket/sources".to_string())
+}
+
 /// Wiki system configuration
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WikiConfig {
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_wiki_base")]
     pub base_path: String,
@@ -977,6 +1028,19 @@ pub struct WikiConfig {
     pub query: WikiQueryConfig,
     #[serde(default)]
     pub lint: WikiLintConfig,
+}
+
+impl Default for WikiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_path: default_wiki_base(),
+            sources_path: default_sources_base(),
+            ingest: WikiIngestConfig::default(),
+            query: WikiQueryConfig::default(),
+            lint: WikiLintConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -991,6 +1055,12 @@ pub struct WikiIngestConfig {
     pub max_pages_per_ingest: usize,
 }
 
+impl Default for WikiIngestConfig {
+    fn default() -> Self {
+        Self { batch_size: 20, auto_ingest: true, dedup_threshold: 0.85, max_pages_per_ingest: 15 }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WikiQueryConfig {
     #[serde(default = "default_limit")]
@@ -999,6 +1069,12 @@ pub struct WikiQueryConfig {
     pub hybrid_search: bool,
     #[serde(default = "default_true")]
     pub answer_filing: bool,
+}
+
+impl Default for WikiQueryConfig {
+    fn default() -> Self {
+        Self { default_limit: 10, hybrid_search: true, answer_filing: true }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1012,6 +1088,17 @@ pub struct WikiLintConfig {
     #[serde(default = "default_true")]
     pub semantic_checks: bool,
 }
+
+impl Default for WikiLintConfig {
+    fn default() -> Self {
+        Self { enabled: true, interval: "24h".to_string(), auto_fix: true, semantic_checks: true }
+    }
+}
+```
+
+Also add to `AgentConfig`:
+```rust
+pub wiki: Option<WikiConfig>,  // Replaces embedding_config + memory_budget + evolution
 ```
 
 - [ ] **Step 2: Replace MemoryManager field with WikiStore in session**
@@ -1019,7 +1106,32 @@ pub struct WikiLintConfig {
 In `gasket/engine/src/session/mod.rs`:
 - Change `memory_manager: Option<Arc<MemoryManager>>` to `wiki_store: Option<Arc<WikiStore>>`
 - Update all methods that use `memory_manager` to use `wiki_store`
-- Update `try_init_memory_manager` → `try_init_wiki_store`
+
+Replace `try_init_memory_manager()` with `try_init_wiki_store()`:
+
+```rust
+fn try_init_wiki_store(config: &AgentConfig, pool: SqlitePool) -> Option<Arc<WikiStore>> {
+    let wiki_config = config.wiki.as_ref()?;
+    if !wiki_config.enabled {
+        return None;
+    }
+    let wiki_base = PathBuf::from(&wiki_config.base_path);
+    let sources_base = PathBuf::from(&wiki_config.sources_path);
+    let store = WikiStore::new(wiki_base, sources_base, pool);
+
+    // Ensure directory structure + SQLite tables exist
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            store.init_dirs().await.ok()?;
+            gasket_storage::wiki::tables::create_wiki_tables(&store.pool()).await.ok()
+        })
+    })?;
+
+    Some(Arc::new(store))
+}
+```
+
+Update `pub fn memory_manager()` accessor → `pub fn wiki_store()`.
 
 - [ ] **Step 3: Build and fix compile errors**
 
@@ -1098,8 +1210,37 @@ git commit -m "refactor(tools): replace memory tools with wiki tools (ingest/sea
 
 Change `evolution.rs` to:
 - Accept `Arc<WikiStore>` instead of `Arc<MemoryManager>`
-- Convert extracted knowledge items to `IngestRequest`
-- Call `WikiStore::write_page()` instead of `MemoryManager::create_memory()`
+- Convert extracted knowledge items to WikiPages
+
+Concrete conversion code (replace the `create_memory` calls):
+
+```rust
+// BEFORE (current evolution.rs ~line 282):
+// memory_manager.create_memory(scenario, &mem.title, &tags, Frequency::Warm, &mem.content).await
+
+// AFTER:
+let page = match scenario {
+    Scenario::Profile => WikiPage::new_entity(&mem.title, "people", &mem.content),
+    Scenario::Knowledge => WikiPage::new_topic(&mem.title, &mem.content),
+    Scenario::Decisions => WikiPage::new_entity(&mem.title, "decisions", &mem.content),
+    _ => WikiPage::new_topic(&mem.title, &mem.content),
+};
+// Add tags from extracted knowledge
+page.frontmatter.tags = mem.tags.clone();
+page.frontmatter.tags.push("auto_learned".to_string());
+
+// Quick dedup: check if page already exists by title match
+let existing = wiki_store.list_pages(PageFilter {
+    page_type: Some(page.frontmatter.page_type.clone()),
+    ..Default::default()
+}).await?;
+let duplicate = existing.iter().any(|p| p.title == page.frontmatter.title);
+if !duplicate {
+    wiki_store.write_page(&page.id, &page).await?;
+}
+```
+
+Note: The LLM extraction prompt stays unchanged. Only the storage layer changes.
 
 - [ ] **Step 2: Create WikiQueryHook**
 
@@ -1127,24 +1268,50 @@ git commit -m "refactor(hooks): update EvolutionHook for WikiStore, add WikiQuer
 - Modify: `gasket/engine/src/lib.rs` (remove memory re-exports)
 - Verify: `gasket/engine/src/session/history/builder.rs` (no memory references remain)
 
-- [ ] **Step 1: Search for remaining memory references**
+- [ ] **Step 1: Comprehensive search for ALL memory references**
 
-Run: `grep -rn "memory::" gasket/engine/src/ --include="*.rs"`
-Expected: Zero references to `session::memory`
+```bash
+grep -rn "MemoryManager\|MemoryLoader\|MemoryWriter\|MemoryContext\|MemoryStore\|MemoryConfig\|memory_manager\|memory::\|mod memory" gasket/engine/src/ --include="*.rs"
+grep -rn "MemorizeTool\|MemorySearchTool\|MemoryRefreshTool" gasket/engine/src/ --include="*.rs"
+grep -rn "use gasket_storage::memory" gasket/engine/src/ --include="*.rs"
+```
 
-- [ ] **Step 2: Delete memory directory**
+Verify: `gasket/storage/src/memory/` references from ENGINE are the only ones that need updating. The storage module itself is KEPT.
+
+- [ ] **Step 2: Delete engine memory directory and old tool files**
 
 ```bash
 rm -rf gasket/engine/src/session/memory/
+rm gasket/engine/src/tools/memorize.rs
+rm gasket/engine/src/tools/memory_search.rs
+rm gasket/engine/src/tools/memory_refresh.rs
 ```
 
-- [ ] **Step 3: Remove memory module declaration**
+- [ ] **Step 3: Remove all memory declarations and re-exports**
 
-Remove `pub mod memory;` from `session/mod.rs` and remove `MemoryManager`/`MemoryContext` re-exports.
+In `gasket/engine/src/session/mod.rs`:
+- Remove `pub mod memory;`
+- Remove `pub use memory::{MemoryContext, MemoryManager};`
+- Remove `pub use store::{MemoryProvider, MemoryStore};`
+
+In `gasket/engine/src/lib.rs`:
+- Remove `MemoryManager, MemoryContext` from session re-exports
+- Remove any `pub mod memory` facade block that re-exports storage/memory
+
+In `gasket/engine/src/tools/mod.rs`:
+- Remove `pub use memorize::MemorizeTool;`
+- Remove `pub use memory_search::MemorySearchTool;`
+- Remove any `mod memorize;`, `mod memory_search;`, `mod memory_refresh;`
+
+In `gasket/engine/src/session/history/builder.rs`:
+- Remove `MemoryLoader` field and usage (replaced by WikiQueryEngine in Phase 3)
 
 - [ ] **Step 4: Fix remaining compile errors**
 
-Search for any `MemoryManager`, `MemoryLoader`, `MemoryWriter`, `MemoryContext` references and replace with wiki equivalents.
+Search for any remaining references and replace with wiki equivalents. Key files to check:
+- `gasket/engine/src/session/store.rs` (MemoryStore type)
+- `gasket/engine/src/tools/builder.rs` (tool registration)
+- `gasket/cli/src/commands/memory.rs` (CLI imports)
 
 - [ ] **Step 5: Build**
 
@@ -1236,10 +1403,37 @@ Prompt LLM to extract: key entities, concepts, claims, and relationships from pa
 **Files:**
 - Create: `gasket/engine/src/wiki/ingest/integrator.rs`
 
-- [ ] **Step 1: Implement WikiIntegrator**
+- [ ] **Step 1: Implement WikiIntegrator with two-tier API**
 
-For Deep Ingest: analyze impact on existing pages, update affected pages, extract relations.
-For Quick Ingest: create single page + update index.
+```rust
+pub enum IngestTier {
+    Quick,  // 1 page, low LLM cost (conversation/agent exploration)
+    Deep,   // 10-15 pages, full integration (document import)
+}
+
+impl WikiIntegrator {
+    /// Quick ingest: creates 1 entity/topic page + updates index. No LLM needed.
+    pub async fn quick_ingest(&self, title: &str, content: &str, tags: Vec<String>, wiki: &WikiStore) -> Result<IngestReport> {
+        let page = WikiPage::new_topic(title, content);
+        wiki.write_page(&page.id, &page).await?;
+        wiki.rebuild_index().await?;
+        Ok(IngestReport::quick(page))
+    }
+
+    /// Deep ingest: LLM analyzes impact on 10-15 existing pages, updates them.
+    pub async fn deep_ingest(&self, source: &ParsedSource, wiki: &WikiStore) -> Result<IngestReport> {
+        let affected_pages = self.llm_analyze_impact(source, wiki).await?;
+        let source_page = wiki.create_source_page(source).await?;
+        for page_id in &affected_pages {
+            let page = wiki.read_page(page_id).await?;
+            let updated = self.llm_update_page(&page, source).await?;
+            wiki.write_page(page_id, &updated).await?;
+        }
+        wiki.rebuild_index().await?;
+        Ok(IngestReport::deep(source_page, affected_pages))
+    }
+}
+```
 
 - [ ] **Step 2: Test integrator**
 
@@ -1292,7 +1486,11 @@ Structured, parseable log entries appended on every operation.
 
 - [ ] **Step 1: Define wiki Tantivy schema**
 
+**Note:** Use the `tantivy` crate directly (already in workspace dependencies), NOT `gasket-tantivy` (which is a CLI tool, not a library). Create the adapter from scratch.
+
 Per spec Section 10: id, path, title, content, summary, type, category, tags, created, updated, confidence, source_count.
+
+Index location: `~/.gasket/wiki/.tantivy/`
 
 - [ ] **Step 2: Implement document upsert on page write**
 
