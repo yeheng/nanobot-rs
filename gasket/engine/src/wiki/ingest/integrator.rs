@@ -105,7 +105,11 @@ pub struct WikiIntegrator {
 
 impl WikiIntegrator {
     pub fn new(provider: Arc<dyn LlmProvider>, model: String, config: IngestConfig) -> Self {
-        Self { provider, model, config }
+        Self {
+            provider,
+            model,
+            config,
+        }
     }
 
     // ── Quick Ingest ──────────────────────────────────────────────
@@ -129,12 +133,20 @@ impl WikiIntegrator {
         // Skip if page already exists with identical content
         if let Ok(existing) = store.read(&path).await {
             if existing.content == content {
-                debug!("Quick ingest: '{}' already exists with same content, skipping", path);
+                debug!(
+                    "Quick ingest: '{}' already exists with same content, skipping",
+                    path
+                );
                 return Ok(IngestReport::quick(path));
             }
         }
 
-        let mut page = WikiPage::new(path.clone(), title.to_string(), page_type, content.to_string());
+        let mut page = WikiPage::new(
+            path.clone(),
+            title.to_string(),
+            page_type,
+            content.to_string(),
+        );
         page.tags = tags;
         store.write(&page).await?;
 
@@ -209,19 +221,17 @@ impl WikiIntegrator {
         let mut updated_paths = Vec::new();
         for page_path in &affected_paths {
             match store.read(page_path).await {
-                Ok(mut page) => {
-                    match self.llm_update_page(&page, source).await {
-                        Ok(updated_content) => {
-                            page.content = updated_content;
-                            page.source_count += 1;
-                            store.write(&page).await?;
-                            updated_paths.push(page_path.clone());
-                        }
-                        Err(e) => {
-                            warn!("Failed to update page '{}': {}", page_path, e);
-                        }
+                Ok(mut page) => match self.llm_update_page(&page, source).await {
+                    Ok(updated_content) => {
+                        page.content = updated_content;
+                        page.source_count += 1;
+                        store.write(&page).await?;
+                        updated_paths.push(page_path.clone());
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to update page '{}': {}", page_path, e);
+                    }
+                },
                 Err(e) => {
                     warn!("Failed to read affected page '{}': {}", page_path, e);
                 }
@@ -230,10 +240,15 @@ impl WikiIntegrator {
 
         info!(
             "Deep ingest complete: source '{}', updated {} page(s)",
-            source_path, updated_paths.len()
+            source_path,
+            updated_paths.len()
         );
 
-        Ok(IngestReport::deep(source_path, updated_paths, estimate.estimated_cost_usd))
+        Ok(IngestReport::deep(
+            source_path,
+            updated_paths,
+            estimate.estimated_cost_usd,
+        ))
     }
 
     // ── LLM Helpers ───────────────────────────────────────────────

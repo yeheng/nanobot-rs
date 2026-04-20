@@ -5,7 +5,7 @@ use gasket_engine::memory::{
     memory_base_dir, AutoIndexHandler, EmbeddingStore, FileMemoryStore, FrequencyManager,
     MetadataStore, SqliteStore,
 };
-use gasket_engine::wiki::{PageFilter, PageStore, PageType, WikiPage, WikiLinter, slugify};
+use gasket_engine::wiki::{slugify, PageFilter, PageStore, PageType, WikiLinter, WikiPage};
 #[cfg(feature = "local-embedding")]
 use gasket_engine::TextEmbedder;
 use gasket_engine::{Embedder, NoopEmbedder};
@@ -145,7 +145,10 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
         .expect("Could not find home directory");
 
     if !memory_dir.exists() {
-        println!("No memory directory found at {}. Nothing to migrate.", memory_dir.display());
+        println!(
+            "No memory directory found at {}. Nothing to migrate.",
+            memory_dir.display()
+        );
         return Ok(());
     }
 
@@ -194,13 +197,12 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
             };
 
             // Extract title from frontmatter or filename
-            let title = extract_title(&content)
-                .unwrap_or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("untitled")
-                        .to_string()
-                });
+            let title = extract_title(&content).unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("untitled")
+                    .to_string()
+            });
 
             let slug = slugify(&title);
             let page_path = format!("{}/{}", prefix, slug);
@@ -208,12 +210,7 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
             // Extract body (skip frontmatter)
             let body = skip_frontmatter(&content);
 
-            let mut page = WikiPage::new(
-                page_path,
-                title,
-                PageType::Topic,
-                body.to_string(),
-            );
+            let mut page = WikiPage::new(page_path, title, PageType::Topic, body.to_string());
 
             // Extract tags from frontmatter if present
             if let Some(tags) = extract_tags(&content) {
@@ -255,9 +252,18 @@ pub async fn cmd_wiki_stats() -> Result<()> {
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let all = ps.list(PageFilter::default()).await?;
-    let entities = all.iter().filter(|p| p.page_type == PageType::Entity).count();
-    let topics = all.iter().filter(|p| p.page_type == PageType::Topic).count();
-    let sources = all.iter().filter(|p| p.page_type == PageType::Source).count();
+    let entities = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Entity)
+        .count();
+    let topics = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Topic)
+        .count();
+    let sources = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Source)
+        .count();
 
     println!("Wiki Statistics:");
     println!("  Total pages: {}", all.len());
@@ -292,12 +298,7 @@ pub async fn cmd_wiki_ingest(path: &str, tier: &str) -> Result<()> {
     let slug = slugify(&title);
     let page_path = format!("topics/{}", slug);
 
-    let mut page = WikiPage::new(
-        page_path.clone(),
-        title.clone(),
-        PageType::Topic,
-        content,
-    );
+    let mut page = WikiPage::new(page_path.clone(), title.clone(), PageType::Topic, content);
 
     // Detect type from path
     if path.contains("entity") || path.contains("entities") {
@@ -494,8 +495,11 @@ fn extract_tags(content: &str) -> Option<Vec<String>> {
                 // Multi-line tags follow
                 let mut tags = Vec::new();
                 let yaml_lines: Vec<&str> = yaml.lines().collect();
-                if let Some(idx) = yaml_lines.iter().position(|l| l.trim().starts_with("tags:")) {
-                    for following in yaml_lines[idx+1..].iter() {
+                if let Some(idx) = yaml_lines
+                    .iter()
+                    .position(|l| l.trim().starts_with("tags:"))
+                {
+                    for following in yaml_lines[idx + 1..].iter() {
                         let f = following.trim();
                         if f.starts_with("- ") {
                             tags.push(f.trim_start_matches("- ").trim().to_string());

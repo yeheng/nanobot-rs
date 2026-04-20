@@ -66,7 +66,10 @@ impl SemanticDeduplicator {
 
             // Exact title match
             if item_title_lower == page_title_lower {
-                debug!("Dedup: exact title match '{}' == '{}'", item.title, page.title);
+                debug!(
+                    "Dedup: exact title match '{}' == '{}'",
+                    item.title, page.title
+                );
                 return DedupResult {
                     is_duplicate: true,
                     existing_path: Some(page.path.clone()),
@@ -155,10 +158,8 @@ impl SemanticDeduplicator {
         if tags_a.is_empty() || tags_b.is_empty() {
             return 0.0;
         }
-        let set_a: std::collections::HashSet<&str> =
-            tags_a.iter().map(|s| s.as_str()).collect();
-        let set_b: std::collections::HashSet<&str> =
-            tags_b.iter().map(|s| s.as_str()).collect();
+        let set_a: std::collections::HashSet<&str> = tags_a.iter().map(|s| s.as_str()).collect();
+        let set_b: std::collections::HashSet<&str> = tags_b.iter().map(|s| s.as_str()).collect();
         let intersection = set_a.intersection(&set_b).count();
         let union = set_a.union(&set_b).count();
         if union == 0 {
@@ -259,9 +260,9 @@ mod tests {
         let dedup = SemanticDeduplicator::default();
         let existing = vec![make_summary("topics/rust", "Rust", vec![])];
         let items = vec![
-            make_item("Rust", "topics/rust", vec![]),   // duplicate
+            make_item("Rust", "topics/rust", vec![]),     // duplicate
             make_item("Python", "topics/python", vec![]), // unique
-            make_item("Go", "topics/go", vec![]),        // unique
+            make_item("Go", "topics/go", vec![]),         // unique
         ];
         let unique = dedup.filter_unique(&items, &existing);
         assert_eq!(unique.len(), 2);

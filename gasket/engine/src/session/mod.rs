@@ -13,7 +13,7 @@ pub mod store;
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
-pub use store::{MemoryContext, MemoryProvider, PhaseBreakdown, MemoryStore};
+pub use store::{MemoryContext, MemoryProvider, MemoryStore, PhaseBreakdown};
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 

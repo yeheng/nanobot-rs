@@ -9,19 +9,20 @@ pub mod store;
 // Re-exports
 pub use index::PageIndex;
 pub use ingest::{
-    ConversationParser, HtmlParser, MarkdownParser, ParsedSource, PlainTextParser,
-    SourceFormat, SourceMetadata, SourceParser,
-    ExtractedItem, ExtractedItemType, ExtractionResult, KnowledgeExtractor,
-    CostEstimate, IngestConfig, IngestReport, IngestTier, WikiIntegrator,
-    DedupResult, SemanticDeduplicator,
+    ConversationParser, CostEstimate, DedupResult, ExtractedItem, ExtractedItemType,
+    ExtractionResult, HtmlParser, IngestConfig, IngestReport, IngestTier, KnowledgeExtractor,
+    MarkdownParser, ParsedSource, PlainTextParser, SemanticDeduplicator, SourceFormat,
+    SourceMetadata, SourceParser, WikiIntegrator,
 };
 pub use lint::{
-    FixReport, LintReport, SemanticIssue, SemanticIssueType,
-    Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig, WikiLinter,
+    FixReport, LintReport, SemanticIssue, SemanticIssueType, Severity, StructuralIssue,
+    StructuralIssueType, StructuralLintConfig, WikiLinter,
 };
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
-pub use query::{QueryResult, Reranker, ScoredCandidate, SearchHit, TokenBudget, TantivyIndex, WikiQueryEngine};
+pub use query::{
+    QueryResult, Reranker, ScoredCandidate, SearchHit, TantivyIndex, TokenBudget, WikiQueryEngine,
+};
 pub use store::PageStore;
 
 #[cfg(test)]

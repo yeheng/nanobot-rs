@@ -237,11 +237,7 @@ impl TantivyIndex {
                     .unwrap_or_default()
                     .to_string();
 
-                hits.push(SearchHit {
-                    path,
-                    score,
-                    title,
-                });
+                hits.push(SearchHit { path, score, title });
             }
         }
 
@@ -259,30 +255,27 @@ impl TantivyIndex {
 
         // Type filter query
         let type_term = Term::from_field_text(self.fields.page_type, page_type.as_str());
-        let type_query: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
-            type_term,
-            IndexRecordOption::Basic,
-        ));
+        let type_query: Box<dyn tantivy::query::Query> =
+            Box::new(TermQuery::new(type_term, IndexRecordOption::Basic));
 
         // Text search queries
-        let text_parser = QueryParser::for_index(
-            &self.index,
-            vec![self.fields.title, self.fields.content],
-        );
+        let text_parser =
+            QueryParser::for_index(&self.index, vec![self.fields.title, self.fields.content]);
 
         let text_query: Box<dyn tantivy::query::Query> = match text_parser.parse_query(query) {
             Ok(q) => q,
             Err(_) => {
                 // Fallback: simple term query on title
                 let term = Term::from_field_text(self.fields.title, query);
-                Box::new(TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions))
+                Box::new(TermQuery::new(
+                    term,
+                    IndexRecordOption::WithFreqsAndPositions,
+                ))
             }
         };
 
-        let combined = BooleanQuery::new(vec![
-            (Occur::Must, type_query),
-            (Occur::Must, text_query),
-        ]);
+        let combined =
+            BooleanQuery::new(vec![(Occur::Must, type_query), (Occur::Must, text_query)]);
 
         let top_docs = searcher.search(&combined, &TopDocs::with_limit(limit))?;
 
@@ -319,10 +312,8 @@ impl TantivyIndex {
             .iter()
             .map(|tag| {
                 let term = Term::from_field_text(self.fields.tags, tag);
-                let query: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
-                    term,
-                    IndexRecordOption::Basic,
-                ));
+                let query: Box<dyn tantivy::query::Query> =
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic));
                 (Occur::Should, query)
             })
             .collect();
@@ -534,8 +525,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let idx = TantivyIndex::open(dir.path().to_path_buf()).unwrap();
 
-        idx.upsert(&make_page("topics/rust", "Rust Old", "Old content.", vec![]))
-            .unwrap();
+        idx.upsert(&make_page(
+            "topics/rust",
+            "Rust Old",
+            "Old content.",
+            vec![],
+        ))
+        .unwrap();
         idx.upsert(&make_page(
             "topics/rust",
             "Rust New",

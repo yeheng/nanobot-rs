@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gasket_engine::wiki::{
-    PageFilter, PageIndex, PageStore, PageType, WikiLinter, WikiPage, slugify,
+    slugify, PageFilter, PageIndex, PageStore, PageType, WikiLinter, WikiPage,
 };
 use tempfile::TempDir;
 
@@ -46,12 +46,7 @@ async fn test_full_ingest_query_lint_cycle() {
         "Async/await in Rust uses the tokio runtime for efficient I/O.",
         vec!["rust", "async"],
     );
-    let short_page = make_page(
-        "topics/stub",
-        "Stub Page",
-        "Short.",
-        vec![],
-    );
+    let short_page = make_page("topics/stub", "Stub Page", "Short.", vec![]);
 
     store.write(&rust_page).await.unwrap();
     store.write(&async_page).await.unwrap();
@@ -87,9 +82,7 @@ async fn test_full_ingest_query_lint_cycle() {
     let stubs: Vec<_> = report
         .structural
         .iter()
-        .filter(|i| {
-            i.description.contains("chars of content")
-        })
+        .filter(|i| i.description.contains("chars of content"))
         .collect();
     assert!(!stubs.is_empty(), "Should detect stub pages");
 }
@@ -121,9 +114,24 @@ async fn test_write_read_roundtrip() {
 async fn test_page_type_filtering() {
     let (store, _dir) = setup_store().await;
 
-    let entity = WikiPage::new("entities/a".into(), "Entity".into(), PageType::Entity, "Entity content.".into());
-    let topic = WikiPage::new("topics/b".into(), "Topic".into(), PageType::Topic, "Topic content.".into());
-    let source = WikiPage::new("sources/c".into(), "Source".into(), PageType::Source, "Source content.".into());
+    let entity = WikiPage::new(
+        "entities/a".into(),
+        "Entity".into(),
+        PageType::Entity,
+        "Entity content.".into(),
+    );
+    let topic = WikiPage::new(
+        "topics/b".into(),
+        "Topic".into(),
+        PageType::Topic,
+        "Topic content.".into(),
+    );
+    let source = WikiPage::new(
+        "sources/c".into(),
+        "Source".into(),
+        PageType::Source,
+        "Source content.".into(),
+    );
 
     store.write(&entity).await.unwrap();
     store.write(&topic).await.unwrap();
@@ -147,7 +155,12 @@ async fn test_page_type_filtering() {
 async fn test_delete_page() {
     let (store, _dir) = setup_store().await;
 
-    let page = make_page("topics/delete-me", "Delete Me", "Content to delete.", vec![]);
+    let page = make_page(
+        "topics/delete-me",
+        "Delete Me",
+        "Content to delete.",
+        vec![],
+    );
     store.write(&page).await.unwrap();
     assert!(store.exists("topics/delete-me").await.unwrap());
 

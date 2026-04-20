@@ -36,7 +36,7 @@ pub mod wiki;
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
     AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryProvider,
-    PhaseBreakdown, MemoryStore, PersistentContext,
+    MemoryStore, PersistentContext, PhaseBreakdown,
 };
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;

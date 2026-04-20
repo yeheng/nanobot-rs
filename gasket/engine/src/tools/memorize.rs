@@ -11,7 +11,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageStore, PageType, WikiPage, slugify};
+use crate::wiki::{slugify, PageStore, PageType, WikiPage};
 
 // ── Memorize Tool ───────────────────────────────────────────────
 
@@ -172,7 +172,12 @@ impl Tool for MemorizeTool {
             parsed.tags.len()
         );
 
-        let mut page = WikiPage::new(path.clone(), title.to_string(), page_type, content.to_string());
+        let mut page = WikiPage::new(
+            path.clone(),
+            title.to_string(),
+            page_type,
+            content.to_string(),
+        );
         page.tags = parsed.tags;
 
         self.page_store

@@ -129,10 +129,7 @@ pub async fn run_structural_lint(
                     issues.push(StructuralIssue {
                         issue_type: StructuralIssueType::MissingReference,
                         path: page.path.clone(),
-                        description: format!(
-                            "Page references '{}' which does not exist",
-                            referent
-                        ),
+                        description: format!("Page references '{}' which does not exist", referent),
                         severity: Severity::Medium,
                     });
                 }
@@ -278,6 +275,9 @@ mod tests {
         );
         let issue = check_naming(&page);
         assert!(issue.is_some());
-        assert_eq!(issue.unwrap().issue_type, StructuralIssueType::NamingViolation);
+        assert_eq!(
+            issue.unwrap().issue_type,
+            StructuralIssueType::NamingViolation
+        );
     }
 }

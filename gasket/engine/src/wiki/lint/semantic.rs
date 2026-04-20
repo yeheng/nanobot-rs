@@ -114,12 +114,17 @@ async fn detect_contradictions(
                     issue_type: SemanticIssueType::Contradiction,
                     pages: vec![page_a.path.clone(), page_b.path.clone()],
                     description,
-                    suggestion: Some("Review both pages and resolve the conflicting claims.".to_string()),
+                    suggestion: Some(
+                        "Review both pages and resolve the conflicting claims.".to_string(),
+                    ),
                 });
             }
             Ok(None) => {} // No contradiction found
             Err(e) => {
-                warn!("Contradiction check failed for '{}', '{}': {}", page_a.path, page_b.path, e);
+                warn!(
+                    "Contradiction check failed for '{}', '{}': {}",
+                    page_a.path, page_b.path, e
+                );
             }
         }
     }

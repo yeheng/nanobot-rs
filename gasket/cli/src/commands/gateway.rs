@@ -80,7 +80,10 @@ pub async fn cmd_gateway() -> Result<()> {
     let pool = memory_store.sqlite_store().pool();
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) = if wiki_root.exists() {
-        let ps = Arc::new(gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone()));
+        let ps = Arc::new(gasket_engine::wiki::PageStore::new(
+            pool.clone(),
+            wiki_root.clone(),
+        ));
         if let Err(e) = ps.init_dirs().await {
             tracing::warn!("Failed to init wiki dirs: {}", e);
         }

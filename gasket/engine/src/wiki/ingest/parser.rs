@@ -156,7 +156,7 @@ impl SourceParser for MarkdownParser {
 
         let (frontmatter, body) = Self::split_frontmatter(&content)?;
 
-        let title_from_fm = frontmatter.and_then(|fm| Self::extract_title_from_frontmatter(fm));
+        let title_from_fm = frontmatter.and_then(Self::extract_title_from_frontmatter);
         let title_from_heading = Self::extract_first_heading(body);
         let title_from_file = title_from_path(path);
 
@@ -165,7 +165,7 @@ impl SourceParser for MarkdownParser {
             .unwrap_or(title_from_file);
 
         let extra = frontmatter
-            .map(|fm| Self::extract_frontmatter_metadata(fm))
+            .map(Self::extract_frontmatter_metadata)
             .unwrap_or_default();
 
         let metadata = SourceMetadata {
@@ -186,13 +186,15 @@ impl SourceParser for MarkdownParser {
     fn parse_content(&self, content: &str, title: &str) -> Result<ParsedSource> {
         let (frontmatter, body) = Self::split_frontmatter(content)?;
 
-        let title_from_fm = frontmatter.and_then(|fm| Self::extract_title_from_frontmatter(fm));
+        let title_from_fm = frontmatter.and_then(Self::extract_title_from_frontmatter);
         let title_from_heading = Self::extract_first_heading(body);
 
-        let title = title_from_fm.or(title_from_heading).unwrap_or_else(|| title.to_string());
+        let title = title_from_fm
+            .or(title_from_heading)
+            .unwrap_or_else(|| title.to_string());
 
         let extra = frontmatter
-            .map(|fm| Self::extract_frontmatter_metadata(fm))
+            .map(Self::extract_frontmatter_metadata)
             .unwrap_or_default();
 
         let metadata = SourceMetadata {
@@ -485,8 +487,7 @@ impl SourceParser for ConversationParser {
 
         let data: ConversationData = serde_json::from_str(&json)?;
 
-        let title = Self::extract_title(&data.events)
-            .unwrap_or_else(|| title_from_path(path));
+        let title = Self::extract_title(&data.events).unwrap_or_else(|| title_from_path(path));
         let content = Self::format_transcript(&data.events);
 
         let metadata = SourceMetadata {
@@ -550,9 +551,15 @@ Content body here."#;
         let result = parser.parse(&file).await.unwrap();
 
         assert_eq!(result.title, "Test Document");
-        assert_eq!(result.content.trim(), "# This is ignored\n\nContent body here.");
+        assert_eq!(
+            result.content.trim(),
+            "# This is ignored\n\nContent body here."
+        );
         assert_eq!(result.metadata.format, SourceFormat::Markdown);
-        assert_eq!(result.metadata.extra.get("tags"), Some(&"[test, markdown]".to_string()));
+        assert_eq!(
+            result.metadata.extra.get("tags"),
+            Some(&"[test, markdown]".to_string())
+        );
     }
 
     #[tokio::test]
@@ -568,7 +575,10 @@ Some content here.";
         let result = parser.parse(&file).await.unwrap();
 
         assert_eq!(result.title, "Just a heading");
-        assert_eq!(result.content.trim(), "# Just a heading\n\nSome content here.");
+        assert_eq!(
+            result.content.trim(),
+            "# Just a heading\n\nSome content here."
+        );
     }
 
     #[tokio::test]
@@ -638,12 +648,17 @@ Content here.";
 
         assert_eq!(result.title, "Hello, how are you?");
         assert!(result.content.contains("User: Hello, how are you?"));
-        assert!(result.content.contains("Assistant: I'm doing well, thanks!"));
+        assert!(result
+            .content
+            .contains("Assistant: I'm doing well, thanks!"));
     }
 
     #[test]
     fn test_title_from_path() {
-        assert_eq!(title_from_path(Path::new("/path/to/my-document.md")), "my-document");
+        assert_eq!(
+            title_from_path(Path::new("/path/to/my-document.md")),
+            "my-document"
+        );
         assert_eq!(title_from_path(Path::new("simple.txt")), "simple");
         assert_eq!(title_from_path(Path::new("/no/extension/file")), "file");
         assert_eq!(title_from_path(Path::new("/")), "untitled");

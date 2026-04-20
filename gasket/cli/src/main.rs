@@ -20,7 +20,8 @@ mod provider;
 mod workspace_downloader;
 
 use cli::{
-    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, VaultCommands, WikiCommands,
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, VaultCommands,
+    WikiCommands,
 };
 
 #[tokio::main]

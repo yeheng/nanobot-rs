@@ -12,8 +12,8 @@ use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{
-    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemorySearchTool,
-    MemoryRefreshTool, ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry,
+    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemoryRefreshTool,
+    MemorySearchTool, ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry,
     WebFetchTool, WebSearchTool, WriteFileTool,
 };
 

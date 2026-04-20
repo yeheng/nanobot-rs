@@ -10,9 +10,7 @@ pub mod semantic;
 pub mod structural;
 
 pub use semantic::{SemanticIssue, SemanticIssueType};
-pub use structural::{
-    Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig,
-};
+pub use structural::{Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig};
 
 use std::sync::Arc;
 
@@ -43,9 +41,7 @@ impl LintReport {
 
     /// Whether any high-severity issues exist.
     pub fn has_high_severity(&self) -> bool {
-        self.structural
-            .iter()
-            .any(|i| i.severity == Severity::High)
+        self.structural.iter().any(|i| i.severity == Severity::High)
     }
 
     /// Summarize as a human-readable string.
@@ -57,14 +53,20 @@ impl LintReport {
         );
 
         if !self.structural.is_empty() {
-            out.push_str(&format!("\nStructural ({} issues):\n", self.structural.len()));
+            out.push_str(&format!(
+                "\nStructural ({} issues):\n",
+                self.structural.len()
+            ));
             for issue in &self.structural {
                 let sev = match issue.severity {
                     Severity::High => "HIGH",
                     Severity::Medium => "MED",
                     Severity::Low => "LOW",
                 };
-                out.push_str(&format!("  [{}] {} — {}\n", sev, issue.path, issue.description));
+                out.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    sev, issue.path, issue.description
+                ));
             }
         }
 
@@ -72,7 +74,12 @@ impl LintReport {
             out.push_str(&format!("\nSemantic ({} issues):\n", self.semantic.len()));
             for issue in &self.semantic {
                 let paths = issue.pages.join(", ");
-                out.push_str(&format!("  {} — {}: {}\n", issue.issue_type.as_str(), paths, issue.description));
+                out.push_str(&format!(
+                    "  {} — {}: {}\n",
+                    issue.issue_type.as_str(),
+                    paths,
+                    issue.description
+                ));
             }
         }
 
@@ -206,12 +213,16 @@ impl WikiLinter {
                         missing_path.clone(),
                         missing_path.clone(),
                         crate::wiki::page::PageType::Topic,
-                        "This page was auto-created as a placeholder. Please add content.".to_string(),
+                        "This page was auto-created as a placeholder. Please add content."
+                            .to_string(),
                     );
                     match self.store.write(&page).await {
                         Ok(_) => {
                             fix_report.missing_refs_created += 1;
-                            tracing::info!("Auto-created stub for missing page: '{}'", missing_path);
+                            tracing::info!(
+                                "Auto-created stub for missing page: '{}'",
+                                missing_path
+                            );
                         }
                         Err(e) => {
                             tracing::warn!("Failed to create stub '{}': {}", missing_path, e);

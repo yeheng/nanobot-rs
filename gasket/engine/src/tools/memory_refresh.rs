@@ -64,11 +64,9 @@ impl Tool for MemoryRefreshTool {
         match args.action.as_str() {
             "sync" => {
                 // Sync SQLite → disk cache
-                let count = self
-                    .page_store
-                    .rebuild_disk_cache()
-                    .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to sync wiki: {}", e)))?;
+                let count = self.page_store.rebuild_disk_cache().await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to sync wiki: {}", e))
+                })?;
 
                 Ok(format!(
                     "✓ Wiki sync complete\n\nSynced {} pages to disk cache.",
@@ -77,11 +75,9 @@ impl Tool for MemoryRefreshTool {
             }
             "reindex" => {
                 // Same as sync for now (Phase 3 will add real index rebuild)
-                let count = self
-                    .page_store
-                    .rebuild_disk_cache()
-                    .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to reindex wiki: {}", e)))?;
+                let count = self.page_store.rebuild_disk_cache().await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to reindex wiki: {}", e))
+                })?;
 
                 Ok(format!(
                     "✓ Wiki reindex complete\n\nReindexed {} pages.",
@@ -94,7 +90,9 @@ impl Tool for MemoryRefreshTool {
                     .page_store
                     .list(PageFilter::default())
                     .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to get wiki stats: {}", e)))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to get wiki stats: {}", e))
+                    })?;
 
                 let total = all_pages.len();
                 let topics = all_pages

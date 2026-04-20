@@ -35,9 +35,7 @@ impl WikiLintHook {
         match *last {
             None => true,
             Some(last_time) => {
-                let elapsed = Utc::now()
-                    .signed_duration_since(last_time)
-                    .num_hours();
+                let elapsed = Utc::now().signed_duration_since(last_time).num_hours();
                 elapsed as u64 >= self.interval_hours
             }
         }
@@ -96,7 +94,10 @@ pub fn parse_interval(interval: &str) -> Option<u64> {
     if interval.ends_with('h') {
         interval[..interval.len() - 1].parse().ok()
     } else if interval.ends_with('d') {
-        interval[..interval.len() - 1].parse::<u64>().ok().map(|d| d * 24)
+        interval[..interval.len() - 1]
+            .parse::<u64>()
+            .ok()
+            .map(|d| d * 24)
     } else {
         None
     }

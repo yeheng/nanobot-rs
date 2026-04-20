@@ -85,11 +85,16 @@ impl KnowledgeExtractor {
             thinking: None,
         };
 
-        let response = self.provider.chat(request).await
+        let response = self
+            .provider
+            .chat(request)
+            .await
             .map_err(|e| anyhow::anyhow!("Knowledge extraction LLM call failed: {}", e))?;
 
         let content = response.content.unwrap_or_default();
-        let tokens_used = response.usage.as_ref()
+        let tokens_used = response
+            .usage
+            .as_ref()
             .map(|u| u.total_tokens as u32)
             .unwrap_or(0);
 
@@ -97,9 +102,16 @@ impl KnowledgeExtractor {
         let items = self.parse_response(&content);
 
         if items.is_empty() {
-            debug!("KnowledgeExtractor: no items extracted from '{}'", source.title);
+            debug!(
+                "KnowledgeExtractor: no items extracted from '{}'",
+                source.title
+            );
         } else {
-            debug!("KnowledgeExtractor: extracted {} item(s) from '{}'", items.len(), source.title);
+            debug!(
+                "KnowledgeExtractor: extracted {} item(s) from '{}'",
+                items.len(),
+                source.title
+            );
         }
 
         Ok(ExtractionResult { items, tokens_used })
@@ -109,8 +121,12 @@ impl KnowledgeExtractor {
         // Truncate very long sources to avoid token overflow
         let max_chars = 12000;
         let content = if source.content.len() > max_chars {
-            format!("{}\n\n[... content truncated, showing first {} chars]\n{}",
-                &source.content[..max_chars], max_chars, "")
+            format!(
+                "{}\n\n[... content truncated, showing first {} chars]\n{}",
+                &source.content[..max_chars],
+                max_chars,
+                ""
+            )
         } else {
             source.content.clone()
         };
@@ -161,18 +177,21 @@ impl KnowledgeExtractor {
 
     /// Normalize extracted items: ensure paths, fill defaults.
     fn normalize_items(&self, items: Vec<ExtractedItem>) -> Vec<ExtractedItem> {
-        items.into_iter().map(|mut item| {
-            // Generate suggested_path if not provided
-            if item.suggested_path.is_none() {
-                let prefix = match item.item_type {
-                    ExtractedItemType::Entity => "entities",
-                    ExtractedItemType::Topic => "topics",
-                    ExtractedItemType::Claim => "topics",
-                };
-                item.suggested_path = Some(format!("{}/{}", prefix, slugify(&item.title)));
-            }
-            item
-        }).collect()
+        items
+            .into_iter()
+            .map(|mut item| {
+                // Generate suggested_path if not provided
+                if item.suggested_path.is_none() {
+                    let prefix = match item.item_type {
+                        ExtractedItemType::Entity => "entities",
+                        ExtractedItemType::Topic => "topics",
+                        ExtractedItemType::Claim => "topics",
+                    };
+                    item.suggested_path = Some(format!("{}/{}", prefix, slugify(&item.title)));
+                }
+                item
+            })
+            .collect()
     }
 }
 
@@ -224,7 +243,9 @@ mod tests {
         }
 
         async fn chat_stream(&self, _request: ChatRequest) -> Result<ChatStream, ProviderError> {
-            Err(ProviderError::Other("noop does not support streaming".to_string()))
+            Err(ProviderError::Other(
+                "noop does not support streaming".to_string(),
+            ))
         }
     }
 
@@ -291,6 +312,9 @@ mod tests {
             tags: vec![],
             confidence: 0.9,
         }]);
-        assert_eq!(items[0].suggested_path, Some("entities/my-project".to_string()));
+        assert_eq!(
+            items[0].suggested_path,
+            Some("entities/my-project".to_string())
+        );
     }
 }

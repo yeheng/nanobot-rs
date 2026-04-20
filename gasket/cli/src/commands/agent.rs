@@ -73,24 +73,25 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
-    let (page_store, page_index) = if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
-        use gasket_engine::wiki::{PageStore, PageIndex};
-        let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
-        if let Err(e) = ps.init_dirs().await {
-            tracing::warn!("Failed to init wiki dirs: {}", e);
-        }
-        let tantivy_dir = wiki_root.join(".tantivy");
-        let pi = match PageIndex::open(tantivy_dir) {
-            Ok(idx) => Some(Arc::new(idx)),
-            Err(e) => {
-                tracing::warn!("Tantivy index open failed, search disabled: {}", e);
-                None
+    let (page_store, page_index) =
+        if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
+            use gasket_engine::wiki::{PageIndex, PageStore};
+            let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
+            if let Err(e) = ps.init_dirs().await {
+                tracing::warn!("Failed to init wiki dirs: {}", e);
             }
+            let tantivy_dir = wiki_root.join(".tantivy");
+            let pi = match PageIndex::open(tantivy_dir) {
+                Ok(idx) => Some(Arc::new(idx)),
+                Err(e) => {
+                    tracing::warn!("Tantivy index open failed, search disabled: {}", e);
+                    None
+                }
+            };
+            (Some(ps), pi)
+        } else {
+            (None, None)
         };
-        (Some(ps), pi)
-    } else {
-        (None, None)
-    };
 
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));

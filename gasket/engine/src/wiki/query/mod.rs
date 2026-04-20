@@ -68,7 +68,10 @@ impl QueryResult {
             if !out.is_empty() {
                 out.push_str("\n---\n");
             }
-            out.push_str(&format!("## {} ({})\n\n{}", page.title, page.path, page.content));
+            out.push_str(&format!(
+                "## {} ({})\n\n{}",
+                page.title, page.path, page.content
+            ));
         }
         out
     }
@@ -235,14 +238,12 @@ mod tests {
     #[test]
     fn test_query_result_to_context_string() {
         let result = QueryResult {
-            pages: vec![
-                WikiPage::new(
-                    "topics/rust".to_string(),
-                    "Rust".to_string(),
-                    PageType::Topic,
-                    "Rust is a systems language.".to_string(),
-                ),
-            ],
+            pages: vec![WikiPage::new(
+                "topics/rust".to_string(),
+                "Rust".to_string(),
+                PageType::Topic,
+                "Rust is a systems language.".to_string(),
+            )],
             total_candidates: 5,
             estimated_tokens: 6,
         };

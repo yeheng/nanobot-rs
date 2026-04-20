@@ -10,8 +10,8 @@
 //!
 //! Future: `local-embedding` adds semantic similarity as an additional signal.
 
-use super::tantivy_adapter::SearchHit;
 use super::super::page::PageSummary;
+use super::tantivy_adapter::SearchHit;
 
 /// A scored candidate for reranking.
 #[derive(Debug, Clone)]
@@ -51,22 +51,26 @@ impl Reranker {
 
     /// Rerank search hits using BM25 score + confidence + recency.
     /// Takes raw Tantivy hits and optional page summaries for metadata.
-    pub fn rerank(
-        &self,
-        hits: Vec<SearchHit>,
-        summaries: &[PageSummary],
-    ) -> Vec<ScoredCandidate> {
+    pub fn rerank(&self, hits: Vec<SearchHit>, summaries: &[PageSummary]) -> Vec<ScoredCandidate> {
         let mut candidates: Vec<ScoredCandidate> = hits
             .into_iter()
             .map(|hit| {
                 let summary = summaries.iter().find(|s| s.path == hit.path).cloned();
                 let score = self.compute_score(&hit, summary.as_ref());
-                ScoredCandidate { hit, summary, score }
+                ScoredCandidate {
+                    hit,
+                    summary,
+                    score,
+                }
             })
             .collect();
 
         // Sort by combined score descending
-        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         candidates
     }
 

@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::error::AgentError;
 use crate::hooks::{HookAction, HookPoint, PipelineHook, ReadonlyContext};
 use crate::session::config::EvolutionConfig;
-use crate::wiki::{PageFilter, PageStore, PageType, WikiPage, slugify};
+use crate::wiki::{slugify, PageFilter, PageStore, PageType, WikiPage};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_storage::{EventStore, SqliteStore};
@@ -273,10 +273,7 @@ impl PipelineHook for EvolutionHook {
             let existing_pages = match page_store.list(PageFilter::default()).await {
                 Ok(pages) => pages,
                 Err(e) => {
-                    warn!(
-                        "EvolutionHook: failed to list pages for dedup check: {}",
-                        e
-                    );
+                    warn!("EvolutionHook: failed to list pages for dedup check: {}", e);
                     continue;
                 }
             };
@@ -315,12 +312,7 @@ impl PipelineHook for EvolutionHook {
             tags.push("auto_learned".to_string());
 
             // 8.6 Create the wiki page
-            let page = WikiPage::new(
-                page_path,
-                mem.title.clone(),
-                page_type,
-                mem.content.clone(),
-            );
+            let page = WikiPage::new(page_path, mem.title.clone(), page_type, mem.content.clone());
             let mut page = page;
             page.tags = tags;
 

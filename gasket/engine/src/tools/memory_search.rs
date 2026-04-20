@@ -2,7 +2,6 @@
 //!
 //! Provides a `memory_search` tool that searches wiki pages via the
 /// PageStore for tag-based queries and PageIndex for semantic search.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -162,8 +161,12 @@ impl MemorySearchTool {
         is_wildcard: bool,
     ) -> ToolResult {
         // Try PageIndex search first (currently stub, returns empty)
-        let query = if is_wildcard { "" } else { &search_tags.join(" ") };
-        let index_results = index.search(&query, parsed.limit).await.unwrap_or_default();
+        let query = if is_wildcard {
+            ""
+        } else {
+            &search_tags.join(" ")
+        };
+        let index_results = index.search(query, parsed.limit).await.unwrap_or_default();
 
         if !index_results.is_empty() {
             // TODO: Phase 3 - use semantic search results
@@ -203,7 +206,10 @@ impl MemorySearchTool {
             let matches = search_tags.iter().any(|tag| {
                 let tag_lower = tag.to_lowercase();
                 summary.title.to_lowercase().contains(&tag_lower)
-                    || summary.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
+                    || summary
+                        .tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&tag_lower))
                     || summary
                         .category
                         .as_ref()
