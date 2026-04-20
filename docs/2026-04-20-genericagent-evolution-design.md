@@ -386,6 +386,8 @@ pub async fn run_loop(...) -> Result<ExecutionResult, KernelError> {
 
 **Zero behavior change for existing callers.** `KernelExecutor` API is unchanged; only its internal implementation uses `SteppableExecutor`. The `TokenLedger` is created inside `run_loop` and accumulated across `step()` calls, exactly as the original inline loop did.
 
+**Note on `ToolContext`:** The actual `KernelExecutor` constructs `ToolContext` with `spawner` and `token_tracker` references for tool execution. `SteppableExecutor` must also accept these (or equivalents) so that tool calls inside `step()` have access to subagent spawning and token tracking. The spec pseudocode omits these for brevity; they are required fields on `SteppableExecutor`.
+
 ---
 
 ### 2. PlanExecutor Module
@@ -476,7 +478,7 @@ impl ComplexityAssessor {
 - Build prompt: findings + SOP references + plan generation instructions
 - LLM generates structured plan with `step_type` markers (`delegated`/`parallel`/`conditional`) and a final `verify` step
 - Write plan to wiki + SQLite execution_steps table
-- `ask_user` for confirmation before execution
+- `confirm_plan` tool call for user confirmation before execution (LLM emits a tool call that pauses execution until user responds)
 
 **Execute Phase:**
 - For each step in order:
@@ -531,8 +533,8 @@ Main Agent                              Subagent
 #[derive(Debug, Clone)]
 pub enum ProgressUpdate {
     Thinking { turn: usize },
-    ToolStart { name: String, args: String },
-    ToolResult { name: String, output: String, duration_ms: u64 },
+    ToolStart { name: String },
+    ToolResult { name: String, output: String },
     TurnComplete { turn: usize, summary: String },
     Done { result: String },
     Error { message: String },
@@ -798,6 +800,9 @@ pub struct CheckpointConfig {
     pub interval_turns: usize,  // Default: 7
     pub checkpoint_prompt: String,
 }
+```
+
+**Integration with `ContextCompactor`:** `CheckpointConfig` is passed to `ContextCompactor` at construction time (e.g., as a new parameter to `ContextCompactor::new()` or via a `with_checkpoint_config()` builder). The existing `ContextCompactor` already has `provider`, `event_store`, `sqlite_store`, `model`, and `token_budget`; `CheckpointConfig` becomes an additional optional field. If `None`, checkpointing is disabled and only passive compaction runs.
 
 impl Default for CheckpointConfig {
     fn default() -> Self {
@@ -889,7 +894,10 @@ Instead, checkpoint injection happens at the **caller layer**, depending on whic
 ```rust
 // PlanExecutor::run() — inside the execution loop
 let mut ledger = TokenLedger::new();
+let mut turn = 0;  // global turn counter across all plan steps
 for step in &plan.steps {
+    turn += 1;
+
     // 1. Checkpoint every N turns
     if turn % checkpoint_config.interval_turns == 0 {
         if let Ok(Some(checkpoint)) = compactor
@@ -945,7 +953,7 @@ ComplexityAssessor.assess()
                         ├── InsightIndex.lookup(task, 5)
                         ├── LLM generates plan with markers
                         ├── Persist to execution_steps table
-                        └── ask_user confirmation
+                        └── confirm_plan tool call (user confirmation)
                         │
                         ▼
                     Execute Phase
@@ -1025,9 +1033,9 @@ pub async fn process_auto(
 |----------|----------|
 | Subagent spawn fails | Retry up to 2×, then abort plan and notify user |
 | Subagent crash during execution | SQLite fallback allows recovery: read last progress, decide to resume or restart |
-| Step execution fails | Mark `status = failed`, record error, retry 3× with exponential backoff (2s/4s/8s), then `step_type = fix` or ask user |
+| Step execution fails | Mark `status = failed`, record error, retry 3× with exponential backoff (2s/4s/8s), then append new fix steps or ask user |
 | Dependency step fails | Mark dependent steps `status = skipped`, continue with independent branches |
-| Verify FAIL | Extract failure items → append `step_type = fix` steps → re-execute (max `max_retries` cycles) |
+| Verify FAIL | Extract failure items → append new fix steps with `status = 'pending'` → re-execute (max `max_retries` cycles) |
 | Verify PARTIAL | Ask user to decide: accept, fix, or retry |
 | InsightIndex lookup empty | Fallback to Tantivy full-text search; if still empty, proceed without SOP guidance |
 | EvolutionHook extraction fails | Log warning, skip memory persistence for this batch, watermark still advances |
@@ -1059,7 +1067,8 @@ pub async fn process_auto(
 4. Implement `InsightIndex` module
 5. Add `session_checkpoints` table + `CheckpointConfig`
 6. Add `insight_index: Option<Arc<InsightIndex>>` field to `AgentSession` (wire through `AgentSessionBuilder`)
-7. Add `insight_index` field + `with_insight_index()` builder to `EvolutionHook`
+7. Add `insight_index` field + `with_insight_index()` builder to `EvolutionHook`; update `AgentSession::build_hooks()` to pass it
+8. Add `CheckpointConfig` parameter to `ContextCompactor::new()` (or builder) so checkpoint functionality is available
 
 ### Phase 2: PlanExecutor Skeleton
 1. Create `execution_plans` + `execution_steps` tables
