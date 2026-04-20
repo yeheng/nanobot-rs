@@ -49,6 +49,7 @@ tokio-stream = "0.1.18"
 bytemuck = "1"
 reqwest.workspace = true
 dirs.workspace = true
+tantivy = "0.25"
 
 [features]
 default = ["websocket"]

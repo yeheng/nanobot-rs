@@ -8,13 +8,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::memory::{MetadataStore, SqliteStore};
+use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{
     EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemorySearchTool,
-    ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry, WebFetchTool,
-    WebSearchTool, WriteFileTool,
+    MemoryRefreshTool, ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry,
+    WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
@@ -57,6 +57,12 @@ pub struct ToolRegistryConfig {
     pub extra_tools: Vec<(Box<dyn Tool>, ToolMetadata)>,
     /// SQLite store for history search (optional).
     pub sqlite_store: Option<SqliteStore>,
+    /// Optional wiki PageStore for unified knowledge management.
+    #[allow(dead_code)]
+    pub page_store: Option<Arc<crate::wiki::PageStore>>,
+    /// Optional wiki PageIndex for semantic search.
+    #[allow(dead_code)]
+    pub page_index: Option<Arc<crate::wiki::PageIndex>>,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
@@ -70,6 +76,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         subagent_spawner,
         extra_tools,
         sqlite_store,
+        page_store,
+        page_index,
     } = registry_config;
 
     // Suppress unused warnings when tool-spawn feature is disabled
@@ -198,24 +206,47 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // Memory search tool — use SQLite MetadataStore when available
-    let memory_tool = if let Some(ref db) = sqlite_store {
-        MemorySearchTool::with_store(MetadataStore::new(db.pool().clone()))
-    } else {
-        MemorySearchTool::new()
-    };
+    // Wiki-based memory tools (only if page_store is configured)
+    if let Some(ref store) = page_store {
+        // Memorize tool
+        tools.register_with_metadata(
+            Box::new(MemorizeTool::new(store.clone())),
+            ToolMetadata {
+                display_name: "Memorize".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["write".to_string(), "memory".to_string()],
+                requires_approval: false,
+                is_mutating: true,
+            },
+        );
 
-    tools.register_with_metadata(
-        Box::new(memory_tool),
-        ToolMetadata {
-            display_name: "Memory Search".to_string(),
-            category: "memory".to_string(),
-            tags: vec!["search".to_string(), "memory".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
+        // Memory search tool
+        let search_tool = MemorySearchTool::new(store.clone(), page_index.clone());
+        tools.register_with_metadata(
+            Box::new(search_tool),
+            ToolMetadata {
+                display_name: "Memory Search".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["search".to_string(), "memory".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
 
+        // Memory refresh tool
+        tools.register_with_metadata(
+            Box::new(MemoryRefreshTool::new(store.clone())),
+            ToolMetadata {
+                display_name: "Memory Refresh".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["refresh".to_string(), "memory".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
+
+    // History query tool — direct SQL query over session_events
     // History query tool — direct SQL query over session_events
     if let Some(ref db) = sqlite_store {
         tools.register_with_metadata(
@@ -234,18 +265,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         );
     }
 
-    // Memorize tool for writing structured long-term memories
-    tools.register_with_metadata(
-        Box::new(MemorizeTool::new()),
-        ToolMetadata {
-            display_name: "Memorize".to_string(),
-            category: "memory".to_string(),
-            tags: vec!["write".to_string(), "memory".to_string()],
-            requires_approval: false,
-            is_mutating: true,
-        },
-    );
-
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
@@ -257,38 +276,4 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     }
 
     tools
-}
-
-/// Register SQLite-backed tools into an existing registry.
-///
-/// This overwrites the default `memory_search` with a store-backed variant
-/// and adds `query_history` when a SQLite store is available.
-pub fn register_sqlite_tools(registry: &mut ToolRegistry, sqlite_store: &SqliteStore) {
-    registry.register_with_metadata(
-        Box::new(MemorySearchTool::with_store(MetadataStore::new(
-            sqlite_store.pool().clone(),
-        ))),
-        ToolMetadata {
-            display_name: "Memory Search".to_string(),
-            category: "memory".to_string(),
-            tags: vec!["search".to_string(), "memory".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-
-    registry.register_with_metadata(
-        Box::new(HistoryQueryTool::new(sqlite_store.pool().clone())),
-        ToolMetadata {
-            display_name: "Query History".to_string(),
-            category: "memory".to_string(),
-            tags: vec![
-                "history".to_string(),
-                "search".to_string(),
-                "sqlite".to_string(),
-            ],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
 }

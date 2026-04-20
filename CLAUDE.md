@@ -43,6 +43,10 @@ gasket/                       # Rust workspace root
 | `config.example.yaml` | Example configuration with model profiles |
 | `gasket/engine/src/agent/loop_.rs` | Core agent execution engine |
 | `gasket/engine/src/agent/summarization.rs` | Context compression with embeddings |
+| `gasket/engine/src/wiki/` | Wiki knowledge system (store, query, ingest, lint) |
+| `gasket/engine/src/wiki/query/tantivy_adapter.rs` | Tantivy BM25 full-text search |
+| `gasket/engine/src/wiki/lint/` | Wiki health checks (structural + semantic) |
+| `gasket/storage/src/wiki/` | SQLite wiki tables (pages, relations, sources, log) |
 | `docs/architecture.md` | Full system architecture |
 | `docs/data-flow.md` | Message flow diagrams |
 
@@ -85,6 +89,24 @@ gasket/                       # Rust workspace root
 - **MCP:** JSON-RPC 2.0 over stdio for external tool servers
 - **Dynamic Models:** `switch_model` tool allows delegating tasks to specialized models
 - **Engine facade:** `engine` crate re-exports bus, channels, providers, storage
+
+## Wiki Knowledge System
+
+The wiki-first knowledge system replaces the old `memory/` module with a three-layer architecture:
+
+| Layer | Storage | Purpose |
+|-------|---------|---------|
+| Raw Sources | `~/.gasket/sources/` | Original documents |
+| Compiled Wiki | `~/.gasket/wiki/` (SQLite + optional .md cache) | Structured knowledge pages |
+| Search Index | `~/.gasket/wiki/.tantivy/` | Tantivy BM25 full-text search |
+
+**Three operations:** Ingest (add knowledge), Query (retrieve knowledge), Lint (health check)
+
+**Key structs:** `PageStore` (CRUD), `PageIndex` (Tantivy search), `WikiLinter` (lint checks), `WikiQueryEngine` (three-phase retrieval)
+
+**Tool backward compatibility:** `memorize` → PageStore.write(), `memory_search` → PageIndex.search(), `memory_refresh` → PageIndex.rebuild()
+
+**Wiki CLI commands:** `gasket wiki init`, `gasket wiki ingest <path>`, `gasket wiki search <query>`, `gasket wiki list`, `gasket wiki lint`, `gasket wiki stats`, `gasket wiki migrate`
 
 ## Testing
 

@@ -20,7 +20,7 @@ mod provider;
 mod workspace_downloader;
 
 use cli::{
-    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, VaultCommands,
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, VaultCommands, WikiCommands,
 };
 
 #[tokio::main]
@@ -103,6 +103,15 @@ async fn main() -> Result<()> {
             MemoryCommands::Refresh => commands::cmd_memory_refresh().await,
             MemoryCommands::Decay => commands::cmd_memory_decay().await,
         },
+        Some(Commands::Wiki { command }) => match command {
+            WikiCommands::Init => commands::cmd_wiki_init().await,
+            WikiCommands::Migrate => commands::cmd_wiki_migrate().await,
+            WikiCommands::Stats => commands::cmd_wiki_stats().await,
+            WikiCommands::Ingest { path, tier } => commands::cmd_wiki_ingest(&path, &tier).await,
+            WikiCommands::Search { query, limit } => commands::cmd_wiki_search(&query, limit).await,
+            WikiCommands::List { page_type } => commands::cmd_wiki_list(page_type.as_deref()).await,
+            WikiCommands::Lint { fix } => commands::cmd_wiki_lint(fix).await,
+        },
         None => {
             // No command - show help
             println!("🐈 gasket v2.0.0 - A lightweight AI assistant\n");
@@ -116,7 +125,8 @@ async fn main() -> Result<()> {
             println!("  auth      Authentication commands");
             println!("  cron      Manage scheduled tasks");
             println!("  stats     Show session token usage and cost statistics");
-            println!("  vault     Manage vault secrets\n");
+            println!("  vault     Manage vault secrets");
+            println!("  wiki      Wiki knowledge system\n");
             println!("Run 'gasket --help' for more information.");
             Ok(())
         }

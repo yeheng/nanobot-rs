@@ -1,7 +1,7 @@
 //! History query coordinator — single entry point for agent loop history access.
 //!
 //! This module defines the unified query types that the agent loop uses
-//! instead of directly calling EventStore, MemoryManager, and Compactor.
+//! instead of directly calling EventStore and Compactor.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -12,8 +12,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::session::compactor::ContextCompactor;
-use crate::session::memory::MemoryContext;
-use crate::session::store::MemoryProvider;
+use crate::session::store::{MemoryContext, MemoryProvider};
 
 /// History query intent — the only query entry point type.
 ///

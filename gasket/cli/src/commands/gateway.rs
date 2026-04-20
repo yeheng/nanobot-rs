@@ -19,7 +19,6 @@ use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::ContextTool;
 use gasket_engine::tools::MemoryDecayTool;
-use gasket_engine::tools::MemoryRefreshTool;
 use gasket_engine::tools::{build_tool_registry, CronTool, Tool, ToolContext, ToolRegistryConfig};
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
@@ -77,20 +76,25 @@ pub async fn cmd_gateway() -> Result<()> {
     // MemoryStore provides the underlying SqliteStore for session management
     let memory_store = Arc::new(MemoryStore::new().await);
 
-    // Create MemoryManager for memory refresh operations
-    let memory_manager = {
-        let pool = memory_store.pool();
-        let base_dir = workspace.join("memory");
-
-        // Use NoopEmbedder for Gateway (we don't need embeddings for refresh operations)
-        let embedder: Box<dyn gasket_engine::Embedder> =
-            Box::new(gasket_engine::NoopEmbedder::new(384));
-
-        Arc::new(
-            gasket_engine::session::memory::MemoryManager::new(base_dir, &pool, embedder)
-                .await
-                .expect("Failed to initialize MemoryManager"),
-        )
+    // Initialize wiki stores if wiki directory exists
+    let pool = memory_store.sqlite_store().pool();
+    let wiki_root = workspace.join("wiki");
+    let (page_store, page_index) = if wiki_root.exists() {
+        let ps = Arc::new(gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone()));
+        if let Err(e) = ps.init_dirs().await {
+            tracing::warn!("Failed to init wiki dirs: {}", e);
+        }
+        let tantivy_dir = wiki_root.join(".tantivy");
+        let pi = match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
+            Ok(idx) => Some(Arc::new(idx)),
+            Err(e) => {
+                tracing::warn!("Tantivy index open failed, search disabled: {}", e);
+                None
+            }
+        };
+        (Some(ps), pi)
+    } else {
+        (None, None)
     };
 
     // Create cron service with hybrid file+database architecture
@@ -140,6 +144,8 @@ pub async fn cmd_gateway() -> Result<()> {
         subagent_spawner: None,
         extra_tools: vec![],
         sqlite_store: None,
+        page_store: page_store.clone(),
+        page_index: page_index.clone(),
     });
 
     let mut subagent_tools = common_tools.clone();
@@ -188,20 +194,23 @@ pub async fn cmd_gateway() -> Result<()> {
             },
         ));
 
-        ext.push((
-            Box::new(MemoryRefreshTool::new(memory_manager.clone())) as Box<dyn Tool>,
-            ToolMetadata {
-                display_name: "Memory Refresh".to_string(),
-                category: "system".to_string(),
-                tags: vec![
-                    "memory".to_string(),
-                    "refresh".to_string(),
-                    "index".to_string(),
-                ],
-                requires_approval: false,
-                is_mutating: true,
-            },
-        ));
+        // MemoryRefreshTool (wiki-only) - only add if page_store is available
+        if let Some(ref ps) = page_store {
+            ext.push((
+                Box::new(gasket_engine::tools::MemoryRefreshTool::new(ps.clone())) as Box<dyn Tool>,
+                ToolMetadata {
+                    display_name: "Memory Refresh".to_string(),
+                    category: "system".to_string(),
+                    tags: vec![
+                        "memory".to_string(),
+                        "refresh".to_string(),
+                        "index".to_string(),
+                    ],
+                    requires_approval: false,
+                    is_mutating: true,
+                },
+            ));
+        }
 
         ext.push((
             Box::new(MemoryDecayTool::new(
@@ -249,7 +258,6 @@ pub async fn cmd_gateway() -> Result<()> {
     };
 
     let mut tools = common_tools.clone();
-    gasket_engine::tools::register_sqlite_tools(&mut tools, &sqlite_store);
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
     }

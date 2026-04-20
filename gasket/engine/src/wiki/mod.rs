@@ -1,12 +1,27 @@
 pub mod index;
+pub mod ingest;
+pub mod lint;
 pub mod log;
 pub mod page;
+pub mod query;
 pub mod store;
 
 // Re-exports
 pub use index::PageIndex;
+pub use ingest::{
+    ConversationParser, HtmlParser, MarkdownParser, ParsedSource, PlainTextParser,
+    SourceFormat, SourceMetadata, SourceParser,
+    ExtractedItem, ExtractedItemType, ExtractionResult, KnowledgeExtractor,
+    CostEstimate, IngestConfig, IngestReport, IngestTier, WikiIntegrator,
+    DedupResult, SemanticDeduplicator,
+};
+pub use lint::{
+    FixReport, LintReport, SemanticIssue, SemanticIssueType,
+    Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig, WikiLinter,
+};
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
+pub use query::{QueryResult, Reranker, ScoredCandidate, SearchHit, TokenBudget, TantivyIndex, WikiQueryEngine};
 pub use store::PageStore;
 
 #[cfg(test)]
@@ -60,7 +75,10 @@ mod tests {
             WikiPage::make_path(&["entities", "projects", "gasket"]),
             "entities/projects/gasket"
         );
-        assert_eq!(WikiPage::make_path(&["topics", "rust-async"]), "topics/rust-async");
+        assert_eq!(
+            WikiPage::make_path(&["topics", "rust-async"]),
+            "topics/rust-async"
+        );
     }
 
     #[test]

@@ -56,10 +56,30 @@ impl MemoryStore {
 
 use anyhow::Result;
 use async_trait::async_trait;
-use gasket_storage::memory::{MemoryHit, MemoryQuery, Scenario};
+use gasket_storage::memory::{MemoryFile, MemoryHit, MemoryQuery, Scenario};
 use gasket_types::session_event::SessionEvent;
 
-use super::memory::MemoryContext;
+/// Per-phase token breakdown for three-phase memory loading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhaseBreakdown {
+    /// Tokens used in Phase 1 (bootstrap: profile + active hot/warm).
+    pub bootstrap_tokens: usize,
+    /// Tokens used in Phase 2 (scenario-specific hot + tag-matched warm).
+    pub scenario_tokens: usize,
+    /// Tokens used in Phase 3 (on-demand semantic search fill).
+    pub on_demand_tokens: usize,
+}
+
+/// Result of loading memories for context injection.
+#[derive(Debug)]
+pub struct MemoryContext {
+    /// Loaded memory files (within token budget).
+    pub memories: Vec<MemoryFile>,
+    /// Total tokens used.
+    pub tokens_used: usize,
+    /// Per-phase token breakdown.
+    pub phase_breakdown: PhaseBreakdown,
+}
 
 /// MemoryProvider trait — memory system query and mutation interface.
 ///

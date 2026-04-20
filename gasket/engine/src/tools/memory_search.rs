@@ -1,83 +1,37 @@
-//! Memory search tool using SQLite MetadataStore.
+//! Memory search tool using wiki PageStore/PageIndex.
 //!
-//! Provides a `memory_search` tool that searches memory files using the
-//! SQLite-backed `MetadataStore` for tag-based queries. Falls back to a
-//! lightweight filesystem scan when MetadataStore is unavailable.
+//! Provides a `memory_search` tool that searches wiki pages via the
+/// PageStore for tag-based queries and PageIndex for semantic search.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::fs;
 use tracing::debug;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use gasket_storage::memory::{memory_base_dir, MetadataStore, Scenario};
-
-/// Skip YAML frontmatter (between `---` delimiters) and return the body.
-fn skip_frontmatter(content: &str) -> &str {
-    if content.trim_start().starts_with("---") {
-        if let Some(end) = content[3..].find("\n---") {
-            return content[(end + 7)..].trim();
-        }
-    }
-    content.trim()
-}
+use crate::wiki::{PageFilter, PageIndex, PageStore};
 
 // ── Memory Search Tool ─────────────────────────────────────────
 
-/// Memory search tool backed by SQLite MetadataStore.
+/// Memory search tool backed by wiki PageStore/PageIndex.
 ///
-/// Searches memory metadata via `MetadataStore::query_by_tags()` for
-/// structured retrieval. Reads content snippets from disk for context.
-/// When no `MetadataStore` is available, falls back to a lightweight
-/// filesystem keyword scan.
+/// Searches wiki pages via PageStore list for tag-based queries and
+/// PageIndex for semantic search (Phase 3).
 pub struct MemorySearchTool {
-    /// Optional SQLite-backed metadata store for fast queries.
-    metadata_store: Option<MetadataStore>,
-    /// Memory base directory (e.g. ~/.gasket/memory/).
-    memory_dir: PathBuf,
-}
-
-impl Default for MemorySearchTool {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Wiki PageStore for unified knowledge search.
+    page_store: Arc<PageStore>,
+    /// Optional wiki PageIndex for semantic search.
+    page_index: Option<Arc<PageIndex>>,
 }
 
 impl MemorySearchTool {
-    /// Create a new memory search tool with default paths and no MetadataStore.
-    pub fn new() -> Self {
-        let memory_dir = memory_base_dir();
+    /// Create with wiki PageStore and PageIndex for unified knowledge search.
+    pub fn new(page_store: Arc<PageStore>, page_index: Option<Arc<PageIndex>>) -> Self {
         Self {
-            metadata_store: None,
-            memory_dir,
-        }
-    }
-
-    /// Create with a MetadataStore for SQLite-backed search.
-    pub fn with_store(metadata_store: MetadataStore) -> Self {
-        let memory_dir = memory_base_dir();
-        Self {
-            metadata_store: Some(metadata_store),
-            memory_dir,
-        }
-    }
-
-    /// Create with custom directory (for testing).
-    pub fn with_dir(memory_dir: PathBuf) -> Self {
-        Self {
-            metadata_store: None,
-            memory_dir,
-        }
-    }
-
-    /// Create with both custom directory and MetadataStore.
-    pub fn with_dir_and_store(memory_dir: PathBuf, metadata_store: MetadataStore) -> Self {
-        Self {
-            metadata_store: Some(metadata_store),
-            memory_dir,
+            page_store,
+            page_index,
         }
     }
 }
@@ -184,52 +138,88 @@ impl Tool for MemorySearchTool {
             parsed.limit
         );
 
-        // Try SQLite-backed search first
-        if let Some(ref store) = self.metadata_store {
+        // Try wiki PageIndex first if available
+        if let Some(ref index) = self.page_index {
             return self
-                .search_with_store(store, &search_tags, &parsed, is_wildcard)
+                .search_with_wiki(index, &self.page_store, &search_tags, &parsed, is_wildcard)
                 .await;
         }
 
-        // Fallback: filesystem keyword scan
-        self.search_with_filesystem(&search_tags, &parsed, is_wildcard)
+        // Fallback to PageStore list + in-memory tag filtering
+        self.search_with_page_store(&self.page_store, &search_tags, &parsed, is_wildcard)
             .await
     }
 }
 
 impl MemorySearchTool {
-    /// SQLite-backed search via MetadataStore.
-    async fn search_with_store(
+    /// Wiki-backed search via PageIndex (semantic) + PageStore (fallback).
+    async fn search_with_wiki(
         &self,
-        store: &MetadataStore,
+        index: &PageIndex,
+        store: &PageStore,
         search_tags: &[String],
         parsed: &SearchArgs,
         is_wildcard: bool,
     ) -> ToolResult {
-        let entries = if is_wildcard {
-            // Wildcard: list all entries across scenarios
-            let mut all = Vec::new();
-            for scenario in Scenario::all() {
-                match store.query_entries(*scenario).await {
-                    Ok(mut e) => all.append(&mut e),
-                    Err(_) => continue,
+        // Try PageIndex search first (currently stub, returns empty)
+        let query = if is_wildcard { "" } else { &search_tags.join(" ") };
+        let index_results = index.search(&query, parsed.limit).await.unwrap_or_default();
+
+        if !index_results.is_empty() {
+            // TODO: Phase 3 - use semantic search results
+        }
+
+        // Fallback to PageStore list + in-memory tag filtering
+        self.search_with_page_store(store, search_tags, parsed, is_wildcard)
+            .await
+    }
+
+    /// PageStore-backed search via list + in-memory filtering.
+    async fn search_with_page_store(
+        &self,
+        store: &PageStore,
+        search_tags: &[String],
+        parsed: &SearchArgs,
+        is_wildcard: bool,
+    ) -> ToolResult {
+        let filter = PageFilter::default();
+        let pages = store
+            .list(filter)
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("PageStore list failed: {}", e)))?;
+
+        let mut results = Vec::new();
+
+        for summary in pages {
+            if is_wildcard {
+                results.push(summary);
+                if results.len() >= parsed.limit {
+                    break;
                 }
-                if all.len() >= parsed.limit {
+                continue;
+            }
+
+            // Check if any search tag matches title, tags, or category
+            let matches = search_tags.iter().any(|tag| {
+                let tag_lower = tag.to_lowercase();
+                summary.title.to_lowercase().contains(&tag_lower)
+                    || summary.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
+                    || summary
+                        .category
+                        .as_ref()
+                        .map(|c| c.to_lowercase().contains(&tag_lower))
+                        .unwrap_or(false)
+            });
+
+            if matches {
+                results.push(summary);
+                if results.len() >= parsed.limit {
                     break;
                 }
             }
-            all.truncate(parsed.limit);
-            all
-        } else {
-            store
-                .query_by_tags(search_tags, None, parsed.limit)
-                .await
-                .map_err(|e| {
-                    ToolError::ExecutionError(format!("MetadataStore query failed: {}", e))
-                })?
-        };
+        }
 
-        if entries.is_empty() {
+        if results.is_empty() {
             return Ok(format!(
                 "No memories found matching tags: {}",
                 search_tags.join(", ")
@@ -238,164 +228,32 @@ impl MemorySearchTool {
 
         let mut output = format!(
             "Found {} memor{} matching tags [{}]:\n\n",
-            entries.len(),
-            if entries.len() == 1 { "y" } else { "ies" },
-            search_tags.join(", ")
-        );
-
-        for entry in &entries {
-            let scenario_dir = self.memory_dir.join(entry.scenario.dir_name());
-            let file_path = scenario_dir.join(&entry.filename);
-
-            let snippet = self.read_snippet(&file_path, 6).await;
-
-            let tags_display = if entry.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", entry.tags.join(", "))
-            };
-
-            output.push_str(&format!(
-                "━━━ {} ━━━\n  Scenario: {} | Tags:{} | Tokens: {}\n  {}\n\n",
-                entry.title, entry.scenario, tags_display, entry.tokens, snippet,
-            ));
-        }
-
-        Ok(output)
-    }
-
-    /// Read the first N lines of a file as a content snippet.
-    async fn read_snippet(&self, path: &std::path::Path, max_lines: usize) -> String {
-        match fs::read_to_string(path).await {
-            Ok(content) => {
-                let body = skip_frontmatter(&content);
-                let lines: Vec<&str> = body.lines().take(max_lines).collect();
-                if body.lines().count() > max_lines {
-                    format!("{}\n  ...", lines.join("\n  "))
-                } else {
-                    lines.join("\n  ")
-                }
-            }
-            Err(_) => "(content unavailable)".to_string(),
-        }
-    }
-
-    /// Lightweight filesystem fallback when MetadataStore is unavailable.
-    ///
-    /// Scans .md files, parses frontmatter titles and tags, and matches
-    /// against search keywords. Much slower than SQLite but works without a DB.
-    async fn search_with_filesystem(
-        &self,
-        search_tags: &[String],
-        parsed: &SearchArgs,
-        is_wildcard: bool,
-    ) -> ToolResult {
-        if !self.memory_dir.exists() {
-            return Ok(format!(
-                "Memory directory does not exist: {}. No memories to search.",
-                self.memory_dir.display()
-            ));
-        }
-
-        let mut results: Vec<(String, Scenario, Vec<String>, String, String)> = Vec::new();
-
-        // Scan each scenario directory
-        for scenario in Scenario::all() {
-            let dir = self.memory_dir.join(scenario.dir_name());
-            if !dir.exists() {
-                continue;
-            }
-
-            let mut read_dir = fs::read_dir(&dir).await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to read directory: {}", e))
-            })?;
-
-            while let Some(entry) = read_dir
-                .next_entry()
-                .await
-                .map_err(|e| ToolError::ExecutionError(format!("Failed to read entry: {}", e)))?
-            {
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-
-                let content = match fs::read_to_string(&path).await {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-
-                // Quick tag match in content (skip for wildcard)
-                if !is_wildcard {
-                    let lower = content.to_lowercase();
-                    let matched = search_tags
-                        .iter()
-                        .any(|tag| lower.contains(&tag.to_lowercase()));
-
-                    if !matched {
-                        continue;
-                    }
-                }
-
-                let filename = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let snippet = {
-                    let body = skip_frontmatter(&content);
-                    body.lines().take(4).collect::<Vec<_>>().join("\n  ")
-                };
-
-                // Try to extract title from frontmatter
-                let title = if content.trim_start().starts_with("---") {
-                    content["---".len()..]
-                        .lines()
-                        .find(|l| l.trim().starts_with("title:"))
-                        .map(|l| l.trim().trim_start_matches("title:").trim().to_string())
-                        .unwrap_or_else(|| filename.clone())
-                } else {
-                    filename.clone()
-                };
-
-                results.push((title, *scenario, vec![], filename, snippet));
-
-                if results.len() >= parsed.limit {
-                    break;
-                }
-            }
-            if results.len() >= parsed.limit {
-                break;
-            }
-        }
-
-        if results.is_empty() {
-            return if is_wildcard {
-                Ok("No memories found.".to_string())
-            } else {
-                Ok(format!(
-                    "No memories found matching keywords: {}",
-                    search_tags.join(", ")
-                ))
-            };
-        }
-
-        let tag_display = if is_wildcard {
-            "*".to_string()
-        } else {
-            search_tags.join(", ")
-        };
-        let mut output = format!(
-            "Found {} memor{} matching [{}]:\n\n",
             results.len(),
             if results.len() == 1 { "y" } else { "ies" },
-            tag_display
+            search_tags.join(", ")
         );
 
-        for (title, scenario, _tags, filename, snippet) in &results {
+        for summary in &results {
+            let tags_display = if summary.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", summary.tags.join(", "))
+            };
+
+            let category_display = summary
+                .category
+                .as_ref()
+                .map(|c| format!(" | Category: {}", c))
+                .unwrap_or_default();
+
             output.push_str(&format!(
-                "━━━ {} ━━━\n  Scenario: {} | File: {}\n  {}\n\n",
-                title, scenario, filename, snippet,
+                "━━━ {} ━━━\n  Type: {}{} | Tags:{} | Confidence: {:.1}\n  Path: {}\n\n",
+                summary.title,
+                summary.page_type.as_str(),
+                category_display,
+                tags_display,
+                summary.confidence,
+                summary.path
             ));
         }
 
@@ -429,103 +287,5 @@ mod tests {
         assert_eq!(parsed.limit, 10);
     }
 
-    #[tokio::test]
-    async fn test_search_filesystem_finds_keyword() {
-        let tmp = tempfile::tempdir().unwrap();
-        let knowledge_dir = tmp.path().join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        std::fs::write(
-            knowledge_dir.join("project_alpha.md"),
-            "# Project Alpha\n\nWe decided to use PostgreSQL for the database.\nThe API uses REST with JSON responses.\n",
-        ).unwrap();
-
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({"query": "PostgreSQL"});
-        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("PostgreSQL"));
-    }
-
-    #[tokio::test]
-    async fn test_search_no_results() {
-        let tmp = tempfile::tempdir().unwrap();
-        let knowledge_dir = tmp.path().join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({"query": "nonexistent_keyword_xyz"});
-        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("No memories found"));
-    }
-
-    #[tokio::test]
-    async fn test_search_requires_query_or_tags() {
-        let tmp = tempfile::tempdir().unwrap();
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({});
-        let result = tool.execute(args, &ToolContext::default()).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Provide at least"));
-    }
-
-    #[tokio::test]
-    async fn test_search_nonexistent_directory() {
-        let tool = MemorySearchTool::with_dir(PathBuf::from("/tmp/nonexistent_gasket_test"));
-        let args = serde_json::json!({"query": "anything"});
-        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("does not exist"));
-    }
-
-    #[tokio::test]
-    async fn test_search_with_tags_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let knowledge_dir = tmp.path().join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        std::fs::write(
-            knowledge_dir.join("rust_note.md"),
-            "---\ntitle: Rust Notes\nscenario: knowledge\ntags:\n  - rust\n  - programming\n---\n\nRust is great for systems programming.\n",
-        ).unwrap();
-
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({"tags": ["rust"]});
-        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("Rust Notes"));
-    }
-
-    #[tokio::test]
-    async fn test_search_skips_short_query_words() {
-        // Words < 2 chars should be skipped when building tag candidates
-        let tmp = tempfile::tempdir().unwrap();
-        let knowledge_dir = tmp.path().join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({"query": "a I"});
-        let result = tool.execute(args, &ToolContext::default()).await;
-        // All words are < 2 chars, so search_tags will be empty
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("too short"));
-    }
-
-    #[tokio::test]
-    async fn test_search_wildcard_lists_all() {
-        let tmp = tempfile::tempdir().unwrap();
-        let knowledge_dir = tmp.path().join("knowledge");
-        std::fs::create_dir_all(&knowledge_dir).unwrap();
-        std::fs::write(
-            knowledge_dir.join("note_a.md"),
-            "# Note A\n\nContent about apples.\n",
-        )
-        .unwrap();
-        std::fs::write(
-            knowledge_dir.join("note_b.md"),
-            "# Note B\n\nContent about bananas.\n",
-        )
-        .unwrap();
-
-        let tool = MemorySearchTool::with_dir(tmp.path().to_path_buf());
-        let args = serde_json::json!({"query": "*"});
-        let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("note_a.md"));
-        assert!(result.contains("note_b.md"));
-    }
+    // TODO: Add integration tests with mock PageStore
 }

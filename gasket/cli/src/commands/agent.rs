@@ -69,7 +69,28 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Build tool registry (CLI mode: no bus/cron)
     let memory_store = Arc::new(MemoryStore::new().await);
-    let sqlite_store = memory_store.sqlite_store().clone();
+    let pool = memory_store.sqlite_store().pool();
+
+    // Initialize wiki stores if wiki config is enabled or wiki directory exists
+    let wiki_root = workspace.join("wiki");
+    let (page_store, page_index) = if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
+        use gasket_engine::wiki::{PageStore, PageIndex};
+        let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
+        if let Err(e) = ps.init_dirs().await {
+            tracing::warn!("Failed to init wiki dirs: {}", e);
+        }
+        let tantivy_dir = wiki_root.join(".tantivy");
+        let pi = match PageIndex::open(tantivy_dir) {
+            Ok(idx) => Some(Arc::new(idx)),
+            Err(e) => {
+                tracing::warn!("Tantivy index open failed, search disabled: {}", e);
+                None
+            }
+        };
+        (Some(ps), pi)
+    } else {
+        (None, None)
+    };
 
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
@@ -95,11 +116,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             workspace: workspace.clone(),
             subagent_spawner: None,
             extra_tools: vec![],
-            sqlite_store: None,
+            sqlite_store: Some(memory_store.sqlite_store().clone()),
+            page_store,
+            page_index,
         });
 
     let mut tools = common_tools.clone();
-    gasket_engine::tools::register_sqlite_tools(&mut tools, &sqlite_store);
     let tools_arc = Arc::new(tools.clone());
     tools.link_engine_refs(tools_arc, provider_info.provider.clone());
     let tools = Arc::new(tools);

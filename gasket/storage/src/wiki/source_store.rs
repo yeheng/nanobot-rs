@@ -26,7 +26,8 @@ impl WikiSourceStore {
     pub async fn mark_ingested(&self, id: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query("UPDATE raw_sources SET ingested = 1, ingested_at = $1 WHERE id = $2")
-            .bind(&now).bind(id)
+            .bind(&now)
+            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())

@@ -70,12 +70,10 @@ impl WikiPageStore {
     }
 
     pub async fn exists(&self, path: &str) -> Result<bool> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT path FROM wiki_pages WHERE path = $1"
-        )
-        .bind(path)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String,)> = sqlx::query_as("SELECT path FROM wiki_pages WHERE path = $1")
+            .bind(path)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.is_some())
     }
 

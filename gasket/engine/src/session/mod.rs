@@ -7,15 +7,13 @@ pub mod compactor;
 pub mod config;
 pub mod context;
 pub mod history;
-pub mod memory;
 pub mod prompt;
 pub mod store;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
-pub use memory::{MemoryContext, MemoryManager};
-pub use store::{MemoryProvider, MemoryStore};
+pub use store::{MemoryContext, MemoryProvider, PhaseBreakdown, MemoryStore};
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 
@@ -78,24 +76,6 @@ type SharedEmbedder = Arc<gasket_storage::TextEmbedder>;
 
 #[cfg(not(feature = "local-embedding"))]
 type SharedEmbedder = ();
-
-/// Thin wrapper to share a single `Arc<TextEmbedder>` as a `Box<dyn Embedder>`.
-#[cfg(feature = "local-embedding")]
-struct SharedTextEmbedder(Arc<gasket_storage::TextEmbedder>);
-
-#[cfg(feature = "local-embedding")]
-#[async_trait::async_trait]
-impl gasket_storage::memory::Embedder for SharedTextEmbedder {
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        self.0.embed(text)
-    }
-    fn dimension(&self) -> usize {
-        self.0.dimension()
-    }
-    fn clone_box(&self) -> Box<dyn gasket_storage::memory::Embedder> {
-        Box::new(Self(self.0.clone()))
-    }
-}
 
 // ── Skill loading (inlined from agent/core/mod.rs) ──
 
@@ -173,7 +153,7 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
-/// Owns session state (events, prompts, memory, compaction) and delegates
+/// Owns session state (events, prompts, wiki knowledge, compaction) and delegates
 /// the core LLM loop to `kernel::execute()`.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
@@ -185,9 +165,8 @@ pub struct AgentSession {
     hooks: Arc<HookRegistry>,
     history_config: gasket_storage::HistoryConfig,
     compactor: Option<Arc<ContextCompactor>>,
-    memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
-    /// Wiki knowledge system (gradually replaces memory_manager).
+    /// Wiki knowledge system.
     page_store: Option<Arc<PageStore>>,
     page_index: Option<Arc<PageIndex>>,
     wiki_log: Option<Arc<WikiLog>>,
@@ -253,7 +232,7 @@ impl AgentSession {
             }
         };
         #[cfg(not(feature = "local-embedding"))]
-        let shared_embedder: Option<SharedEmbedder> = None;
+        let _shared_embedder: Option<SharedEmbedder> = None;
 
         indexing_service.enable_queue(10000);
         indexing_service.start_worker();
@@ -288,10 +267,6 @@ impl AgentSession {
         let compactor = Arc::new(compactor);
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-        let memory_manager =
-            Self::try_init_memory_manager(&memory_store, shared_embedder, config.memory_budget)
-                .await;
-
         let wiki_components = Self::try_init_wiki(&config, sqlite_store_for_evo.pool());
         let (page_store, page_index, wiki_log) = match wiki_components {
             Some((store, index, log)) => (Some(store), Some(index), Some(log)),
@@ -299,7 +274,7 @@ impl AgentSession {
         };
 
         let hooks = Self::build_hooks(
-            memory_manager.as_ref(),
+            page_store.as_ref(),
             &config,
             sqlite_store_for_evo,
             event_store_for_evo,
@@ -316,7 +291,6 @@ impl AgentSession {
             hooks,
             history_config,
             compactor: Some(compactor),
-            memory_manager,
             indexing_service: Some(indexing_service),
             pricing,
             pending_done: tokio_util::task::TaskTracker::new(),
@@ -346,7 +320,7 @@ impl AgentSession {
     }
 
     fn build_hooks(
-        memory_manager: Option<&Arc<MemoryManager>>,
+        page_store: Option<&Arc<PageStore>>,
         config: &AgentConfig,
         sqlite_store: Arc<gasket_storage::SqliteStore>,
         event_store: Arc<EventStore>,
@@ -356,17 +330,17 @@ impl AgentSession {
 
         let mut builder = history::builder::build_default_hooks_builder();
 
-        if let (Some(mm), Some(evo_config)) = (memory_manager, config.evolution.as_ref()) {
+        if let (Some(ps), Some(evo_config)) = (page_store, config.evolution.as_ref()) {
             if evo_config.enabled {
-                let evo_hook = Arc::new(EvolutionHook::new(
-                    mm.clone(),
+                let mut evo_hook = EvolutionHook::new(
                     sqlite_store,
                     event_store,
                     provider,
                     config.model.clone(),
                     evo_config.clone(),
-                ));
-                builder = builder.with_hook(evo_hook);
+                );
+                evo_hook = evo_hook.with_page_store(ps.clone());
+                builder = builder.with_hook(Arc::new(evo_hook));
                 tracing::info!(
                     "EvolutionHook registered (batch_messages={})",
                     evo_config.batch_messages
@@ -502,13 +476,6 @@ impl AgentSession {
     /// all pending `finalize_response` calls complete. This prevents data loss where
     /// an assistant message has been generated but not yet persisted to the EventStore.
     pub async fn graceful_shutdown(&self) {
-        // Flush memory manager access log
-        if let Some(ref mgr) = self.memory_manager {
-            if let Err(e) = mgr.shutdown_flush().await {
-                warn!("Memory manager shutdown flush failed: {}", e);
-            }
-        }
-
         // Close the tracker (no new tasks accepted) and await all in-flight work.
         self.pending_done.close();
         if !self.pending_done.is_empty() {
@@ -654,44 +621,9 @@ impl AgentSession {
     ) -> Result<history::builder::BuildOutcome, AgentError> {
         use history::builder::ContextBuilder;
 
-        let memory_loader = if let Some(ref mgr) = self.memory_manager {
-            let mgr = mgr.clone();
-            Some(
-                move |content: &str| -> history::builder::MemoryLoaderFuture {
-                    let mgr = mgr.clone();
-                    let content = content.to_string();
-                    Box::pin(async move {
-                        use gasket_storage::memory::MemoryQuery;
-                        let query = MemoryQuery::new().with_text(&content);
-                        match mgr.load_for_context(&query).await {
-                            Ok(ctx) if !ctx.memories.is_empty() => {
-                                let mut sections = Vec::new();
-                                sections.push("## Long-Term Memory".to_string());
-                                sections.push(format!(
-                                    "The following memories were loaded ({} tokens):",
-                                    ctx.tokens_used
-                                ));
-                                sections.push(String::new());
-                                for mem in &ctx.memories {
-                                    sections.push(format!(
-                                        "### {} [{}]",
-                                        mem.metadata.title, mem.metadata.scenario
-                                    ));
-                                    sections.push(mem.content.clone());
-                                    sections.push(String::new());
-                                }
-                                Some(sections.join("\n"))
-                            }
-                            _ => None,
-                        }
-                    })
-                },
-            )
-        } else {
-            None
-        };
-
-        let mut builder = ContextBuilder::new(
+        // TODO: Phase 3 - Add wiki-based memory loader
+        // For now, don't set any memory loader
+        let builder = ContextBuilder::new(
             self.context.clone(),
             self.system_prompt.clone(),
             self.skills_context.clone(),
@@ -699,61 +631,7 @@ impl AgentSession {
             self.history_config.clone(),
         );
 
-        if let Some(loader) = memory_loader {
-            builder = builder.with_memory_loader(loader);
-        }
-
         builder.build(content, session_key).await
-    }
-
-    /// Try to initialize the long-term memory manager.
-    async fn try_init_memory_manager(
-        memory_store: &MemoryStore,
-        _shared_embedder: Option<SharedEmbedder>,
-        memory_budget: Option<gasket_storage::memory::TokenBudget>,
-    ) -> Option<Arc<MemoryManager>> {
-        use gasket_storage::memory::{memory_base_dir, Embedder, NoopEmbedder};
-
-        let base_dir = memory_base_dir();
-        if !base_dir.exists() {
-            debug!("Memory directory {:?} does not exist", base_dir);
-            return None;
-        }
-
-        let embedder: Box<dyn Embedder> = {
-            #[cfg(feature = "local-embedding")]
-            {
-                if let Some(arc_embedder) = _shared_embedder {
-                    info!("Memory manager reusing shared TextEmbedder");
-                    Box::new(SharedTextEmbedder(arc_embedder)) as Box<dyn Embedder>
-                } else {
-                    Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
-                }
-            }
-            #[cfg(not(feature = "local-embedding"))]
-            {
-                Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
-            }
-        };
-
-        let pool = memory_store.sqlite_store().pool();
-        let mgr_result = MemoryManager::new(base_dir, &pool, embedder).await;
-        let mgr_result = mgr_result.map(|m| m.with_budget(memory_budget));
-
-        match mgr_result {
-            Ok(mgr) => {
-                if let Err(e) = mgr.init().await {
-                    warn!("Failed to initialize memory manager: {}", e);
-                    return None;
-                }
-                debug!("Memory manager initialized successfully");
-                Some(Arc::new(mgr))
-            }
-            Err(e) => {
-                warn!("Failed to create memory manager: {}", e);
-                None
-            }
-        }
     }
 
     /// Try to initialize the wiki knowledge system.
@@ -766,19 +644,31 @@ impl AgentSession {
             return None;
         }
         let wiki_base = std::path::PathBuf::from(&wiki_config.base_path);
-        let store = PageStore::new(pool.clone(), wiki_base);
-        let index = PageIndex::new();
+        let store = PageStore::new(pool.clone(), wiki_base.clone());
+        let tantivy_dir = wiki_base.join(".tantivy");
+        let index = match PageIndex::open(tantivy_dir) {
+            Ok(idx) => idx,
+            Err(e) => {
+                tracing::warn!("Failed to open Tantivy index, search disabled: {}", e);
+                return None;
+            }
+        };
         let log = WikiLog::new(pool.clone());
 
         // Ensure directory structure + SQLite tables exist
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 store.init_dirs().await.ok()?;
-                gasket_storage::wiki::tables::create_wiki_tables(&pool).await.ok()
+                gasket_storage::wiki::tables::create_wiki_tables(&pool)
+                    .await
+                    .ok()
             })
         })?;
 
-        tracing::info!("Wiki knowledge system initialized at {}", wiki_config.base_path);
+        tracing::info!(
+            "Wiki knowledge system initialized at {}",
+            wiki_config.base_path
+        );
         Some((Arc::new(store), Arc::new(index), Arc::new(log)))
     }
 }

@@ -21,7 +21,11 @@ pub use cron::{
     cmd_cron_remove, cmd_cron_show,
 };
 pub use gateway::cmd_gateway;
-pub use memory::{cmd_memory_decay, cmd_memory_refresh};
+pub use memory::{
+    cmd_memory_decay, cmd_memory_refresh,
+    cmd_wiki_init, cmd_wiki_ingest, cmd_wiki_lint, cmd_wiki_list,
+    cmd_wiki_migrate, cmd_wiki_search, cmd_wiki_stats,
+};
 pub use onboard::cmd_onboard;
 pub use status::{cmd_auth_status, cmd_status};
 pub use vault::{

@@ -39,9 +39,7 @@ pub use gasket_types::{
 };
 
 // Re-export tool implementations
-pub use builder::{
-    build_tool_registry, register_sqlite_tools, resolve_exec_workspace, ToolRegistryConfig,
-};
+pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
 pub use context::ContextTool;
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};

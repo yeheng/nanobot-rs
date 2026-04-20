@@ -50,7 +50,9 @@ pub struct WikiPage {
     pub confidence: f64,
 }
 
-fn default_confidence() -> f64 { 1.0 }
+fn default_confidence() -> f64 {
+    1.0
+}
 
 impl WikiPage {
     /// One constructor. All page types go through this.
@@ -91,7 +93,9 @@ impl WikiPage {
             anyhow::bail!("missing frontmatter delimiter");
         }
         let rest = &content[3..];
-        let end = rest.find("\n---").ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
+        let end = rest
+            .find("\n---")
+            .ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
         let yaml = &rest[..end];
         let body = rest[end + 4..].trim_start_matches('\n').trim_start();
         let mut page: WikiPage = serde_yaml::from_str(yaml)?;
@@ -125,7 +129,13 @@ pub struct PageFilter {
 pub fn slugify(s: &str) -> String {
     s.to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())

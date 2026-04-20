@@ -8,3 +8,4 @@ pub use log_store::WikiLogStore;
 pub use page_store::WikiPageStore;
 pub use relation_store::WikiRelationStore;
 pub use source_store::WikiSourceStore;
+pub use tables::create_wiki_tables;

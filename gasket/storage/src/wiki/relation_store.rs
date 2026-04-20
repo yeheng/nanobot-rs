@@ -17,7 +17,10 @@ impl WikiRelationStore {
                VALUES ($1, $2, $3, $4)
                ON CONFLICT(from_page, to_page, relation) DO UPDATE SET confidence = 1.0"#,
         )
-        .bind(from_page).bind(to_page).bind(relation).bind(&now)
+        .bind(from_page)
+        .bind(to_page)
+        .bind(relation)
+        .bind(&now)
         .execute(&self.pool)
         .await?;
         Ok(())

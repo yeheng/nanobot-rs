@@ -2,7 +2,7 @@
 //!
 //! This hook batches conversation events and, once a threshold is reached,
 //! triggers a background LLM call to extract persistent facts and skills,
-//! writing them into long-term memory via `MemoryManager`.
+//! writing them into the wiki knowledge system.
 
 use std::sync::Arc;
 
@@ -12,10 +12,10 @@ use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use crate::hooks::{HookAction, HookPoint, PipelineHook, ReadonlyContext};
-use crate::session::{EvolutionConfig, MemoryManager};
+use crate::session::config::EvolutionConfig;
+use crate::wiki::{PageFilter, PageStore, PageType, WikiPage, slugify};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::memory::{Frequency, Scenario};
 use gasket_storage::{EventStore, SqliteStore};
 use gasket_types::{EventType, SessionKey};
 
@@ -32,18 +32,17 @@ struct EvolutionMemory {
 
 /// Hook that performs self-evolution by extracting insights from conversations.
 pub struct EvolutionHook {
-    memory_manager: Arc<MemoryManager>,
     sqlite_store: Arc<SqliteStore>,
     event_store: Arc<EventStore>,
     provider: Arc<dyn LlmProvider>,
     model: String,
     config: EvolutionConfig,
+    page_store: Option<Arc<PageStore>>,
 }
 
 impl EvolutionHook {
     /// Create a new `EvolutionHook` with all required dependencies.
     pub fn new(
-        memory_manager: Arc<MemoryManager>,
         sqlite_store: Arc<SqliteStore>,
         event_store: Arc<EventStore>,
         provider: Arc<dyn LlmProvider>,
@@ -51,13 +50,19 @@ impl EvolutionHook {
         config: EvolutionConfig,
     ) -> Self {
         Self {
-            memory_manager,
             sqlite_store,
             event_store,
             provider,
             model,
             config,
+            page_store: None,
         }
+    }
+
+    /// Builder method to set the page store for wiki-based memory storage.
+    pub fn with_page_store(mut self, page_store: Arc<PageStore>) -> Self {
+        self.page_store = Some(page_store);
+        self
     }
 
     /// Build the watermark key for a given session.
@@ -253,41 +258,80 @@ impl PipelineHook for EvolutionHook {
             );
         }
 
-        // 8. Write each extracted item into long-term memory.
+        // 8. Write each extracted item into long-term memory (wiki-only).
         for mem in memories {
-            // 8.1 Semantic deduplication: search for highly similar existing memories.
-            let query_text = format!("{} {}", mem.title, mem.content);
-            if let Ok(hits) = self.memory_manager.search(&query_text, 1).await {
-                if let Some(hit) = hits.first() {
-                    if hit.score > 0.85 {
-                        debug!(
-                            "EvolutionHook: Memory '{}' is too similar to existing '{}' (score: {:.2}). Skipping duplicate.",
-                            mem.title, hit.title, hit.score
-                        );
-                        continue;
-                    }
+            // PageStore is required for evolution hook
+            let page_store = match &self.page_store {
+                Some(ps) => ps,
+                None => {
+                    warn!("EvolutionHook: PageStore not configured, skipping memory extraction");
+                    continue;
                 }
-            }
-
-            let scenario = match mem.scenario.as_str() {
-                "profile" => Scenario::Profile,
-                _ => Scenario::Knowledge,
             };
 
+            // 8.1 Deduplication: check for similar existing pages by title
+            let existing_pages = match page_store.list(PageFilter::default()).await {
+                Ok(pages) => pages,
+                Err(e) => {
+                    warn!(
+                        "EvolutionHook: failed to list pages for dedup check: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            // Simple string similarity check (exact match for now, can be enhanced later)
+            let mem_slug = slugify(&mem.title);
+            let is_duplicate = existing_pages
+                .iter()
+                .any(|p| slugify(&p.title) == mem_slug || p.path.contains(&mem_slug));
+
+            if is_duplicate {
+                debug!(
+                    "EvolutionHook: Page '{}' already exists (similar title found). Skipping duplicate.",
+                    mem.title
+                );
+                continue;
+            }
+
+            // 8.2 Determine path prefix based on scenario
+            let path_prefix = match mem.scenario.as_str() {
+                "profile" => "entities/people",
+                _ => "topics",
+            };
+
+            // 8.3 Build the page path
+            let page_path = format!("{}/{}", path_prefix, mem_slug);
+
+            // 8.4 Determine page type
+            let page_type = match mem.scenario.as_str() {
+                "profile" => PageType::Entity,
+                _ => PageType::Topic,
+            };
+
+            // 8.5 Build tags
             let mut tags = mem.tags.unwrap_or_default();
             tags.push("auto_learned".to_string());
 
-            if let Err(e) = self
-                .memory_manager
-                .create_memory(scenario, &mem.title, &tags, Frequency::Warm, &mem.content)
-                .await
-            {
+            // 8.6 Create the wiki page
+            let page = WikiPage::new(
+                page_path,
+                mem.title.clone(),
+                page_type,
+                mem.content.clone(),
+            );
+            let mut page = page;
+            page.tags = tags;
+
+            // 8.7 Write to page store
+            if let Err(e) = page_store.write(&page).await {
                 warn!(
-                    "EvolutionHook: failed to create memory '{}': {}",
+                    "EvolutionHook: failed to create wiki page '{}': {}",
                     mem.title, e
                 );
             } else {
-                debug!("EvolutionHook: created memory '{}'", mem.title);
+                debug!("EvolutionHook: created wiki page '{}'", mem.title);
             }
         }
 

@@ -4,9 +4,9 @@
 
 **Goal:** Replace the existing memory/ module with a Wiki-first knowledge management system using a three-layer architecture (Raw Sources, Compiled Wiki, Schema).
 
-**Architecture:** The Wiki system stores knowledge as interlinked Markdown pages under `~/.gasket/wiki/` with SQLite metadata, Tantivy full-text search, and embedding-based semantic retrieval. A WikiStore facade provides CRUD, ingest, query, and lint operations. The existing memory/ module is cleanly removed.
+**Architecture:** The Wiki system stores knowledge in SQLite as the single source of truth (path as PK, content in DB). Disk markdown files are optional derived cache. Three focused structs replace the old WikiStore God Object: `PageStore` (CRUD), `PageIndex` (search), `WikiLog` (audit). Tool names (`memorize`, `memory_search`, `memory_refresh`) are preserved for backward compatibility. A one-time `gasket wiki migrate` command handles data transition.
 
-**Tech Stack:** Rust, tokio, SQLite (sqlx), Tantivy, ONNX embeddings (fastembed), serde_yaml (frontmatter), chrono
+**Tech Stack:** Rust, tokio, SQLite (sqlx), Tantivy, ONNX embeddings (fastembed), serde_yaml (frontmatter export), chrono
 
 **Spec:** `docs/specs/2026-04-19-wiki-first-knowledge-system-design.md`
 
@@ -18,14 +18,16 @@
 
 ```
 gasket/engine/src/wiki/
-├── mod.rs                 # WikiStore facade + module re-exports
-├── page.rs                # WikiPage, PageFrontmatter, PageType
-├── uri.rs                 # WikiUri enum + parser + resolver
+├── mod.rs                 # Re-exports
+├── page.rs                # WikiPage, PageType, PageSummary, PageFilter, slugify
+├── store.rs               # PageStore: CRUD + disk sync (replaces WikiStore God Object)
+├── index.rs               # PageIndex: Tantivy + FTS5 search (Phase 3)
+├── log.rs                 # WikiLog: structured operation log
 ├── ingest/
-│   ├── mod.rs             # IngestPipeline, IngestRequest, IngestReport
+│   ├── mod.rs             # IngestPipeline, IngestTier
 │   ├── parser.rs          # SourceParser trait + Markdown/HTML/Text parsers
 │   ├── extractor.rs       # KnowledgeExtractor (LLM prompt + response parse)
-│   ├── integrator.rs      # WikiIntegrator (LLM-driven page updates)
+│   ├── integrator.rs      # WikiIntegrator (LLM-driven page updates + cost gate)
 │   └── dedup.rs           # SemanticDeduplicator (embedding similarity)
 ├── query/
 │   ├── mod.rs             # WikiQueryEngine (three-phase retrieval)
@@ -35,12 +37,10 @@ gasket/engine/src/wiki/
 │   ├── mod.rs             # WikiLinter, LintReport
 │   ├── structural.rs      # Structural checks (orphans, missing, weak)
 │   └── semantic.rs        # Semantic checks (contradictions, stale)
-├── index.rs               # index.md generation and maintenance
-└── log.rs                 # log.md append + SQLite structured log
 
 gasket/engine/src/hooks/
-├── wiki_ingest.rs         # Replaces evolution.rs for Quick Ingest
-└── wiki_query.rs          # Replaces memory loading in BeforeRequest
+├── wiki_query.rs          # Replaces memory loading in BeforeRequest
+└── (evolution.rs refactored in-place)
 ```
 
 ### New Files (storage crate)
@@ -48,8 +48,8 @@ gasket/engine/src/hooks/
 ```
 gasket/storage/src/wiki/
 ├── mod.rs                 # Re-exports
-├── tables.rs              # SQLite table creation (wiki_pages, raw_sources, etc.)
-├── page_store.rs          # Wiki page metadata CRUD
+├── tables.rs              # SQLite table creation (path as PK, content in DB, no lock table)
+├── page_store.rs          # Wiki page CRUD (content lives in SQLite)
 ├── source_store.rs        # Raw source registry
 ├── relation_store.rs      # Inter-page relations CRUD
 └── log_store.rs           # Structured operation log
@@ -65,18 +65,18 @@ gasket/cli/src/commands/wiki.rs  # wiki ingest/query/lint/list commands
 
 ```
 gasket/engine/src/lib.rs                    # pub mod wiki; remove memory refs
-gasket/engine/src/session/mod.rs            # WikiStore replaces MemoryManager
+gasket/engine/src/session/mod.rs            # PageStore + PageIndex replace MemoryManager
 gasket/engine/src/session/config.rs         # WikiConfig replaces MemoryConfig
-gasket/engine/src/session/history/builder.rs # WikiQueryEngine replaces MemoryLoader
+gasket/engine/src/session/history/builder.rs # PageIndex replaces MemoryLoader
 gasket/engine/src/hooks/mod.rs              # Add wiki hooks
-gasket/engine/src/hooks/evolution.rs        # Refactor to use WikiStore
-gasket/engine/src/tools/mod.rs              # Replace memory tools with wiki tools
-gasket/engine/src/tools/builder.rs          # Register wiki tools
-gasket/engine/src/tools/memorize.rs         # Replace with WikiIngestTool
-gasket/engine/src/tools/memory_search.rs    # Replace with WikiSearchTool
-gasket/engine/src/tools/memory_refresh.rs   # Replace with WikiRefreshTool
+gasket/engine/src/hooks/evolution.rs        # Refactor to use PageStore
+gasket/engine/src/tools/mod.rs              # Update memory tool implementations
+gasket/engine/src/tools/builder.rs          # Re-register memory tools with wiki backing
+gasket/engine/src/tools/memorize.rs         # Rewrite: backed by PageStore (keep tool name)
+gasket/engine/src/tools/memory_search.rs    # Rewrite: backed by PageIndex (keep tool name)
+gasket/engine/src/tools/memory_refresh.rs   # Rewrite: backed by PageIndex (keep tool name)
 gasket/cli/src/commands/mod.rs              # Add wiki commands
-gasket/cli/src/commands/memory.rs           # Replace with wiki commands
+gasket/cli/src/commands/memory.rs           # Add wiki migrate command
 gasket/storage/src/lib.rs                   # pub mod wiki; memory module kept for transition
 ```
 
@@ -84,12 +84,11 @@ gasket/storage/src/lib.rs                   # pub mod wiki; memory module kept f
 
 ```
 gasket/engine/src/session/memory/           # Entire directory (MemoryManager facade)
-gasket/engine/src/tools/memorize.rs         # Replaced by wiki_ingest tool
-gasket/engine/src/tools/memory_search.rs    # Replaced by wiki_search tool
-gasket/engine/src/tools/memory_refresh.rs   # Replaced by wiki_refresh tool
 ```
 
-**IMPORTANT:** `gasket/storage/src/memory/` is KEPT. It provides `EmbeddingStore`, `FileMemoryStore` patterns that the wiki storage layer reuses. Only the engine-level `session/memory/` facade is removed.
+**Note:** Tool FILES are kept (memorize.rs, memory_search.rs, memory_refresh.rs) — only their internals are rewritten to use PageStore/PageIndex. Tool NAMES remain `memorize`, `memory_search`, `memory_refresh` for backward compatibility.
+
+**IMPORTANT:** `gasket/storage/src/memory/` is KEPT. It provides `EmbeddingStore`, `FileMemoryStore` patterns that the wiki storage layer reuses. Only the engine-level `session/memory/` facade is removed. Tool file names (`memorize.rs`, `memory_search.rs`, `memory_refresh.rs`) are also kept — only their internals are rewritten.
 
 ---
 
@@ -100,99 +99,16 @@ gasket/engine/src/tools/memory_refresh.rs   # Replaced by wiki_refresh tool
 **Files:**
 - Create: `gasket/engine/src/wiki/mod.rs`
 - Create: `gasket/engine/src/wiki/page.rs`
-- Create: `gasket/engine/src/wiki/uri.rs`
 
-- [ ] **Step 1: Create wiki URI module**
+**No `uri.rs`.** Pages are identified by `String` path. No custom URI scheme.
 
-```rust
-// gasket/engine/src/wiki/uri.rs
-
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-
-/// wiki:// URI scheme for identifying wiki resources
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum WikiUri {
-    /// A wiki page: wiki://entities/projects/gasket
-    Page { path: String },
-    /// A raw source reference: source://uploads/2026-04-19-paper
-    Source { id: String },
-    /// The content index page
-    Index,
-    /// The operation log
-    Log,
-}
-
-impl WikiUri {
-    pub fn page(path: impl Into<String>) -> Self {
-        Self::Page { path: path.into() }
-    }
-
-    pub fn source(id: impl Into<String>) -> Self {
-        Self::Source { id: id.into() }
-    }
-
-    /// Parse a wiki:// or source:// URI string
-    pub fn parse(uri: &str) -> anyhow::Result<Self> {
-        if uri == "wiki://index" {
-            return Ok(Self::Index);
-        }
-        if uri == "wiki://log" {
-            return Ok(Self::Log);
-        }
-        if let Some(path) = uri.strip_prefix("wiki://") {
-            if path.is_empty() {
-                anyhow::bail!("empty wiki path: {}", uri);
-            }
-            return Ok(Self::Page { path: path.to_string() });
-        }
-        if let Some(id) = uri.strip_prefix("source://") {
-            if id.is_empty() {
-                anyhow::bail!("empty source id: {}", uri);
-            }
-            return Ok(Self::Source { id: id.to_string() });
-        }
-        anyhow::bail!("invalid wiki URI: {}", uri)
-    }
-
-    /// Convert URI to filesystem path relative to wiki base directory
-    pub fn to_file_path(&self, base: &Path) -> PathBuf {
-        match self {
-            Self::Page { path } => base.join(format!("{}.md", path)),
-            Self::Source { id } => base.join("sources").join(format!("{}.md", id)),
-            Self::Index => base.join("index.md"),
-            Self::Log => base.join("log.md"),
-        }
-    }
-
-    /// Convert to URI string
-    pub fn as_str(&self) -> String {
-        match self {
-            Self::Page { path } => format!("wiki://{}", path),
-            Self::Source { id } => format!("source://{}", id),
-            Self::Index => "wiki://index".to_string(),
-            Self::Log => "wiki://log".to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for WikiUri {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-```
-
-- [ ] **Step 2: Create wiki page module**
+- [ ] **Step 1: Create wiki page module**
 
 ```rust
 // gasket/engine/src/wiki/page.rs
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-use super::uri::WikiUri;
 
 /// Page type classification
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,136 +119,82 @@ pub enum PageType {
     Source,
 }
 
-/// Relation types between wiki pages
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Relation {
-    References,
-    Contradicts,
-    Supersedes,
-    Related,
+impl PageType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Entity => "entity",
+            Self::Topic => "topic",
+            Self::Source => "source",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "entity" => Some(Self::Entity),
+            "topic" => Some(Self::Topic),
+            "source" => Some(Self::Source),
+            _ => None,
+        }
+    }
 }
 
-/// YAML frontmatter for a wiki page
+/// A wiki page. One struct. One constructor. No special cases.
+/// SQLite is the single truth source. Disk files are derived cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PageFrontmatter {
-    pub id: String,
+pub struct WikiPage {
+    /// Relative path under wiki root: "entities/projects/gasket"
+    pub path: String,
     pub title: String,
-    #[serde(rename = "type")]
     pub page_type: PageType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    pub content: String,
     pub created: DateTime<Utc>,
     pub updated: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
     #[serde(default)]
-    pub outgoing_links: Vec<String>,
-    #[serde(default)]
-    pub incoming_links: Vec<String>,
+    pub source_count: u32,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
 }
 
-/// A complete wiki page (frontmatter + markdown body)
-#[derive(Debug, Clone)]
-pub struct WikiPage {
-    pub id: WikiUri,
-    pub frontmatter: PageFrontmatter,
-    pub content: String,
-}
+fn default_confidence() -> f64 { 1.0 }
 
 impl WikiPage {
-    /// Create a new entity page
-    pub fn new_entity(title: impl Into<String>, category: impl Into<String>, content: impl Into<String>) -> Self {
-        let title = title.into();
-        let category = category.into();
-        let slug = slugify(&title);
-        let id = WikiUri::page(format!("entities/{}/{}", category, slug));
+    /// One constructor. All page types go through this.
+    pub fn new(path: String, title: String, page_type: PageType, content: String) -> Self {
         let now = Utc::now();
         Self {
-            id,
-            frontmatter: PageFrontmatter {
-                id: id.as_str(),
-                title,
-                page_type: PageType::Entity,
-                category: Some(category),
-                tags: vec![],
-                created: now,
-                updated: now,
-                source_count: None,
-                confidence: None,
-                outgoing_links: vec![],
-                incoming_links: vec![],
-            },
-            content: content.into(),
+            path,
+            title,
+            page_type,
+            content,
+            category: None,
+            tags: vec![],
+            created: now,
+            updated: now,
+            source_count: 0,
+            confidence: 1.0,
         }
     }
 
-    /// Create a new topic page
-    pub fn new_topic(title: impl Into<String>, content: impl Into<String>) -> Self {
-        let title = title.into();
-        let slug = slugify(&title);
-        let id = WikiUri::page(format!("topics/{}", slug));
-        let now = Utc::now();
-        Self {
-            id,
-            frontmatter: PageFrontmatter {
-                id: id.as_str(),
-                title,
-                page_type: PageType::Topic,
-                category: None,
-                tags: vec![],
-                created: now,
-                updated: now,
-                source_count: None,
-                confidence: None,
-                outgoing_links: vec![],
-                incoming_links: vec![],
-            },
-            content: content.into(),
-        }
+    /// Helper: build a path from parts: ["entities", "projects", "gasket"]
+    pub fn make_path(parts: &[&str]) -> String {
+        parts.join("/")
     }
 
-    /// Create a new source summary page
-    pub fn new_source(title: impl Into<String>, source_id: impl Into<String>, content: impl Into<String>) -> Self {
-        let title = title.into();
-        let source_id = source_id.into();
-        let slug = slugify(&title);
-        let id = WikiUri::page(format!("sources/{}", slug));
-        let now = Utc::now();
-        Self {
-            id,
-            frontmatter: PageFrontmatter {
-                id: id.as_str(),
-                title,
-                page_type: PageType::Source,
-                category: Some(source_id.clone()),
-                tags: vec![],
-                created: now,
-                updated: now,
-                source_count: Some(1),
-                confidence: None,
-                outgoing_links: vec![],
-                incoming_links: vec![],
-            },
-            content: content.into(),
-        }
-    }
-
-    /// Serialize to markdown with frontmatter
+    /// Convert to markdown for disk export (optional cache)
     pub fn to_markdown(&self) -> String {
         let mut out = String::from("---\n");
-        out.push_str(&serde_yaml::to_string(&self.frontmatter).unwrap_or_default());
+        out.push_str(&serde_yaml::to_string(&self).unwrap_or_default());
         out.push_str("---\n\n");
         out.push_str(&self.content);
         out
     }
 
-    /// Deserialize from markdown with frontmatter
-    pub fn from_markdown(id: WikiUri, markdown: &str) -> anyhow::Result<Self> {
+    /// Parse from markdown (used only for migration / disk cache rebuild)
+    pub fn from_markdown(path: String, markdown: &str) -> anyhow::Result<Self> {
         let content = markdown.trim_start();
         if !content.starts_with("---") {
             anyhow::bail!("missing frontmatter delimiter");
@@ -341,63 +203,23 @@ impl WikiPage {
         let end = rest.find("\n---").ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
         let yaml = &rest[..end];
         let body = rest[end + 4..].trim_start_matches('\n').trim_start();
-
-        let frontmatter: PageFrontmatter = serde_yaml::from_str(yaml)?;
-        Ok(Self {
-            id,
-            frontmatter,
-            content: body.to_string(),
-        })
+        let mut page: WikiPage = serde_yaml::from_str(yaml)?;
+        page.path = path;
+        page.content = body.to_string();
+        Ok(page)
     }
 }
 
-/// Summary for index listing (no content)
+/// Summary for listing (no content — lightweight)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageSummary {
-    pub id: String,
+    pub path: String,
     pub title: String,
     pub page_type: PageType,
     pub category: Option<String>,
     pub tags: Vec<String>,
     pub updated: DateTime<Utc>,
-    pub confidence: Option<f64>,
-}
-
-impl From<&PageFrontmatter> for PageSummary {
-    fn from(fm: &PageFrontmatter) -> Self {
-        Self {
-            id: fm.id.clone(),
-            title: fm.title.clone(),
-            page_type: fm.page_type.clone(),
-            category: fm.category.clone(),
-            tags: fm.tags.clone(),
-            updated: fm.updated,
-            confidence: fm.confidence,
-        }
-    }
-}
-
-impl PageSummary {
-    /// Convert from SQLite PageRow (string dates → DateTime)
-    pub fn from_row(r: &crate::storage::wiki::page_store::PageRow) -> Self {
-        Self {
-            id: r.id.clone(),
-            title: r.title.clone(),
-            page_type: match r.page_type.as_str() {
-                "entity" => PageType::Entity,
-                "topic" => PageType::Topic,
-                _ => PageType::Source,
-            },
-            category: r.category.clone(),
-            tags: r.tags.as_ref()
-                .and_then(|t| serde_json::from_str(t).ok())
-                .unwrap_or_default(),
-            updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_default(),
-            confidence: Some(r.confidence),
-        }
-    }
+    pub confidence: f64,
 }
 
 /// Filter for listing pages
@@ -408,7 +230,8 @@ pub struct PageFilter {
     pub tags: Vec<String>,
 }
 
-fn slugify(s: &str) -> String {
+/// Slugify a string for use in paths
+pub fn slugify(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
@@ -420,92 +243,94 @@ fn slugify(s: &str) -> String {
 }
 ```
 
-- [ ] **Step 3: Create wiki module root with tests**
+- [ ] **Step 2: Create wiki module root with tests**
 
 ```rust
 // gasket/engine/src/wiki/mod.rs
 
 pub mod page;
-pub mod uri;
 
 // Re-exports
-pub use page::{PageFilter, PageFrontmatter, PageSummary, PageType, Relation, WikiPage};
-pub use uri::WikiUri;
+pub use page::{PageFilter, PageSummary, PageType, WikiPage, slugify};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_wiki_uri_parse_page() {
-        let uri = WikiUri::parse("wiki://entities/projects/gasket").unwrap();
-        assert_eq!(uri, WikiUri::page("entities/projects/gasket"));
-    }
-
-    #[test]
-    fn test_wiki_uri_parse_source() {
-        let uri = WikiUri::parse("source://uploads/2026-04-19-paper").unwrap();
-        assert_eq!(uri, WikiUri::source("uploads/2026-04-19-paper"));
-    }
-
-    #[test]
-    fn test_wiki_uri_parse_special() {
-        assert_eq!(WikiUri::parse("wiki://index").unwrap(), WikiUri::Index);
-        assert_eq!(WikiUri::parse("wiki://log").unwrap(), WikiUri::Log);
-    }
-
-    #[test]
-    fn test_wiki_uri_to_file_path() {
-        let base = std::path::Path::new("/tmp/wiki");
-        let uri = WikiUri::page("entities/projects/gasket");
-        assert_eq!(
-            uri.to_file_path(base),
-            std::path::PathBuf::from("/tmp/wiki/entities/projects/gasket.md")
+    fn test_page_new_entity() {
+        let page = WikiPage::new(
+            "entities/projects/gasket".to_string(),
+            "Gasket Project".to_string(),
+            PageType::Entity,
+            "A Rust agent framework.".to_string(),
         );
+        assert_eq!(page.path, "entities/projects/gasket");
+        assert_eq!(page.page_type, PageType::Entity);
+        assert_eq!(page.confidence, 1.0);
+        assert!(page.tags.is_empty());
     }
 
     #[test]
-    fn test_wiki_uri_roundtrip() {
-        let uri = WikiUri::page("topics/rust-async");
-        let s = uri.as_str();
-        let parsed = WikiUri::parse(&s).unwrap();
-        assert_eq!(uri, parsed);
+    fn test_page_new_topic() {
+        let page = WikiPage::new(
+            "topics/rust-async".to_string(),
+            "Rust Async".to_string(),
+            PageType::Topic,
+            "How async works in Rust.".to_string(),
+        );
+        assert_eq!(page.page_type, PageType::Topic);
     }
 
     #[test]
-    fn test_wiki_page_entity_creation() {
-        let page = WikiPage::new_entity("Gasket Project", "projects", "A Rust agent framework.");
-        assert!(matches!(page.frontmatter.page_type, PageType::Entity));
-        assert!(matches!(page.id, WikiUri::Page { .. }));
-    }
-
-    #[test]
-    fn test_wiki_page_markdown_roundtrip() {
-        let page = WikiPage::new_topic("Test Topic", "Some content here.");
+    fn test_page_markdown_roundtrip() {
+        let mut page = WikiPage::new(
+            "topics/test".to_string(),
+            "Test Topic".to_string(),
+            PageType::Topic,
+            "Some content here.".to_string(),
+        );
+        page.tags = vec!["test".to_string()];
         let md = page.to_markdown();
-        let parsed = WikiPage::from_markdown(page.id.clone(), &md).unwrap();
-        assert_eq!(parsed.frontmatter.title, "Test Topic");
+        let parsed = WikiPage::from_markdown("topics/test".to_string(), &md).unwrap();
+        assert_eq!(parsed.title, "Test Topic");
         assert_eq!(parsed.content, "Some content here.");
+        assert_eq!(parsed.tags, vec!["test"]);
     }
 
     #[test]
-    fn test_wiki_uri_rejects_invalid() {
-        assert!(WikiUri::parse("http://example.com").is_err());
-        assert!(WikiUri::parse("wiki://").is_err());
+    fn test_make_path() {
+        assert_eq!(WikiPage::make_path(&["entities", "projects", "gasket"]), "entities/projects/gasket");
+        assert_eq!(WikiPage::make_path(&["topics", "rust-async"]), "topics/rust-async");
+    }
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("Rust & LLM"), "rust-llm");
+        assert_eq!(slugify("  spaces  "), "spaces");
+    }
+
+    #[test]
+    fn test_page_type_roundtrip() {
+        assert_eq!(PageType::from_str("entity"), Some(PageType::Entity));
+        assert_eq!(PageType::from_str("topic"), Some(PageType::Topic));
+        assert_eq!(PageType::from_str("source"), Some(PageType::Source));
+        assert_eq!(PageType::from_str("unknown"), None);
     }
 }
 ```
 
-- [ ] **Step 4: Run tests to verify**
+- [ ] **Step 3: Run tests to verify**
 
 Run: `cargo test --package gasket-engine -- wiki::tests --nocapture`
-Expected: All 8 tests PASS
+Expected: All 6 tests PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add gasket/engine/src/wiki/
-git commit -m "feat(wiki): add WikiUri, WikiPage, and PageFrontmatter data types"
+git commit -m "feat(wiki): add WikiPage data type with path-based identity"
 ```
 
 ---
@@ -545,17 +370,19 @@ pub use source_store::WikiSourceStore;
 
 use sqlx::SqlitePool;
 
-/// Create all wiki-related tables
+/// Create all wiki-related tables.
+/// Key design: wiki_pages.path is PK, content lives in SQLite (single truth).
+/// No wiki_page_locks table — SQLite WAL handles concurrency.
 pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS wiki_pages (
-            id          TEXT PRIMARY KEY,
-            path        TEXT NOT NULL UNIQUE,
+            path        TEXT PRIMARY KEY,
             title       TEXT NOT NULL,
             type        TEXT NOT NULL,
             category    TEXT,
             tags        TEXT,
+            content     TEXT NOT NULL DEFAULT '',
             created     TEXT NOT NULL,
             updated     TEXT NOT NULL,
             source_count INTEGER DEFAULT 0,
@@ -613,33 +440,17 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS wiki_page_locks (
-            page_id     TEXT PRIMARY KEY,
-            locked_at   TEXT NOT NULL
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
     // Indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(type)")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_category ON wiki_pages(category)")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_updated ON wiki_pages(updated)")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_raw_sources_ingested ON raw_sources(ingested)")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_log_action ON wiki_log(action)")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
 
     Ok(())
 }
@@ -653,7 +464,8 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-/// SQLite-backed wiki page metadata store
+/// SQLite-backed wiki page store. Single source of truth.
+/// Content lives here. Disk files are optional cache.
 pub struct WikiPageStore {
     pool: SqlitePool,
 }
@@ -663,14 +475,15 @@ impl WikiPageStore {
         Self { pool }
     }
 
+    /// Atomic UPSERT. SQLite WAL handles concurrency. No separate lock needed.
     pub async fn upsert(
         &self,
-        id: &str,
         path: &str,
         title: &str,
         page_type: &str,
         category: Option<&str>,
         tags: &str,
+        content: &str,
         source_count: u32,
         confidence: f64,
         checksum: Option<&str>,
@@ -678,49 +491,60 @@ impl WikiPageStore {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO wiki_pages (id, path, title, type, category, tags, created, updated, source_count, confidence, checksum)
+            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                path = excluded.path,
+            ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 type = excluded.type,
                 category = excluded.category,
                 tags = excluded.tags,
+                content = excluded.content,
                 updated = excluded.updated,
                 source_count = excluded.source_count,
                 confidence = excluded.confidence,
                 checksum = excluded.checksum
             "#,
         )
-        .bind(id).bind(path).bind(title).bind(page_type)
-        .bind(category).bind(tags).bind(&now).bind(&now)
+        .bind(path).bind(title).bind(page_type)
+        .bind(category).bind(tags).bind(content)
+        .bind(&now).bind(&now)
         .bind(source_count).bind(confidence).bind(checksum)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<PageRow>> {
+    pub async fn get(&self, path: &str) -> Result<Option<PageRow>> {
         let row = sqlx::query_as::<_, PageRow>(
-            "SELECT id, path, title, type, category, tags, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE id = ?"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE path = ?"
         )
-        .bind(id)
+        .bind(path)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
     }
 
-    pub async fn delete(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM wiki_pages WHERE id = ?")
-            .bind(id)
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        sqlx::query("DELETE FROM wiki_pages WHERE path = ?")
+            .bind(path)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
+    pub async fn exists(&self, path: &str) -> Result<bool> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT path FROM wiki_pages WHERE path = ?"
+        )
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn list_by_type(&self, page_type: &str) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT id, path, title, type, category, tags, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE type = ? ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE type = ? ORDER BY updated DESC"
         )
         .bind(page_type)
         .fetch_all(&self.pool)
@@ -730,55 +554,23 @@ impl WikiPageStore {
 
     pub async fn list_all(&self) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT id, path, title, type, category, tags, created, updated, source_count, confidence, checksum FROM wiki_pages ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages ORDER BY updated DESC"
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
     }
-
-    /// Acquire advisory lock for a page (auto-expires after 30s)
-    pub async fn acquire_lock(&self, page_id: &str) -> Result<bool> {
-        let now = chrono::Utc::now();
-        let threshold = (now - chrono::Duration::seconds(30)).to_rfc3339();
-
-        // Clean expired locks
-        sqlx::query("DELETE FROM wiki_page_locks WHERE locked_at < ?")
-            .bind(&threshold)
-            .execute(&self.pool)
-            .await?;
-
-        // Try to acquire
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO wiki_page_locks (page_id, locked_at) VALUES (?, ?)"
-        )
-        .bind(page_id)
-        .bind(now.to_rfc3339())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Release advisory lock for a page
-    pub async fn release_lock(&self, page_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM wiki_page_locks WHERE page_id = ?")
-            .bind(page_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct PageRow {
-    pub id: String,
     pub path: String,
     pub title: String,
     #[sqlx(rename = "type")]
     pub page_type: String,
     pub category: Option<String>,
     pub tags: Option<String>,
+    pub content: String,
     pub created: String,
     pub updated: String,
     pub source_count: i64,
@@ -812,170 +604,265 @@ git commit -m "feat(storage): add wiki SQLite tables and page/source/relation/lo
 
 ---
 
-### Task 3: WikiStore Facade
+### Task 3: PageStore, PageIndex, WikiLog (split from WikiStore)
 
 **Files:**
-- Modify: `gasket/engine/src/wiki/mod.rs` (add WikiStore struct)
+- Create: `gasket/engine/src/wiki/store.rs`
+- Create: `gasket/engine/src/wiki/index.rs`
+- Create: `gasket/engine/src/wiki/log.rs`
+- Modify: `gasket/engine/src/wiki/mod.rs` (add modules)
 
-- [ ] **Step 1: Write WikiStore facade**
+**No monolithic WikiStore.** Three focused structs, each with one `SqlitePool` reference.
+
+- [ ] **Step 1: Write PageStore (CRUD + disk sync)**
 
 ```rust
-// Add to gasket/engine/src/wiki/mod.rs
+// gasket/engine/src/wiki/store.rs
 
 use anyhow::Result;
-use gasket_storage::wiki::{WikiPageStore, WikiLogStore, WikiRelationStore, WikiSourceStore};
-use std::path::{Path, PathBuf};
+use gasket_storage::wiki::WikiPageStore;
+use std::path::PathBuf;
 use tokio::fs;
 
-/// The core wiki store - facade over filesystem + SQLite
-pub struct WikiStore {
-    wiki_base: PathBuf,
-    sources_base: PathBuf,
-    page_store: WikiPageStore,
-    log_store: WikiLogStore,
-    relation_store: WikiRelationStore,
-    source_store: WikiSourceStore,
+use super::page::{PageFilter, PageSummary, PageType, WikiPage};
+
+/// PageStore: CRUD operations on wiki pages.
+/// SQLite is single truth. Disk files are optional cache.
+pub struct PageStore {
+    db: WikiPageStore,
+    wiki_root: PathBuf,
 }
 
-impl WikiStore {
-    pub fn new(
-        wiki_base: PathBuf,
-        sources_base: PathBuf,
-        pool: sqlx::SqlitePool,
-    ) -> Self {
+impl PageStore {
+    pub fn new(pool: sqlx::SqlitePool, wiki_root: PathBuf) -> Self {
         Self {
-            wiki_base,
-            sources_base,
-            page_store: WikiPageStore::new(pool.clone()),
-            log_store: WikiLogStore::new(pool.clone()),
-            relation_store: WikiRelationStore::new(pool.clone()),
-            source_store: WikiSourceStore::new(pool),
+            db: WikiPageStore::new(pool),
+            wiki_root,
         }
     }
 
     /// Ensure wiki directory structure exists
     pub async fn init_dirs(&self) -> Result<()> {
         for dir in &["entities/people", "entities/projects", "entities/concepts", "topics", "sources"] {
-            fs::create_dir_all(self.wiki_base.join(dir)).await?;
+            fs::create_dir_all(self.wiki_root.join(dir)).await?;
         }
-        fs::create_dir_all(self.sources_base.join("uploads")).await?;
-        fs::create_dir_all(self.sources_base.join("web")).await?;
-        fs::create_dir_all(self.sources_base.join("conversations")).await?;
-        fs::create_dir_all(self.sources_base.join("channels")).await?;
         Ok(())
     }
 
-    // --- CRUD ---
-
-    pub async fn read_page(&self, id: &WikiUri) -> Result<WikiPage> {
-        let path = id.to_file_path(&self.wiki_base);
-        let markdown = fs::read_to_string(&path).await?;
-        WikiPage::from_markdown(id.clone(), &markdown)
+    /// Read a page from SQLite (single truth)
+    pub async fn read(&self, path: &str) -> Result<WikiPage> {
+        let row = self.db.get(path).await?
+            .ok_or_else(|| anyhow::anyhow!("page not found: {}", path))?;
+        Ok(WikiPage {
+            path: row.path,
+            title: row.title,
+            page_type: PageType::from_str(&row.page_type)
+                .unwrap_or(PageType::Topic),
+            category: row.category,
+            tags: row.tags.as_ref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+            content: row.content,
+            created: chrono::DateTime::parse_from_rfc3339(&row.created)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            source_count: row.source_count as u32,
+            confidence: row.confidence,
+        })
     }
 
-    pub async fn write_page(&self, id: &WikiUri, page: &WikiPage) -> Result<()> {
-        let path = id.to_file_path(&self.wiki_base);
-
-        // Create parent directories
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        // Acquire lock
-        let locked = self.page_store.acquire_lock(&id.as_str()).await?;
-        if !locked {
-            anyhow::bail!("failed to acquire lock for page: {}", id);
-        }
-
-        // Write filesystem
-        fs::write(&path, page.to_markdown()).await?;
-
-        // Update SQLite metadata
-        let tags_str = serde_json::to_string(&page.frontmatter.tags)?;
-        self.page_store.upsert(
-            &page.frontmatter.id,
-            path.strip_prefix(&self.wiki_base)?.to_str().unwrap_or(""),
-            &page.frontmatter.title,
-            match &page.frontmatter.page_type { PageType::Entity => "entity", PageType::Topic => "topic", PageType::Source => "source" },
-            page.frontmatter.category.as_deref(),
+    /// Write a page to SQLite (single truth) + optional disk sync
+    pub async fn write(&self, page: &WikiPage) -> Result<()> {
+        let tags_str = serde_json::to_string(&page.tags)?;
+        let checksum = Some(&format!("{:x}", md5::compute(&page.content))[..8] as &str);
+        self.db.upsert(
+            &page.path,
+            &page.title,
+            page.page_type.as_str(),
+            page.category.as_deref(),
             &tags_str,
-            page.frontmatter.source_count.unwrap_or(0),
-            page.frontmatter.confidence.unwrap_or(1.0),
-            None,
+            &page.content,
+            page.source_count,
+            page.confidence,
+            None, // checksum computed from content
         ).await?;
 
-        // Release lock
-        self.page_store.release_lock(&id.as_str()).await?;
+        // Lazy disk sync (best effort)
+        let _ = self.sync_to_disk(page).await;
         Ok(())
     }
 
-    pub async fn delete_page(&self, id: &WikiUri) -> Result<()> {
-        let path = id.to_file_path(&self.wiki_base);
-        fs::remove_file(&path).await?;
-        self.page_store.delete(&id.as_str()).await?;
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        self.db.delete(path).await?;
+        // Best-effort disk cleanup
+        let disk_path = self.wiki_root.join(format!("{}.md", path));
+        let _ = fs::remove_file(&disk_path).await;
         Ok(())
     }
 
-    pub async fn list_pages(&self, filter: PageFilter) -> Result<Vec<PageSummary>> {
+    pub async fn exists(&self, path: &str) -> Result<bool> {
+        self.db.exists(path).await
+    }
+
+    pub async fn list(&self, filter: PageFilter) -> Result<Vec<PageSummary>> {
         let rows = match &filter.page_type {
-            Some(pt) => self.page_store.list_by_type(match pt { PageType::Entity => "entity", PageType::Topic => "topic", PageType::Source => "source" }).await?,
-            None => self.page_store.list_all().await?,
+            Some(pt) => self.db.list_by_type(pt.as_str()).await?,
+            None => self.db.list_all().await?,
         };
         Ok(rows.iter().map(|r| PageSummary {
-            id: r.id.clone(),
+            path: r.path.clone(),
             title: r.title.clone(),
-            page_type: match r.page_type.as_str() { "entity" => PageType::Entity, "topic" => PageType::Topic, _ => PageType::Source },
+            page_type: PageType::from_str(&r.page_type).unwrap_or(PageType::Topic),
             category: r.category.clone(),
-            tags: r.tags.as_ref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
-            updated: chrono::DateTime::parse_from_rfc3339(&r.updated).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_default(),
-            confidence: Some(r.confidence),
+            tags: r.tags.as_ref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+            updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            confidence: r.confidence,
         }).collect())
     }
 
+    /// Sync page to disk as markdown (optional, for human readability)
+    pub async fn sync_to_disk(&self, page: &WikiPage) -> Result<()> {
+        let path = self.wiki_root.join(format!("{}.md", page.path));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&path, page.to_markdown()).await?;
+        Ok(())
+    }
+
+    /// Rebuild disk cache from SQLite (for migration or recovery)
+    pub async fn rebuild_disk_cache(&self) -> Result<usize> {
+        let rows = self.db.list_all().await?;
+        for row in &rows {
+            let page = self.read(&row.path).await?;
+            self.sync_to_disk(&page).await?;
+        }
+        Ok(rows.len())
+    }
+
     // --- Relations ---
-    pub async fn add_relation(&self, from: &WikiUri, to: &WikiUri, relation: &str) -> Result<()> {
-        self.relation_store.add(&from.as_str(), &to.as_str(), relation).await
-    }
-    pub async fn get_relations(&self, id: &WikiUri) -> Result<Vec<(String, String, String)>> {
-        self.relation_store.get_outgoing(&id.as_str()).await
+
+    pub async fn add_relation(&self, from: &str, to: &str, relation: &str) -> Result<()> {
+        // Delegated to WikiRelationStore via storage layer
+        // self.relation_store.add(from, to, relation).await
+        todo!("Implemented in storage/src/wiki/relation_store.rs")
     }
 
-    // --- Sources ---
-    pub async fn register_source(&self, id: &str, path: &str, format: &str, title: &str) -> Result<()> {
-        self.source_store.register(id, path, format, title).await
-    }
-
-    // --- Index & Log ---
-    pub async fn rebuild_index(&self) -> Result<()> {
-        // TODO: Phase 2 - generate index.md from all pages
-        Ok(())
-    }
-    pub async fn append_log(&self, entry: &str) -> Result<()> {
-        let log_path = self.wiki_base.join("log.md");
-        let existing = fs::read_to_string(&log_path).await.unwrap_or_default();
-        fs::write(&log_path, format!("{}{}", existing, entry)).await?;
-        Ok(())
-    }
-    pub async fn log_to_db(&self, action: &str, target: &str, detail: &str) -> Result<()> {
-        self.log_store.append(action, target, detail).await
+    pub async fn get_outgoing(&self, path: &str) -> Result<Vec<(String, String, String)>> {
+        todo!("Implemented in storage/src/wiki/relation_store.rs")
     }
 }
 ```
 
-- [ ] **Step 2: Add wiki module to engine lib.rs**
+- [ ] **Step 2: Write PageIndex (search stub)**
 
-Add `pub mod wiki;` to `gasket/engine/src/lib.rs` and add necessary imports.
+```rust
+// gasket/engine/src/wiki/index.rs
 
-- [ ] **Step 3: Run build**
+use anyhow::Result;
+
+use super::page::PageSummary;
+
+/// PageIndex: search over wiki pages.
+/// Phase 1: SQLite FTS5 only. Phase 3: Tantivy + embedding.
+pub struct PageIndex {
+    // pool: SqlitePool,  -- added in Phase 3
+}
+
+impl PageIndex {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    /// Phase 1: placeholder. Returns empty results.
+    /// Phase 3: Tantivy BM25 + embedding rerank.
+    pub async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<PageSummary>> {
+        Ok(vec![])
+    }
+}
+```
+
+- [ ] **Step 3: Write WikiLog (structured log)**
+
+```rust
+// gasket/engine/src/wiki/log.rs
+
+use anyhow::Result;
+use gasket_storage::wiki::WikiLogStore;
+use serde::{Deserialize, Serialize};
+
+/// WikiLog: structured operation log.
+/// Data in SQLite. No log.md file maintenance.
+pub struct WikiLog {
+    db: WikiLogStore,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub id: i64,
+    pub action: String,
+    pub target: Option<String>,
+    pub detail: Option<String>,
+    pub created: String,
+}
+
+impl WikiLog {
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { db: WikiLogStore::new(pool) }
+    }
+
+    pub async fn append(&self, action: &str, target: &str, detail: &str) -> Result<()> {
+        self.db.append(action, target, detail).await
+    }
+
+    pub async fn list_recent(&self, limit: usize) -> Result<Vec<LogEntry>> {
+        self.db.list_recent(limit).await
+    }
+}
+```
+
+- [ ] **Step 4: Update wiki module root**
+
+```rust
+// gasket/engine/src/wiki/mod.rs (updated)
+
+pub mod page;
+pub mod store;
+pub mod index;
+pub mod log;
+
+// Re-exports
+pub use page::{PageFilter, PageSummary, PageType, WikiPage, slugify};
+pub use store::PageStore;
+pub use index::PageIndex;
+pub use log::WikiLog;
+
+// Tests remain in this file (unchanged from Task 1)
+#[cfg(test)]
+mod tests { /* ... same as Task 1 ... */ }
+```
+
+- [ ] **Step 5: Add wiki module to engine lib.rs**
+
+Add `pub mod wiki;` to `gasket/engine/src/lib.rs`.
+
+- [ ] **Step 6: Run build**
 
 Run: `cargo build --package gasket-engine`
 Expected: Compiles with no errors
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add gasket/engine/src/wiki/mod.rs gasket/engine/src/lib.rs
-git commit -m "feat(wiki): add WikiStore facade with CRUD, relations, and locking"
+git add gasket/engine/src/wiki/ gasket/engine/src/lib.rs
+git commit -m "feat(wiki): add PageStore, PageIndex, WikiLog (split from WikiStore)"
 ```
 
 ---
@@ -983,8 +870,8 @@ git commit -m "feat(wiki): add WikiStore facade with CRUD, relations, and lockin
 ### Task 4: WikiConfig and Session Integration
 
 **Files:**
-- Modify: `gasket/engine/src/session/config.rs` (add WikiConfig, remove MemoryConfig references)
-- Modify: `gasket/engine/src/session/mod.rs` (WikiStore replaces MemoryManager)
+- Modify: `gasket/engine/src/session/config.rs` (add WikiConfig)
+- Modify: `gasket/engine/src/session/mod.rs` (PageStore + PageIndex replace MemoryManager)
 
 - [ ] **Step 1: Add WikiConfig to session config**
 
@@ -1000,6 +887,8 @@ fn default_dedup_threshold() -> f64 { 0.85 }
 fn default_max_pages() -> usize { 15 }
 fn default_limit() -> usize { 10 }
 fn default_lint_interval() -> String { "24h".to_string() }
+fn default_max_cost() -> f64 { 0.10 }
+fn default_cost_warning() -> f64 { 0.05 }
 
 fn default_wiki_base() -> String {
     dirs::home_dir()
@@ -1053,11 +942,19 @@ pub struct WikiIngestConfig {
     pub dedup_threshold: f64,
     #[serde(default = "default_max_pages")]
     pub max_pages_per_ingest: usize,
+    #[serde(default = "default_max_cost")]
+    pub max_cost_per_ingest: f64,
+    #[serde(default = "default_cost_warning")]
+    pub cost_warning_threshold: f64,
 }
 
 impl Default for WikiIngestConfig {
     fn default() -> Self {
-        Self { batch_size: 20, auto_ingest: true, dedup_threshold: 0.85, max_pages_per_ingest: 15 }
+        Self {
+            batch_size: 20, auto_ingest: true, dedup_threshold: 0.85,
+            max_pages_per_ingest: 15, max_cost_per_ingest: 0.10,
+            cost_warning_threshold: 0.05,
+        }
     }
 }
 
@@ -1072,9 +969,7 @@ pub struct WikiQueryConfig {
 }
 
 impl Default for WikiQueryConfig {
-    fn default() -> Self {
-        Self { default_limit: 10, hybrid_search: true, answer_filing: true }
-    }
+    fn default() -> Self { Self { default_limit: 10, hybrid_search: true, answer_filing: true } }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1101,87 +996,91 @@ Also add to `AgentConfig`:
 pub wiki: Option<WikiConfig>,  // Replaces embedding_config + memory_budget + evolution
 ```
 
-- [ ] **Step 2: Replace MemoryManager field with WikiStore in session**
+- [ ] **Step 2: Replace MemoryManager with PageStore + PageIndex in session**
 
 In `gasket/engine/src/session/mod.rs`:
-- Change `memory_manager: Option<Arc<MemoryManager>>` to `wiki_store: Option<Arc<WikiStore>>`
-- Update all methods that use `memory_manager` to use `wiki_store`
+- Change `memory_manager: Option<Arc<MemoryManager>>` to `page_store: Option<Arc<PageStore>>`
+- Add `page_index: Option<Arc<PageIndex>>`
+- Add `wiki_log: Option<Arc<WikiLog>>`
 
-Replace `try_init_memory_manager()` with `try_init_wiki_store()`:
+Replace `try_init_memory_manager()` with `try_init_wiki()`:
 
 ```rust
-fn try_init_wiki_store(config: &AgentConfig, pool: SqlitePool) -> Option<Arc<WikiStore>> {
+fn try_init_wiki(config: &AgentConfig, pool: SqlitePool) -> Option<(Arc<PageStore>, Arc<PageIndex>, Arc<WikiLog>)> {
     let wiki_config = config.wiki.as_ref()?;
     if !wiki_config.enabled {
         return None;
     }
     let wiki_base = PathBuf::from(&wiki_config.base_path);
-    let sources_base = PathBuf::from(&wiki_config.sources_path);
-    let store = WikiStore::new(wiki_base, sources_base, pool);
+    let store = PageStore::new(pool.clone(), wiki_base);
+    let index = PageIndex::new();  // Phase 1: no Tantivy
+    let log = WikiLog::new(pool.clone());
 
     // Ensure directory structure + SQLite tables exist
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
             store.init_dirs().await.ok()?;
-            gasket_storage::wiki::tables::create_wiki_tables(&store.pool()).await.ok()
+            gasket_storage::wiki::tables::create_wiki_tables(&pool).await.ok()
         })
     })?;
 
-    Some(Arc::new(store))
+    Some((Arc::new(store), Arc::new(index), Arc::new(log)))
 }
 ```
 
-Update `pub fn memory_manager()` accessor → `pub fn wiki_store()`.
+Update accessors: `pub fn page_store()`, `pub fn page_index()`, `pub fn wiki_log()`.
 
 - [ ] **Step 3: Build and fix compile errors**
 
 Run: `cargo build --package gasket-engine 2>&1 | head -50`
-Expected: Compile errors in tools/ and hooks/ that reference old memory types (fixed in Task 5)
+Expected: Compile errors in tools/ and hooks/ (fixed in Tasks 5-6)
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add gasket/engine/src/session/
-git commit -m "refactor(session): replace MemoryManager with WikiStore in session config"
+git commit -m "refactor(session): replace MemoryManager with PageStore + PageIndex + WikiLog"
 ```
 
 ---
 
-### Task 5: Replace Memory Tools with Wiki Tools
+### Task 5: Rewrite Memory Tools (keep tool names)
 
 **Files:**
-- Modify: `gasket/engine/src/tools/memorize.rs` → rewrite as `WikiIngestTool`
-- Modify: `gasket/engine/src/tools/memory_search.rs` → rewrite as `WikiSearchTool`
-- Modify: `gasket/engine/src/tools/memory_refresh.rs` → rewrite as `WikiRefreshTool`
-- Modify: `gasket/engine/src/tools/builder.rs` (register wiki tools)
+- Modify: `gasket/engine/src/tools/memorize.rs` (rewrite internals, keep name `memorize`)
+- Modify: `gasket/engine/src/tools/memory_search.rs` (rewrite internals, keep name `memory_search`)
+- Modify: `gasket/engine/src/tools/memory_refresh.rs` (rewrite internals, keep name `memory_refresh`)
+- Modify: `gasket/engine/src/tools/builder.rs` (update registration)
 - Modify: `gasket/engine/src/tools/mod.rs` (update exports)
 
-- [ ] **Step 1: Rewrite memorize.rs as WikiIngestTool**
+**CRITICAL: Tool names stay as `memorize`, `memory_search`, `memory_refresh`.** The LLM's existing tool-use patterns must not break. Only the backing implementation changes from MemoryManager to PageStore/PageIndex.
 
-Replace the `MemorizeTool` with `WikiIngestTool` that creates wiki pages. Keep the same Tool trait interface. Key changes:
-- `memorize` → `wiki_ingest`
-- Creates a WikiPage and writes via WikiStore
-- Updates index after creation
+- [ ] **Step 1: Rewrite memorize.rs internals**
 
-- [ ] **Step 2: Rewrite memory_search.rs as WikiSearchTool**
+Replace `MemoryManager.create_memory()` calls with `PageStore::write()`. Tool name remains `memorize`.
 
-Replace `MemorySearchTool` with `WikiSearchTool`. Initially uses SQLite metadata search (Tantivy integration in Phase 3). Key changes:
-- `memory_search` → `wiki_search`
-- Queries WikiPageStore for matching pages
-- Returns page summaries
+```rust
+// Key change in execute():
+let path = format!("entities/{}/{}", slugify(&scenario), slugify(&title));
+let mut page = WikiPage::new(path, title, page_type, content);
+page.tags = tags;
 
-- [ ] **Step 3: Rewrite memory_refresh.rs as WikiRefreshTool**
+ctx.page_store().write(&page).await?;
+```
 
-Replace `MemoryRefreshTool` with `WikiRefreshTool`:
-- `memory_refresh` → `wiki_refresh`
-- Triggers `rebuild_index()` on WikiStore
+- [ ] **Step 2: Rewrite memory_search.rs internals**
+
+Replace `MemoryManager.search()` calls with `PageStore::list()` (Phase 1) / `PageIndex::search()` (Phase 3). Tool name remains `memory_search`.
+
+- [ ] **Step 3: Rewrite memory_refresh.rs internals**
+
+Replace `MemoryManager.refresh()` calls with `PageIndex::rebuild()` (Phase 3 stub). Tool name remains `memory_refresh`.
 
 - [ ] **Step 4: Update tool builder registration**
 
 In `gasket/engine/src/tools/builder.rs`:
-- Replace `MemorizeTool` registration with `WikiIngestTool`
-- Replace `MemorySearchTool` with `WikiSearchTool`
-- Replace `MemoryRefreshTool` with `WikiRefreshTool`
+- Update tool constructors to receive `Arc<PageStore>` + `Arc<PageIndex>` instead of `Arc<MemoryManager>`
+- Tool names and descriptions remain unchanged
 
 - [ ] **Step 5: Update tools/mod.rs exports**
 
@@ -1194,7 +1093,7 @@ Expected: Compiles with no errors
 
 ```bash
 git add gasket/engine/src/tools/
-git commit -m "refactor(tools): replace memory tools with wiki tools (ingest/search/refresh)"
+git commit -m "refactor(tools): rewrite memory tools to use PageStore (keep tool names)"
 ```
 
 ---
@@ -1202,41 +1101,42 @@ git commit -m "refactor(tools): replace memory tools with wiki tools (ingest/sea
 ### Task 6: Update Hooks
 
 **Files:**
-- Modify: `gasket/engine/src/hooks/evolution.rs` (use WikiStore)
+- Modify: `gasket/engine/src/hooks/evolution.rs` (use PageStore instead of MemoryManager)
 - Create: `gasket/engine/src/hooks/wiki_query.rs` (replace MemoryLoader hook)
 - Modify: `gasket/engine/src/hooks/mod.rs` (add new hook)
 
-- [ ] **Step 1: Refactor EvolutionHook to use WikiStore**
+- [ ] **Step 1: Refactor EvolutionHook to use PageStore**
 
 Change `evolution.rs` to:
-- Accept `Arc<WikiStore>` instead of `Arc<MemoryManager>`
+- Accept `Arc<PageStore>` instead of `Arc<MemoryManager>`
 - Convert extracted knowledge items to WikiPages
 
 Concrete conversion code (replace the `create_memory` calls):
 
 ```rust
-// BEFORE (current evolution.rs ~line 282):
-// memory_manager.create_memory(scenario, &mem.title, &tags, Frequency::Warm, &mem.content).await
-
-// AFTER:
-let page = match scenario {
-    Scenario::Profile => WikiPage::new_entity(&mem.title, "people", &mem.content),
-    Scenario::Knowledge => WikiPage::new_topic(&mem.title, &mem.content),
-    Scenario::Decisions => WikiPage::new_entity(&mem.title, "decisions", &mem.content),
-    _ => WikiPage::new_topic(&mem.title, &mem.content),
-};
-// Add tags from extracted knowledge
-page.frontmatter.tags = mem.tags.clone();
-page.frontmatter.tags.push("auto_learned".to_string());
-
-// Quick dedup: check if page already exists by title match
-let existing = wiki_store.list_pages(PageFilter {
-    page_type: Some(page.frontmatter.page_type.clone()),
-    ..Default::default()
-}).await?;
-let duplicate = existing.iter().any(|p| p.title == page.frontmatter.title);
-if !duplicate {
-    wiki_store.write_page(&page.id, &page).await?;
+// BEFORE (current evolution.rs):
+//   memory_manager.create_memory(scenario, &mem.title, &tags, Frequency::Warm, &mem.content).await
+//
+// AFTER (wiki):
+for item in &items {
+    let path = format!("entities/{}/{}", slugify(&item.scenario), slugify(&item.title));
+    if store.exists(&path).await? {
+        continue; // Quick dedup
+    }
+    let mut page = WikiPage::new(
+        path,
+        item.title.clone(),
+        match item.scenario {
+            Scenario::Profile => PageType::Entity,
+            Scenario::Knowledge => PageType::Topic,
+            Scenario::Decisions => PageType::Entity,
+            _ => PageType::Topic,
+        },
+        item.content.clone(),
+    );
+    page.tags = item.tags.clone();
+    page.tags.push("auto_learned".to_string());
+    store.write(&page).await?;
 }
 ```
 
@@ -1247,6 +1147,7 @@ Note: The LLM extraction prompt stays unchanged. Only the storage layer changes.
 ```rust
 // gasket/engine/src/hooks/wiki_query.rs
 // BeforeRequest hook that loads relevant wiki pages into context
+// Uses PageIndex::search() for retrieval
 ```
 
 - [ ] **Step 3: Register hooks and build**
@@ -1255,7 +1156,7 @@ Note: The LLM extraction prompt stays unchanged. Only the storage layer changes.
 
 ```bash
 git add gasket/engine/src/hooks/
-git commit -m "refactor(hooks): update EvolutionHook for WikiStore, add WikiQueryHook"
+git commit -m "refactor(hooks): update EvolutionHook for PageStore, add WikiQueryHook"
 ```
 
 ---
@@ -1266,26 +1167,25 @@ git commit -m "refactor(hooks): update EvolutionHook for WikiStore, add WikiQuer
 - Delete: `gasket/engine/src/session/memory/` (entire directory)
 - Modify: `gasket/engine/src/session/mod.rs` (remove `pub mod memory;`)
 - Modify: `gasket/engine/src/lib.rs` (remove memory re-exports)
-- Verify: `gasket/engine/src/session/history/builder.rs` (no memory references remain)
+
+**Tool files are KEPT** (`memorize.rs`, `memory_search.rs`, `memory_refresh.rs`) — only their internals were rewritten in Task 5. The storage-level `gasket/storage/src/memory/` is also KEPT.
 
 - [ ] **Step 1: Comprehensive search for ALL memory references**
 
 ```bash
 grep -rn "MemoryManager\|MemoryLoader\|MemoryWriter\|MemoryContext\|MemoryStore\|MemoryConfig\|memory_manager\|memory::\|mod memory" gasket/engine/src/ --include="*.rs"
-grep -rn "MemorizeTool\|MemorySearchTool\|MemoryRefreshTool" gasket/engine/src/ --include="*.rs"
 grep -rn "use gasket_storage::memory" gasket/engine/src/ --include="*.rs"
 ```
 
-Verify: `gasket/storage/src/memory/` references from ENGINE are the only ones that need updating. The storage module itself is KEPT.
+Verify: References should only exist in `session/memory/` (to be deleted) and storage-level code (to be kept).
 
-- [ ] **Step 2: Delete engine memory directory and old tool files**
+- [ ] **Step 2: Delete engine memory directory only**
 
 ```bash
 rm -rf gasket/engine/src/session/memory/
-rm gasket/engine/src/tools/memorize.rs
-rm gasket/engine/src/tools/memory_search.rs
-rm gasket/engine/src/tools/memory_refresh.rs
 ```
+
+**DO NOT delete** `memorize.rs`, `memory_search.rs`, `memory_refresh.rs` — they were rewritten in Task 5.
 
 - [ ] **Step 3: Remove all memory declarations and re-exports**
 
@@ -1298,19 +1198,14 @@ In `gasket/engine/src/lib.rs`:
 - Remove `MemoryManager, MemoryContext` from session re-exports
 - Remove any `pub mod memory` facade block that re-exports storage/memory
 
-In `gasket/engine/src/tools/mod.rs`:
-- Remove `pub use memorize::MemorizeTool;`
-- Remove `pub use memory_search::MemorySearchTool;`
-- Remove any `mod memorize;`, `mod memory_search;`, `mod memory_refresh;`
-
 In `gasket/engine/src/session/history/builder.rs`:
-- Remove `MemoryLoader` field and usage (replaced by WikiQueryEngine in Phase 3)
+- Remove `MemoryLoader` field and usage (replaced by PageIndex in Phase 3)
 
 - [ ] **Step 4: Fix remaining compile errors**
 
 Search for any remaining references and replace with wiki equivalents. Key files to check:
 - `gasket/engine/src/session/store.rs` (MemoryStore type)
-- `gasket/engine/src/tools/builder.rs` (tool registration)
+- `gasket/engine/src/tools/builder.rs` (already updated in Task 5)
 - `gasket/cli/src/commands/memory.rs` (CLI imports)
 
 - [ ] **Step 5: Build**
@@ -1327,38 +1222,93 @@ Expected: All tests pass (memory-specific tests are gone, wiki tests pass)
 
 ```bash
 git add -A gasket/engine/src/
-git commit -m "refactor(engine): remove memory/ module, fully replaced by wiki/"
+git commit -m "refactor(engine): remove session/memory/ module, fully replaced by wiki/"
 ```
 
 ---
 
-### Task 8: Update CLI Commands
+### Task 8: CLI Commands + Migration
 
 **Files:**
-- Modify: `gasket/cli/src/commands/memory.rs` → rewrite as `wiki.rs`
+- Modify: `gasket/cli/src/commands/memory.rs` (rewrite as wiki commands)
 - Modify: `gasket/cli/src/commands/mod.rs` (add wiki commands)
 - Modify: `gasket/cli/src/main.rs` (update CLI dispatch)
 
-- [ ] **Step 1: Rewrite CLI memory commands as wiki commands**
+- [ ] **Step 1: Rewrite CLI commands**
 
 Replace `memory refresh` / `memory decay` with:
 - `wiki ingest <path>` - Import a document
 - `wiki search <query>` - Search wiki pages
 - `wiki list` - List all wiki pages
 - `wiki lint` - Run health check
+- `wiki migrate` - One-time migration from old memory system
 
-- [ ] **Step 2: Update CLI dispatch in main.rs**
+- [ ] **Step 2: Implement `wiki migrate` command**
 
-- [ ] **Step 3: Build CLI**
+```rust
+// In gasket/cli/src/commands/wiki.rs
+
+/// One-time migration: reads old memory_metadata table → creates wiki pages
+async fn migrate(pool: &SqlitePool) -> Result<()> {
+    // 1. Read old memory_metadata rows
+    let old_rows = sqlx::query_as::<_, OldMemoryRow>(
+        "SELECT scenario, title, content, tags, frequency FROM memory_metadata"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    if old_rows.is_empty() {
+        println!("No old memory data found. Nothing to migrate.");
+        return Ok(());
+    }
+
+    // 2. Convert to WikiPages and write to wiki_pages table
+    let store = PageStore::new(pool.clone(), wiki_root);
+    let mut migrated = 0;
+    for row in &old_rows {
+        let path = format!("entities/{}/{}", slugify(&row.scenario), slugify(&row.title));
+        if store.exists(&path).await? {
+            continue; // Skip duplicates
+        }
+        let mut page = WikiPage::new(
+            path,
+            row.title.clone(),
+            match row.scenario.as_str() {
+                "profile" => PageType::Entity,
+                "knowledge" => PageType::Topic,
+                "decisions" => PageType::Entity,
+                _ => PageType::Topic,
+            },
+            row.content.clone(),
+        );
+        page.tags = row.tags.clone();
+        page.tags.push("migrated".to_string());
+        store.write(&page).await?;
+        migrated += 1;
+    }
+
+    println!("Migrated {} memories to wiki pages.", migrated);
+
+    // 3. Log migration
+    let log = WikiLog::new(pool.clone());
+    log.append("migrate", &format!("{}_pages", migrated), "memory_metadata -> wiki_pages").await?;
+
+    Ok(())
+}
+```
+
+- [ ] **Step 3: Update CLI dispatch in main.rs**
+
+- [ ] **Step 4: Build CLI**
 
 Run: `cargo build --package gasket-cli`
 Expected: Clean build (ignoring pre-existing tui.rs errors)
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add gasket/cli/src/
-git commit -m "refactor(cli): replace memory commands with wiki commands"
+git commit -m "refactor(cli): add wiki commands with migration from old memory system"
 ```
 
 ---
@@ -1398,12 +1348,12 @@ Prompt LLM to extract: key entities, concepts, claims, and relationships from pa
 
 ---
 
-### Task 11: Wiki Integrator (LLM-driven)
+### Task 11: Wiki Integrator (LLM-driven + Cost Gate)
 
 **Files:**
 - Create: `gasket/engine/src/wiki/ingest/integrator.rs`
 
-- [ ] **Step 1: Implement WikiIntegrator with two-tier API**
+- [ ] **Step 1: Implement WikiIntegrator with two-tier API + cost validation**
 
 ```rust
 pub enum IngestTier {
@@ -1411,25 +1361,79 @@ pub enum IngestTier {
     Deep,   // 10-15 pages, full integration (document import)
 }
 
+/// Cost estimate for a deep ingest operation
+pub struct CostEstimate {
+    pub estimated_input_tokens: u32,
+    pub estimated_pages_affected: usize,
+    pub estimated_cost_usd: f64,
+}
+
+pub struct IngestConfig {
+    pub max_cost_per_ingest: f64,      // USD, default 0.10
+    pub cost_warning_threshold: f64,   // USD, default 0.05
+}
+
 impl WikiIntegrator {
-    /// Quick ingest: creates 1 entity/topic page + updates index. No LLM needed.
-    pub async fn quick_ingest(&self, title: &str, content: &str, tags: Vec<String>, wiki: &WikiStore) -> Result<IngestReport> {
-        let page = WikiPage::new_topic(title, content);
-        wiki.write_page(&page.id, &page).await?;
-        wiki.rebuild_index().await?;
+    /// Quick ingest: creates 1 entity/topic page. No LLM needed.
+    pub async fn quick_ingest(&self, title: &str, content: &str, tags: Vec<String>, store: &PageStore) -> Result<IngestReport> {
+        let path = format!("topics/{}", slugify(title));
+        let mut page = WikiPage::new(path, title.to_string(), PageType::Topic, content.to_string());
+        page.tags = tags;
+        store.write(&page).await?;
         Ok(IngestReport::quick(page))
     }
 
-    /// Deep ingest: LLM analyzes impact on 10-15 existing pages, updates them.
-    pub async fn deep_ingest(&self, source: &ParsedSource, wiki: &WikiStore) -> Result<IngestReport> {
-        let affected_pages = self.llm_analyze_impact(source, wiki).await?;
-        let source_page = wiki.create_source_page(source).await?;
-        for page_id in &affected_pages {
-            let page = wiki.read_page(page_id).await?;
-            let updated = self.llm_update_page(&page, source).await?;
-            wiki.write_page(page_id, &updated).await?;
+    /// Estimate token cost for a deep ingest before executing it
+    pub fn estimate_cost(&self, source: &ParsedSource, store: &PageStore) -> CostEstimate {
+        let source_tokens = estimate_tokens(&source.content);
+        // Rough estimate: each affected page costs ~2k input tokens + ~500 relation tokens
+        let estimated_pages = std::cmp::min(source.entities.len() * 2, 15);
+        let update_tokens = estimated_pages as u32 * 2500;
+
+        CostEstimate {
+            estimated_input_tokens: source_tokens + update_tokens,
+            estimated_pages_affected: estimated_pages,
+            estimated_cost_usd: self.pricing.calculate(&self.model, source_tokens + update_tokens),
         }
-        wiki.rebuild_index().await?;
+    }
+
+    /// Deep ingest with cost validation gate.
+    /// LLM analyzes impact on 10-15 existing pages, updates them.
+    pub async fn deep_ingest(&self, source: &ParsedSource, store: &PageStore) -> Result<IngestReport> {
+        // GATE: validate cost before proceeding
+        let estimate = self.estimate_cost(source, store);
+        if estimate.estimated_cost_usd > self.config.max_cost_per_ingest {
+            anyhow::bail!(
+                "Deep ingest estimated cost ${:.4} exceeds budget ${:.4}. \
+                 Affected pages: {}. Use quick_ingest or increase budget.",
+                estimate.estimated_cost_usd, self.config.max_cost_per_ingest,
+                estimate.estimated_pages_affected
+            );
+        }
+        if estimate.estimated_cost_usd > self.config.cost_warning_threshold {
+            tracing::warn!(
+                "Deep ingest cost ${:.4} above warning threshold ${:.4}. Proceeding.",
+                estimate.estimated_cost_usd, self.config.cost_warning_threshold
+            );
+        }
+
+        // Proceed with deep ingest
+        let affected_pages = self.llm_analyze_impact(source, store).await?;
+        let source_path = format!("sources/{}", slugify(&source.title));
+        let source_page = WikiPage::new(
+            source_path,
+            source.title.clone(),
+            PageType::Source,
+            source.content.clone(),
+        );
+        store.write(&source_page).await?;
+
+        for page_path in &affected_pages {
+            let page = store.read(page_path).await?;
+            let updated = self.llm_update_page(&page, source).await?;
+            store.write(&updated).await?;
+        }
+
         Ok(IngestReport::deep(source_page, affected_pages))
     }
 }
@@ -1639,23 +1643,26 @@ Runs on configurable interval (default 24h). Calls WikiLinter, auto-fixes simple
 ```
 Task 1 (Data Types) ─────────────────┐
 Task 2 (SQLite Tables) ──────────────┤
-                                      ├─→ Task 3 (WikiStore Facade) ─→ Task 4 (Config+Session)
-                                      │                                    │
-                                      │                                    ├─→ Task 5 (Tools)
-                                      │                                    ├─→ Task 6 (Hooks)
-                                      │                                    └─→ Task 7 (Remove Memory)
-                                      │                                          │
-                                      │                                          ├─→ Task 8 (CLI)
-                                      │                                          │
-                                      │                                          ├─→ Phase 2 (Ingest: Tasks 9-13)
-                                      │                                          │
-                                      │                                          ├─→ Phase 3 (Query: Tasks 14-15)
-                                      │                                          │
-                                      │                                          ├─→ Phase 4 (Lint: Tasks 16-18)
-                                      │                                          │
-                                      │                                          └─→ Phase 5 (Polish: Tasks 19-21)
+                                      ├─→ Task 3 (PageStore+PageIndex+WikiLog)
+                                      │         │
+                                      │         └─→ Task 4 (Config+Session)
+                                      │                    │
+                                      │                    ├─→ Task 5 (Tools: keep names)
+                                      │                    ├─→ Task 6 (Hooks)
+                                      │                    └─→ Task 7 (Remove memory/)
+                                      │                          │
+                                      │                          ├─→ Task 8 (CLI + migrate)
+                                      │                          │
+                                      │                          ├─→ Phase 2 (Ingest: Tasks 9-13)
+                                      │                          │   └─→ Task 11 (cost gate)
+                                      │                          │
+                                      │                          ├─→ Phase 3 (Query: Tasks 14-15)
+                                      │                          │
+                                      │                          ├─→ Phase 4 (Lint: Tasks 16-18)
+                                      │                          │
+                                      │                          └─→ Phase 5 (Polish: Tasks 19-21)
 ```
 
-**Phase 1 (Tasks 1-8) is the critical path.** All subsequent phases depend on Phase 1 completing first.
+**Phase 1 (Tasks 1-8) is the critical path — CRUD only.** No Ingest, no Lint, no Tantivy in Phase 1.
 
-**Phases 2-5 can partially overlap** once their Phase 1 dependencies are met (e.g., Task 9 can start once Task 3 is done).
+**Phases 2-5 can partially overlap** once their Phase 1 dependencies are met.

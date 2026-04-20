@@ -699,8 +699,12 @@ mod tests {
         );
         let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
-        assert!(result.output.len() <= 10 + "\n\n[... truncated]".len());
-        assert!(result.output.ends_with("[... truncated]"));
+        // Output should be truncated: first 10 bytes + truncation notice
+        assert!(result.output.contains("[OUTPUT TRUNCATED:"));
+        assert!(result.output.contains("exceeded limit of 10 chars]"));
+        // Verify the truncated portion is at most 10 bytes + the suffix
+        let suffix_start = result.output.find("\n\n[OUTPUT TRUNCATED").unwrap();
+        assert!(suffix_start <= 10);
     }
 
     #[tokio::test]
@@ -726,7 +730,8 @@ mod tests {
         );
         let result = executor.execute_one(&tc, &ToolContext::default()).await;
 
-        assert!(result.output.ends_with("[... truncated]"));
+        assert!(result.output.contains("[OUTPUT TRUNCATED:"));
+        // Must not split a multi-byte UTF-8 character
         assert!(result.output.is_char_boundary(result.output.len()));
     }
 

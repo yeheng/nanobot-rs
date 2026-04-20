@@ -11,18 +11,18 @@ impl WikiLogStore {
     }
 
     pub async fn append(&self, action: &str, target: &str, detail: &str) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO wiki_log (action, target, detail) VALUES ($1, $2, $3)"
-        )
-        .bind(action).bind(target).bind(detail)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT INTO wiki_log (action, target, detail) VALUES ($1, $2, $3)")
+            .bind(action)
+            .bind(target)
+            .bind(detail)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     pub async fn list_recent(&self, limit: i64) -> Result<Vec<LogRow>> {
         let rows = sqlx::query_as::<_, LogRow>(
-            "SELECT id, action, target, detail, created FROM wiki_log ORDER BY id DESC LIMIT $1"
+            "SELECT id, action, target, detail, created FROM wiki_log ORDER BY id DESC LIMIT $1",
         )
         .bind(limit)
         .fetch_all(&self.pool)

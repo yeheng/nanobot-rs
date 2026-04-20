@@ -1,4 +1,4 @@
-//! Memory refresh tool for reindexing and syncing memory files
+//! Memory refresh tool for reindexing and syncing wiki pages
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -7,17 +7,18 @@ use std::sync::Arc;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::session::memory::MemoryManager;
+use crate::wiki::{PageFilter, PageStore, PageType};
 
-/// Tool for refreshing memory index and reindexing files
+/// Tool for refreshing wiki page index and reindexing files
 pub struct MemoryRefreshTool {
-    manager: Arc<MemoryManager>,
+    /// Wiki PageStore for unified knowledge management
+    page_store: Arc<PageStore>,
 }
 
 impl MemoryRefreshTool {
-    /// Create a new memory refresh tool
-    pub fn new(manager: Arc<MemoryManager>) -> Self {
-        Self { manager }
+    /// Create a new memory refresh tool with wiki PageStore
+    pub fn new(page_store: Arc<PageStore>) -> Self {
+        Self { page_store }
     }
 }
 
@@ -62,53 +63,56 @@ impl Tool for MemoryRefreshTool {
 
         match args.action.as_str() {
             "sync" => {
-                // Sync metadata from filesystem to SQLite (incremental)
-                self.manager.sync_all().await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to sync memories: {}", e))
-                })?;
-
-                Ok("✓ Memory sync complete\n\nMetadata updated for changed files.".to_string())
-            }
-            "reindex" => {
-                // Full reindex: scan all files and rebuild SQLite metadata
-                let report = self.manager.reindex().await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to reindex memories: {}", e))
-                })?;
+                // Sync SQLite → disk cache
+                let count = self
+                    .page_store
+                    .rebuild_disk_cache()
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to sync wiki: {}", e)))?;
 
                 Ok(format!(
-                    "✓ Memory reindex complete\n\nTotal files indexed: {}",
-                    report.total_files
+                    "✓ Wiki sync complete\n\nSynced {} pages to disk cache.",
+                    count
+                ))
+            }
+            "reindex" => {
+                // Same as sync for now (Phase 3 will add real index rebuild)
+                let count = self
+                    .page_store
+                    .rebuild_disk_cache()
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to reindex wiki: {}", e)))?;
+
+                Ok(format!(
+                    "✓ Wiki reindex complete\n\nReindexed {} pages.",
+                    count
                 ))
             }
             "stats" => {
-                // Get memory statistics via search
-                let all_memories = self.manager.search("", 10000).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to get stats: {}", e))
-                })?;
+                // Get wiki statistics
+                let all_pages = self
+                    .page_store
+                    .list(PageFilter::default())
+                    .await
+                    .map_err(|e| ToolError::ExecutionError(format!("Failed to get wiki stats: {}", e)))?;
 
-                let total = all_memories.len();
-                let hot = all_memories
+                let total = all_pages.len();
+                let topics = all_pages
                     .iter()
-                    .filter(|m| matches!(m.frequency, gasket_storage::memory::Frequency::Hot))
+                    .filter(|p| matches!(p.page_type, PageType::Topic))
                     .count();
-                let warm = all_memories
+                let entities = all_pages
                     .iter()
-                    .filter(|m| matches!(m.frequency, gasket_storage::memory::Frequency::Warm))
+                    .filter(|p| matches!(p.page_type, PageType::Entity))
                     .count();
-                let cold = all_memories
+                let sources = all_pages
                     .iter()
-                    .filter(|m| matches!(m.frequency, gasket_storage::memory::Frequency::Cold))
+                    .filter(|p| matches!(p.page_type, PageType::Source))
                     .count();
-                let archived = all_memories
-                    .iter()
-                    .filter(|m| matches!(m.frequency, gasket_storage::memory::Frequency::Archived))
-                    .count();
-
-                let total_tokens: usize = all_memories.iter().map(|m| m.tokens).sum();
 
                 Ok(format!(
-                    "📊 Memory Statistics\n\nTotal memories: {}\nTotal tokens: {}\n\nBy frequency:\n  🔥 Hot: {}\n  🌡️  Warm: {}\n  ❄️  Cold: {}\n  📦 Archived: {}",
-                    total, total_tokens, hot, warm, cold, archived
+                    "📊 Wiki Statistics\n\nTotal pages: {}\n\nBy type:\n  📚 Topics: {}\n  👥 Entities: {}\n  📄 Sources: {}",
+                    total, topics, entities, sources
                 ))
             }
             _ => Err(ToolError::InvalidArguments(format!(

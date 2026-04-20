@@ -35,8 +35,8 @@ pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
-    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryManager,
-    MemoryProvider, MemoryStore, PersistentContext,
+    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryProvider,
+    PhaseBreakdown, MemoryStore, PersistentContext,
 };
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;
@@ -195,3 +195,6 @@ pub mod memory {
     pub use gasket_storage::memory::{EmbeddingStore, MetadataStore};
     pub use gasket_storage::{EventStore, SqliteStore, StoreError};
 }
+
+// Wiki
+pub use gasket_storage::wiki::create_wiki_tables;

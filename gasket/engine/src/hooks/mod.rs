@@ -29,6 +29,7 @@ mod history;
 mod registry;
 mod types;
 mod vault;
+pub mod wiki_lint;
 
 pub use evolution::EvolutionHook;
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};

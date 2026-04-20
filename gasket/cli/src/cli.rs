@@ -58,6 +58,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
+
+    /// Wiki knowledge system commands
+    Wiki {
+        #[command(subcommand)]
+        command: WikiCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -224,4 +230,48 @@ pub enum MemoryCommands {
 
     /// Run memory frequency decay (demote stale hot/warm/cold memories)
     Decay,
+}
+
+#[derive(Subcommand)]
+pub enum WikiCommands {
+    /// Initialize wiki directory structure and SQLite tables
+    Init,
+
+    /// Migrate existing memory files to wiki pages
+    Migrate,
+
+    /// Show wiki statistics
+    Stats,
+
+    /// Ingest a file into the wiki (markdown, text, html)
+    Ingest {
+        /// Path to file to ingest
+        path: String,
+        /// Ingest tier: quick (1 page, no LLM) or deep (LLM-driven)
+        #[arg(long, default_value = "quick")]
+        tier: String,
+    },
+
+    /// Search wiki pages
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+
+    /// List wiki pages
+    List {
+        /// Filter by page type (entity, topic, source)
+        #[arg(long)]
+        page_type: Option<String>,
+    },
+
+    /// Run wiki health checks
+    Lint {
+        /// Auto-fix simple issues
+        #[arg(long)]
+        fix: bool,
+    },
 }
