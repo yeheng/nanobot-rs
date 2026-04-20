@@ -17,6 +17,8 @@ pub use context::{AgentContext, PersistentContext};
 pub use memory::{MemoryContext, MemoryManager};
 pub use store::{MemoryProvider, MemoryStore};
 
+use crate::wiki::{PageIndex, PageStore, WikiLog};
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -185,6 +187,10 @@ pub struct AgentSession {
     compactor: Option<Arc<ContextCompactor>>,
     memory_manager: Option<Arc<MemoryManager>>,
     indexing_service: Option<Arc<IndexingService>>,
+    /// Wiki knowledge system (gradually replaces memory_manager).
+    page_store: Option<Arc<PageStore>>,
+    page_index: Option<Arc<PageIndex>>,
+    wiki_log: Option<Arc<WikiLog>>,
     /// Optional pricing configuration for cost calculation.
     pricing: Option<ModelPricing>,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
@@ -286,6 +292,12 @@ impl AgentSession {
             Self::try_init_memory_manager(&memory_store, shared_embedder, config.memory_budget)
                 .await;
 
+        let wiki_components = Self::try_init_wiki(&config, sqlite_store_for_evo.pool());
+        let (page_store, page_index, wiki_log) = match wiki_components {
+            Some((store, index, log)) => (Some(store), Some(index), Some(log)),
+            None => (None, None, None),
+        };
+
         let hooks = Self::build_hooks(
             memory_manager.as_ref(),
             &config,
@@ -308,6 +320,9 @@ impl AgentSession {
             indexing_service: Some(indexing_service),
             pricing,
             pending_done: tokio_util::task::TaskTracker::new(),
+            page_store,
+            page_index,
+            wiki_log,
         })
     }
 
@@ -392,6 +407,21 @@ impl AgentSession {
     /// Get the indexing service.
     pub fn indexing_service(&self) -> Option<&Arc<IndexingService>> {
         self.indexing_service.as_ref()
+    }
+
+    /// Get the wiki page store.
+    pub fn page_store(&self) -> Option<&Arc<PageStore>> {
+        self.page_store.as_ref()
+    }
+
+    /// Get the wiki page index.
+    pub fn page_index(&self) -> Option<&Arc<PageIndex>> {
+        self.page_index.as_ref()
+    }
+
+    /// Get the wiki log.
+    pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
+        self.wiki_log.as_ref()
     }
 
     /// Clear session for the given key.
@@ -724,6 +754,32 @@ impl AgentSession {
                 None
             }
         }
+    }
+
+    /// Try to initialize the wiki knowledge system.
+    fn try_init_wiki(
+        config: &AgentConfig,
+        pool: sqlx::SqlitePool,
+    ) -> Option<(Arc<PageStore>, Arc<PageIndex>, Arc<WikiLog>)> {
+        let wiki_config = config.wiki.as_ref()?;
+        if !wiki_config.enabled {
+            return None;
+        }
+        let wiki_base = std::path::PathBuf::from(&wiki_config.base_path);
+        let store = PageStore::new(pool.clone(), wiki_base);
+        let index = PageIndex::new();
+        let log = WikiLog::new(pool.clone());
+
+        // Ensure directory structure + SQLite tables exist
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                store.init_dirs().await.ok()?;
+                gasket_storage::wiki::tables::create_wiki_tables(&pool).await.ok()
+            })
+        })?;
+
+        tracing::info!("Wiki knowledge system initialized at {}", wiki_config.base_path);
+        Some((Arc::new(store), Arc::new(index), Arc::new(log)))
     }
 }
 
