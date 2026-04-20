@@ -1,7 +1,13 @@
+pub mod index;
+pub mod log;
 pub mod page;
+pub mod store;
 
 // Re-exports
-pub use page::{PageFilter, PageSummary, PageType, WikiPage, slugify};
+pub use index::PageIndex;
+pub use log::{LogEntry, WikiLog};
+pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
+pub use store::PageStore;
 
 #[cfg(test)]
 mod tests {
@@ -50,7 +56,10 @@ mod tests {
 
     #[test]
     fn test_make_path() {
-        assert_eq!(WikiPage::make_path(&["entities", "projects", "gasket"]), "entities/projects/gasket");
+        assert_eq!(
+            WikiPage::make_path(&["entities", "projects", "gasket"]),
+            "entities/projects/gasket"
+        );
         assert_eq!(WikiPage::make_path(&["topics", "rust-async"]), "topics/rust-async");
     }
 
