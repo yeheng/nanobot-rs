@@ -96,7 +96,29 @@ The following critical issues were identified and fixed during the first spec re
 - Overloaded `marker` field split into `step_type` + `status`
 - `page_store.read()` dedup → `page_store.exists()`
 - Static `assess()` method → instance method with provider/model
-- Checkpoint injection via `BeforeLLM` hook instead of direct state mutation
+- Checkpoint injection moved from direct state mutation to caller-layer (`BeforeLLM` was considered but rejected because it fires once per request, not per iteration)
+
+## Changes from Review (Iteration 2)
+
+The following issues were identified and fixed during the second spec review:
+
+1. **Checkpoint injection at wrong layer** — `BeforeLLM` hook fires once per request in `ContextBuilder::build()`, not per kernel iteration. `KernelExecutor` has zero hook infrastructure. **Fix**: Checkpoint injection moved to the **caller layer** (`PlanExecutor` calls `compactor.checkpoint()` between `step()` calls). Direct mode (`KernelExecutor`) keeps only passive compaction.
+
+2. **AgentSession missing `insight_index` field** — `process_with_plan()` referenced `self.insight_index` but `AgentSession` has no such field. **Fix**: Added explicit note that `AgentSession` gains `insight_index: Option<Arc<InsightIndex>>` in Phase 1 of the migration plan.
+
+3. **EvolutionHook missing `insight_index` field** — `persist_as_sop()` used `self.insight_index` but the struct had no such field. **Fix**: Added note that `EvolutionHook` gains `insight_index` field and `with_insight_index()` builder method.
+
+4. **MonitoredSpawner::spawn() borrow checker error** — Captured `self` in `tokio::spawn` after calling `&self` methods. **Fix**: Clone `sqlite_pool` before spawn; pass cloned pool into async block.
+
+5. **ComplexityAssessor contradictory definitions** — Had both `pub struct ComplexityAssessor;` and `pub struct ComplexityAssessor { provider, model }`. **Fix**: Removed unit struct, kept the one with fields.
+
+6. **PageType::Sop missing `as_str()` and `FromStr`** — Added `Sop` variant but didn't show `as_str()` → `"sop"` or `FromStr` parsing. **Fix**: Added both implementations in the spec.
+
+7. **`fix` step_type premature** — Schema included `fix` as a step type but Open Question #2 was unresolved. **Fix**: Removed `fix` from `step_type` enum; fix-loop behavior will be handled by appending new steps with `status = 'pending'`.
+
+8. **MonitoredRunner missing tools/provider fields** — `run()` called `self.llm.chat()` and `self.execute_tool()` but struct had no such fields. **Fix**: `MonitoredRunner` now uses `SteppableExecutor` internally (which owns provider + tools + config).
+
+9. **SteppableExecutor missing `TokenLedger`** — `step()` returned `token_usage: Option<TokenUsage>` but caller had no way to accumulate across steps. **Fix**: Added `ledger: &mut TokenLedger` parameter to `step()`. KernelExecutor creates ledger internally and passes it each iteration.
 
 ## Architecture
 
@@ -241,12 +263,35 @@ pub enum PageType {
 }
 
 impl PageType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Entity => "entity",
+            Self::Topic => "topic",
+            Self::Source => "source",
+            Self::Sop => "sop",  // NEW
+        }
+    }
+
     pub fn directory(&self) -> &'static str {
         match self {
             Self::Entity => "entities",
             Self::Topic => "topics",
             Self::Source => "sources",
             Self::Sop => "sops",
+        }
+    }
+}
+
+impl std::str::FromStr for PageType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "entity" => Ok(Self::Entity),
+            "topic" => Ok(Self::Topic),
+            "source" => Ok(Self::Source),
+            "sop" => Ok(Self::Sop),  // NEW
+            _ => Err(()),
         }
     }
 }
@@ -316,6 +361,7 @@ impl SteppableExecutor {
     pub async fn step(
         &self,
         messages: &mut Vec<ChatMessage>,
+        ledger: &mut TokenLedger,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Result<StepResult, KernelError>;
 }
@@ -327,17 +373,18 @@ impl SteppableExecutor {
 // KernelExecutor::run_loop() becomes:
 pub async fn run_loop(...) -> Result<ExecutionResult, KernelError> {
     let steppable = SteppableExecutor::new(provider, tools, config);
+    let mut ledger = TokenLedger::new();
     for iteration in 1..=config.max_iterations {
-        let result = steppable.step(&mut state.messages, event_tx).await?;
+        let result = steppable.step(&mut state.messages, &mut ledger, event_tx).await?;
         if !result.should_continue {
-            return Ok(state.to_result(result.response));
+            return Ok(state.to_result(result.response, &ledger));
         }
     }
     Err(KernelError::MaxIterations(config.max_iterations))
 }
 ```
 
-**Zero behavior change for existing callers.** `KernelExecutor` API is unchanged; only its internal implementation uses `SteppableExecutor`.
+**Zero behavior change for existing callers.** `KernelExecutor` API is unchanged; only its internal implementation uses `SteppableExecutor`. The `TokenLedger` is created inside `run_loop` and accumulated across `step()` calls, exactly as the original inline loop did.
 
 ---
 
@@ -384,7 +431,7 @@ CREATE TABLE execution_steps (
     plan_id TEXT NOT NULL,
     step_number INTEGER NOT NULL,
     description TEXT NOT NULL,
-    step_type TEXT NOT NULL DEFAULT 'direct',  -- direct | delegated | parallel | conditional | fix
+    step_type TEXT NOT NULL DEFAULT 'direct',  -- direct | delegated | parallel | conditional
     status TEXT NOT NULL DEFAULT 'pending',    -- pending | done | failed | skipped
     sop_path TEXT,
     depends_on INTEGER,
@@ -399,8 +446,6 @@ CREATE TABLE execution_steps (
 #### ComplexityAssessor (Entry Point)
 
 ```rust
-pub struct ComplexityAssessor;
-
 pub enum Complexity {
     Direct,  // 1-2 steps, skip PlanExecutor
     Auto,    // 3 steps, let agent decide
@@ -524,10 +569,15 @@ impl MonitoredSpawner {
         // Register in DB for crash recovery
         self.register_in_db(&spec.id, &spec).await?;
 
+        // Clone pool for the spawned task (can't capture `self` across await)
+        let pool = self.sqlite_pool.clone();
+        let spec_id = spec.id.clone();
+
         let handle = tokio::spawn(async move {
             let mut runner = MonitoredRunner::new(spec, progress_tx, interventor_rx);
             let result = runner.run().await;
-            self.update_db_status(&spec.id, &result).await?;
+            // Update DB via cloned pool
+            Self::update_db_status(&pool, &spec_id, &result).await?;
             result
         });
 
@@ -545,8 +595,9 @@ struct MonitoredRunner {
     spec: TaskSpec,
     progress: mpsc::Sender<ProgressUpdate>,
     intervention: mpsc::Receiver<Intervention>,
-    key_info: String,
-    extra_prompt: String,
+    steppable: SteppableExecutor,  // Uses provider + tools + config
+    messages: Vec<ChatMessage>,
+    ledger: TokenLedger,
 }
 
 impl MonitoredRunner {
@@ -559,21 +610,43 @@ impl MonitoredRunner {
 
             self.progress.send(ProgressUpdate::Thinking { turn }).await.ok();
 
-            let response = self.llm.chat(&self.build_messages()).await?;
+            // Execute one LLM iteration via SteppableExecutor
+            let result = self.steppable.step(&mut self.messages, &mut self.ledger, None).await?;
 
-            if let Some(tools) = response.tool_calls {
-                for tc in tools {
-                    self.progress.send(ProgressUpdate::ToolStart { ... }).await.ok();
-                    let result = self.execute_tool(&tc).await;
-                    self.progress.send(ProgressUpdate::ToolResult { ... }).await.ok();
+            if !result.tool_results.is_empty() {
+                for tr in &result.tool_results {
+                    self.progress
+                        .send(ProgressUpdate::ToolStart { name: tr.tool_name.clone() })
+                        .await
+                        .ok();
+                    self.progress
+                        .send(ProgressUpdate::ToolResult {
+                            name: tr.tool_name.clone(),
+                            output: tr.output.clone(),
+                        })
+                        .await
+                        .ok();
                 }
             }
 
-            self.progress.send(ProgressUpdate::TurnComplete { turn, summary }).await.ok();
+            self.progress
+                .send(ProgressUpdate::TurnComplete {
+                    turn,
+                    summary: result.response.content.clone().unwrap_or_default(),
+                })
+                .await
+                .ok();
+
+            if !result.should_continue {
+                break;
+            }
         }
 
-        self.progress.send(ProgressUpdate::Done { result }).await.ok();
-        SubagentResult::Success(result)
+        let final_content = self.messages.last()
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default();
+        self.progress.send(ProgressUpdate::Done { result: final_content.clone() }).await.ok();
+        SubagentResult::Success(final_content)
     }
 }
 ```
@@ -615,6 +688,8 @@ Future enhancement: Add `ProgressHook` trait to `KernelExecutor` so that any exe
 #### Purpose
 
 Extend the existing `EvolutionHook` to classify extracted memories by type, write SOPs as `PageType::Sop`, and atomically update the InsightIndex.
+
+**Struct change:** `EvolutionHook` gains `insight_index: Option<Arc<InsightIndex>>` (mirroring the existing `page_store` field) and a `with_insight_index()` builder method. If `insight_index` is `None`, SOPs are still written to the wiki but the InsightIndex is not updated.
 
 #### Memory Classification
 
@@ -801,31 +876,40 @@ CREATE TABLE session_checkpoints (
 );
 ```
 
-#### Integration: BeforeLLM Hook
+#### Integration: Caller-Layer Injection
 
-The checkpoint is **not injected by directly mutating `state.messages`** (which is internal to `KernelExecutor`). Instead, it flows through the existing **BeforeLLM hook**:
+`KernelExecutor.run_loop()` has **no hook infrastructure** — it is a pure LLM iteration loop. The existing `BeforeLLM` hook fires **once per request** in `ContextBuilder::build()`, before the kernel is even invoked. Therefore, proactive per-iteration checkpoints cannot flow through `BeforeLLM`.
+
+Instead, checkpoint injection happens at the **caller layer**, depending on which executor is used:
+
+**Direct mode (`KernelExecutor`)**: No proactive checkpoint injection. Only existing passive compaction (`try_compact` when token threshold is exceeded) is active. Proactive checkpoints require the steppable executor.
+
+**Plan mode (`SteppableExecutor`)**: `PlanExecutor` calls `compactor.checkpoint()` between `step()` calls and injects the result into the message history:
 
 ```rust
-// kernel/executor.rs run_loop, before each LLM call:
+// PlanExecutor::run() — inside the execution loop
+let mut ledger = TokenLedger::new();
+for step in &plan.steps {
+    // 1. Checkpoint every N turns
+    if turn % checkpoint_config.interval_turns == 0 {
+        if let Ok(Some(checkpoint)) = compactor
+            .checkpoint(session_key, turn, &recent_events)
+            .await
+        {
+            messages.push(ChatMessage::system(format!(
+                "[Checkpoint at turn {}]\n{}",
+                turn, checkpoint
+            )));
+        }
+    }
 
-// 1. Existing passive compaction
-if token_usage > threshold {
-    compactor.try_compact(session_key, token_usage, vault);
-}
-
-// 2. NEW: Active checkpoint via hook
-let mut hook_ctx = MutableContext { /* ... */ };
-if let Ok(Some(checkpoint)) = compactor
-    .checkpoint(session_key, iteration, &recent_events)
-    .await
-{
-    hook_ctx.messages.push(ChatMessage::system(format!(
-        "[Checkpoint at turn {}]\n{}",
-        iteration, checkpoint
-    )));
-    hooks.execute(HookPoint::BeforeLLM, &mut hook_ctx).await?;
+    // 2. Execute the plan step
+    let result = steppable.step(&mut messages, &mut ledger, event_tx).await?;
+    // ...
 }
 ```
+
+**Future extension**: A new `BeforeIteration` hook point could be added to `KernelExecutor` so that direct mode also benefits from proactive checkpoints. This is out of scope for this spec.
 
 **Checkpoint vs. Summary distinction:**
 - **Summary** (existing) = compressed historical conversation, passive, token-driven
@@ -931,6 +1015,8 @@ pub async fn process_auto(
 }
 ```
 
+**Note on `AgentSession` fields:** `AgentSession` currently has `page_store: Option<Arc<PageStore>>` but no `insight_index` field. The migration plan (Phase 1) adds `insight_index: Option<Arc<InsightIndex>>` to `AgentSession` and wires it through `AgentSessionBuilder`.
+
 ---
 
 ## Error Handling
@@ -967,11 +1053,13 @@ pub async fn process_auto(
 ## Migration Plan
 
 ### Phase 1: Foundation (No breaking changes)
-1. Add `PageType::Sop` variant
+1. Add `PageType::Sop` variant (+ `as_str()`, `FromStr`, `directory()`)
 2. Add `"sops"` directory to `PageStore::init_dirs()`
 3. Create `wiki_insights` SQLite table
 4. Implement `InsightIndex` module
 5. Add `session_checkpoints` table + `CheckpointConfig`
+6. Add `insight_index: Option<Arc<InsightIndex>>` field to `AgentSession` (wire through `AgentSessionBuilder`)
+7. Add `insight_index` field + `with_insight_index()` builder to `EvolutionHook`
 
 ### Phase 2: PlanExecutor Skeleton
 1. Create `execution_plans` + `execution_steps` tables
@@ -987,11 +1075,11 @@ pub async fn process_auto(
 ### Phase 4: Evolution + Verify Closure
 1. Enhance `EvolutionHook` with SOP extraction + InsightIndex upsert
 2. Implement Verify phase in PlanExecutor
-3. Add fix loop logic (`step_type = fix`)
+3. Add fix loop logic (append new steps with `status = 'pending'` on failure)
 
 ### Phase 5: Integration
 1. Add `AgentSession.process_with_plan()` and `process_auto()` methods
-2. Refactor `KernelExecutor` to use internal `SteppableExecutor`; wire `Compactor.checkpoint()` via `BeforeLLM` hook
+2. Refactor `KernelExecutor` to use internal `SteppableExecutor`; wire `Compactor.checkpoint()` into PlanExecutor's caller-layer step loop
 3. Add user-facing commands (`/plan`, `/verify`)
 4. End-to-end testing and documentation
 
@@ -1000,7 +1088,7 @@ pub async fn process_auto(
 ## Open Questions
 
 1. **Should `parallel` steps share a subagent provider or use independent instances?** Independent is safer for isolation but costs more tokens.
-2. **How should the fix loop interact with the original plan's steps?** Append new `step_type = fix` steps or modify existing `status = failed` steps?
+2. **How should the fix loop interact with the original plan's steps?** Append new steps with `status = 'pending'` or modify existing `status = 'failed'` steps?
 3. **Should ComplexityAssessor use the same model as the main agent or a cheaper model?** Using a cheaper model (e.g., Haiku) saves cost but may misclassify.
 
 ## References
