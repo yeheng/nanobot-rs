@@ -91,13 +91,10 @@ impl WikiLintHook {
 /// Parse an interval string like "24h", "12h", "1h" into hours.
 pub fn parse_interval(interval: &str) -> Option<u64> {
     let interval = interval.trim();
-    if interval.ends_with('h') {
-        interval[..interval.len() - 1].parse().ok()
-    } else if interval.ends_with('d') {
-        interval[..interval.len() - 1]
-            .parse::<u64>()
-            .ok()
-            .map(|d| d * 24)
+    if let Some(hours) = interval.strip_suffix('h') {
+        hours.parse().ok()
+    } else if let Some(days) = interval.strip_suffix('d') {
+        days.parse::<u64>().ok().map(|d| d * 24)
     } else {
         None
     }

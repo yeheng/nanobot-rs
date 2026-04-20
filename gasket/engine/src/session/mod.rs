@@ -212,7 +212,7 @@ impl AgentSession {
 
         // Shared embedder
         #[cfg(feature = "local-embedding")]
-        let shared_embedder: Option<SharedEmbedder> = {
+        let _shared_embedder: Option<SharedEmbedder> = {
             let embedder_config = config
                 .embedding_config
                 .as_ref()

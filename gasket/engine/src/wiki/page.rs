@@ -19,12 +19,17 @@ impl PageType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+}
+
+impl std::str::FromStr for PageType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "entity" => Some(Self::Entity),
-            "topic" => Some(Self::Topic),
-            "source" => Some(Self::Source),
-            _ => None,
+            "entity" => Ok(Self::Entity),
+            "topic" => Ok(Self::Topic),
+            "source" => Ok(Self::Source),
+            _ => Err(()),
         }
     }
 }

@@ -91,9 +91,9 @@ mod tests {
 
     #[test]
     fn test_page_type_roundtrip() {
-        assert_eq!(PageType::from_str("entity"), Some(PageType::Entity));
-        assert_eq!(PageType::from_str("topic"), Some(PageType::Topic));
-        assert_eq!(PageType::from_str("source"), Some(PageType::Source));
-        assert_eq!(PageType::from_str("unknown"), None);
+        assert_eq!("entity".parse(), Ok(PageType::Entity));
+        assert_eq!("topic".parse(), Ok(PageType::Topic));
+        assert_eq!("source".parse(), Ok(PageType::Source));
+        assert!("unknown".parse::<PageType>().is_err());
     }
 }

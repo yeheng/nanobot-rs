@@ -35,11 +35,6 @@ impl SemanticDeduplicator {
         Self { threshold }
     }
 
-    /// Create with default threshold (0.85).
-    pub fn default() -> Self {
-        Self::new(0.85)
-    }
-
     /// Check if an extracted item duplicates an existing page.
     ///
     /// Uses text-based similarity (title + content overlap) for Phase 2.
@@ -195,6 +190,12 @@ impl SemanticDeduplicator {
         (0..chars.len() - 2)
             .map(|i| chars[i..i + 3].iter().collect())
             .collect()
+    }
+}
+
+impl Default for SemanticDeduplicator {
+    fn default() -> Self {
+        Self::new(0.85)
     }
 }
 

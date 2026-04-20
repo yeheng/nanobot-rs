@@ -44,7 +44,7 @@ impl PageStore {
         Ok(WikiPage {
             path: row.path,
             title: row.title,
-            page_type: PageType::from_str(&row.page_type).unwrap_or(PageType::Topic),
+            page_type: row.page_type.parse().unwrap_or(PageType::Topic),
             category: row.category,
             tags: row
                 .tags
@@ -68,17 +68,17 @@ impl PageStore {
         let tags_str = serde_json::to_string(&page.tags)?;
         let checksum = Some(format!("{}", page.content.len()));
         self.db
-            .upsert(
-                &page.path,
-                &page.title,
-                page.page_type.as_str(),
-                page.category.as_deref(),
-                &tags_str,
-                &page.content,
-                page.source_count,
-                page.confidence,
-                checksum.as_deref(),
-            )
+            .upsert(&gasket_storage::wiki::WikiPageInput {
+                path: &page.path,
+                title: &page.title,
+                page_type: page.page_type.as_str(),
+                category: page.category.as_deref(),
+                tags: &tags_str,
+                content: &page.content,
+                source_count: page.source_count,
+                confidence: page.confidence,
+                checksum: checksum.as_deref(),
+            })
             .await?;
 
         // Lazy disk sync (best effort)
@@ -108,7 +108,7 @@ impl PageStore {
             .map(|r| PageSummary {
                 path: r.path.clone(),
                 title: r.title.clone(),
-                page_type: PageType::from_str(&r.page_type).unwrap_or(PageType::Topic),
+                page_type: r.page_type.parse().unwrap_or(PageType::Topic),
                 category: r.category.clone(),
                 tags: r
                     .tags

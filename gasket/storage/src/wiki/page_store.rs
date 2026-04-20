@@ -1,6 +1,20 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
+/// Input for upserting a wiki page into SQLite.
+#[derive(Debug)]
+pub struct WikiPageInput<'a> {
+    pub path: &'a str,
+    pub title: &'a str,
+    pub page_type: &'a str,
+    pub category: Option<&'a str>,
+    pub tags: &'a str,
+    pub content: &'a str,
+    pub source_count: u32,
+    pub confidence: f64,
+    pub checksum: Option<&'a str>,
+}
+
 /// SQLite-backed wiki page store. Single source of truth.
 /// Content lives here. Disk files are optional cache.
 pub struct WikiPageStore {
@@ -13,18 +27,7 @@ impl WikiPageStore {
     }
 
     /// Atomic UPSERT. SQLite WAL handles concurrency.
-    pub async fn upsert(
-        &self,
-        path: &str,
-        title: &str,
-        page_type: &str,
-        category: Option<&str>,
-        tags: &str,
-        content: &str,
-        source_count: u32,
-        confidence: f64,
-        checksum: Option<&str>,
-    ) -> Result<()> {
+    pub async fn upsert(&self, page: &WikiPageInput<'_>) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
@@ -42,10 +45,17 @@ impl WikiPageStore {
                 checksum = excluded.checksum
             "#,
         )
-        .bind(path).bind(title).bind(page_type)
-        .bind(category).bind(tags).bind(content)
-        .bind(&now).bind(&now)
-        .bind(source_count).bind(confidence).bind(checksum)
+        .bind(page.path)
+        .bind(page.title)
+        .bind(page.page_type)
+        .bind(page.category)
+        .bind(page.tags)
+        .bind(page.content)
+        .bind(&now)
+        .bind(&now)
+        .bind(page.source_count)
+        .bind(page.confidence)
+        .bind(page.checksum)
         .execute(&self.pool)
         .await?;
         Ok(())

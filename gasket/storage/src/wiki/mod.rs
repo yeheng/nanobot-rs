@@ -5,7 +5,7 @@ pub mod source_store;
 pub mod tables;
 
 pub use log_store::WikiLogStore;
-pub use page_store::WikiPageStore;
+pub use page_store::{WikiPageInput, WikiPageStore};
 pub use relation_store::WikiRelationStore;
 pub use source_store::WikiSourceStore;
 pub use tables::create_wiki_tables;

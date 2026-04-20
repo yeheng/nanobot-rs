@@ -183,7 +183,7 @@ fn init_telemetry(env_filter: EnvFilter, log_to_file: bool) -> bool {
 
     // Try to create OTLP exporter
     let exporter = match opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
+        .with_http()
         .with_endpoint(format!("{}/v1/traces", endpoint))
         .build()
     {
