@@ -6,7 +6,7 @@
 
 ## Summary
 
-This spec proposes integrating GenericAgent's core innovations — self-evolving skills, structured plan/verify execution, hierarchical memory indexing, and monitored subagent delegation — into gasket's Rust architecture. The design follows a "thin orchestrator" philosophy: a `PlanExecutor` state machine wraps the existing `KernelExecutor` as an optional decorator, leaving the Direct execution path untouched.
+This spec proposes integrating GenericAgent's core innovations — self-evolving skills, structured plan/verify execution, hierarchical memory indexing, and monitored subagent delegation — into gasket's Rust architecture. The design follows a "thin orchestrator" philosophy: a `PlanExecutor` state machine orchestrates complex tasks via a new `SteppableExecutor` primitive, while the existing Direct execution path (via `KernelExecutor`) remains untouched.
 
 Five modules are defined:
 
@@ -15,6 +15,17 @@ Five modules are defined:
 3. **MonitoredSpawner** — Real-time monitoring and intervention for subagents via channels + SQLite fallback
 4. **EvolutionHook Enhancement** — Task-to-SOP crystallization with automatic InsightIndex updates
 5. **Compactor Checkpoint** — Proactive working-memory snapshots every N turns
+
+## Key Design Decision: Steppable Execution Primitive
+
+The spec reviewer identified that `KernelExecutor` runs a **full autonomous loop** (`for iteration in 1..=max_iterations`) with no public API for per-step external orchestration. To enable PlanExecutor's step-by-step execution without rewriting the kernel, we introduce a new **`SteppableExecutor`** primitive:
+
+- `SteppableExecutor` is a **refactored extraction** from `KernelExecutor` that splits the loop body into discrete `step()` calls
+- `KernelExecutor` internally uses `SteppableExecutor` (composition, not inheritance), preserving its existing API
+- PlanExecutor calls `SteppableExecutor::step()` for each plan step, controlling iteration count and message history externally
+- The streaming pipeline (`StreamEvent`) works identically — events flow per-step and aggregate
+
+This is a **surgical refactor**: extract the loop body into `step()`, have `KernelExecutor` call `step()` in a loop. No behavior change for existing callers.
 
 ## Background
 
@@ -66,6 +77,27 @@ Gasket has the pieces but lacks the **protocol** tying them together:
 - Supporting GenericAgent's browser automation (webdriver) — out of scope
 - Changing the Actor pipeline architecture (Router→Session→Outbound)
 
+## Changes from Review (Iteration 1)
+
+The following critical issues were identified and fixed during the first spec review:
+
+1. **KernelExecutor not steppable** — Spec originally assumed per-step calls, but `KernelExecutor.run_loop()` runs a full autonomous loop. **Fix**: Introduced `SteppableExecutor` as a new primitive — extracted loop body into `step()` method, with `KernelExecutor` composing it internally. Zero API change for existing callers.
+
+2. **AgentSession.process_direct() can't be branched** — No hook point existed for `ComplexityAssessor` before kernel runs. **Fix**: Added new `AgentSession.process_with_plan()` method plus `process_auto()` convenience wrapper. Caller chooses between direct and plan mode.
+
+3. **SQLite FK to non-existent sessions table** — `execution_plans` had `FOREIGN KEY REFERENCES sessions(key)` but no `sessions` table exists. **Fix**: Removed FK, added `idx_execution_plans_session` index.
+
+4. **MonitoredSpawner can't decorate runner.rs** — `run_subagent()` is a pure function with no internal hooks. **Fix**: `MonitoredRunner` implements its own execution loop using `SteppableExecutor`, not as a decorator around `run_subagent()`.
+
+5. **Missing sops/ directory** — `PageStore::init_dirs()` doesn't create "sops". **Fix**: Added to Migration Plan Phase 1.
+
+**Warnings also fixed**:
+- `std::sync::RwLock` → `tokio::sync::RwLock`
+- Overloaded `marker` field split into `step_type` + `status`
+- `page_store.read()` dedup → `page_store.exists()`
+- Static `assess()` method → instance method with provider/model
+- Checkpoint injection via `BeforeLLM` hook instead of direct state mutation
+
 ## Architecture
 
 ### Overview
@@ -92,8 +124,8 @@ Gasket has the pieces but lacks the **protocol** tying them together:
 │                              ┌───────────┴───────────┐    │
 │                              ▼                       ▼    │
 │                    ┌──────────────┐        ┌─────────────┐ │
-│                    │  kernel::    │        │ Subagent    │ │
-│                    │  execute()   │        │ (Monitored) │ │
+│                    │ Steppable    │        │ Subagent    │ │
+│                    │ Executor     │        │ (Monitored) │ │
 │                    └──────────────┘        └─────────────┘ │
 │                              │                       │    │
 │                              ▼                       ▼    │
@@ -106,7 +138,7 @@ Gasket has the pieces but lacks the **protocol** tying them together:
 
 **Key Interface Contracts:**
 
-1. `PlanExecutor` → `KernelExecutor`: Single-step calls via `ExecutionPlan` step entries
+1. `PlanExecutor` → `SteppableExecutor`: Per-step execution with external iteration control
 2. `PlanExecutor` → `MonitoredSpawner`: `spawn_monitored()` returns `(handle, interventor, progress_rx)`
 3. `PlanExecutor` → `InsightIndex`: `insight.lookup(query, k) -> Vec<InsightEntry>` for SOP routing
 4. `EvolutionHook` → `InsightIndex`: Atomic upsert after SOP creation
@@ -117,7 +149,7 @@ Gasket has the pieces but lacks the **protocol** tying them together:
 PlanExecutor
     ├── uses MonitoredSpawner (Explore, Verify phases)
     ├── uses InsightIndex (Plan phase — SOP lookup)
-    ├── uses KernelExecutor (Execute phase — per-step)
+    ├── uses SteppableExecutor (Execute phase — per-step)
     └── writes ExecutionPlan + ExecutionStep tables
 
 MonitoredSpawner
@@ -163,7 +195,7 @@ pub struct InsightEntry {
 
 pub struct InsightIndex {
     pool: SqlitePool,
-    cache: RwLock<HashMap<String, Vec<InsightEntry>>>,
+    cache: tokio::sync::RwLock<HashMap<String, Vec<InsightEntry>>>,
 }
 ```
 
@@ -255,6 +287,60 @@ tags: [auto_learned, docker]
 
 ---
 
+### 1b. SteppableExecutor (New Primitive)
+
+#### Purpose
+
+Extract the per-iteration body of `KernelExecutor.run_loop()` into a reusable `SteppableExecutor` that can be driven externally. `KernelExecutor` internally composes `SteppableExecutor` in a loop, preserving its existing API.
+
+#### API
+
+```rust
+/// Result of executing one LLM iteration
+pub struct StepResult {
+    pub response: ChatResponse,
+    pub tool_results: Vec<ToolCallResult>,
+    pub token_usage: Option<TokenUsage>,
+    pub should_continue: bool,  // true if tool_calls present
+}
+
+/// Steppable executor — one LLM call + optional tool execution per step()
+pub struct SteppableExecutor {
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    config: KernelConfig,
+}
+
+impl SteppableExecutor {
+    /// Execute one iteration: LLM call → optional tool calls → return result
+    pub async fn step(
+        &self,
+        messages: &mut Vec<ChatMessage>,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+    ) -> Result<StepResult, KernelError>;
+}
+```
+
+#### KernelExecutor Integration
+
+```rust
+// KernelExecutor::run_loop() becomes:
+pub async fn run_loop(...) -> Result<ExecutionResult, KernelError> {
+    let steppable = SteppableExecutor::new(provider, tools, config);
+    for iteration in 1..=config.max_iterations {
+        let result = steppable.step(&mut state.messages, event_tx).await?;
+        if !result.should_continue {
+            return Ok(state.to_result(result.response));
+        }
+    }
+    Err(KernelError::MaxIterations(config.max_iterations))
+}
+```
+
+**Zero behavior change for existing callers.** `KernelExecutor` API is unchanged; only its internal implementation uses `SteppableExecutor`.
+
+---
+
 ### 2. PlanExecutor Module
 
 #### Purpose
@@ -288,16 +374,18 @@ CREATE TABLE execution_plans (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
     max_retries INTEGER DEFAULT 3,
-    verification_result TEXT,  -- PASS | FAIL | PARTIAL
-    FOREIGN KEY (session_key) REFERENCES sessions(key)
+    verification_result TEXT  -- PASS | FAIL | PARTIAL
 );
+
+CREATE INDEX idx_execution_plans_session ON execution_plans(session_key);
 
 CREATE TABLE execution_steps (
     step_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL,
     step_number INTEGER NOT NULL,
     description TEXT NOT NULL,
-    marker TEXT NOT NULL DEFAULT '[ ]',  -- [ ], [✓], [✗], [D], [P], [?], [SKIP], [FIX]
+    step_type TEXT NOT NULL DEFAULT 'direct',  -- direct | delegated | parallel | conditional | fix
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending | done | failed | skipped
     sop_path TEXT,
     depends_on INTEGER,
     condition TEXT,        -- For [?] conditional branches
@@ -319,9 +407,14 @@ pub enum Complexity {
     Plan,    // 4+ steps or dependencies, force Plan mode
 }
 
+pub struct ComplexityAssessor {
+    provider: Arc<dyn LlmProvider>,
+    model: String,  // Cheap model, e.g. "anthropic/claude-haiku"
+}
+
 impl ComplexityAssessor {
-    /// 1-round judgment, ≤100 tokens, uses cheap model
-    pub async fn assess(task: &str) -> Complexity;
+    /// 1-round judgment, ≤100 tokens
+    pub async fn assess(&self, task: &str) -> Complexity;
 }
 ```
 
@@ -336,25 +429,25 @@ impl ComplexityAssessor {
 **Plan Phase:**
 - Query InsightIndex for relevant SOPs
 - Build prompt: findings + SOP references + plan generation instructions
-- LLM generates structured plan with `[D]`/`[P]`/`[?]`/`[VERIFY]` markers
+- LLM generates structured plan with `step_type` markers (`delegated`/`parallel`/`conditional`) and a final `verify` step
 - Write plan to wiki + SQLite execution_steps table
 - `ask_user` for confirmation before execution
 
 **Execute Phase:**
 - For each step in order:
-  - Check dependencies satisfied; if not, mark `[SKIP]`
-  - `[D]` → delegate to MonitoredSpawner subagent
-  - `[P]` → collect parallel subagents, await all
-  - default → call KernelExecutor for single-step execution
+  - Check dependencies satisfied; if not, mark `status = skipped`
+  - `step_type = delegated` → spawn MonitoredSpawner subagent
+  - `step_type = parallel` → collect parallel subagents, await all
+  - `step_type = direct` → call SteppableExecutor for single-step execution
   - Mini-verify: quick sanity check of output
-  - Mark `[✓]` and persist to SQLite
+  - Mark `status = done` and persist to SQLite
 
 **Verify Phase:**
 - Spawn independent verification subagent with adversarial role
 - Subagent reads plan + deliverables, runs verification checks
 - Subagent outputs `VERDICT: PASS | FAIL | PARTIAL` as final line
-- **PASS** → mark `[VERIFY]` as `[✓]`, call EvolutionHook
-- **FAIL** → enter `[FIX]` loop (max `max_retries` iterations)
+- **PASS** → mark verify step `status = done`, call EvolutionHook
+- **FAIL** → enter fix loop (max `max_retries` iterations)
 - **PARTIAL** → ask user to decide
 
 #### Error Handling
@@ -504,7 +597,16 @@ CREATE INDEX idx_subagent_status ON subagent_tasks(status);
 
 #### Integration with Existing runner.rs
 
-`MonitoredRunner` acts as a **decorator** around the existing `run_subagent()` function rather than modifying it directly. This preserves backward compatibility and allows incremental adoption.
+**Important**: The existing `run_subagent()` in `runner.rs` is a **pure function** that creates a `KernelExecutor` and runs it to completion. It has no internal hooks for progress observation or intervention.
+
+Therefore, `MonitoredRunner` is **not a decorator** around `run_subagent()`. Instead:
+
+1. `MonitoredRunner` implements its own execution loop using `SteppableExecutor`
+2. Progress events are emitted at each turn boundary
+3. Interventions are checked between turns via `try_recv()`
+4. The existing `SimpleSpawner` API remains unchanged for non-monitored use cases
+
+Future enhancement: Add `ProgressHook` trait to `KernelExecutor` so that any execution (direct or subagent) can emit progress events uniformly.
 
 ---
 
@@ -553,7 +655,7 @@ async fn persist_as_sop(&self, mem: &EvolutionMemory) -> Result<(), AgentError> 
     // Deduplication
     let slug = slugify(&mem.title);
     let path = format!("sops/{}", slug);
-    if page_store.read(&path).await.is_ok() {
+    if page_store.exists(&path).await? {
         return Ok(());  // Already exists
     }
 
@@ -699,25 +801,29 @@ CREATE TABLE session_checkpoints (
 );
 ```
 
-#### Integration with Executor Loop
+#### Integration: BeforeLLM Hook
+
+The checkpoint is **not injected by directly mutating `state.messages`** (which is internal to `KernelExecutor`). Instead, it flows through the existing **BeforeLLM hook**:
 
 ```rust
-// kernel/executor.rs run_loop:
+// kernel/executor.rs run_loop, before each LLM call:
 
 // 1. Existing passive compaction
 if token_usage > threshold {
     compactor.try_compact(session_key, token_usage, vault);
 }
 
-// 2. NEW: Active checkpoint
-if let Some(checkpoint_summary) = compactor
+// 2. NEW: Active checkpoint via hook
+let mut hook_ctx = MutableContext { /* ... */ };
+if let Ok(Some(checkpoint)) = compactor
     .checkpoint(session_key, iteration, &recent_events)
-    .await?
+    .await
 {
-    state.messages.push(ChatMessage::system(format!(
+    hook_ctx.messages.push(ChatMessage::system(format!(
         "[Checkpoint at turn {}]\n{}",
-        iteration, checkpoint_summary
+        iteration, checkpoint
     )));
+    hooks.execute(HookPoint::BeforeLLM, &mut hook_ctx).await?;
 }
 ```
 
@@ -761,9 +867,9 @@ ComplexityAssessor.assess()
                     Execute Phase
                         ├── For each step:
                         │   ├── Check dependencies
-                        │   ├── Route: [D]→subagent, [P]→parallel, default→KernelExecutor
+                        │   ├── Route: delegated→subagent, parallel→parallel, default→SteppableExecutor
                         │   ├── Mini-verify output
-                        │   └── Mark [✓] in SQLite
+                        │   └── Mark status = done in SQLite
                         └── All steps done
                         │
                         ▼
@@ -771,7 +877,7 @@ ComplexityAssessor.assess()
                         ├── MonitoredSpawner.spawn(verify_spec)
                         ├── Adversarial verification
                         ├── Parse VERDICT line
-                        └── PASS? → Done / FAIL? → [FIX] loop
+                        └── PASS? → Done / FAIL? → fix loop
                         │
                         ▼
                     Done
@@ -782,6 +888,49 @@ ComplexityAssessor.assess()
                         └── Archive plan to wiki
 ```
 
+#### AgentSession Integration
+
+PlanExecutor does **not** modify `process_direct()`. Instead, a new method `process_with_plan()` is added:
+
+```rust
+impl AgentSession {
+    /// Process a message with plan-mode support.
+    /// Called when ComplexityAssessor indicates a complex task.
+    pub async fn process_with_plan(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+    ) -> Result<AgentResponse, AgentError> {
+        let plan_executor = PlanExecutor::new(
+            self.runtime_ctx.clone(),
+            self.insight_index.clone(),
+            self.page_store.clone(),
+        );
+        plan_executor.run(content, session_key).await
+    }
+}
+```
+
+The caller (CLI or channel handler) is responsible for choosing between `process_direct()` and `process_with_plan()`. A convenience wrapper can automate this:
+
+```rust
+pub async fn process_auto(
+    &self,
+    content: &str,
+    session_key: &SessionKey,
+) -> Result<AgentResponse, AgentError> {
+    let assessor = ComplexityAssessor::new(self.provider.clone(), "cheap-model".into());
+    match assessor.assess(content).await? {
+        Complexity::Direct => self.process_direct(content, session_key).await,
+        Complexity::Plan => self.process_with_plan(content, session_key).await,
+        Complexity::Auto => {
+            // Let the agent decide via a tool call
+            self.process_direct(content, session_key).await
+        }
+    }
+}
+```
+
 ---
 
 ## Error Handling
@@ -790,9 +939,9 @@ ComplexityAssessor.assess()
 |----------|----------|
 | Subagent spawn fails | Retry up to 2×, then abort plan and notify user |
 | Subagent crash during execution | SQLite fallback allows recovery: read last progress, decide to resume or restart |
-| Step execution fails | Mark `[✗]`, record error, retry 3× with exponential backoff (2s/4s/8s), then `[FIX]` or ask user |
-| Dependency step fails | Mark dependent steps `[SKIP]`, continue with independent branches |
-| Verify FAIL | Extract failure items → append `[FIX]` steps → re-execute (max `max_retries` cycles) |
+| Step execution fails | Mark `status = failed`, record error, retry 3× with exponential backoff (2s/4s/8s), then `step_type = fix` or ask user |
+| Dependency step fails | Mark dependent steps `status = skipped`, continue with independent branches |
+| Verify FAIL | Extract failure items → append `step_type = fix` steps → re-execute (max `max_retries` cycles) |
 | Verify PARTIAL | Ask user to decide: accept, fix, or retry |
 | InsightIndex lookup empty | Fallback to Tantivy full-text search; if still empty, proceed without SOP guidance |
 | EvolutionHook extraction fails | Log warning, skip memory persistence for this batch, watermark still advances |
@@ -805,7 +954,7 @@ ComplexityAssessor.assess()
 | Module | Test Approach |
 |--------|---------------|
 | InsightIndex | Unit tests for lookup/upsert/sync; mock PageStore |
-| PlanExecutor | Integration tests with mocked KernelExecutor + MonitoredSpawner |
+| PlanExecutor | Integration tests with mocked SteppableExecutor + MonitoredSpawner |
 | ComplexityAssessor | Prompt injection tests: verify correct classification for known inputs |
 | MonitoredSpawner | Test channel communication; test SQLite fallback when channel drops |
 | MonitoredRunner | Mock LLM + tool registry, verify progress events fire in correct order |
@@ -819,9 +968,10 @@ ComplexityAssessor.assess()
 
 ### Phase 1: Foundation (No breaking changes)
 1. Add `PageType::Sop` variant
-2. Create `wiki_insights` SQLite table
-3. Implement `InsightIndex` module
-4. Add `session_checkpoints` table + `CheckpointConfig`
+2. Add `"sops"` directory to `PageStore::init_dirs()`
+3. Create `wiki_insights` SQLite table
+4. Implement `InsightIndex` module
+5. Add `session_checkpoints` table + `CheckpointConfig`
 
 ### Phase 2: PlanExecutor Skeleton
 1. Create `execution_plans` + `execution_steps` tables
@@ -837,11 +987,11 @@ ComplexityAssessor.assess()
 ### Phase 4: Evolution + Verify Closure
 1. Enhance `EvolutionHook` with SOP extraction + InsightIndex upsert
 2. Implement Verify phase in PlanExecutor
-3. Add `[FIX]` loop logic
+3. Add fix loop logic (`step_type = fix`)
 
 ### Phase 5: Integration
-1. Wire `PlanExecutor` into `AgentSession.process_direct()`
-2. Wire `Compactor.checkpoint()` into `KernelExecutor.run_loop()`
+1. Add `AgentSession.process_with_plan()` and `process_auto()` methods
+2. Refactor `KernelExecutor` to use internal `SteppableExecutor`; wire `Compactor.checkpoint()` via `BeforeLLM` hook
 3. Add user-facing commands (`/plan`, `/verify`)
 4. End-to-end testing and documentation
 
@@ -849,8 +999,8 @@ ComplexityAssessor.assess()
 
 ## Open Questions
 
-1. **Should `[P]` parallel steps share a subagent provider or use independent instances?** Independent is safer for isolation but costs more tokens.
-2. **How should the `[FIX]` loop interact with the original plan's steps?** Append new `[FIX]` steps or modify existing `[✗]` steps?
+1. **Should `parallel` steps share a subagent provider or use independent instances?** Independent is safer for isolation but costs more tokens.
+2. **How should the fix loop interact with the original plan's steps?** Append new `step_type = fix` steps or modify existing `status = failed` steps?
 3. **Should ComplexityAssessor use the same model as the main agent or a cheaper model?** Using a cheaper model (e.g., Haiku) saves cost but may misclassify.
 
 ## References
