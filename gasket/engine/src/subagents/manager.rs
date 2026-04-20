@@ -41,6 +41,7 @@ pub struct TaskSpec {
     pub task: String,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
+    pub max_turns: Option<u32>,
 }
 
 impl TaskSpec {
@@ -50,6 +51,7 @@ impl TaskSpec {
             task: task.into(),
             model: None,
             system_prompt: None,
+            max_turns: None,
         }
     }
 
@@ -60,6 +62,11 @@ impl TaskSpec {
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    pub fn with_max_turns(mut self, turns: u32) -> Self {
+        self.max_turns = Some(turns);
         self
     }
 }

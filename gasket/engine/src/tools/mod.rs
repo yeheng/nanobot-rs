@@ -15,6 +15,7 @@
 
 mod builder;
 mod context;
+mod create_plan;
 mod cron;
 mod filesystem;
 mod format;
@@ -26,6 +27,7 @@ mod memory_refresh;
 mod memory_search;
 mod message;
 mod registry;
+mod search_sops;
 mod shell;
 mod spawn;
 mod spawn_parallel;
@@ -41,6 +43,7 @@ pub use gasket_types::{
 // Re-export tool implementations
 pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
 pub use context::ContextTool;
+pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use format::format_subagent_response;
@@ -52,6 +55,7 @@ pub use memory_refresh::MemoryRefreshTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
+pub use search_sops::search_sops;
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;

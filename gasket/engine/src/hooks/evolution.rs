@@ -28,6 +28,10 @@ struct EvolutionMemory {
     scenario: String,
     content: String,
     tags: Option<Vec<String>>,
+    #[serde(default)]
+    verified: bool,
+    #[serde(default)]
+    confidence: f32,
 }
 
 /// Hook that performs self-evolution by extracting insights from conversations.
@@ -205,11 +209,17 @@ impl PipelineHook for EvolutionHook {
             "You are a memory extraction sub-system.\n\
              Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.\n\n\
              CRITICAL RULES:\n\
-             1. DO NOT extract transient context (e.g., 'User said hello', 'User asked about a bug').\n\
+             1. DO NOT extract transient context (e.g., 'User said hello').\n\
              2. DO NOT extract information that is likely already known.\n\
              3. Focus on concrete nouns: names, explicit architectural choices, strict preferences.\n\
-             4. If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
-             Output strict JSON array: [{{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\", \"content\": string, \"tags\": [string]}}].\n\n{}",
+             4. 'No Execution, No Memory' — only include facts/skills confirmed by successful tool calls.\n\
+             5. Classify each item:\n\
+                - type: 'note' (factual) or 'skill' (procedural)\n\
+                - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)\n\
+                - verified: true if backed by successful tool result\n\
+                - confidence: 0.0-1.0 based on verification strength\n\
+             If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
+             Output strict JSON array: [{{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}}].\n\n{}",
             conversation
         );
 
@@ -269,61 +279,52 @@ impl PipelineHook for EvolutionHook {
                 }
             };
 
-            // 8.1 Deduplication: check for similar existing pages by title
-            let existing_pages = match page_store.list(PageFilter::default()).await {
-                Ok(pages) => pages,
-                Err(e) => {
-                    warn!("EvolutionHook: failed to list pages for dedup check: {}", e);
-                    continue;
+            match mem.memory_type.as_str() {
+                "skill" => {
+                    if let Err(e) = self.persist_as_sop(&mem, page_store).await {
+                        warn!("EvolutionHook: failed to persist SOP '{}': {}", mem.title, e);
+                    }
                 }
-            };
+                _ => {
+                    // Existing note/topic path
+                    let path_prefix = match mem.scenario.as_str() {
+                        "profile" => "entities/people",
+                        _ => "topics",
+                    };
+                    let page_type = match mem.scenario.as_str() {
+                        "profile" => PageType::Entity,
+                        _ => PageType::Topic,
+                    };
 
-            // Simple string similarity check (exact match for now, can be enhanced later)
-            let mem_slug = slugify(&mem.title);
-            let is_duplicate = existing_pages
-                .iter()
-                .any(|p| slugify(&p.title) == mem_slug || p.path.contains(&mem_slug));
+                    let slug = slugify(&mem.title);
+                    let page_path = format!("{}/{}", path_prefix, slug);
 
-            if is_duplicate {
-                debug!(
-                    "EvolutionHook: Page '{}' already exists (similar title found). Skipping duplicate.",
-                    mem.title
-                );
-                continue;
-            }
+                    // Deduplication
+                    let existing = match page_store.list(PageFilter::default()).await {
+                        Ok(pages) => pages,
+                        Err(e) => {
+                            warn!("EvolutionHook: failed to list pages for dedup: {}", e);
+                            continue;
+                        }
+                    };
+                    let is_dup = existing
+                        .iter()
+                        .any(|p| slugify(&p.title) == slug || p.path.contains(&slug));
+                    if is_dup {
+                        continue;
+                    }
 
-            // 8.2 Determine path prefix based on scenario
-            let path_prefix = match mem.scenario.as_str() {
-                "profile" => "entities/people",
-                _ => "topics",
-            };
+                    let mut tags = mem.tags.clone().unwrap_or_default();
+                    tags.push("auto_learned".to_string());
 
-            // 8.3 Build the page path
-            let page_path = format!("{}/{}", path_prefix, mem_slug);
+                    let page = WikiPage::new(page_path, mem.title, page_type, mem.content.clone());
+                    let mut page = page;
+                    page.tags = tags;
 
-            // 8.4 Determine page type
-            let page_type = match mem.scenario.as_str() {
-                "profile" => PageType::Entity,
-                _ => PageType::Topic,
-            };
-
-            // 8.5 Build tags
-            let mut tags = mem.tags.unwrap_or_default();
-            tags.push("auto_learned".to_string());
-
-            // 8.6 Create the wiki page
-            let page = WikiPage::new(page_path, mem.title.clone(), page_type, mem.content.clone());
-            let mut page = page;
-            page.tags = tags;
-
-            // 8.7 Write to page store
-            if let Err(e) = page_store.write(&page).await {
-                warn!(
-                    "EvolutionHook: failed to create wiki page '{}': {}",
-                    mem.title, e
-                );
-            } else {
-                debug!("EvolutionHook: created wiki page '{}'", mem.title);
+                    if let Err(e) = page_store.write(&page).await {
+                        warn!("EvolutionHook: failed to create wiki page: {}", e);
+                    }
+                }
             }
         }
 
@@ -336,5 +337,109 @@ impl PipelineHook for EvolutionHook {
             })?;
 
         Ok(HookAction::Continue)
+    }
+}
+
+impl EvolutionHook {
+    /// Persist a skill-type memory as an SOP wiki page.
+    async fn persist_as_sop(
+        &self,
+        mem: &EvolutionMemory,
+        page_store: &PageStore,
+    ) -> Result<(), AgentError> {
+        let slug = slugify(&mem.title);
+
+        // Deduplication
+        let existing = page_store.list(PageFilter::default()).await.map_err(|e| {
+            AgentError::Other(format!("EvolutionHook: failed to list pages for dedup: {}", e))
+        })?;
+        let is_duplicate = existing
+            .iter()
+            .any(|p| slugify(&p.title) == slug || p.path.contains(&slug));
+
+        if is_duplicate {
+            debug!("EvolutionHook: SOP '{}' already exists. Skipping.", mem.title);
+            return Ok(());
+        }
+
+        let path = format!("sops/{}", slug);
+        let mut page = WikiPage::new(path, mem.title.clone(), PageType::Sop, format_sop_content(mem));
+
+        let mut tags = mem.tags.clone().unwrap_or_default();
+        tags.push("auto_learned".to_string());
+        if mem.verified {
+            tags.push("verified".to_string());
+        }
+        page.tags = tags;
+
+        page_store.write(&page).await.map_err(|e| {
+            AgentError::Other(format!("EvolutionHook: failed to write SOP page: {}", e))
+        })?;
+
+        info!("EvolutionHook: created SOP page '{}'", mem.title);
+        Ok(())
+    }
+}
+
+/// Format an EvolutionMemory as SOP Markdown content.
+fn format_sop_content(mem: &EvolutionMemory) -> String {
+    format!(
+        "## Trigger Scenario\n\
+         - {}\n\n\
+         ## Preconditions\n\
+         - (observed during execution)\n\n\
+         ## Key Steps\n\
+         {}\n\n\
+         ## Pitfalls\n\
+         - Review before reuse in different environments.\n\n\
+         ## Confidence\n\
+         - {:.1}% (verified: {})",
+        mem.scenario, mem.content, mem.confidence * 100.0, mem.verified
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_with_verified() {
+        let json = r#"[{"title":"Docker Build","type":"skill","scenario":"procedure","content":"Run docker build","tags":["docker"],"verified":true,"confidence":0.95}]"#;
+        let mems = EvolutionHook::extract_json(json).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].memory_type, "skill");
+        assert!(mems[0].verified);
+        assert!((mems[0].confidence - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_format_sop_content() {
+        let mem = EvolutionMemory {
+            title: "Test".to_string(),
+            memory_type: "skill".to_string(),
+            scenario: "procedure".to_string(),
+            content: "1. Step one\n2. Step two".to_string(),
+            tags: Some(vec!["docker".to_string()]),
+            verified: true,
+            confidence: 0.9,
+        };
+        let content = format_sop_content(&mem);
+        assert!(content.contains("Trigger Scenario"));
+        assert!(content.contains("Preconditions"));
+        assert!(content.contains("Key Steps"));
+        assert!(content.contains("Pitfalls"));
+        assert!(content.contains("Step one"));
+        assert!(content.contains("90.0%"));
+        assert!(content.contains("verified: true"));
+    }
+
+    #[test]
+    fn test_extract_json_backward_compat() {
+        // Old format without verified/confidence should still parse (defaults)
+        let json = r#"[{"title":"Test","type":"note","scenario":"knowledge","content":"fact","tags":[]}]"#;
+        let mems = EvolutionHook::extract_json(json).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert!(!mems[0].verified);
+        assert_eq!(mems[0].confidence, 0.0);
     }
 }

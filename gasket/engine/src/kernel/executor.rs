@@ -30,10 +30,22 @@ const DEFAULT_NO_RESPONSE: &str = "I've completed processing but have no respons
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of executing a single tool call
+#[derive(Debug)]
 pub struct ToolCallResult {
     pub tool_call_id: String,
     pub tool_name: String,
     pub output: String,
+}
+
+/// Result of executing one LLM iteration.
+///
+/// Returned by `SteppableExecutor::step()` so callers can inspect each turn
+/// without owning the full loop.
+#[derive(Debug)]
+pub struct StepResult {
+    pub response: ChatResponse,
+    pub tool_results: Vec<ToolCallResult>,
+    pub should_continue: bool,
 }
 
 /// Executes tool calls against a `ToolRegistry`.
@@ -253,16 +265,16 @@ impl ExecutionState {
 ///
 /// Each iteration returns its `TokenUsage` delta; this ledger accumulates
 /// them across the full execution lifecycle.
-struct TokenLedger {
-    total_usage: Option<TokenUsage>,
+pub struct TokenLedger {
+    pub total_usage: Option<TokenUsage>,
 }
 
 impl TokenLedger {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { total_usage: None }
     }
 
-    fn accumulate(&mut self, usage: &TokenUsage) {
+    pub fn accumulate(&mut self, usage: &TokenUsage) {
         self.total_usage = Some(match self.total_usage.take() {
             Some(mut acc) => {
                 acc.input_tokens += usage.input_tokens;
@@ -272,6 +284,267 @@ impl TokenLedger {
             }
             None => usage.clone(),
         });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SteppableExecutor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Steppable executor — one LLM call + optional tool execution per `step()`.
+///
+/// External callers (like `MonitoredRunner`) drive the loop; `KernelExecutor`
+/// composes this internally.
+pub struct SteppableExecutor {
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    config: KernelConfig,
+    spawner: Option<Arc<dyn SubagentSpawner>>,
+    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+    /// Optional checkpoint interceptor. Called before each step().
+    /// Returns summary to inject, or None to skip.
+    checkpoint_callback:
+        Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+}
+
+impl SteppableExecutor {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        config: KernelConfig,
+    ) -> Self {
+        Self {
+            provider,
+            tools,
+            config,
+            spawner: None,
+            token_tracker: None,
+            checkpoint_callback: None,
+        }
+    }
+
+    pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
+    }
+
+    pub fn with_token_tracker(
+        mut self,
+        tracker: Arc<crate::token_tracker::TokenTracker>,
+    ) -> Self {
+        self.token_tracker = Some(tracker);
+        self
+    }
+
+    /// Enable proactive checkpointing via interceptor.
+    pub fn with_checkpoint(
+        mut self,
+        callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.checkpoint_callback = Some(callback);
+        self
+    }
+
+    /// Execute one iteration: LLM call → optional tool calls → return result.
+    ///
+    /// `messages` is mutated in place (assistant response + tool results appended).
+    /// `ledger` accumulates token usage across steps.
+    pub async fn step(
+        &self,
+        messages: &mut Vec<ChatMessage>,
+        ledger: &mut TokenLedger,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+    ) -> Result<StepResult, KernelError> {
+        // Proactive checkpoint injection (before LLM call)
+        if let Some(ref cb) = self.checkpoint_callback {
+            if let Some(summary) = cb(messages.len()) {
+                debug!(
+                    "[Steppable] Injecting checkpoint ({} chars)",
+                    summary.len()
+                );
+                messages.push(ChatMessage::system(format!(
+                    "[Working Memory] {}",
+                    summary
+                )));
+            }
+        }
+
+        let request_handler =
+            RequestHandler::new(&self.provider, &self.tools, &self.config);
+        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+
+        let request = request_handler.build_chat_request(messages);
+        let stream_result = request_handler
+            .send_with_retry(request)
+            .await
+            .map_err(|e| KernelError::Provider(e.to_string()))?;
+
+        let response = self.get_response(stream_result, event_tx, ledger).await?;
+
+        let is_final = !response.has_tool_calls();
+
+        if is_final {
+            if let Some(ref content) = response.content {
+                messages.push(ChatMessage::assistant(content));
+            }
+            return Ok(StepResult {
+                response,
+                tool_results: vec![],
+                should_continue: false,
+            });
+        }
+
+        // Handle tool calls — mutates messages, returns results for progress reporting
+        let tool_results = self
+            .handle_tool_calls(&response, &executor, messages, event_tx)
+            .await;
+
+        Ok(StepResult {
+            response,
+            tool_results,
+            should_continue: true,
+        })
+    }
+
+    async fn get_response(
+        &self,
+        stream_result: ChatStream,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        ledger: &mut TokenLedger,
+    ) -> Result<ChatResponse, KernelError> {
+        let (mut event_stream, response_future) = stream::stream_events(stream_result);
+
+        if let Some(tx) = event_tx {
+            let mut event_count = 0usize;
+            while let Some(event) = event_stream.next().await {
+                event_count += 1;
+                if event_count == 1 {
+                    debug!("[Steppable] Received first event from LLM stream");
+                }
+                if tx.send(event).await.is_err() {
+                    debug!(
+                        "[Steppable] Channel closed after {} events",
+                        event_count
+                    );
+                    break;
+                }
+            }
+        } else {
+            while event_stream.next().await.is_some() {}
+        }
+
+        let response = response_future
+            .await
+            .map_err(|e| KernelError::Provider(e.to_string()))?;
+
+        if let Some(ref api_usage) = response.usage {
+            let usage = gasket_types::TokenUsage::from_api_fields(
+                api_usage.input_tokens,
+                api_usage.output_tokens,
+            );
+            ledger.accumulate(&usage);
+        }
+
+        Ok(response)
+    }
+
+    async fn handle_tool_calls(
+        &self,
+        response: &ChatResponse,
+        executor: &ToolExecutor<'_>,
+        messages: &mut Vec<ChatMessage>,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+    ) -> Vec<ToolCallResult> {
+        if response.tool_calls.is_empty() {
+            if let Some(ref c) = response.content {
+                messages.push(ChatMessage::assistant(c));
+            }
+            return vec![];
+        }
+
+        info!(
+            "[Steppable] Executing {} tool call(s): {}",
+            response.tool_calls.len(),
+            response
+                .tool_calls
+                .iter()
+                .map(|tc| tc.function.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        messages.push(ChatMessage::assistant_with_tools(
+            response.content.clone(),
+            response.tool_calls.clone(),
+        ));
+
+        let mut ctx = ToolContext::default();
+        if let Some(ref spawner) = self.spawner {
+            ctx = ctx.spawner(spawner.clone());
+        }
+        if let Some(ref tracker) = self.token_tracker {
+            ctx = ctx.token_tracker(tracker.clone());
+        }
+
+        let futures: Vec<_> = response
+            .tool_calls
+            .iter()
+            .enumerate()
+            .map(|(idx, tc)| {
+                let tool_call = tc.clone();
+                let ctx = ctx.clone();
+                let tx = event_tx.cloned();
+                async move {
+                    let tool_name = tool_call.function.name.clone();
+                    let tool_args = tool_call.function.arguments.to_string();
+
+                    if let Some(ref sender) = tx {
+                        let _ = sender
+                            .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
+                            .await;
+                    }
+
+                    let start = std::time::Instant::now();
+                    let result = executor.execute_one(&tool_call, &ctx).await;
+                    let duration = start.elapsed();
+
+                    debug!(
+                        "[Steppable] Tool {} -> done ({}ms)",
+                        tool_name,
+                        duration.as_millis()
+                    );
+
+                    if let Some(ref sender) = tx {
+                        let _ = sender
+                            .send(StreamEvent::tool_end(
+                                &tool_name,
+                                Some(result.output.clone()),
+                            ))
+                            .await;
+                    }
+
+                    (idx, tool_call.id, tool_name, result.output)
+                }
+            })
+            .collect();
+
+        let mut results = futures_util::future::join_all(futures).await;
+        results.sort_by_key(|(idx, _, _, _)| *idx);
+
+        let mut tool_results = Vec::new();
+        for (_, tool_call_id, tool_name, output) in results {
+            messages.push(ChatMessage::tool_result(
+                tool_call_id.clone(),
+                tool_name.clone(),
+                output.clone(),
+            ));
+            tool_results.push(ToolCallResult {
+                tool_call_id,
+                tool_name,
+                output,
+            });
+        }
+        tool_results
     }
 }
 
@@ -359,39 +632,48 @@ impl<'a> KernelExecutor<'a> {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+        let mut steppable = SteppableExecutor::new(
+            self.provider.clone(),
+            self.tools.clone(),
+            self.config.clone(),
+        );
+        if let Some(ref spawner) = self.spawner {
+            steppable = steppable.with_spawner(spawner.clone());
+        }
+        if let Some(ref tracker) = self.token_tracker {
+            steppable = steppable.with_token_tracker(tracker.clone());
+        }
 
         for iteration in 1..=self.config.max_iterations {
             debug!("[Kernel] iteration {}", iteration);
 
-            let request = request_handler.build_chat_request(&state.messages);
-            let stream_result = request_handler
-                .send_with_retry(request)
-                .await
-                .map_err(|e| KernelError::Provider(e.to_string()))?;
+            let result = steppable
+                .step(&mut state.messages, ledger, event_tx)
+                .await?;
 
-            let response = self.get_response(stream_result, event_tx, ledger).await?;
-
-            Self::log_token_usage(ledger, iteration);
-            Self::log_response(&response, iteration, options.vault_values);
-
-            if let Some((content, reasoning_content)) = Self::check_final_response(&response) {
-                return Ok(state.to_result(content, reasoning_content, ledger));
+            // Track tools used from this step
+            for tr in &result.tool_results {
+                state.tools_used.push(tr.tool_name.clone());
             }
 
-            self.handle_tool_calls(&response, &executor, state, event_tx)
-                .await;
+            Self::log_token_usage(ledger, iteration);
+            Self::log_response(&result.response, iteration, options.vault_values);
 
-            if iteration >= self.config.max_iterations {
-                info!(
-                    "[Kernel] Max iterations ({}) reached",
-                    self.config.max_iterations
-                );
-                return Err(KernelError::MaxIterations(self.config.max_iterations));
+            if !result.should_continue {
+                let content = result
+                    .response
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
+                let reasoning = result.response.reasoning_content.clone();
+                return Ok(state.to_result(content, reasoning, ledger));
             }
         }
 
+        info!(
+            "[Kernel] Max iterations ({}) reached",
+            self.config.max_iterations
+        );
         Err(KernelError::MaxIterations(self.config.max_iterations))
     }
 
@@ -425,160 +707,6 @@ impl<'a> KernelExecutor<'a> {
             response.has_tool_calls(),
             response.tool_calls.len()
         );
-    }
-
-    async fn handle_tool_calls(
-        &self,
-        response: &ChatResponse,
-        executor: &ToolExecutor<'_>,
-        state: &mut ExecutionState,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
-    ) {
-        if response.tool_calls.is_empty() {
-            if let Some(ref c) = response.content {
-                state.messages.push(ChatMessage::assistant(c));
-            }
-            return;
-        }
-
-        info!(
-            "[Kernel] Executing {} tool call(s): {}",
-            response.tool_calls.len(),
-            response
-                .tool_calls
-                .iter()
-                .map(|tc| tc.function.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
-        state.messages.push(ChatMessage::assistant_with_tools(
-            response.content.clone(),
-            response.tool_calls.clone(),
-        ));
-
-        let mut ctx = ToolContext::default();
-        if let Some(ref spawner) = self.spawner {
-            ctx = ctx.spawner(spawner.clone());
-        }
-        if let Some(ref tracker) = self.token_tracker {
-            ctx = ctx.token_tracker(tracker.clone());
-        }
-
-        // 并发执行工具调用，每个工具独立发送事件
-        let futures: Vec<_> = response
-            .tool_calls
-            .iter()
-            .enumerate()
-            .map(|(idx, tc)| {
-                let tool_call = tc.clone();
-                let ctx = ctx.clone();
-                let tx = event_tx.cloned();
-                async move {
-                    let tool_name = tool_call.function.name.clone();
-                    let tool_args = tool_call.function.arguments.to_string();
-
-                    // 发送 tool_start 事件
-                    if let Some(ref sender) = tx {
-                        let _ = sender
-                            .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
-                            .await;
-                    }
-
-                    let start = std::time::Instant::now();
-                    let result = executor.execute_one(&tool_call, &ctx).await;
-                    let duration = start.elapsed();
-
-                    debug!(
-                        "[Kernel] Tool {} -> done ({}ms)",
-                        tool_name,
-                        duration.as_millis()
-                    );
-
-                    // 发送 tool_end 事件
-                    if let Some(ref sender) = tx {
-                        let _ = sender
-                            .send(StreamEvent::tool_end(
-                                &tool_name,
-                                Some(result.output.clone()),
-                            ))
-                            .await;
-                    }
-
-                    (idx, tool_call.id, tool_name, result.output)
-                }
-            })
-            .collect();
-
-        let mut results = futures_util::future::join_all(futures).await;
-        // 按原始顺序排序，确保消息顺序一致
-        results.sort_by_key(|(idx, _, _, _)| *idx);
-
-        for (_, tool_call_id, tool_name, output) in results {
-            state.tools_used.push(tool_name.clone());
-            state
-                .messages
-                .push(ChatMessage::tool_result(tool_call_id, tool_name, output));
-        }
-    }
-
-    async fn get_response(
-        &self,
-        stream_result: ChatStream,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        ledger: &mut TokenLedger,
-    ) -> Result<ChatResponse, KernelError> {
-        // Always use the streaming pipeline — "Everything is a Stream".
-        // For non-streaming callers, events are silently drained.
-        let (mut event_stream, response_future) = stream::stream_events(stream_result);
-
-        if let Some(tx) = event_tx {
-            // Forward events to external channel
-            let mut event_count = 0usize;
-            while let Some(event) = event_stream.next().await {
-                event_count += 1;
-                if event_count == 1 {
-                    debug!("[Kernel] Received first event from LLM stream");
-                }
-                if tx.send(event).await.is_err() {
-                    debug!(
-                        "[Kernel] Channel closed after {} events, client disconnected",
-                        event_count
-                    );
-                    break;
-                }
-            }
-            debug!("[Kernel] Event stream ended, total events: {}", event_count);
-        } else {
-            // Non-streaming: silently drain events to drive the stream to completion
-            while event_stream.next().await.is_some() {}
-        }
-
-        let response = response_future
-            .await
-            .map_err(|e| KernelError::Provider(e.to_string()))?;
-
-        if let Some(ref api_usage) = response.usage {
-            let usage = gasket_types::TokenUsage::from_api_fields(
-                api_usage.input_tokens,
-                api_usage.output_tokens,
-            );
-            ledger.accumulate(&usage);
-        }
-
-        Ok(response)
-    }
-
-    fn check_final_response(response: &ChatResponse) -> Option<(String, Option<String>)> {
-        if response.has_tool_calls() {
-            return None;
-        }
-        info!("[Kernel] No tool calls, returning final response");
-        let content = response
-            .content
-            .clone()
-            .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
-        Some((content, response.reasoning_content.clone()))
     }
 }
 

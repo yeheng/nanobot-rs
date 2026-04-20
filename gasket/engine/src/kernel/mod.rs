@@ -10,7 +10,10 @@ pub mod stream;
 
 pub use context::{KernelConfig, RuntimeContext};
 pub use error::KernelError;
-pub use executor::{ExecutionResult, ExecutorOptions, KernelExecutor, ToolExecutor};
+pub use executor::{
+    ExecutionResult, ExecutorOptions, KernelExecutor, StepResult, SteppableExecutor,
+    TokenLedger, ToolExecutor,
+};
 pub use stream::{BufferedEvents, StreamEvent};
 
 use gasket_providers::ChatMessage;

@@ -8,6 +8,7 @@ pub enum PageType {
     Entity,
     Topic,
     Source,
+    Sop,
 }
 
 impl PageType {
@@ -16,6 +17,16 @@ impl PageType {
             Self::Entity => "entity",
             Self::Topic => "topic",
             Self::Source => "source",
+            Self::Sop => "sop",
+        }
+    }
+
+    pub fn directory(&self) -> &'static str {
+        match self {
+            Self::Entity => "entities",
+            Self::Topic => "topics",
+            Self::Source => "sources",
+            Self::Sop => "sops",
         }
     }
 }
@@ -28,6 +39,7 @@ impl std::str::FromStr for PageType {
             "entity" => Ok(Self::Entity),
             "topic" => Ok(Self::Topic),
             "source" => Ok(Self::Source),
+            "sop" => Ok(Self::Sop),
             _ => Err(()),
         }
     }

@@ -210,6 +210,7 @@ fn check_naming(page: &WikiPage) -> Option<StructuralIssue> {
         PageType::Entity => "entities/",
         PageType::Topic => "topics/",
         PageType::Source => "sources/",
+        PageType::Sop => "sops/",
     };
 
     if !page.path.starts_with(expected_prefix) {

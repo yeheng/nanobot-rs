@@ -28,6 +28,7 @@ impl PageStore {
             "entities/concepts",
             "topics",
             "sources",
+            "sops",
         ] {
             fs::create_dir_all(self.wiki_root.join(dir)).await?;
         }
