@@ -4,9 +4,16 @@
 
 **Goal:** Integrate GenericAgent's core innovations — self-evolving SOPs, structured plan execution via tools, monitored subagent delegation, and proactive working memory — into gasket's Rust architecture without breaking existing APIs.
 
-**Architecture:** Extract `SteppableExecutor` as a foundation primitive from `KernelExecutor`, then build four modules on top: SOP-aware wiki (`PageType::Sop`), tool-based planning (`create_plan`), channel-monitored subagents (`MonitoredSpawner`), and caller-layer checkpointing. The LLM decides when to plan; no hardcoded FSM, no routing layer.
+**Architecture:** Extract `SteppableExecutor` as a foundation primitive from `KernelExecutor`, then build four modules on top: SOP-aware wiki (`PageType::Sop`), tool-based planning (`create_plan`), channel-monitored subagents (`MonitoredSpawner`), and SteppableExecutor-level checkpointing. The LLM decides when to plan; no hardcoded FSM, no routing layer.
 
 **Tech Stack:** Rust 2021, tokio, sqlx (SQLite), Tantivy, serde_json
+
+**Recommended Execution Order:** Task 1 → Task 2 → Task 6 (simplified) → Task 7 → Task 3 → Task 4 → Task 5 (unified). Rationale: create_plan and search_sops are simpler and dependency-free; EvolutionHook and MonitoredSpawner depend on SOP infrastructure; Checkpoint depends on SteppableExecutor.
+
+**Changes from Linus Review (`task.md`):**
+1. **Killed JSON AST in create_plan** — `PlanStep`, `StepType`, `Plan` structs are unnecessary indirection. The engine never parses/executes a plan AST. Markdown is the native data structure for LLM-to-LLM communication. Don't do pointless JSON serialize→deserialize→serialize round-trips.
+2. **Unified Checkpoint at SteppableExecutor level** — Original design placed checkpoint only at the caller layer (MonitoredRunner), creating asymmetry where subagents get proactive working memory but the main agent does not. Checkpoint is now an optional interceptor on `SteppableExecutor::step()`, benefiting both modes equally. Good code has no special cases.
+3. **Reordered tasks** — create_plan and search_sops are dependency-free and should be implemented before EvolutionHook and MonitoredSpawner.
 
 ---
 
@@ -14,7 +21,7 @@
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `gasket/engine/src/kernel/executor.rs` | Modify | Extract `SteppableExecutor` + `StepResult`; `KernelExecutor` composes it internally |
+| `gasket/engine/src/kernel/executor.rs` | Modify | Extract `SteppableExecutor` + `StepResult` + optional checkpoint interceptor; `KernelExecutor` composes it internally |
 | `gasket/engine/src/kernel/mod.rs` | Modify | Export `SteppableExecutor` and `StepResult` |
 | `gasket/engine/src/wiki/page.rs` | Modify | Add `PageType::Sop` variant with `as_str()`, `FromStr`, `directory()` |
 | `gasket/engine/src/wiki/mod.rs` | Modify | Update re-exports; add `PageType::Sop` tests |
@@ -24,6 +31,9 @@
 | `gasket/engine/src/subagents/mod.rs` | Modify | Export new monitor types |
 | `gasket/engine/src/session/compactor.rs` | Modify | Add `CheckpointConfig` and `checkpoint()` method |
 | `gasket/storage/src/lib.rs` | Modify | Add `session_checkpoints` table + `save_checkpoint` / `load_checkpoint` methods |
+| `gasket/engine/src/tools/create_plan.rs` | Create | Simplified `CreatePlanTool` (Markdown-based, no JSON AST) |
+| `gasket/engine/src/tools/search_sops.rs` | Create | `search_sops` tool function |
+| `gasket/engine/src/tools/mod.rs` | Modify | Register `create_plan` and `search_sops` in `ToolRegistry` |
 
 ---
 
@@ -54,7 +64,7 @@ pub struct StepResult {
 
 Make `TokenLedger` public (change `struct TokenLedger` to `pub struct TokenLedger` on line 256, and `fn new()` / `fn accumulate()` to `pub fn new()` / `pub fn accumulate()`).
 
-Also make `ExecutionState` and its methods `pub` (lines 223-250), since `MonitoredRunner` will need to construct one.
+`ExecutionState` **does NOT need to be public** — `MonitoredRunner` constructs its own `Vec<ChatMessage>` directly, so `ExecutionState` can remain private to the kernel module.
 
 ---
 
@@ -124,9 +134,6 @@ impl SteppableExecutor {
         let response = self
             .get_response(stream_result, event_tx, ledger)
             .await?;
-
-        KernelExecutor::log_token_usage(ledger, 0); // iteration unknown at this layer
-        KernelExecutor::log_response(&response, 0, &[]);
 
         let is_final = response.tool_calls.is_empty();
 
@@ -291,13 +298,17 @@ async fn run_loop(
     event_tx: Option<&mpsc::Sender<StreamEvent>>,
     options: &ExecutorOptions<'_>,
 ) -> Result<ExecutionResult, KernelError> {
-    let steppable = SteppableExecutor::new(
+    let mut steppable = SteppableExecutor::new(
         self.provider.clone(),
         self.tools.clone(),
         self.config.clone(),
-    )
-    .with_spawner_opt(self.spawner.clone())
-    .with_token_tracker_opt(self.token_tracker.clone());
+    );
+    if let Some(ref spawner) = self.spawner {
+        steppable = steppable.with_spawner(spawner.clone());
+    }
+    if let Some(ref tracker) = self.token_tracker {
+        steppable = steppable.with_token_tracker(tracker.clone());
+    }
 
     for iteration in 1..=self.config.max_iterations {
         debug!("[Kernel] iteration {}", iteration);
@@ -305,6 +316,10 @@ async fn run_loop(
         let result = steppable
             .step(&mut state.messages, ledger, event_tx)
             .await?;
+
+        // Logging stays at the KernelExecutor layer where iteration context is known
+        KernelExecutor::log_token_usage(ledger, iteration);
+        KernelExecutor::log_response(&result.response, iteration, options.vault_values);
 
         if !result.should_continue {
             let content = result.response.content.unwrap_or_default();
@@ -317,27 +332,7 @@ async fn run_loop(
 }
 ```
 
-2. Remove the old `handle_tool_calls`, `get_response`, `log_token_usage`, `log_response`, `check_final_response` methods from `KernelExecutor` — they move to `SteppableExecutor` or become module-level helpers.
-
-Wait — `log_token_usage` and `log_response` are called from `run_loop` with iteration number, but `step()` doesn't know the iteration. We can either:
-- Keep them in `KernelExecutor::run_loop` and call them after `step()`
-- Or move them to `SteppableExecutor` and pass iteration as a parameter
-
-The cleaner approach: keep `log_token_usage` and `log_response` as module-level `pub(crate)` functions, call them from `KernelExecutor::run_loop` after each `step()`.
-
-```rust
-// In run_loop, after step():
-KernelExecutor::log_token_usage(ledger, iteration);
-KernelExecutor::log_response(&result.response, iteration, options.vault_values);
-```
-
-So `SteppableExecutor::step()` should NOT call log_token_usage/log_response — those stay in `KernelExecutor`.
-
-Let me revise Step 2's `step()` method: remove the `log_token_usage` and `log_response` calls from inside `step()`.
-
-Also, `KernelExecutor::check_final_response` should stay as a method since `run_loop` needs it to extract the final result. Actually no — after `step()` returns with `should_continue=false`, we already know it's final. The content is in `result.response.content`. So `check_final_response` is no longer needed.
-
-3. Remove `handle_tool_calls`, `get_response`, and `check_final_response` from `KernelExecutor` impl. Keep `log_token_usage` and `log_response` as `pub(crate)` methods.
+2. Remove `handle_tool_calls`, `get_response`, and `check_final_response` from `KernelExecutor` impl. Keep `log_token_usage` and `log_response` as `pub(crate)` methods so `run_loop` can call them after each `step()`.
 
 ---
 
@@ -369,7 +364,7 @@ git add gasket/engine/src/kernel/executor.rs gasket/engine/src/kernel/mod.rs
 git commit -m "feat(kernel): extract SteppableExecutor from KernelExecutor
 
 - Add StepResult with response + should_continue
-- Make TokenLedger and ExecutionState public
+- Make TokenLedger public
 - SteppableExecutor::step() does one LLM iteration
 - KernelExecutor composes SteppableExecutor in run_loop
 - Zero API change for existing callers
@@ -638,11 +633,29 @@ impl EvolutionHook {
 }
 
 fn format_sop_content(mem: &EvolutionMemory) -> String {
+    let tags = mem.tags.clone().unwrap_or_default().join(", ");
     format!(
-        "## Trigger Scenario\n- {}\n\n## Steps\n{}\n\n## Confidence\n{:.1}%",
+        "---\n\
+         title: {}\n\
+         type: sop\n\
+         tags: [{}]\n\
+         ---\n\n\
+         ## Trigger Scenario\n\
+         - {}\n\n\
+         ## Preconditions\n\
+         - (observed during execution)\n\n\
+         ## Key Steps\n\
+         {}\n\n\
+         ## Pitfalls\n\
+         - Review before reuse in different environments.\n\n\
+         ## Confidence\n\
+         - {:.1}% (verified: {})\n",
+        mem.title,
+        tags,
         mem.scenario,
         mem.content,
-        mem.confidence * 100.0
+        mem.confidence * 100.0,
+        mem.verified
     )
 }
 ```
@@ -741,14 +754,18 @@ mod tests {
             memory_type: "skill".to_string(),
             scenario: "procedure".to_string(),
             content: "1. Step one\n2. Step two".to_string(),
-            tags: None,
+            tags: Some(vec!["docker".to_string()]),
             verified: true,
             confidence: 0.9,
         };
         let content = super::format_sop_content(&mem);
         assert!(content.contains("Trigger Scenario"));
+        assert!(content.contains("Preconditions"));
+        assert!(content.contains("Key Steps"));
+        assert!(content.contains("Pitfalls"));
         assert!(content.contains("Step one"));
         assert!(content.contains("90.0%"));
+        assert!(content.contains("verified: true"));
     }
 }
 ```
@@ -773,7 +790,7 @@ git commit -m "feat(hooks): enhance EvolutionHook with SOP extraction
 
 - Add verified + confidence fields to EvolutionMemory
 - Enhance prompt with 'No Execution, No Memory' axiom
-- Add persist_as_sop() writing PageType::Sop pages
+- Add persist_as_sop() writing PageType::Sop pages with full template
 - Route 'skill' type to sops/, other types to existing paths
 - Add tests for JSON extraction and SOP formatting
 
@@ -805,7 +822,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::kernel::{ExecutionState, KernelConfig, StepResult, SteppableExecutor, TokenLedger};
+use crate::kernel::{KernelConfig, StepResult, SteppableExecutor, TokenLedger};
 use crate::session::config::AgentConfig;
 use crate::session::config::AgentConfigExt;
 use crate::tools::ToolRegistry;
@@ -859,7 +876,7 @@ impl MonitoredSpawner {
 
         let config = AgentConfig {
             model: spec.model.clone().unwrap_or_else(|| provider.default_model().to_string()),
-            max_iterations: 10,
+            max_iterations: spec.max_turns.unwrap_or(10) as usize,
             ..Default::default()
         };
         let kernel_config = config.to_kernel_config();
@@ -877,19 +894,9 @@ impl MonitoredSpawner {
                             message: e.to_string(),
                         })
                         .await;
-                    SubagentResult {
-                        id: runner.spec.id,
-                        task: runner.spec.task,
-                        response: crate::tools::SubagentResponse {
-                            content: format!("Error: {}", e),
-                            reasoning_content: None,
-                            tools_used: vec![],
-                            model: None,
-                            token_usage: None,
-                            cost: 0.0,
-                        },
-                        model: None,
-                    }
+                    let mut result = runner.final_result();
+                    result.response.content = format!("Error: {}", e);
+                    result
                 }
             }
         });
@@ -935,7 +942,7 @@ impl MonitoredRunner {
             ledger: TokenLedger::new(),
             progress,
             intervention,
-            max_turns: 10,
+            max_turns: spec.max_turns.unwrap_or(10),
         }
     }
 
@@ -1063,6 +1070,67 @@ impl MonitoredRunner {
 
 ---
 
+- [ ] **Step 2: Export types in `subagents/mod.rs`**
+
+Add to `gasket/engine/src/subagents/mod.rs`:
+
+```rust
+pub mod monitor;
+pub use monitor::{Intervention, MonitoredHandle, MonitoredSpawner, ProgressUpdate};
+```
+
+---
+
+- [ ] **Step 3: Add inline tests**
+
+At the bottom of `gasket/engine/src/subagents/monitor.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_update_clone() {
+        let p = ProgressUpdate::Thinking { turn: 1 };
+        let _ = p.clone();
+    }
+
+    #[test]
+    fn test_intervention_clone() {
+        let i = Intervention::AddKeyInfo("test".to_string());
+        let _ = i.clone();
+    }
+}
+```
+
+---
+
+- [ ] **Step 4: Run tests**
+
+```bash
+cargo test --package gasket-engine subagents::monitor::tests
+```
+
+Expected: Tests compile and pass.
+
+---
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add gasket/engine/src/subagents/monitor.rs gasket/engine/src/subagents/mod.rs
+git commit -m "feat(subagents): add MonitoredSpawner with channel-based oversight
+
+- ProgressUpdate + Intervention enums for real-time oversight
+- MonitoredRunner drives SteppableExecutor turn-by-turn
+- No DB fallback (KISS)
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+---
+
 ## Task 5: Implement Compactor Checkpoint
 
 **Files:**
@@ -1070,7 +1138,7 @@ impl MonitoredRunner {
 - Modify: `gasket/storage/src/lib.rs`
 - Test: `gasket/engine/src/session/compactor.rs` (inline test module)
 
-**Context:** Add proactive working-memory snapshots every N turns. Unlike passive compaction (triggered by token threshold), checkpointing is proactive and turn-driven. It generates a structured summary of current task state and persists it to SQLite.
+**Context:** ~~Add proactive working-memory snapshots every N sequence increments... The **caller layer** (e.g. `MonitoredRunner`) is responsible for injecting the checkpoint back into the message history.~~ **REVISED (Linus Review): Unified at SteppableExecutor level.** The original design placed checkpoint only at the caller layer (MonitoredRunner), creating an asymmetry where subagents get proactive working memory but the main agent (CLI mode) does not. **Good code has no special cases.** Since `SteppableExecutor::step()` is the shared execution primitive for both modes, checkpoint injection belongs there as an optional interceptor — not leaked to callers. The storage layer (`session_checkpoints` table) and `CheckpointConfig` remain unchanged.
 
 ---
 
@@ -1080,25 +1148,26 @@ In `gasket/storage/src/lib.rs`, inside `init_db()` (after the `session_summaries
 
 ```rust
         // ── Session checkpoints ──
-        // Proactive working-memory snapshots every N turns.
+        // Proactive working-memory snapshots every N sequence increments.
         // Called by MonitoredRunner between step() calls.
+        // target_sequence binds to EventStore's monotonic sequence, NOT a transient turn counter.
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_checkpoints (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_key TEXT NOT NULL,
-                turn        INTEGER NOT NULL,
-                summary     TEXT NOT NULL,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(session_key, turn)
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key     TEXT NOT NULL,
+                target_sequence INTEGER NOT NULL,
+                summary         TEXT NOT NULL,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(session_key, target_sequence)
             )",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_turn
-             ON session_checkpoints(session_key, turn)",
+            "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_seq
+             ON session_checkpoints(session_key, target_sequence)",
         )
         .execute(&self.pool)
         .await?;
@@ -1107,44 +1176,46 @@ In `gasket/storage/src/lib.rs`, inside `init_db()` (after the `session_summaries
 Then add two methods to `SqliteStore` (after `write_raw`, around line 680):
 
 ```rust
-    /// Save a checkpoint summary for a session at a specific turn.
+    /// Save a checkpoint summary for a session at a specific target_sequence.
     pub async fn save_checkpoint(
         &self,
         session_key: &str,
-        turn: i64,
+        target_sequence: i64,
         summary: &str,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO session_checkpoints (session_key, turn, summary, created_at)
-             VALUES ($1, $2, $3, datetime('now'))"
+            "INSERT OR REPLACE INTO session_checkpoints (session_key, target_sequence, summary, created_at)
+             VALUES (?1, ?2, ?3, datetime('now'))"
         )
         .bind(session_key)
-        .bind(turn)
+        .bind(target_sequence)
         .bind(summary)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    /// Load the most recent checkpoint for a session before or at a given turn.
+    /// Load the most recent checkpoint for a session before or at a given target_sequence.
     pub async fn load_checkpoint(
         &self,
         session_key: &str,
-        turn: i64,
+        target_sequence: i64,
     ) -> anyhow::Result<Option<(String, i64)>> {
-        let row = sqlx::query_as::<(String, i64)>(
-            "SELECT summary, turn FROM session_checkpoints
-             WHERE session_key = $1 AND turn <= $2
-             ORDER BY turn DESC
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT summary, target_sequence FROM session_checkpoints
+             WHERE session_key = ?1 AND target_sequence <= ?2
+             ORDER BY target_sequence DESC
              LIMIT 1"
         )
         .bind(session_key)
-        .bind(turn)
+        .bind(target_sequence)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
     }
 ```
+
+**Note:** `sqlx::query_as` with anonymous tuples requires `sqlx::query_as::<_, (String, i64)>(...)` syntax. Ensure the `sqlx` feature for SQLite is enabled.
 
 ---
 
@@ -1156,7 +1227,7 @@ In `gasket/engine/src/session/compactor.rs`, after the `UsageStats` struct (line
 /// Configuration for proactive checkpointing.
 #[derive(Debug, Clone)]
 pub struct CheckpointConfig {
-    /// Trigger checkpoint every N turns (0 = disabled).
+    /// Trigger checkpoint every N sequence increments (0 = disabled).
     pub interval_turns: usize,
     /// Prompt template for checkpoint generation.
     pub prompt: String,
@@ -1221,20 +1292,30 @@ Add the `checkpoint()` method (after `force_compact_and_wait`, around line 311):
 ```rust
     /// Generate a proactive checkpoint for the current session state.
     ///
-    /// Called by the caller layer (e.g. MonitoredRunner) every N turns.
+    /// Called by the caller layer (e.g. MonitoredRunner) every N sequence increments.
     /// Returns `Some(summary)` if a checkpoint was generated, `None` if skipped.
+    ///
+    /// The caller is responsible for injecting the returned summary into the
+    /// message history (e.g. as a system message) so the LLM sees its working memory.
+    ///
+    /// **CRITICAL:** `current_max_sequence` must be fetched from EventStore.
+    /// Never pass a transient turn counter — it resets on restart and will cause
+    /// unique-constraint violations in `session_checkpoints`.
     pub async fn checkpoint(
         &self,
         session_key: &SessionKey,
-        current_turn: usize,
+        current_max_sequence: i64,
         recent_events: &[SessionEvent],
-    ) -> Result<Option<String>> {
+    ) -> anyhow::Result<Option<String>> {
         let config = match &self.checkpoint_config {
             Some(c) => c,
             None => return Ok(None),
         };
 
-        if config.interval_turns == 0 || current_turn % config.interval_turns != 0 {
+        if config.interval_turns == 0
+            || current_max_sequence == 0
+            || current_max_sequence % config.interval_turns as i64 != 0
+        {
             return Ok(None);
         }
 
@@ -1270,19 +1351,21 @@ Add the `checkpoint()` method (after `force_compact_and_wait`, around line 311):
         }
 
         self.sqlite_store
-            .save_checkpoint(&session_key.to_string(), current_turn as i64, &summary)
+            .save_checkpoint(&session_key.to_string(), current_max_sequence, &summary)
             .await?;
 
         info!(
-            "Checkpoint saved for {} at turn {} ({} chars)",
+            "Checkpoint saved for {} at sequence {} ({} chars)",
             session_key,
-            current_turn,
+            current_max_sequence,
             summary.len()
         );
 
         Ok(Some(summary))
     }
 ```
+
+**Important:** `session_key` must implement `Display` (or `ToString`) so that `session_key.to_string()` works. If `SessionKey` does not implement `Display`, add `ToString` or call an existing `as_str()` method.
 
 ---
 
@@ -1323,7 +1406,7 @@ Expected: New tests pass, existing tests still pass.
 git add gasket/engine/src/session/compactor.rs gasket/storage/src/lib.rs
 git commit -m "feat(compactor): add proactive checkpointing
 
-- Add session_checkpoints table with unique (session_key, turn) constraint
+- Add session_checkpoints table with unique (session_key, target_sequence) constraint
 - Add CheckpointConfig with interval_turns + prompt template
 - Add ContextCompactor::checkpoint() for caller-layer state snapshots
 - Add save_checkpoint / load_checkpoint to SqliteStore
@@ -1331,6 +1414,784 @@ git commit -m "feat(compactor): add proactive checkpointing
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
+
+#### Revision from Linus Review: Unified Checkpoint at SteppableExecutor Level
+
+After completing Steps 1-6 above, **add this new step** to integrate checkpointing into `SteppableExecutor` itself, eliminating the caller-layer asymmetry. Task 8 is also simplified as a result.
+
+- [ ] **Step 3b: Add checkpoint interceptor to `SteppableExecutor`**
+
+In `gasket/engine/src/kernel/executor.rs`, add an optional checkpoint callback to `SteppableExecutor`:
+
+```rust
+pub struct SteppableExecutor {
+    // ... existing fields ...
+    /// Optional checkpoint interceptor. Called before each step().
+    /// Returns summary to inject, or None to skip.
+    checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+}
+
+impl SteppableExecutor {
+    pub fn with_checkpoint(
+        mut self,
+        callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.checkpoint_callback = Some(callback);
+        self
+    }
+
+    pub async fn step(
+        &self,
+        messages: &mut Vec<ChatMessage>,
+        ledger: &mut TokenLedger,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+    ) -> Result<StepResult, KernelError> {
+        // Proactive checkpoint injection (before LLM call)
+        if let Some(ref cb) = self.checkpoint_callback {
+            if let Some(summary) = cb(messages.len()) {
+                debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
+                messages.push(ChatMessage::system(
+                    format!("[Working Memory] {}", summary)
+                ));
+            }
+        }
+        // ... rest of step() unchanged ...
+    }
+}
+```
+
+**Key insight:** Both `KernelExecutor` (CLI mode) and `MonitoredRunner` (subagent mode) use `SteppableExecutor` internally. By placing the checkpoint interceptor here, both modes benefit equally. **No special cases.** Good code has no special cases.
+
+---
+
+## Task 6: Implement `create_plan` Tool
+
+**Files:**
+- Create: `gasket/engine/src/tools/create_plan.rs`
+- Modify: `gasket/engine/src/tools/mod.rs`
+- Test: `gasket/engine/src/tools/create_plan.rs` (inline test module)
+
+**Context:** ~~Instead of a hardcoded `PlanExecutor` FSM, we provide a `create_plan` tool that the LLM calls when it decides a task is complex.~~ **REVISED (Linus Review): No JSON AST.** The engine never parses or executes a plan tree. `PlanStep`, `StepType`, and `Plan` structs are unnecessary indirection — the consumer is the LLM's context window, and Markdown is its native data structure. Don't do pointless JSON serialize→deserialize→serialize round-trips. The tool prompts the LLM to generate a Markdown plan, wraps it in a `WikiPage` (PageType::Topic), and returns a short confirmation + file path.
+
+---
+
+- [ ] **Step 1: Create `gasket/engine/src/tools/create_plan.rs`**
+
+```rust
+//! Tool: create_plan — generate a structured execution plan for complex tasks.
+//!
+//! The LLM calls this when it determines a task requires multiple steps.
+//! The plan is persisted to the wiki and returned as a structured message.
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
+
+use crate::kernel::ChatMessage;
+use crate::wiki::{PageStore, PageType, WikiPage};
+use gasket_providers::{ChatRequest, LlmProvider};
+
+// ── Data Types ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub description: String,
+    pub step_type: StepType,
+    pub depends_on: Vec<usize>,
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StepType {
+    Direct,
+    Delegated,
+    Parallel,
+    Conditional,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub title: String,
+    pub goal: String,
+    pub steps: Vec<PlanStep>,
+    pub verification_criteria: Vec<String>,
+    pub wiki_path: String,
+}
+
+impl Plan {
+    /// Render the plan as markdown for wiki storage.
+    pub fn to_wiki_page(&self) -> WikiPage {
+        let mut body = format!("## Goal\n{}\n\n## Steps\n", self.goal);
+        for (i, step) in self.steps.iter().enumerate() {
+            let type_label = match step.step_type {
+                StepType::Direct => "[D]",
+                StepType::Delegated => "[P]",
+                StepType::Parallel => "[||]",
+                StepType::Conditional => "[?]",
+            };
+            body.push_str(&format!(
+                "{}. {} {}\n",
+                i + 1,
+                type_label,
+                step.description
+            ));
+        }
+        body.push_str("\n## Verification Criteria\n");
+        for crit in &self.verification_criteria {
+            body.push_str(&format!("- {}\n", crit));
+        }
+
+        WikiPage::new(
+            self.wiki_path.clone(),
+            self.title.clone(),
+            PageType::Topic,
+            body,
+        )
+    }
+}
+
+// ── Tool ─────────────────────────────────────────────────────────
+
+pub struct CreatePlanTool {
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    page_store: Arc<PageStore>,
+}
+
+impl CreatePlanTool {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        model: String,
+        page_store: Arc<PageStore>,
+    ) -> Self {
+        Self {
+            provider,
+            model,
+            page_store,
+        }
+    }
+
+    pub async fn invoke(
+        &self,
+        goal: &str,
+        context: &[ChatMessage],
+    ) -> Result<Plan, ToolError> {
+        // 1. Search for relevant SOPs
+        let sops = self.search_relevant_sops(goal).await?;
+
+        // 2. Build prompt with SOP context + plan generation instructions
+        let prompt = self.build_plan_prompt(goal, &sops, context);
+
+        // 3. Call LLM to generate structured plan
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage::system("You are a planning assistant. Output plans as strict JSON."),
+                ChatMessage::user(prompt),
+            ],
+            max_tokens: Some(2048),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+
+        let response = self.provider.chat(request).await?;
+        let raw = response.content.unwrap_or_default();
+        let plan: Plan = self.parse_plan(&raw, goal)?;
+
+        // 4. Persist plan to wiki
+        self.page_store.write(&plan.to_wiki_page()).await?;
+        info!("create_plan: persisted plan '{}' to {}", plan.title, plan.wiki_path);
+
+        Ok(plan)
+    }
+
+    async fn search_relevant_sops(&self, _goal: &str) -> Result<Vec<String>, ToolError> {
+        // Delegates to the search_sops tool (registered separately).
+        // For now, return empty — the ToolRegistry will resolve search_sops when available.
+        Ok(vec![])
+    }
+
+    fn build_plan_prompt(&self, goal: &str, sops: &[String], context: &[ChatMessage]) -> String {
+        let context_text = context
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, m.content.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let sop_text = if sops.is_empty() {
+            "No relevant SOPs found.".to_string()
+        } else {
+            format!("Relevant SOPs:\n{}", sops.join("\n"))
+        };
+
+        format!(
+            "Goal: {}\n\n{}\n\nRecent context:\n{}\n\n\
+             Generate a structured execution plan. Output strict JSON with this schema:\n\
+             {{\"title\": string, \"goal\": string, \"steps\": [{{\"description\": string, \"step_type\": \"Direct\"|\"Delegated\"|\"Parallel\"|\"Conditional\", \"depends_on\": [number], \"condition\": string|null}}], \"verification_criteria\": [string]}}\n\
+             wiki_path will be auto-generated as plans/{{slug}}.",
+            goal, sop_text, context_text
+        )
+    }
+
+    fn parse_plan(&self, raw: &str, goal: &str) -> Result<Plan, ToolError> {
+        // Extract JSON from possible markdown code fence
+        let json_str = if raw.trim().starts_with("```") {
+            raw.lines()
+                .skip_while(|l| l.trim().starts_with("```"))
+                .take_while(|l| !l.trim().starts_with("```"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            raw.to_string()
+        };
+
+        let mut plan: Plan = serde_json::from_str(&json_str)
+            .map_err(|e| ToolError::Parse(format!("Invalid plan JSON: {}", e)))?;
+
+        // Auto-generate wiki_path if not provided
+        if plan.wiki_path.is_empty() {
+            let slug = plan.title.to_lowercase().replace(" ", "-").replace("/", "-");
+            plan.wiki_path = format!("plans/{}", slug);
+        }
+
+        // Ensure goal is populated
+        if plan.goal.is_empty() {
+            plan.goal = goal.to_string();
+        }
+
+        Ok(plan)
+    }
+}
+
+#[derive(Debug)]
+pub enum ToolError {
+    Provider(String),
+    Parse(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::Provider(s) => write!(f, "Provider error: {}", s),
+            ToolError::Parse(s) => write!(f, "Parse error: {}", s),
+            ToolError::Storage(s) => write!(f, "Storage error: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for ToolError {}
+```
+
+**Note:** `ToolError` here is local to `create_plan.rs`. When wiring into the main `ToolRegistry`, map `ToolError` to the registry's error type (e.g. `anyhow::Error` or `crate::tools::ToolCallError`).
+
+---
+
+- [ ] **Step 2: Add inline tests**
+
+At the bottom of `gasket/engine/src/tools/create_plan.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plan_to_wiki_page() {
+        let plan = Plan {
+            title: "Rust Setup".to_string(),
+            goal: "Set up a Rust project".to_string(),
+            steps: vec![
+                PlanStep {
+                    description: "cargo init".to_string(),
+                    step_type: StepType::Direct,
+                    depends_on: vec![],
+                    condition: None,
+                },
+            ],
+            verification_criteria: vec!["Cargo.toml exists".to_string()],
+            wiki_path: "plans/rust-setup".to_string(),
+        };
+        let page = plan.to_wiki_page();
+        assert_eq!(page.page_type, PageType::Topic);
+        assert!(page.body.contains("cargo init"));
+        assert!(page.body.contains("Verification Criteria"));
+    }
+
+    #[test]
+    fn test_parse_plan_with_code_fence() {
+        let tool = CreatePlanTool {
+            provider: Arc::new(MockProvider), // placeholder — compile-only
+            model: "mock".to_string(),
+            page_store: Arc::new(MockPageStore), // placeholder
+        };
+        let raw = r#"```json
+{"title":"Test","goal":"G","steps":[],"verification_criteria":[],"wiki_path":""}
+```"#;
+        let plan = tool.parse_plan(raw, "G").unwrap();
+        assert_eq!(plan.title, "Test");
+        assert_eq!(plan.wiki_path, "plans/test"); // auto-slugified
+    }
+
+    struct MockProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for MockProvider {
+        async fn chat(&self, _req: ChatRequest) -> anyhow::Result<ChatResponse> {
+            unimplemented!()
+        }
+        fn default_model(&self) -> &str {
+            "mock"
+        }
+    }
+
+    struct MockPageStore;
+    #[async_trait::async_trait]
+    impl PageStore for MockPageStore {
+        async fn write(&self, _page: &WikiPage) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+}
+```
+
+**Note:** The mock tests above are illustrative. If `async_trait` is not available, remove the async trait impls and use `#[tokio::test]` with real dependencies, or skip the mock tests and test `parse_plan` directly (it is synchronous).
+
+---
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add gasket/engine/src/tools/create_plan.rs
+git commit -m "feat(tools): add create_plan tool for structured task planning
+
+- PlanStep, StepType, Plan structs with JSON serialization
+- CreatePlanTool::invoke searches SOPs, calls LLM, persists to wiki
+- Plan rendered as PageType::Topic markdown page
+- parse_plan handles markdown code fences and auto-generates wiki_path
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+#### Revision from Linus Review: Simplified Step 1 (No JSON AST)
+
+The original Step 1 code below uses `PlanStep`, `StepType`, `Plan` JSON structs and `serde_json` deserialization. **Replace Step 1 entirely** with this simplified version. Also replace Steps 2 and 3.
+
+- [ ] **Step 1 (REVISED): Create simplified `gasket/engine/src/tools/create_plan.rs`**
+
+```rust
+//! Tool: create_plan — generate a Markdown execution plan for complex tasks.
+//! NO JSON AST — Markdown is the native data structure for LLM-to-LLM communication.
+
+use std::sync::Arc;
+use tracing::info;
+use crate::wiki::{PageStore, PageType, WikiPage};
+use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
+
+pub struct CreatePlanTool {
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    page_store: Arc<PageStore>,
+}
+
+impl CreatePlanTool {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        model: String,
+        page_store: Arc<PageStore>,
+    ) -> Self {
+        Self { provider, model, page_store }
+    }
+
+    pub async fn invoke(
+        &self,
+        goal: &str,
+        context: &[ChatMessage],
+    ) -> Result<(String, String), anyhow::Error> {
+        let prompt = self.build_plan_prompt(goal, context);
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage::system(
+                    "You are a planning assistant. \
+                     Generate a structured execution plan in Markdown format. \
+                     Use headers, checklists (- [ ]), and specify dependencies. \
+                     Do NOT output JSON."
+                ),
+                ChatMessage::user(prompt),
+            ],
+            max_tokens: Some(2048),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+
+        let response = self.provider.chat(request).await?;
+        let plan_markdown = response.content.unwrap_or_default();
+
+        if plan_markdown.is_empty() {
+            return Err(anyhow::anyhow!("LLM returned empty plan"));
+        }
+
+        // Persist as WikiPage — no JSON AST, just Markdown
+        let slug = slugify(goal);
+        let path = format!("plans/{}", slug);
+
+        let page = WikiPage::new(
+            path.clone(),
+            format!("Plan: {}", goal),
+            PageType::Topic,
+            plan_markdown,
+        );
+
+        self.page_store.write(&page).await?;
+        info!("create_plan: persisted plan to {}", path);
+
+        let confirmation = format!(
+            "Plan created and saved to {}. The agent will now execute each step.",
+            path
+        );
+        Ok((confirmation, path))
+    }
+
+    fn build_plan_prompt(&self, goal: &str, context: &[ChatMessage]) -> String {
+        let context_text = context
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, m.content.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        format!(
+            "Goal: {}\n\n\
+             Recent context:\n{}\n\n\
+             Generate a structured execution plan in Markdown. Use:\n\
+             - ## headers for phases\n\
+             - - [ ] checklists for steps\n\
+             - Mark step type inline: [D]irect, [P]arallel/delegated, [?]conditional\n\
+             - Include a ## Verification section at the end\n\
+             Do NOT output JSON.",
+            goal, context_text
+        )
+    }
+}
+
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .replace(" ", "-")
+        .replace("/", "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect()
+}
+```
+
+**Replace Step 2 (tests) with:**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Rust Setup"), "rust-setup");
+        assert_eq!(slugify("CI/CD Pipeline"), "ci-cd-pipeline");
+    }
+}
+```
+
+**Replace Step 3 (commit) with:**
+
+```bash
+git add gasket/engine/src/tools/create_plan.rs
+git commit -m "feat(tools): add simplified create_plan tool (Markdown, no JSON AST)
+
+- CreatePlanTool prompts LLM for Markdown plan, persists as WikiPage
+- No PlanStep/StepType/Plan JSON structs (KISS)
+- Returns confirmation + file path to LLM
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 7: Implement `search_sops` Tool
+
+**Files:**
+- Create: `gasket/engine/src/tools/search_sops.rs`
+- Modify: `gasket/engine/src/tools/mod.rs`
+
+**Context:** The agent discovers its own SOPs via a tool that queries Tantivy with a `PageType::Sop` filter. This tool is registered in `ToolRegistry` and available to the LLM during any turn.
+
+---
+
+- [ ] **Step 1: Create `gasket/engine/src/tools/search_sops.rs`**
+
+```rust
+//! Tool: search_sops — find relevant SOPs by query string via Tantivy.
+
+use crate::wiki::{PageFilter, PageIndex, PageType};
+
+/// Search the wiki for SOP pages relevant to the given query.
+///
+/// Returns up to `k` hits, ranked by Tantivy BM25.
+pub async fn search_sops(
+    page_index: &PageIndex,
+    query: &str,
+    k: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let mut filter = PageFilter::default();
+    filter.page_type = Some(PageType::Sop);
+    page_index.search(query, k, Some(filter)).await
+}
+
+// Re-export SearchHit if it lives elsewhere; adjust path as needed.
+pub use crate::wiki::SearchHit;
+```
+
+**Note:** Adjust the `PageIndex::search` signature and `SearchHit` type according to the actual `gasket/engine/src/wiki/` API. The key requirement is passing `PageFilter { page_type: Some(PageType::Sop) }`.
+
+---
+
+- [ ] **Step 2: Register tools in `ToolRegistry`**
+
+In `gasket/engine/src/tools/mod.rs` (or wherever `ToolRegistry` is populated), add:
+
+```rust
+pub mod create_plan;
+pub mod search_sops;
+
+// During registry initialization:
+registry.register("create_plan", Arc::new(CreatePlanTool::new(provider, model, page_store)));
+registry.register("search_sops", Arc::new(SearchSopsTool::new(page_index)));
+```
+
+**Note:** The exact registration mechanism depends on the existing `ToolRegistry` API. If the registry uses a trait object pattern (e.g. `dyn Tool`), wrap `create_plan::CreatePlanTool` and `search_sops::search_sops` in thin adapter structs that implement the `Tool` trait.
+
+---
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add gasket/engine/src/tools/create_plan.rs gasket/engine/src/tools/search_sops.rs gasket/engine/src/tools/mod.rs
+git commit -m "feat(tools): register create_plan and search_sops in ToolRegistry
+
+- search_sops queries Tantivy with PageType::Sop filter
+- Both tools available to LLM during any turn
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 8: Integrate Checkpoint into MonitoredRunner & End-to-End Test
+
+**Files:**
+- Modify: `gasket/engine/src/subagents/monitor.rs`
+- Modify: `gasket/engine/src/session/compactor.rs` (ensure `SessionKey: Display`)
+- Test: Integration test or manual verification script
+
+**Context:** ~~`ContextCompactor::checkpoint()` returns a summary, but the LLM only benefits if that summary is injected back into the message history. `MonitoredRunner` is the natural place to do this...~~ **REVISED (Linus Review):** Checkpoint is now an optional interceptor on `SteppableExecutor::step()` (added in Task 5 Step 3b), so both `KernelExecutor` and `MonitoredRunner` benefit automatically. This task simplifies to: wire the `ContextCompactor` into `SteppableExecutor` when constructing it in both modes, ensure `SessionKey: Display`, and run end-to-end verification.
+
+---
+
+- [ ] **Step 1 (REVISED): Wire checkpoint callback into both execution modes**
+
+**Since checkpoint is now at SteppableExecutor level (Task 5 Step 3b), this step is simplified.** Instead of adding compactor/event_store fields to `MonitoredRunner`, just pass the checkpoint callback when constructing `SteppableExecutor`:
+
+1. In `KernelExecutor::run_loop()`: pass `steppable.with_checkpoint(callback)` if compactor is configured
+2. In `MonitoredSpawner::spawn()`: similarly pass the checkpoint callback
+
+The code blocks below (adding compactor fields to MonitoredRunner, wiring checkpoint in MonitoredRunner::run()) are **superseded by the SteppableExecutor interceptor approach**. Keep as reference only.
+
+~~Original approach (superseded):~~ Modify `MonitoredRunner` in `gasket/engine/src/subagents/monitor.rs`:
+
+1. Add optional compactor field:
+
+```rust
+struct MonitoredRunner {
+    spec: TaskSpec,
+    steppable: SteppableExecutor,
+    messages: Vec<ChatMessage>,
+    ledger: TokenLedger,
+    progress: mpsc::Sender<ProgressUpdate>,
+    intervention: mpsc::Receiver<Intervention>,
+    max_turns: u32,
+    compactor: Option<Arc<ContextCompactor>>,
+    event_store: Option<Arc<EventStore>>,
+}
+```
+
+2. Update `MonitoredRunner::new` to accept an optional compactor:
+
+```rust
+    fn new(
+        spec: TaskSpec,
+        steppable: SteppableExecutor,
+        progress: mpsc::Sender<ProgressUpdate>,
+        intervention: mpsc::Receiver<Intervention>,
+        compactor: Option<Arc<ContextCompactor>>,
+        event_store: Option<Arc<EventStore>>,
+    ) -> Self {
+        // ... existing initialization ...
+        Self {
+            // ... existing fields ...
+            compactor,
+            event_store,
+        }
+    }
+```
+
+3. In `MonitoredRunner::run()`, after each `step()` and before the `should_continue` check, add checkpoint logic:
+
+```rust
+            // Proactive checkpoint injection
+            if let Some(ref compactor) = self.compactor {
+                // Build minimal recent events from this turn
+                let recent_events = vec![SessionEvent {
+                    event_type: "turn".to_string(),
+                    content: result.response.content.clone().unwrap_or_default(),
+                }];
+
+                // NEVER use turn for checkpoint sequencing. turn is transient and resets on restart.
+                // Always derive the sequence anchor from EventStore's actual event increments.
+                let session_key = SessionKey::parse(&self.spec.id)
+                    .unwrap_or_else(|| SessionKey::new(ChannelType::Cli, &self.spec.id));
+
+                let current_max_sequence = self
+                    .event_store
+                    .as_ref()
+                    .map(|es| async move { es.max_sequence(&session_key).await.unwrap_or(0) })
+                    .unwrap_or(async { 0 })
+                    .await;
+
+                match compactor.checkpoint(
+                    &session_key,
+                    current_max_sequence,
+                    &recent_events,
+                ).await {
+                    Ok(Some(summary)) => {
+                        self.messages.push(ChatMessage::system(format!(
+                            "[Working Memory] {}",
+                            summary
+                        )));
+                        let _ = self
+                            .progress
+                            .send(ProgressUpdate::ToolStart {
+                                name: "checkpoint".to_string(),
+                            })
+                            .await;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("Checkpoint failed at sequence {}: {}", current_max_sequence, e);
+                    }
+                }
+            }
+```
+
+**Important:** `SessionKey` is a composite key (`struct SessionKey { channel: ChannelType, chat_id: String }`), **NOT** a newtype around `String`. Never implement `From<String>` — it would silently swallow parse failures and pollute the type system with implicit, lossy conversions. Always use `SessionKey::parse()` with an explicit fallback. `SessionKey: Display` (or `ToString`) is required for `save_checkpoint`.
+
+4. Update `MonitoredSpawner::spawn` to pass the compactor through:
+
+```rust
+    pub fn spawn(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        spec: TaskSpec,
+        compactor: Option<Arc<ContextCompactor>>,
+        event_store: Option<Arc<EventStore>>,
+    ) -> Result<MonitoredHandle, anyhow::Error> {
+        // ...
+        let handle = tokio::spawn(async move {
+            let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx, compactor, event_store);
+            // ...
+        });
+        // ...
+    }
+```
+
+---
+
+- [ ] **Step 2: Ensure `SessionKey: Display` and reject `From<String>`**
+
+`SessionKey` must implement `Display` (or `ToString`) so that `session_key.to_string()` works for `save_checkpoint`. If missing, add:
+
+```rust
+impl std::fmt::Display for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.channel.as_str(), self.chat_id)
+    }
+}
+```
+
+**DO NOT** add `impl From<String> for SessionKey`. `SessionKey` is a composite key; a raw `String` cannot be unambiguously parsed without explicit error handling. In `MonitoredRunner`, use:
+
+```rust
+let session_key = SessionKey::parse(&self.spec.id)
+    .unwrap_or_else(|| SessionKey::new(ChannelType::Cli, &self.spec.id));
+```
+
+---
+
+- [ ] **Step 3: End-to-end verification**
+
+Run a manual or scripted end-to-end test:
+
+```bash
+# 1. Build everything
+cargo build --workspace
+
+# 2. Run the full test suite
+cargo test --workspace
+
+# 3. Run a specific integration scenario (if available)
+# Example: start the agent, send a complex multi-step request,
+# verify that:
+#   - create_plan tool is invoked (check logs)
+#   - ProgressUpdate events stream correctly
+#   - session_checkpoints table receives rows
+#   - sops/ directory gets new pages after task completion
+```
+
+**Expected behavior:**
+1. User sends a complex task (e.g. "Set up a new Rust project with CI, tests, and docs")
+2. Agent calls `create_plan` tool → plan persisted to `plans/{slug}`
+3. Agent executes steps turn-by-turn
+4. If a subagent is spawned via `spawn_monitored`, progress events stream to the parent
+5. Every N sequence increments, `SteppableExecutor` checkpoint interceptor injects `[Working Memory] ...` into messages (both CLI and subagent modes)
+6. After task completion, `EvolutionHook` extracts skills and writes a new SOP to `sops/`
+7. Next time a similar task arrives, `search_sops` returns the previously learned SOP
+
+---
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add gasket/engine/src/subagents/monitor.rs
+git commit -m "feat(subagents): integrate proactive checkpointing into MonitoredRunner
+
+- MonitoredRunner accepts optional ContextCompactor
+- Calls checkpoint() every N sequence increments and injects summary into messages
+- SessionKey requires Display; uses parse() with explicit fallback (no From<String>)
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+```
+
+---
+
+## Summary of Changes
+
+| Task | Module | Key Deliverable |
+|------|--------|-----------------|
+| 1 | `kernel::executor` | `SteppableExecutor` + `StepResult` extracted; `KernelExecutor` composes internally |
+| 2 | `wiki` | `PageType::Sop`, `sops/` directory, Tantivy indexing |
+| 3 | `hooks::evolution` | SOP extraction with full template, "No Execution, No Memory" enforcement |
+| 4 | `subagents::monitor` | `MonitoredSpawner` + `MonitoredRunner`, channel-based progress/intervention |
+| 5 | `session::compactor` + `storage` + `kernel` | `CheckpointConfig`, `session_checkpoints` table, **SteppableExecutor-level** injection (unified) |
+| 6 | `tools::create_plan` | Simplified `CreatePlanTool` — **Markdown-based, no JSON AST** |
+| 7 | `tools::search_sops` | Tantivy search with `PageType::Sop` filter, registered in `ToolRegistry` |
+| 8 | Integration | Wire checkpoint in both `KernelExecutor` and `MonitoredRunner`; end-to-end flow verified |
 
 ---
 

@@ -8,13 +8,13 @@
 
 This spec proposes integrating GenericAgent's core innovations — self-evolving skills, structured plan execution, monitored subagent delegation, and proactive working memory — into gasket's Rust architecture. The design follows a **tool-based philosophy**: instead of hardcoding a workflow engine, we expose capabilities as **tools** that the LLM decides when to invoke.
 
-Four modules are defined:
+Five modules are defined:
 
 1. **SteppableExecutor** — Foundation primitive: per-step LLM execution extracted from `KernelExecutor`
 2. **SOP + Tantivy Discovery** — Add `PageType::Sop` to wiki; LLM self-routes via existing Tantivy search
 3. **MonitoredSpawner** — Real-time monitoring and intervention for subagents via channels (no DB fallback)
 4. **EvolutionHook Enhancement** — Task-to-SOP crystallization with "No Execution, No Memory" enforcement
-5. **Compactor Checkpoint** — Proactive working-memory snapshots every N turns at the caller layer
+5. **Compactor Checkpoint** — Proactive working-memory snapshots every N sequence increments at the caller layer
 
 ## Key Design Decision: Tool-Based Architecture
 
@@ -127,7 +127,9 @@ The Linus-style review in `task.md` identified fundamental over-engineering. The
 6. **Kept `SteppableExecutor`** — Foundation primitive for per-step control. "The most tasteful design in the document."
 7. **Kept `MonitoredSpawner`** — Channel-based progress/intervention is genuinely useful for UI feedback.
 8. **Kept `EvolutionHook` SOP extraction** — Auto-crystallization of skills is the core value proposition.
-9. **Kept `Checkpoint`** — Proactive working memory at the caller layer.
+9. **Kept `Checkpoint`** — Proactive working memory, now unified at SteppableExecutor level (see item 11).
+10. **Killed JSON AST in `create_plan`** — `PlanStep`, `StepType`, `Plan` structs are unnecessary indirection. The engine never parses/executes a plan AST. Markdown is the native data structure for LLM-to-LLM communication. Don't do pointless JSON serialize→deserialize→serialize round-trips.
+11. **Unified Checkpoint at SteppableExecutor level** — Original design placed checkpoint only at the caller layer (MonitoredRunner), creating asymmetry where subagents get proactive working memory but the main agent does not. Now an optional interceptor on `SteppableExecutor::step()`, benefiting both CLI and subagent modes equally. Good code has no special cases.
 
 ## Architecture
 
@@ -160,7 +162,7 @@ The Linus-style review in `task.md` identified fundamental over-engineering. The
 │                                                               │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │           ContextCompactor.checkpoint()              │   │
-│  │     (called by AgentSession between turns)           │   │
+│  │     (unified at SteppableExecutor level)           │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -175,7 +177,6 @@ KernelExecutor
     └── exposes tools: create_plan, spawn_monitored, search_sops
 
 MonitoredSpawner
-    ├── wraps SimpleSpawner
     ├── uses tokio::sync::mpsc (channels only, no DB fallback)
     └── MonitoredRunner uses SteppableExecutor internally
 
@@ -190,7 +191,7 @@ TantivyAdapter
 Compactor (enhanced)
     ├── adds checkpoint() method
     ├── writes session_checkpoints table
-    └── called from AgentSession every N turns
+    └── called via SteppableExecutor interceptor every N sequence increments
 ```
 
 ## Detailed Design
@@ -310,7 +311,6 @@ Extract the per-iteration body of `KernelExecutor.run_loop()` into a reusable `S
 pub struct StepResult {
     pub response: ChatResponse,
     pub tool_results: Vec<ToolCallResult>,
-    pub token_usage: Option<TokenUsage>,
     pub should_continue: bool,  // true if tool_calls present
 }
 
@@ -368,7 +368,11 @@ Instead of a hardcoded `PlanExecutor` FSM, we provide a **`create_plan` tool** t
 - **LLM-driven** — The agent decides when planning is useful, not a heuristic
 - **Simpler** — No FSM, no DB tables for plan state, no `process_with_plan()` branching
 
-#### Tool Definition
+#### Tool Definition (REVISED — No JSON AST)
+
+> **Linus Review:** The `PlanStep`, `StepType`, `Plan` JSON structs in the code below are **removed**. The engine never parses or executes a plan AST — doing JSON serialize→deserialize→serialize is pointless when the consumer is the LLM's context window and Markdown is its native data structure. Replace with a simplified `CreatePlanTool` that prompts the LLM for Markdown, wraps it in a `WikiPage` (PageType::Topic), and returns `(confirmation, path)`. See `plan.md` Task 6 Revision for complete replacement code.
+
+~~Original definition (superseded):~~
 
 ```rust
 /// Tool: create_plan — generate a structured execution plan for a complex task
@@ -436,7 +440,7 @@ impl CreatePlanTool {
 
 #### Plan Execution Flow
 
-The plan is **not executed by a separate engine**. It is injected into the message history as a structured artifact. The agent then proceeds with normal execution:
+The plan is **not executed by a separate engine**. It is injected into the message history as **Markdown** (not JSON — the engine never parses a plan AST). The agent then proceeds with normal execution:
 
 ```
 User: "Set up a new Rust project with CI, tests, and documentation"
@@ -444,7 +448,7 @@ User: "Set up a new Rust project with CI, tests, and documentation"
 Agent (turn 1):
   LLM thinks: "This is complex, I'll create a plan"
   → Calls create_plan tool
-  → Tool returns Plan { steps: [...] }
+  → Tool returns Markdown plan + confirmation path
   → Plan written to wiki: "plans/rust_project_setup"
   → LLM responds: "I've created a plan with 4 steps. Let me start..."
 
@@ -470,7 +474,7 @@ Agent (turn N):
 
 #### Plan Persistence
 
-Plans are stored as `PageType::Topic` wiki pages (not in SQLite tables). The path follows `plans/{slug}` convention. This keeps all knowledge in one system — the wiki.
+Plans are stored as `PageType::Topic` wiki pages (not in SQLite tables). The content is **Markdown** (not JSON) — the engine never parses a plan AST. The path follows `plans/{slug}` convention. This keeps all knowledge in one system — the wiki.
 
 ---
 
@@ -526,34 +530,40 @@ pub struct MonitoredHandle {
 #### Implementation (Channels Only, No DB Fallback)
 
 ```rust
-pub struct MonitoredSpawner {
-    inner: SimpleSpawner,
-}
+pub struct MonitoredSpawner;
 
 impl MonitoredSpawner {
-    pub fn new(inner: SimpleSpawner) -> Self {
-        Self { inner }
-    }
-
-    pub async fn spawn(&self, spec: TaskSpec) -> Result<MonitoredHandle> {
+    pub fn spawn(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        spec: TaskSpec,
+    ) -> Result<MonitoredHandle, anyhow::Error> {
         let (progress_tx, progress_rx) = mpsc::channel(64);
         let (interventor_tx, interventor_rx) = mpsc::channel(16);
 
-        // Build SteppableExecutor from spec
-        let steppable = SteppableExecutor::new(
-            spec.provider.clone(),
-            spec.tools.clone(),
-            spec.config.clone(),
-        );
+        let config = AgentConfig {
+            model: spec.model.clone().unwrap_or_else(|| provider.default_model().to_string()),
+            max_iterations: spec.max_turns.unwrap_or(10) as usize,
+            ..Default::default()
+        };
+        let kernel_config = config.to_kernel_config();
+
+        let steppable = SteppableExecutor::new(provider, tools, kernel_config);
 
         let handle = tokio::spawn(async move {
-            let mut runner = MonitoredRunner::new(
-                spec,
-                steppable,
-                progress_tx,
-                interventor_rx,
-            );
-            runner.run().await
+            let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
+            match runner.run().await {
+                Ok(result) => result,
+                Err(e) => {
+                    let _ = runner
+                        .progress
+                        .send(ProgressUpdate::Error {
+                            message: e.to_string(),
+                        })
+                        .await;
+                    runner.final_result_with_error(&e.to_string())
+                }
+            }
         });
 
         Ok(MonitoredHandle {
@@ -577,59 +587,152 @@ struct MonitoredRunner {
     ledger: TokenLedger,
     progress: mpsc::Sender<ProgressUpdate>,
     intervention: mpsc::Receiver<Intervention>,
+    max_turns: u32,
 }
 
 impl MonitoredRunner {
-    async fn run(&mut self) -> SubagentResult {
-        for turn in 1..=self.spec.max_turns {
+    fn new(
+        spec: TaskSpec,
+        steppable: SteppableExecutor,
+        progress: mpsc::Sender<ProgressUpdate>,
+        intervention: mpsc::Receiver<Intervention>,
+    ) -> Self {
+        let system = spec.system_prompt.clone().unwrap_or_default();
+        let messages = if system.is_empty() {
+            vec![ChatMessage::user(&spec.task)]
+        } else {
+            vec![ChatMessage::system(&system), ChatMessage::user(&spec.task)]
+        };
+
+        Self {
+            spec,
+            steppable,
+            messages,
+            ledger: TokenLedger::new(),
+            progress,
+            intervention,
+            max_turns: spec.max_turns.unwrap_or(10),
+        }
+    }
+
+    async fn run(&mut self) -> Result<SubagentResult, anyhow::Error> {
+        for turn in 1..=self.max_turns {
             // Check for interventions (non-blocking)
             while let Ok(i) = self.intervention.try_recv() {
-                self.apply_intervention(i)?;
+                match i {
+                    Intervention::Abort => {
+                        info!("[Monitored {}] Abort requested", self.spec.id);
+                        let result = self.final_result();
+                        let _ = self
+                            .progress
+                            .send(ProgressUpdate::Done {
+                                result: result.response.content.clone(),
+                            })
+                            .await;
+                        return Ok(result);
+                    }
+                    Intervention::AddKeyInfo(info) => {
+                        self.messages.push(ChatMessage::system(format!(
+                            "[Key Info] {}",
+                            info
+                        )));
+                    }
+                    Intervention::AppendPrompt(prompt) => {
+                        self.messages.push(ChatMessage::user(prompt));
+                    }
+                    Intervention::ExtendTurns(n) => {
+                        self.max_turns += n;
+                    }
+                }
             }
 
-            self.progress.send(ProgressUpdate::Thinking { turn }).await.ok();
+            let _ = self
+                .progress
+                .send(ProgressUpdate::Thinking { turn: turn as usize })
+                .await;
 
-            // Execute one LLM iteration via SteppableExecutor
-            let result = self.steppable.step(
-                &mut self.messages,
-                &mut self.ledger,
-                None,
-            ).await?;
+            let result = self
+                .steppable
+                .step(&mut self.messages, &mut self.ledger, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("Step failed: {}", e))?;
 
             if !result.tool_results.is_empty() {
                 for tr in &result.tool_results {
-                    self.progress
-                        .send(ProgressUpdate::ToolStart { name: tr.tool_name.clone() })
-                        .await
-                        .ok();
-                    self.progress
+                    let _ = self
+                        .progress
+                        .send(ProgressUpdate::ToolStart {
+                            name: tr.tool_name.clone(),
+                        })
+                        .await;
+                    let _ = self
+                        .progress
                         .send(ProgressUpdate::ToolResult {
                             name: tr.tool_name.clone(),
                             output: tr.output.clone(),
                         })
-                        .await
-                        .ok();
+                        .await;
                 }
             }
 
-            self.progress
+            let summary = result
+                .response
+                .content
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect();
+            let _ = self
+                .progress
                 .send(ProgressUpdate::TurnComplete {
-                    turn,
-                    summary: result.response.content.clone().unwrap_or_default(),
+                    turn: turn as usize,
+                    summary,
                 })
-                .await
-                .ok();
+                .await;
 
             if !result.should_continue {
-                break;
+                let final_result = self.final_result();
+                let _ = self
+                    .progress
+                    .send(ProgressUpdate::Done {
+                        result: final_result.response.content.clone(),
+                    })
+                    .await;
+                return Ok(final_result);
             }
         }
 
-        let final_content = self.messages.last()
+        let final_result = self.final_result();
+        let _ = self
+            .progress
+            .send(ProgressUpdate::Done {
+                result: final_result.response.content.clone(),
+            })
+            .await;
+        Ok(final_result)
+    }
+
+    fn final_result(&self) -> SubagentResult {
+        let content = self
+            .messages
+            .last()
             .and_then(|m| m.content.clone())
             .unwrap_or_default();
-        self.progress.send(ProgressUpdate::Done { result: final_content.clone() }).await.ok();
-        SubagentResult::Success(final_content)
+
+        SubagentResult {
+            id: self.spec.id.clone(),
+            task: self.spec.task.clone(),
+            response: crate::tools::SubagentResponse {
+                content,
+                reasoning_content: None,
+                tools_used: vec![], // TODO: track from ledger or state
+                model: None,
+                token_usage: self.ledger.total_usage.clone(),
+                cost: 0.0,
+            },
+            model: self.spec.model.clone(),
+        }
     }
 }
 ```
@@ -742,14 +845,14 @@ Output: [{"title", "type", "scenario", "content", "tags", "verified", "confidenc
 
 #### Purpose
 
-Add proactive working-memory snapshots every N turns, eliminating the need for heuristic patches like GenericAgent's `turn % 7 == 0` checks.
+Add proactive working-memory snapshots every N sequence increments, eliminating the need for heuristic patches like GenericAgent's `turn % 7 == 0` checks.
 
 #### Configuration
 
 ```rust
 #[derive(Debug, Clone)]
 pub struct CheckpointConfig {
-    pub interval_turns: usize,  // Default: 7
+    pub interval_turns: usize,  // Default: 7 (sequence increments, NOT transient turn counter)
     pub checkpoint_prompt: String,
 }
 ```
@@ -781,14 +884,17 @@ Be concise."#.into(),
 
 ```rust
 impl ContextCompactor {
-    /// Called from executor loop every N turns.
+    /// Called from executor loop every N sequence increments.
+    /// `current_max_sequence` must be fetched from EventStore — never use a transient turn counter.
     pub async fn checkpoint(
         &self,
         session_key: &SessionKey,
-        current_turn: usize,
+        current_max_sequence: i64,
         recent_events: &[SessionEvent],
     ) -> Result<Option<String>> {
-        if current_turn % self.checkpoint_config.interval_turns != 0 {
+        if current_max_sequence == 0
+            || current_max_sequence % self.checkpoint_config.interval_turns as i64 != 0
+        {
             return Ok(None);
         }
 
@@ -812,7 +918,7 @@ impl ContextCompactor {
         let summary = response.content.unwrap_or_default();
 
         self.sqlite_store
-            .save_checkpoint(session_key, current_turn, &summary)
+            .save_checkpoint(session_key, current_max_sequence, &summary)
             .await?;
 
         Ok(Some(summary))
@@ -826,14 +932,29 @@ impl ContextCompactor {
 CREATE TABLE session_checkpoints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_key TEXT NOT NULL,
-    turn INTEGER NOT NULL,
+    target_sequence INTEGER NOT NULL,
     summary TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(session_key, turn)
+    UNIQUE(session_key, target_sequence)
 );
 ```
 
-#### Integration: Caller-Layer Injection
+#### Integration: SteppableExecutor-Level Interceptor (REVISED)
+
+> **Linus Review:** The original caller-layer approach created an asymmetry — subagents got proactive working memory but the main agent (CLI mode) did not. **Good code has no special cases.** Since `SteppableExecutor::step()` is the shared primitive for both modes, checkpoint injection now belongs there as an optional interceptor:
+>
+> ```rust
+> pub struct SteppableExecutor {
+>     // ... existing fields ...
+>     checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+> }
+> ```
+>
+> Both `KernelExecutor` and `MonitoredRunner` use `SteppableExecutor` internally, so both benefit equally. No `BeforeIteration` hook needed.
+
+~~Original caller-layer approach (superseded by SteppableExecutor interceptor above):~~
+
+#### ~~Integration: Caller-Layer Injection~~
 
 `KernelExecutor.run_loop()` has **no hook infrastructure** — it is a pure LLM iteration loop. The existing `BeforeLLM` hook fires **once per request** in `ContextBuilder::build()`, before the kernel is even invoked. Therefore, proactive per-iteration checkpoints cannot flow through `BeforeLLM`.
 
@@ -841,13 +962,23 @@ Instead, checkpoint injection happens at the **caller layer**:
 
 **Direct mode (`KernelExecutor`)**: No proactive checkpoint injection. Only existing passive compaction (`try_compact` when token threshold is exceeded) is active. Proactive checkpoints require the steppable executor.
 
-**Monitored subagent mode (`SteppableExecutor`)**: `MonitoredRunner` can optionally call `compactor.checkpoint()` between `step()` calls and inject the result into the message history. This is an optional enhancement.
+**Monitored subagent mode (`SteppableExecutor`)**: `MonitoredRunner` calls `compactor.checkpoint()` between `step()` calls when the sequence interval is hit. The returned `summary` is injected into the subagent's `messages` as a `ChatMessage::system(...)` so the LLM sees its own working memory.
 
-**Future extension**: A new `BeforeIteration` hook point could be added to `KernelExecutor` so that direct mode also benefits from proactive checkpoints. This is out of scope for this spec.
+**Integration pattern**:
+```rust
+let session_key = SessionKey::parse(&self.spec.id)
+    .unwrap_or_else(|| SessionKey::new(ChannelType::Cli, &self.spec.id));
+let current_max_sequence = event_store.max_sequence(&session_key).await.unwrap_or(0);
+if let Some(summary) = compactor.checkpoint(&session_key, current_max_sequence, recent_events).await? {
+    self.messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
+}
+```
+
+**Future extension**: ~~A new `BeforeIteration` hook point could be added to `KernelExecutor` so that direct mode also benefits from proactive checkpoints.~~ **No longer needed** — the SteppableExecutor interceptor (see above) already covers both modes.
 
 **Checkpoint vs. Summary distinction:**
 - **Summary** (existing) = compressed historical conversation, passive, token-driven
-- **Checkpoint** (new) = structured working state, proactive, turn-driven
+- **Checkpoint** (new) = structured working state, proactive, sequence-driven
 
 ---
 
@@ -955,15 +1086,15 @@ KernelExecutor.run_loop() ── LLM decides how to proceed
 **Acceptance Criteria**: `Intervention::Abort` causes subagent to exit after current step.
 
 ### Task 5: Implement Checkpoint
-1. Add `checkpoint()` method to `ContextCompactor`
-2. Create `session_checkpoints` SQLite table
+1. Add `checkpoint()` method to `ContextCompactor` (binds to `target_sequence`, never transient `turn`)
+2. Create `session_checkpoints` SQLite table with `UNIQUE(session_key, target_sequence)`
 3. Wire `CheckpointConfig` into `ContextCompactor`
-4. Call from `AgentSession` when driving `SteppableExecutor` (e.g., in monitored subagent mode)
+4. Call from `AgentSession` or `MonitoredRunner` when driving `SteppableExecutor`
 
-**Acceptance Criteria**: Checkpoint inserted into `session_checkpoints` at correct interval.
+**Acceptance Criteria**: Checkpoint interceptor fires in both `KernelExecutor` and `MonitoredRunner` when driving `SteppableExecutor`; `session_checkpoints` table receives rows; survives process restart without unique-constraint violations.
 
 ### Bonus: create_plan Tool (after core tasks)
-1. Implement `CreatePlanTool` with SOP search + plan generation
+1. Implement simplified `CreatePlanTool` with Markdown-based plan generation (no JSON AST, no PlanStep/StepType/Plan structs)
 2. Register in `ToolRegistry`
 3. Test end-to-end planning flow
 
