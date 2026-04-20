@@ -22,11 +22,7 @@ pub struct CreatePlanTool {
 }
 
 impl CreatePlanTool {
-    pub fn new(
-        provider: Arc<dyn LlmProvider>,
-        model: String,
-        page_store: Arc<PageStore>,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn LlmProvider>, model: String, page_store: Arc<PageStore>) -> Self {
         Self {
             provider,
             model,

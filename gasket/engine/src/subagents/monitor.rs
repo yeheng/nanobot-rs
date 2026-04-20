@@ -74,8 +74,7 @@ impl MonitoredSpawner {
         let steppable = SteppableExecutor::new(provider, tools, kernel_config);
 
         let handle = tokio::spawn(async move {
-            let mut runner =
-                MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
+            let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
             match runner.run().await {
                 Ok(result) => result,
                 Err(e) => {
@@ -152,10 +151,8 @@ impl MonitoredRunner {
                         return Ok(result);
                     }
                     Intervention::AddKeyInfo(info) => {
-                        self.messages.push(ChatMessage::system(format!(
-                            "[Key Info] {}",
-                            info
-                        )));
+                        self.messages
+                            .push(ChatMessage::system(format!("[Key Info] {}", info)));
                     }
                     Intervention::AppendPrompt(prompt) => {
                         self.messages.push(ChatMessage::user(prompt));
@@ -168,7 +165,9 @@ impl MonitoredRunner {
 
             let _ = self
                 .progress
-                .send(ProgressUpdate::Thinking { turn: turn as usize })
+                .send(ProgressUpdate::Thinking {
+                    turn: turn as usize,
+                })
                 .await;
 
             let result = self

@@ -269,6 +269,12 @@ pub struct TokenLedger {
     pub total_usage: Option<TokenUsage>,
 }
 
+impl Default for TokenLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenLedger {
     pub fn new() -> Self {
         Self { total_usage: None }
@@ -303,8 +309,7 @@ pub struct SteppableExecutor {
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     /// Optional checkpoint interceptor. Called before each step().
     /// Returns summary to inject, or None to skip.
-    checkpoint_callback:
-        Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
 }
 
 impl SteppableExecutor {
@@ -328,10 +333,7 @@ impl SteppableExecutor {
         self
     }
 
-    pub fn with_token_tracker(
-        mut self,
-        tracker: Arc<crate::token_tracker::TokenTracker>,
-    ) -> Self {
+    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
         self.token_tracker = Some(tracker);
         self
     }
@@ -358,19 +360,12 @@ impl SteppableExecutor {
         // Proactive checkpoint injection (before LLM call)
         if let Some(ref cb) = self.checkpoint_callback {
             if let Some(summary) = cb(messages.len()) {
-                debug!(
-                    "[Steppable] Injecting checkpoint ({} chars)",
-                    summary.len()
-                );
-                messages.push(ChatMessage::system(format!(
-                    "[Working Memory] {}",
-                    summary
-                )));
+                debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
+                messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
             }
         }
 
-        let request_handler =
-            RequestHandler::new(&self.provider, &self.tools, &self.config);
+        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
         let request = request_handler.build_chat_request(messages);
@@ -422,10 +417,7 @@ impl SteppableExecutor {
                     debug!("[Steppable] Received first event from LLM stream");
                 }
                 if tx.send(event).await.is_err() {
-                    debug!(
-                        "[Steppable] Channel closed after {} events",
-                        event_count
-                    );
+                    debug!("[Steppable] Channel closed after {} events", event_count);
                     break;
                 }
             }

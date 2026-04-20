@@ -376,7 +376,10 @@ impl ContextCompactor {
         // Load recent events for context
         let events = self
             .event_store
-            .get_events_after_sequence(session_key, current_max_sequence.saturating_sub(config.interval_turns as i64))
+            .get_events_after_sequence(
+                session_key,
+                current_max_sequence.saturating_sub(config.interval_turns as i64),
+            )
             .await
             .unwrap_or_default();
 

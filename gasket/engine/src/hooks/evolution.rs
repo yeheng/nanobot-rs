@@ -282,7 +282,10 @@ impl PipelineHook for EvolutionHook {
             match mem.memory_type.as_str() {
                 "skill" => {
                     if let Err(e) = self.persist_as_sop(&mem, page_store).await {
-                        warn!("EvolutionHook: failed to persist SOP '{}': {}", mem.title, e);
+                        warn!(
+                            "EvolutionHook: failed to persist SOP '{}': {}",
+                            mem.title, e
+                        );
                     }
                 }
                 _ => {
@@ -351,19 +354,30 @@ impl EvolutionHook {
 
         // Deduplication
         let existing = page_store.list(PageFilter::default()).await.map_err(|e| {
-            AgentError::Other(format!("EvolutionHook: failed to list pages for dedup: {}", e))
+            AgentError::Other(format!(
+                "EvolutionHook: failed to list pages for dedup: {}",
+                e
+            ))
         })?;
         let is_duplicate = existing
             .iter()
             .any(|p| slugify(&p.title) == slug || p.path.contains(&slug));
 
         if is_duplicate {
-            debug!("EvolutionHook: SOP '{}' already exists. Skipping.", mem.title);
+            debug!(
+                "EvolutionHook: SOP '{}' already exists. Skipping.",
+                mem.title
+            );
             return Ok(());
         }
 
         let path = format!("sops/{}", slug);
-        let mut page = WikiPage::new(path, mem.title.clone(), PageType::Sop, format_sop_content(mem));
+        let mut page = WikiPage::new(
+            path,
+            mem.title.clone(),
+            PageType::Sop,
+            format_sop_content(mem),
+        );
 
         let mut tags = mem.tags.clone().unwrap_or_default();
         tags.push("auto_learned".to_string());
@@ -394,7 +408,10 @@ fn format_sop_content(mem: &EvolutionMemory) -> String {
          - Review before reuse in different environments.\n\n\
          ## Confidence\n\
          - {:.1}% (verified: {})",
-        mem.scenario, mem.content, mem.confidence * 100.0, mem.verified
+        mem.scenario,
+        mem.content,
+        mem.confidence * 100.0,
+        mem.verified
     )
 }
 
@@ -436,7 +453,8 @@ mod tests {
     #[test]
     fn test_extract_json_backward_compat() {
         // Old format without verified/confidence should still parse (defaults)
-        let json = r#"[{"title":"Test","type":"note","scenario":"knowledge","content":"fact","tags":[]}]"#;
+        let json =
+            r#"[{"title":"Test","type":"note","scenario":"knowledge","content":"fact","tags":[]}]"#;
         let mems = EvolutionHook::extract_json(json).unwrap();
         assert_eq!(mems.len(), 1);
         assert!(!mems[0].verified);
