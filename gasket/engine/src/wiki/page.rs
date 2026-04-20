@@ -18,7 +18,6 @@ impl PageType {
             Self::Source => "source",
         }
     }
-
 }
 
 impl std::str::FromStr for PageType {
