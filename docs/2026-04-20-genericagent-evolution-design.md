@@ -6,23 +6,32 @@
 
 ## Summary
 
-This spec proposes integrating GenericAgent's core innovations — self-evolving skills, structured plan/verify execution, hierarchical memory indexing, and monitored subagent delegation — into gasket's Rust architecture. The design follows a "thin orchestrator" philosophy: a `PlanExecutor` state machine orchestrates complex tasks via a new `SteppableExecutor` primitive, while the existing Direct execution path (via `KernelExecutor`) remains untouched.
+This spec proposes integrating GenericAgent's core innovations — self-evolving skills, structured plan execution, monitored subagent delegation, and proactive working memory — into gasket's Rust architecture. The design follows a **tool-based philosophy**: instead of hardcoding a workflow engine, we expose capabilities as **tools** that the LLM decides when to invoke.
 
-Five modules are defined:
+Four modules are defined:
 
-1. **InsightIndex** — Wiki navigation layer (L1-equivalent) for O(1) topic-to-SOP routing
-2. **PlanExecutor** — Optional 4-phase state machine (Explore/Plan/Execute/Verify) for complex tasks
-3. **MonitoredSpawner** — Real-time monitoring and intervention for subagents via channels + SQLite fallback
-4. **EvolutionHook Enhancement** — Task-to-SOP crystallization with automatic InsightIndex updates
-5. **Compactor Checkpoint** — Proactive working-memory snapshots every N turns
+1. **SteppableExecutor** — Foundation primitive: per-step LLM execution extracted from `KernelExecutor`
+2. **SOP + Tantivy Discovery** — Add `PageType::Sop` to wiki; LLM self-routes via existing Tantivy search
+3. **MonitoredSpawner** — Real-time monitoring and intervention for subagents via channels (no DB fallback)
+4. **EvolutionHook Enhancement** — Task-to-SOP crystallization with "No Execution, No Memory" enforcement
+5. **Compactor Checkpoint** — Proactive working-memory snapshots every N turns at the caller layer
+
+## Key Design Decision: Tool-Based Architecture
+
+The original design proposed a `PlanExecutor` state machine with `ComplexityAssessor` routing. After review, this was identified as **over-engineering**:
+
+- **Problem**: Hardcoding a 4-phase FSM (Explore/Plan/Execute/Verify) creates two parallel execution paths and adds an extra LLM call just for routing.
+- **Solution**: Provide a `create_plan` **tool**. If the LLM decides a task is complex, it calls the tool. The tool returns structured steps into the message history. The agent then executes them using the same `KernelExecutor` loop — no separate path, no `ComplexityAssessor`.
+
+This is the Unix philosophy: small, composable tools. The LLM is the orchestrator, not a Rust FSM.
 
 ## Key Design Decision: Steppable Execution Primitive
 
-The spec reviewer identified that `KernelExecutor` runs a **full autonomous loop** (`for iteration in 1..=max_iterations`) with no public API for per-step external orchestration. To enable PlanExecutor's step-by-step execution without rewriting the kernel, we introduce a new **`SteppableExecutor`** primitive:
+`KernelExecutor` runs a **full autonomous loop** (`for iteration in 1..=max_iterations`) with no public API for per-step external orchestration. To enable monitored subagent execution and future caller-layer checkpointing, we introduce **`SteppableExecutor`**:
 
 - `SteppableExecutor` is a **refactored extraction** from `KernelExecutor` that splits the loop body into discrete `step()` calls
 - `KernelExecutor` internally uses `SteppableExecutor` (composition, not inheritance), preserving its existing API
-- PlanExecutor calls `SteppableExecutor::step()` for each plan step, controlling iteration count and message history externally
+- `MonitoredRunner` calls `SteppableExecutor::step()` for each turn, emitting progress events
 - The streaming pipeline (`StreamEvent`) works identically — events flow per-step and aggregate
 
 This is a **surgical refactor**: extract the loop body into `step()`, have `KernelExecutor` call `step()` in a loop. No behavior change for existing callers.
@@ -58,67 +67,67 @@ Gasket has the pieces but lacks the **protocol** tying them together:
 
 - No structured plan/verify execution for complex tasks
 - No real-time subagent monitoring
-- Wiki has search (Tantivy) but no **navigation index** for LLM self-routing
+- Wiki has search (Tantivy) but no **SOP-aware routing** for LLM self-discovery
 - EvolutionHook extracts facts but not **action-verified procedural skills (SOPs)**
 - ContextCompactor is passive — no proactive working-memory checkpoints
 
 ## Goals
 
-1. Enable gasket to handle complex multi-step tasks with structured planning and independent verification
-2. Let the agent **discover and reuse its own skills** via an auto-maintained SOP index
+1. Let the agent **plan complex tasks** by providing a `create_plan` tool — the LLM decides when to use it
+2. Let the agent **discover and reuse its own skills** via `PageType::Sop` pages discoverable through Tantivy
 3. Provide real-time oversight of subagent execution with intervention capabilities
 4. Ensure task learnings are **automatically crystallized** into reusable SOPs
 5. Maintain proactive working memory without heuristic turn-based patches
 
 ## Non-Goals
 
-- Replacing the existing Direct execution mode — PlanExecutor is strictly optional
+- Replacing the existing Direct execution mode — the unified path stays; `create_plan` is just another tool
 - Porting GenericAgent's Python implementation verbatim — we adapt concepts to Rust idioms
 - Supporting GenericAgent's browser automation (webdriver) — out of scope
 - Changing the Actor pipeline architecture (Router→Session→Outbound)
+- Building a workflow engine with DB state tables — plans live in message history, not SQLite
 
 ## Changes from Review (Iteration 1)
 
 The following critical issues were identified and fixed during the first spec review:
 
-1. **KernelExecutor not steppable** — Spec originally assumed per-step calls, but `KernelExecutor.run_loop()` runs a full autonomous loop. **Fix**: Introduced `SteppableExecutor` as a new primitive — extracted loop body into `step()` method, with `KernelExecutor` composing it internally. Zero API change for existing callers.
+1. **KernelExecutor not steppable** — Spec originally assumed per-step calls, but `KernelExecutor.run_loop()` runs a full autonomous loop. **Fix**: Introduced `SteppableExecutor` as a new primitive.
 
-2. **AgentSession.process_direct() can't be branched** — No hook point existed for `ComplexityAssessor` before kernel runs. **Fix**: Added new `AgentSession.process_with_plan()` method plus `process_auto()` convenience wrapper. Caller chooses between direct and plan mode.
+2. **AgentSession.process_direct() can't be branched** — No hook point existed for `ComplexityAssessor` before kernel runs. **Fix**: Added new `AgentSession.process_with_plan()` method plus `process_auto()` convenience wrapper.
 
-3. **SQLite FK to non-existent sessions table** — `execution_plans` had `FOREIGN KEY REFERENCES sessions(key)` but no `sessions` table exists. **Fix**: Removed FK, added `idx_execution_plans_session` index.
+3. **SQLite FK to non-existent sessions table** — `execution_plans` had `FOREIGN KEY REFERENCES sessions(key)` but no `sessions` table exists. **Fix**: Removed FK.
 
-4. **MonitoredSpawner can't decorate runner.rs** — `run_subagent()` is a pure function with no internal hooks. **Fix**: `MonitoredRunner` implements its own execution loop using `SteppableExecutor`, not as a decorator around `run_subagent()`.
+4. **MonitoredSpawner can't decorate runner.rs** — `run_subagent()` is a pure function with no internal hooks. **Fix**: `MonitoredRunner` implements its own execution loop using `SteppableExecutor`.
 
 5. **Missing sops/ directory** — `PageStore::init_dirs()` doesn't create "sops". **Fix**: Added to Migration Plan Phase 1.
 
-**Warnings also fixed**:
-- `std::sync::RwLock` → `tokio::sync::RwLock`
-- Overloaded `marker` field split into `step_type` + `status`
-- `page_store.read()` dedup → `page_store.exists()`
-- Static `assess()` method → instance method with provider/model
-- Checkpoint injection moved from direct state mutation to caller-layer (`BeforeLLM` was considered but rejected because it fires once per request, not per iteration)
-
 ## Changes from Review (Iteration 2)
 
-The following issues were identified and fixed during the second spec review:
+1. **Checkpoint injection at wrong layer** — `BeforeLLM` hook fires once per request. **Fix**: Checkpoint injection moved to the **caller layer**.
+2. **MonitoredSpawner::spawn() borrow checker error** — **Fix**: Clone `sqlite_pool` before spawn.
+3. **PageType::Sop missing `as_str()` and `FromStr`** — **Fix**: Added both.
+4. **MonitoredRunner missing tools/provider fields** — **Fix**: Uses `SteppableExecutor` internally.
+5. **SteppableExecutor missing `TokenLedger`** — **Fix**: Added `ledger` parameter to `step()`.
 
-1. **Checkpoint injection at wrong layer** — `BeforeLLM` hook fires once per request in `ContextBuilder::build()`, not per kernel iteration. `KernelExecutor` has zero hook infrastructure. **Fix**: Checkpoint injection moved to the **caller layer** (`PlanExecutor` calls `compactor.checkpoint()` between `step()` calls). Direct mode (`KernelExecutor`) keeps only passive compaction.
+## Changes from Review (Iteration 3)
 
-2. **AgentSession missing `insight_index` field** — `process_with_plan()` referenced `self.insight_index` but `AgentSession` has no such field. **Fix**: Added explicit note that `AgentSession` gains `insight_index: Option<Arc<InsightIndex>>` in Phase 1 of the migration plan.
+1. **ProgressUpdate field mismatches** — **Fix**: Simplified enum variants to match actual usage.
+2. **Undefined `turn` variable** — **Fix**: Added `let mut turn = 0` counter.
+3. **`ask_user` ambiguity** — **Fix**: Clarified as `confirm_plan` tool call.
 
-3. **EvolutionHook missing `insight_index` field** — `persist_as_sop()` used `self.insight_index` but the struct had no such field. **Fix**: Added note that `EvolutionHook` gains `insight_index` field and `with_insight_index()` builder method.
+## Changes from Linus Review (Major Simplification)
 
-4. **MonitoredSpawner::spawn() borrow checker error** — Captured `self` in `tokio::spawn` after calling `&self` methods. **Fix**: Clone `sqlite_pool` before spawn; pass cloned pool into async block.
+The Linus-style review in `task.md` identified fundamental over-engineering. The following **large-scale cuts** were made:
 
-5. **ComplexityAssessor contradictory definitions** — Had both `pub struct ComplexityAssessor;` and `pub struct ComplexityAssessor { provider, model }`. **Fix**: Removed unit struct, kept the one with fields.
-
-6. **PageType::Sop missing `as_str()` and `FromStr`** — Added `Sop` variant but didn't show `as_str()` → `"sop"` or `FromStr` parsing. **Fix**: Added both implementations in the spec.
-
-7. **`fix` step_type premature** — Schema included `fix` as a step type but Open Question #2 was unresolved. **Fix**: Removed `fix` from `step_type` enum; fix-loop behavior will be handled by appending new steps with `status = 'pending'`.
-
-8. **MonitoredRunner missing tools/provider fields** — `run()` called `self.llm.chat()` and `self.execute_tool()` but struct had no such fields. **Fix**: `MonitoredRunner` now uses `SteppableExecutor` internally (which owns provider + tools + config).
-
-9. **SteppableExecutor missing `TokenLedger`** — `step()` returned `token_usage: Option<TokenUsage>` but caller had no way to accumulate across steps. **Fix**: Added `ledger: &mut TokenLedger` parameter to `step()`. KernelExecutor creates ledger internally and passes it each iteration.
+1. **Killed `ComplexityAssessor`** — Extra LLM call just for routing. The LLM itself decides when to plan via the `create_plan` tool.
+2. **Killed hardcoded `PlanExecutor` FSM** — Replaced with `create_plan` tool. Plans live in EventStore message history, not SQLite tables.
+3. **Killed `execution_plans` + `execution_steps` tables** — Temporary execution state belongs in the context, not a relational schema.
+4. **Killed `wiki_insights` table** — `InsightIndex` was a parallel projection of `wiki_pages`. SOPs are discovered through existing Tantivy search on `PageType::Sop`.
+5. **Killed `subagent_tasks` SQLite fallback** — If a subagent crashes, the user re-sends the instruction. KISS.
+6. **Kept `SteppableExecutor`** — Foundation primitive for per-step control. "The most tasteful design in the document."
+7. **Kept `MonitoredSpawner`** — Channel-based progress/intervention is genuinely useful for UI feedback.
+8. **Kept `EvolutionHook` SOP extraction** — Auto-crystallization of skills is the core value proposition.
+9. **Kept `Checkpoint`** — Proactive working memory at the caller layer.
 
 ## Architecture
 
@@ -127,130 +136,70 @@ The following issues were identified and fixed during the second spec review:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        AgentSession                           │
-│  ┌──────────────────────┐    ┌──────────────────────────┐  │
-│  │   process_direct()   │───►│   ComplexityAssessor     │  │
-│  └──────────────────────┘    │   (1-round LLM judgment)  │  │
-│                              └───────────┬──────────────┘  │
-│                                          │                 │
-│                    simple (<3 steps)     │   complex (≥3)  │
-│                                          ▼                 │
-│                              ┌──────────────────────────┐  │
-│                              │     PlanExecutor         │  │
-│                              │  ┌────┬────┬────┬────┐   │  │
-│                              │  │Ex │Pl │Ex │Ve │   │  │
-│                              │  │pl │an │ec │ri │   │  │
-│                              │  │or │  │ut │fy │   │  │
-│                              │  └────┴────┴────┴────┘   │  │
-│                              └──────────────────────────┘  │
-│                                          │                 │
-│                              ┌───────────┴───────────┐    │
-│                              ▼                       ▼    │
-│                    ┌──────────────┐        ┌─────────────┐ │
-│                    │ Steppable    │        │ Subagent    │ │
-│                    │ Executor     │        │ (Monitored) │ │
-│                    └──────────────┘        └─────────────┘ │
-│                              │                       │    │
-│                              ▼                       ▼    │
-│                    ┌──────────────┐        ┌─────────────┐ │
-│                    │ InsightIndex │        │ EvolutionHook│ │
-│                    │   (wiki)     │        │  (hooks)     │ │
-│                    └──────────────┘        └─────────────┘ │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              KernelExecutor.run_loop()               │   │
+│  │  ┌────────────┐  ┌──────────┐  ┌─────────────────┐  │   │
+│  │  │ Steppable  │  │ create_  │  │  spawn_         │  │   │
+│  │  │ Executor   │  │ plan     │  │  monitored      │  │   │
+│  │  │  (tool)    │  │  (tool)  │  │  (tool)         │  │   │
+│  │  └────────────┘  └──────────┘  └─────────────────┘  │   │
+│  │         ▲                                    │       │   │
+│  └─────────┼────────────────────────────────────┼───────┘   │
+│            │                                    │            │
+│  ┌─────────┴──────────┐              ┌──────────┴────────┐  │
+│  │   Tantivy Search   │              │ MonitoredRunner   │  │
+│  │   (PageType::Sop)  │              │ (progress +       │  │
+│  │                    │              │  intervention)    │  │
+│  └─────────┬──────────┘              └──────────┬────────┘  │
+│            │                                    │            │
+│  ┌─────────┴──────────┐              ┌──────────┴────────┐  │
+│  │    PageStore       │              │  EvolutionHook    │  │
+│  │  (wiki: sops/)     │              │  (SOP extraction) │  │
+│  └────────────────────┘              └───────────────────┘  │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │           ContextCompactor.checkpoint()              │   │
+│  │     (called by AgentSession between turns)           │   │
+│  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Interface Contracts:**
-
-1. `PlanExecutor` → `SteppableExecutor`: Per-step execution with external iteration control
-2. `PlanExecutor` → `MonitoredSpawner`: `spawn_monitored()` returns `(handle, interventor, progress_rx)`
-3. `PlanExecutor` → `InsightIndex`: `insight.lookup(query, k) -> Vec<InsightEntry>` for SOP routing
-4. `EvolutionHook` → `InsightIndex`: Atomic upsert after SOP creation
+**Key principle**: One unified execution path. The LLM uses tools (`create_plan`, `spawn_monitored`) when it decides they are needed. No routing layer, no FSM.
 
 ### Module Dependency Graph
 
 ```
-PlanExecutor
-    ├── uses MonitoredSpawner (Explore, Verify phases)
-    ├── uses InsightIndex (Plan phase — SOP lookup)
-    ├── uses SteppableExecutor (Execute phase — per-step)
-    └── writes ExecutionPlan + ExecutionStep tables
+KernelExecutor
+    ├── internally uses SteppableExecutor (surgical refactor)
+    └── exposes tools: create_plan, spawn_monitored, search_sops
 
 MonitoredSpawner
     ├── wraps SimpleSpawner
-    ├── uses SQLite fallback table
-    └── injects progress/intervention into runner
-
-InsightIndex
-    ├── uses SQLite (wiki_insights table)
-    ├── references PageStore (wiki pages)
-    └── synced by EvolutionHook + background task
+    ├── uses tokio::sync::mpsc (channels only, no DB fallback)
+    └── MonitoredRunner uses SteppableExecutor internally
 
 EvolutionHook (enhanced)
-    ├── uses PageStore (write SOP pages)
-    ├── uses InsightIndex (index new SOPs)
+    ├── uses PageStore (write SOP pages as PageType::Sop)
     └── triggered at AfterResponse hook point
+
+TantivyAdapter
+    ├── already indexes all wiki pages
+    └── SOPs discovered via search with PageType::Sop filter
 
 Compactor (enhanced)
     ├── adds checkpoint() method
     ├── writes session_checkpoints table
-    └── called from executor loop every N turns
+    └── called from AgentSession every N turns
 ```
 
 ## Detailed Design
 
-### 1. InsightIndex Module
+### 1. SOP Discovery via Tantivy
 
 #### Purpose
 
-A navigation layer sitting above the Wiki system. It does not store content — only "topic → page_path" pointers with relevance scoring. This is the L1-equivalent from GenericAgent's memory hierarchy.
-
-#### Data Structures
-
-```rust
-#[derive(Debug, Clone)]
-pub struct InsightEntry {
-    pub topic: String,              // Trigger keyword, e.g. "docker_build"
-    pub page_path: String,          // Wiki page path, e.g. "sops/docker_build"
-    pub page_type: PageType,        // Entity | Topic | Source | Sop
-    pub relevance: f32,             // 0.0-1.0, sort tiebreaker
-    pub last_verified: Option<DateTime<Utc>>,
-}
-
-pub struct InsightIndex {
-    pool: SqlitePool,
-    cache: tokio::sync::RwLock<HashMap<String, Vec<InsightEntry>>>,
-}
-```
-
-#### API
-
-```rust
-impl InsightIndex {
-    /// O(1) routing query used by PlanExecutor during planning.
-    pub async fn lookup(&self, query: &str, k: usize) -> Vec<InsightEntry>;
-
-    /// Atomic upsert called by EvolutionHook after SOP creation.
-    pub async fn upsert(&self, entry: &InsightEntry) -> Result<()>;
-
-    /// Background sync: scan wiki for new Sop pages and auto-index.
-    pub async fn sync_with_wiki(&self, store: &PageStore) -> Result<SyncReport>;
-}
-```
-
-#### SQLite Schema
-
-```sql
-CREATE TABLE wiki_insights (
-    topic TEXT NOT NULL,
-    page_path TEXT NOT NULL PRIMARY KEY,
-    page_type TEXT NOT NULL,
-    relevance REAL DEFAULT 1.0,
-    last_verified TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_insight_topic ON wiki_insights(topic);
-CREATE INDEX idx_insight_type ON wiki_insights(page_type);
-```
+Instead of building a parallel `wiki_insights` table, we leverage the **existing Tantivy index**. Adding `PageType::Sop` to the wiki makes SOPs searchable through the same infrastructure already used for entities, topics, and sources.
 
 #### PageType::Sop Addition
 
@@ -268,7 +217,7 @@ impl PageType {
             Self::Entity => "entity",
             Self::Topic => "topic",
             Self::Source => "source",
-            Self::Sop => "sop",  // NEW
+            Self::Sop => "sop",
         }
     }
 
@@ -290,7 +239,7 @@ impl std::str::FromStr for PageType {
             "entity" => Ok(Self::Entity),
             "topic" => Ok(Self::Topic),
             "source" => Ok(Self::Source),
-            "sop" => Ok(Self::Sop),  // NEW
+            "sop" => Ok(Self::Sop),
             _ => Err(()),
         }
     }
@@ -324,11 +273,27 @@ tags: [auto_learned, docker]
 - Do not pull external base images in isolated network environments
 ```
 
-#### Integration Points
+#### Discovery: `search_sops` Tool
 
-- **PlanExecutor** calls `lookup()` to find relevant SOPs before planning
-- **EvolutionHook** calls `upsert()` atomically after creating a new SOP page
-- **Background task** runs `sync_with_wiki()` periodically to catch orphaned pages
+The agent discovers its own SOPs via a tool that queries Tantivy:
+
+```rust
+/// Tool: search_sops — find relevant SOPs by query string
+pub async fn search_sops(query: &str, k: usize) -> Vec<SearchHit> {
+    // Query Tantivy with PageType::Sop filter
+    let mut filter = PageFilter::default();
+    filter.page_type = Some(PageType::Sop);
+    page_index.search(query, k, Some(filter)).await
+}
+```
+
+This tool is registered in `ToolRegistry` and available to the LLM during any turn. When the agent encounters a task it has an SOP for, it can retrieve and follow it.
+
+#### Why Not a Separate InsightIndex Table?
+
+- **Tantivy already indexes everything** — adding a parallel SQLite table for "topic → path" mapping is duplication
+- **SOPs are content** — they have titles, tags, and full text. Tantivy BM25 scoring is superior to a flat `relevance` field
+- **KISS** — one search index, not two
 
 ---
 
@@ -390,119 +355,122 @@ pub async fn run_loop(...) -> Result<ExecutionResult, KernelError> {
 
 ---
 
-### 2. PlanExecutor Module
+### 2. create_plan Tool
 
 #### Purpose
 
-A finite state machine executing complex tasks through 4 phases: Explore → Plan → Execute → Verify. It wraps `KernelExecutor` as a per-step caller, leaving the core loop untouched.
+Instead of a hardcoded `PlanExecutor` FSM, we provide a **`create_plan` tool** that the LLM can call when it decides a task is complex. The tool generates structured steps, writes them to the wiki, and returns the plan to the LLM. The agent then executes the steps using the normal `KernelExecutor` loop — the same path as any other task.
 
-#### State Machine
+#### Why a Tool Instead of a State Machine?
 
-```
-Created ──assess()──► Direct (simple tasks, skip PlanExecutor)
-    │
-    └──► Exploring ──findings ready──► Planning ──user confirm──►
-                                                          Executing ──all [✓]──► Verifying
-                                                                │                      │
-                                                                │ step fail            ├── PASS ──► Done
-                                                                │                      │
-                                                                └── [FIX] loop ◄── FAIL ──┘
-```
+- **No routing overhead** — No extra LLM call (`ComplexityAssessor`) to decide whether to plan
+- **Single execution path** — Direct tasks and planned tasks use the same `KernelExecutor` loop
+- **LLM-driven** — The agent decides when planning is useful, not a heuristic
+- **Simpler** — No FSM, no DB tables for plan state, no `process_with_plan()` branching
 
-#### ExecutionPlan Data Structures
-
-```sql
-CREATE TABLE execution_plans (
-    plan_id TEXT PRIMARY KEY,
-    session_key TEXT NOT NULL,
-    task_description TEXT NOT NULL,
-    status TEXT NOT NULL,  -- Created | Exploring | Planning | Executing | Verifying | Done | Aborted
-    findings TEXT,         -- JSON: ExplorationResult
-    plan_wiki_path TEXT,   -- Reference to plan.md in wiki
-    current_step INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    max_retries INTEGER DEFAULT 3,
-    verification_result TEXT  -- PASS | FAIL | PARTIAL
-);
-
-CREATE INDEX idx_execution_plans_session ON execution_plans(session_key);
-
-CREATE TABLE execution_steps (
-    step_id TEXT PRIMARY KEY,
-    plan_id TEXT NOT NULL,
-    step_number INTEGER NOT NULL,
-    description TEXT NOT NULL,
-    step_type TEXT NOT NULL DEFAULT 'direct',  -- direct | delegated | parallel | conditional
-    status TEXT NOT NULL DEFAULT 'pending',    -- pending | done | failed | skipped
-    sop_path TEXT,
-    depends_on INTEGER,
-    condition TEXT,        -- For [?] conditional branches
-    tool_calls TEXT,       -- JSON: [ToolCallRecord]
-    result_summary TEXT,
-    error TEXT,
-    FOREIGN KEY (plan_id) REFERENCES execution_plans(plan_id)
-);
-```
-
-#### ComplexityAssessor (Entry Point)
+#### Tool Definition
 
 ```rust
-pub enum Complexity {
-    Direct,  // 1-2 steps, skip PlanExecutor
-    Auto,    // 3 steps, let agent decide
-    Plan,    // 4+ steps or dependencies, force Plan mode
-}
-
-pub struct ComplexityAssessor {
+/// Tool: create_plan — generate a structured execution plan for a complex task
+///
+/// The LLM calls this when it determines a task requires multiple steps.
+/// The plan is persisted to the wiki and returned as a structured message.
+pub struct CreatePlanTool {
     provider: Arc<dyn LlmProvider>,
-    model: String,  // Cheap model, e.g. "anthropic/claude-haiku"
+    model: String,
+    page_store: Arc<PageStore>,
 }
 
-impl ComplexityAssessor {
-    /// 1-round judgment, ≤100 tokens
-    pub async fn assess(&self, task: &str) -> Complexity;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub description: String,
+    pub step_type: StepType,  // Direct | Delegated | Parallel | Conditional
+    pub depends_on: Vec<usize>,
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StepType {
+    Direct,     // Execute via single SteppableExecutor step
+    Delegated,  // Spawn MonitoredSpawner subagent
+    Parallel,   // Execute alongside other steps
+    Conditional, // Execute only if condition evaluates true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub title: String,
+    pub goal: String,
+    pub steps: Vec<PlanStep>,
+    pub verification_criteria: Vec<String>,
+    pub wiki_path: String,
+}
+
+impl CreatePlanTool {
+    pub async fn invoke(&self, goal: &str, context: &[ChatMessage]) -> Result<Plan, ToolError> {
+        // 1. Search for relevant SOPs
+        let sops = self.search_relevant_sops(goal).await?;
+
+        // 2. Build prompt with SOP context + plan generation instructions
+        let prompt = self.build_plan_prompt(goal, &sops, context);
+
+        // 3. Call LLM to generate structured plan
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage::system("You are a planning assistant."), prompt],
+            max_tokens: Some(2048),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+
+        let response = self.provider.chat(request).await?;
+        let plan: Plan = self.parse_plan(&response.content.unwrap_or_default())?;
+
+        // 4. Persist plan to wiki
+        self.page_store.write(&plan.to_wiki_page()).await?;
+
+        Ok(plan)
+    }
 }
 ```
 
-#### Phase Details
+#### Plan Execution Flow
 
-**Explore Phase:**
-- Spawn a MonitoredSpawner subagent with an exploration task
-- Subagent writes findings to a wiki exploration page
-- PlanExecutor monitors progress via `progress_rx`, intervenes via `interventor`
-- Subagent constrained to read-only operations, ≤10 tool calls
+The plan is **not executed by a separate engine**. It is injected into the message history as a structured artifact. The agent then proceeds with normal execution:
 
-**Plan Phase:**
-- Query InsightIndex for relevant SOPs
-- Build prompt: findings + SOP references + plan generation instructions
-- LLM generates structured plan with `step_type` markers (`delegated`/`parallel`/`conditional`) and a final `verify` step
-- Write plan to wiki + SQLite execution_steps table
-- `confirm_plan` tool call for user confirmation before execution (LLM emits a tool call that pauses execution until user responds)
+```
+User: "Set up a new Rust project with CI, tests, and documentation"
 
-**Execute Phase:**
-- For each step in order:
-  - Check dependencies satisfied; if not, mark `status = skipped`
-  - `step_type = delegated` → spawn MonitoredSpawner subagent
-  - `step_type = parallel` → collect parallel subagents, await all
-  - `step_type = direct` → call SteppableExecutor for single-step execution
-  - Mini-verify: quick sanity check of output
-  - Mark `status = done` and persist to SQLite
+Agent (turn 1):
+  LLM thinks: "This is complex, I'll create a plan"
+  → Calls create_plan tool
+  → Tool returns Plan { steps: [...] }
+  → Plan written to wiki: "plans/rust_project_setup"
+  → LLM responds: "I've created a plan with 4 steps. Let me start..."
 
-**Verify Phase:**
-- Spawn independent verification subagent with adversarial role
-- Subagent reads plan + deliverables, runs verification checks
-- Subagent outputs `VERDICT: PASS | FAIL | PARTIAL` as final line
-- **PASS** → mark verify step `status = done`, call EvolutionHook
-- **FAIL** → enter fix loop (max `max_retries` iterations)
-- **PARTIAL** → ask user to decide
+Agent (turn 2):
+  LLM sees plan in context
+  → Executes step 1 (Direct): "cargo init"
+  → Tool result: project created
 
-#### Error Handling
+Agent (turn 3):
+  → Executes step 2 (Delegated): spawn_monitored for CI setup
+  → MonitoredSpawner reports progress
+  → Subagent completes
 
-- **Subagent failure** → check stderr log, retry up to 2 times, then escalate to user
-- **Step failure** → mark `[✗]`, record error, retry 3× with backoff (2s/4s/8s)
-- **Dependency failure** → propagate `[SKIP]` to downstream steps
-- **Verify FAIL** → append `[FIX]` steps to plan, re-execute only failed items
+Agent (turn 4):
+  → Executes step 3 (Direct): add tests
+  → ...
+
+Agent (turn N):
+  → All steps complete
+  → LLM calls verify_completion tool (optional)
+  → Responds to user
+```
+
+#### Plan Persistence
+
+Plans are stored as `PageType::Topic` wiki pages (not in SQLite tables). The path follows `plans/{slug}` convention. This keeps all knowledge in one system — the wiki.
 
 ---
 
@@ -510,7 +478,7 @@ impl ComplexityAssessor {
 
 #### Purpose
 
-Add real-time monitoring and intervention to subagent execution. Replaces GenericAgent's file-IO protocol (`_intervene`, `_stop`, `_keyinfo`) with type-safe Rust channels backed by SQLite fallback.
+Add real-time monitoring and intervention to subagent execution. Replaces GenericAgent's file-IO protocol (`_intervene`, `_stop`, `_keyinfo`) with type-safe Rust channels.
 
 #### Architecture
 
@@ -555,51 +523,60 @@ pub struct MonitoredHandle {
 }
 ```
 
-#### Communication: Channel + SQLite Fallback
+#### Implementation (Channels Only, No DB Fallback)
 
 ```rust
 pub struct MonitoredSpawner {
     inner: SimpleSpawner,
-    sqlite_pool: SqlitePool,
 }
 
 impl MonitoredSpawner {
+    pub fn new(inner: SimpleSpawner) -> Self {
+        Self { inner }
+    }
+
     pub async fn spawn(&self, spec: TaskSpec) -> Result<MonitoredHandle> {
         let (progress_tx, progress_rx) = mpsc::channel(64);
         let (interventor_tx, interventor_rx) = mpsc::channel(16);
 
-        // Register in DB for crash recovery
-        self.register_in_db(&spec.id, &spec).await?;
-
-        // Clone pool for the spawned task (can't capture `self` across await)
-        let pool = self.sqlite_pool.clone();
-        let spec_id = spec.id.clone();
+        // Build SteppableExecutor from spec
+        let steppable = SteppableExecutor::new(
+            spec.provider.clone(),
+            spec.tools.clone(),
+            spec.config.clone(),
+        );
 
         let handle = tokio::spawn(async move {
-            let mut runner = MonitoredRunner::new(spec, progress_tx, interventor_rx);
-            let result = runner.run().await;
-            // Update DB via cloned pool
-            Self::update_db_status(&pool, &spec_id, &result).await?;
-            result
+            let mut runner = MonitoredRunner::new(
+                spec,
+                steppable,
+                progress_tx,
+                interventor_rx,
+            );
+            runner.run().await
         });
 
-        Ok(MonitoredHandle { handle, interventor: interventor_tx, progress: progress_rx })
+        Ok(MonitoredHandle {
+            handle,
+            interventor: interventor_tx,
+            progress: progress_rx,
+        })
     }
 }
 ```
 
-#### MonitoredRunner
+**No SQLite fallback.** If the subagent crashes, state is lost. The user re-sends the instruction. This is the KISS principle — the complexity of crash recovery outweighs the benefit for a local personal AI assistant.
 
-Wraps the existing subagent runner, injecting progress/intervention hooks at key points:
+#### MonitoredRunner
 
 ```rust
 struct MonitoredRunner {
     spec: TaskSpec,
-    progress: mpsc::Sender<ProgressUpdate>,
-    intervention: mpsc::Receiver<Intervention>,
-    steppable: SteppableExecutor,  // Uses provider + tools + config
+    steppable: SteppableExecutor,
     messages: Vec<ChatMessage>,
     ledger: TokenLedger,
+    progress: mpsc::Sender<ProgressUpdate>,
+    intervention: mpsc::Receiver<Intervention>,
 }
 
 impl MonitoredRunner {
@@ -613,7 +590,11 @@ impl MonitoredRunner {
             self.progress.send(ProgressUpdate::Thinking { turn }).await.ok();
 
             // Execute one LLM iteration via SteppableExecutor
-            let result = self.steppable.step(&mut self.messages, &mut self.ledger, None).await?;
+            let result = self.steppable.step(
+                &mut self.messages,
+                &mut self.ledger,
+                None,
+            ).await?;
 
             if !result.tool_results.is_empty() {
                 for tr in &result.tool_results {
@@ -653,23 +634,6 @@ impl MonitoredRunner {
 }
 ```
 
-#### SQLite Fallback Table
-
-```sql
-CREATE TABLE subagent_tasks (
-    task_id TEXT PRIMARY KEY,
-    spec TEXT NOT NULL,
-    status TEXT NOT NULL,
-    progress_log TEXT,
-    interventions TEXT,
-    result TEXT,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP
-);
-
-CREATE INDEX idx_subagent_status ON subagent_tasks(status);
-```
-
 #### Integration with Existing runner.rs
 
 **Important**: The existing `run_subagent()` in `runner.rs` is a **pure function** that creates a `KernelExecutor` and runs it to completion. It has no internal hooks for progress observation or intervention.
@@ -681,17 +645,13 @@ Therefore, `MonitoredRunner` is **not a decorator** around `run_subagent()`. Ins
 3. Interventions are checked between turns via `try_recv()`
 4. The existing `SimpleSpawner` API remains unchanged for non-monitored use cases
 
-Future enhancement: Add `ProgressHook` trait to `KernelExecutor` so that any execution (direct or subagent) can emit progress events uniformly.
-
 ---
 
 ### 4. EvolutionHook Enhancement
 
 #### Purpose
 
-Extend the existing `EvolutionHook` to classify extracted memories by type, write SOPs as `PageType::Sop`, and atomically update the InsightIndex.
-
-**Struct change:** `EvolutionHook` gains `insight_index: Option<Arc<InsightIndex>>` (mirroring the existing `page_store` field) and a `with_insight_index()` builder method. If `insight_index` is `None`, SOPs are still written to the wiki but the InsightIndex is not updated.
+Extend the existing `EvolutionHook` to classify extracted memories by type and write SOPs as `PageType::Sop`.
 
 #### Memory Classification
 
@@ -715,7 +675,7 @@ impl EvolutionHook {
     async fn persist_memory(&self, mem: &EvolutionMemory) -> Result<(), AgentError> {
         match mem.memory_type.as_str() {
             "note" => self.persist_as_fact(mem).await,    // L2: Entity/Topic
-            "skill" => self.persist_as_sop(mem).await,    // L3: Sop + InsightIndex
+            "skill" => self.persist_as_sop(mem).await,    // L3: Sop
             _ => self.persist_as_topic(mem).await,        // Fallback
         }
     }
@@ -751,16 +711,8 @@ async fn persist_as_sop(&self, mem: &EvolutionMemory) -> Result<(), AgentError> 
 
     page_store.write(&page).await?;
 
-    // Update InsightIndex atomically
-    if let Some(ref insight) = self.insight_index {
-        insight.upsert(&InsightEntry {
-            topic: mem.title.clone(),
-            page_path: path,
-            page_type: PageType::Sop,
-            relevance: mem.confidence,
-            last_verified: if mem.verified { Some(Utc::now()) } else { None },
-        }).await?;
-    }
+    // Tantivy re-index happens automatically via PageIndex
+    // No separate InsightIndex table needed
 
     Ok(())
 }
@@ -885,37 +837,11 @@ CREATE TABLE session_checkpoints (
 
 `KernelExecutor.run_loop()` has **no hook infrastructure** — it is a pure LLM iteration loop. The existing `BeforeLLM` hook fires **once per request** in `ContextBuilder::build()`, before the kernel is even invoked. Therefore, proactive per-iteration checkpoints cannot flow through `BeforeLLM`.
 
-Instead, checkpoint injection happens at the **caller layer**, depending on which executor is used:
+Instead, checkpoint injection happens at the **caller layer**:
 
 **Direct mode (`KernelExecutor`)**: No proactive checkpoint injection. Only existing passive compaction (`try_compact` when token threshold is exceeded) is active. Proactive checkpoints require the steppable executor.
 
-**Plan mode (`SteppableExecutor`)**: `PlanExecutor` calls `compactor.checkpoint()` between `step()` calls and injects the result into the message history:
-
-```rust
-// PlanExecutor::run() — inside the execution loop
-let mut ledger = TokenLedger::new();
-let mut turn = 0;  // global turn counter across all plan steps
-for step in &plan.steps {
-    turn += 1;
-
-    // 1. Checkpoint every N turns
-    if turn % checkpoint_config.interval_turns == 0 {
-        if let Ok(Some(checkpoint)) = compactor
-            .checkpoint(session_key, turn, &recent_events)
-            .await
-        {
-            messages.push(ChatMessage::system(format!(
-                "[Checkpoint at turn {}]\n{}",
-                turn, checkpoint
-            )));
-        }
-    }
-
-    // 2. Execute the plan step
-    let result = steppable.step(&mut messages, &mut ledger, event_tx).await?;
-    // ...
-}
-```
+**Monitored subagent mode (`SteppableExecutor`)**: `MonitoredRunner` can optionally call `compactor.checkpoint()` between `step()` calls and inject the result into the message history. This is an optional enhancement.
 
 **Future extension**: A new `BeforeIteration` hook point could be added to `KernelExecutor` so that direct mode also benefits from proactive checkpoints. This is out of scope for this spec.
 
@@ -936,94 +862,35 @@ User Request
 AgentSession.process_direct()
     │
     ▼
-ComplexityAssessor.assess()
+KernelExecutor.run_loop() ── LLM decides how to proceed
     │
-    ├── simple ──► KernelExecutor.execute() ──► Done
+    ├── Simple task ──► Execute normally ──► Done
     │
-    └── complex ──► PlanExecutor.run()
-                        │
-                        ▼
-                    Explore Phase
-                        ├── MonitoredSpawner.spawn(explore_spec)
-                        ├── Progress monitoring + intervention
-                        └── Write findings to wiki exploration page
-                        │
-                        ▼
-                    Plan Phase
-                        ├── InsightIndex.lookup(task, 5)
-                        ├── LLM generates plan with markers
-                        ├── Persist to execution_steps table
-                        └── confirm_plan tool call (user confirmation)
-                        │
-                        ▼
-                    Execute Phase
-                        ├── For each step:
-                        │   ├── Check dependencies
-                        │   ├── Route: delegated→subagent, parallel→parallel, default→SteppableExecutor
-                        │   ├── Mini-verify output
-                        │   └── Mark status = done in SQLite
-                        └── All steps done
-                        │
-                        ▼
-                    Verify Phase
-                        ├── MonitoredSpawner.spawn(verify_spec)
-                        ├── Adversarial verification
-                        ├── Parse VERDICT line
-                        └── PASS? → Done / FAIL? → fix loop
-                        │
-                        ▼
-                    Done
-                        ├── EvolutionHook.on_task_complete()
-                        │   ├── Extract verified facts/skills
-                        │   ├── Write SOP to wiki (PageType::Sop)
-                        │   └── Upsert InsightIndex
-                        └── Archive plan to wiki
+    └── Complex task ──► LLM calls create_plan tool
+            │
+            ▼
+        create_plan
+            ├── Search Tantivy for relevant SOPs (PageType::Sop)
+            ├── LLM generates structured plan
+            ├── Persist plan to wiki (PageType::Topic)
+            └── Return plan to agent context
+            │
+            ▼
+        Agent continues execution
+            ├── Step 1: Direct → SteppableExecutor.step()
+            ├── Step 2: Delegated → MonitoredSpawner.spawn()
+            │   ├── ProgressUpdate events stream back
+            │   └── Intervention possible
+            ├── Step 3: Parallel → Multiple subagents
+            └── ...
+            │
+            ▼
+        Done
+            ├── EvolutionHook.on_task_complete()
+            │   ├── Extract verified facts/skills
+            │   └── Write SOP to wiki (PageType::Sop)
+            └── Respond to user
 ```
-
-#### AgentSession Integration
-
-PlanExecutor does **not** modify `process_direct()`. Instead, a new method `process_with_plan()` is added:
-
-```rust
-impl AgentSession {
-    /// Process a message with plan-mode support.
-    /// Called when ComplexityAssessor indicates a complex task.
-    pub async fn process_with_plan(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-    ) -> Result<AgentResponse, AgentError> {
-        let plan_executor = PlanExecutor::new(
-            self.runtime_ctx.clone(),
-            self.insight_index.clone(),
-            self.page_store.clone(),
-        );
-        plan_executor.run(content, session_key).await
-    }
-}
-```
-
-The caller (CLI or channel handler) is responsible for choosing between `process_direct()` and `process_with_plan()`. A convenience wrapper can automate this:
-
-```rust
-pub async fn process_auto(
-    &self,
-    content: &str,
-    session_key: &SessionKey,
-) -> Result<AgentResponse, AgentError> {
-    let assessor = ComplexityAssessor::new(self.provider.clone(), "cheap-model".into());
-    match assessor.assess(content).await? {
-        Complexity::Direct => self.process_direct(content, session_key).await,
-        Complexity::Plan => self.process_with_plan(content, session_key).await,
-        Complexity::Auto => {
-            // Let the agent decide via a tool call
-            self.process_direct(content, session_key).await
-        }
-    }
-}
-```
-
-**Note on `AgentSession` fields:** `AgentSession` currently has `page_store: Option<Arc<PageStore>>` but no `insight_index` field. The migration plan (Phase 1) adds `insight_index: Option<Arc<InsightIndex>>` to `AgentSession` and wires it through `AgentSessionBuilder`.
 
 ---
 
@@ -1031,13 +898,12 @@ pub async fn process_auto(
 
 | Scenario | Strategy |
 |----------|----------|
-| Subagent spawn fails | Retry up to 2×, then abort plan and notify user |
-| Subagent crash during execution | SQLite fallback allows recovery: read last progress, decide to resume or restart |
-| Step execution fails | Mark `status = failed`, record error, retry 3× with exponential backoff (2s/4s/8s), then append new fix steps or ask user |
-| Dependency step fails | Mark dependent steps `status = skipped`, continue with independent branches |
-| Verify FAIL | Extract failure items → append new fix steps with `status = 'pending'` → re-execute (max `max_retries` cycles) |
-| Verify PARTIAL | Ask user to decide: accept, fix, or retry |
-| InsightIndex lookup empty | Fallback to Tantivy full-text search; if still empty, proceed without SOP guidance |
+| Subagent spawn fails | Retry up to 2×, then abort and return error to LLM (which can decide next action) |
+| Subagent crash during execution | State lost. User re-sends instruction. No DB fallback. |
+| Plan generation fails | Return error to LLM; agent can retry or proceed without plan |
+| Step execution fails | LLM sees tool error in context, decides retry/skip/abort |
+| Verify FAIL | LLM sees result, decides fix approach (no hardcoded fix loop) |
+| SOP search empty | Proceed without SOP guidance; agent improvises |
 | EvolutionHook extraction fails | Log warning, skip memory persistence for this batch, watermark still advances |
 | Compactor checkpoint fails | Non-fatal: log warning, continue execution without checkpoint injection |
 
@@ -1047,58 +913,67 @@ pub async fn process_auto(
 
 | Module | Test Approach |
 |--------|---------------|
-| InsightIndex | Unit tests for lookup/upsert/sync; mock PageStore |
-| PlanExecutor | Integration tests with mocked SteppableExecutor + MonitoredSpawner |
-| ComplexityAssessor | Prompt injection tests: verify correct classification for known inputs |
-| MonitoredSpawner | Test channel communication; test SQLite fallback when channel drops |
-| MonitoredRunner | Mock LLM + tool registry, verify progress events fire in correct order |
-| EvolutionHook | Mock PageStore + InsightIndex, verify SOP created and indexed atomically |
-| Compactor Checkpoint | Mock provider, verify checkpoint generated at correct intervals |
-| End-to-end | Full PlanExecutor flow with a 3-step task, verify all phases execute |
+| SteppableExecutor | Existing agent chat tests must pass 100%. Verify TokenLedger accumulates correctly. |
+| PageType::Sop | `PageType::from_str("sop")` returns `Ok(PageType::Sop)`. Wiki init creates `sops/` dir. |
+| EvolutionHook SOP | Mock LLM returns `skill` type JSON; verify `PageStore::write` called with `PageType::Sop`. |
+| MonitoredSpawner | Test channel communication. Send `Intervention::Abort`, verify subagent exits cleanly. |
+| MonitoredRunner | Mock LLM + tool registry, verify progress events fire in correct order. |
+| Compactor Checkpoint | Mock provider, verify checkpoint generated at correct intervals. |
+| create_plan Tool | Test that tool returns structured Plan; verify persisted to wiki. |
+| End-to-end | Agent uses create_plan for a 3-step task, executes all steps, SOP extracted. |
 
 ---
 
 ## Migration Plan
 
-### Phase 1: Foundation (No breaking changes)
+### Task 1: Extract SteppableExecutor
+1. Define `StepResult` struct
+2. Extract `KernelExecutor` loop body into `SteppableExecutor::step(&mut messages, &mut ledger, event_tx)`
+3. Rewrite `KernelExecutor::run_loop()` to call `step()` in a loop
+
+**Acceptance Criteria**: All existing agent chat tests pass. `KernelExecutor` external API unchanged.
+
+### Task 2: Extend Wiki for SOP
 1. Add `PageType::Sop` variant (+ `as_str()`, `FromStr`, `directory()`)
 2. Add `"sops"` directory to `PageStore::init_dirs()`
-3. Create `wiki_insights` SQLite table
-4. Implement `InsightIndex` module
-5. Add `session_checkpoints` table + `CheckpointConfig`
-6. Add `insight_index: Option<Arc<InsightIndex>>` field to `AgentSession` (wire through `AgentSessionBuilder`)
-7. Add `insight_index` field + `with_insight_index()` builder to `EvolutionHook`; update `AgentSession::build_hooks()` to pass it
-8. Add `CheckpointConfig` parameter to `ContextCompactor::new()` (or builder) so checkpoint functionality is available
+3. Register `search_sops` tool in `ToolRegistry`
 
-### Phase 2: PlanExecutor Skeleton
-1. Create `execution_plans` + `execution_steps` tables
-2. Implement `ComplexityAssessor`
-3. Implement `PlanExecutor` with Explore + Plan + Execute phases
-4. Add `plan_mode` tool to ToolRegistry
+**Acceptance Criteria**: `PageType::from_str("sop")` works. `sops/` directory created on init.
 
-### Phase 3: Subagent Monitoring
-1. Implement `MonitoredSpawner` + `MonitoredRunner`
-2. Wire into PlanExecutor Explore/Verify phases
-3. Add `subagent_tasks` SQLite table for fallback
+### Task 3: Enhance EvolutionHook for SOP
+1. Modify extraction prompt for "No Execution, No Memory" + `note`/`skill` classification
+2. Modify `persist_memory` to route `skill` → `persist_as_sop()`
+3. Write SOP pages with proper frontmatter + body structure
 
-### Phase 4: Evolution + Verify Closure
-1. Enhance `EvolutionHook` with SOP extraction + InsightIndex upsert
-2. Implement Verify phase in PlanExecutor
-3. Add fix loop logic (append new steps with `status = 'pending'` on failure)
+**Acceptance Criteria**: Mock LLM returns `skill` type → `PageStore::write` called with `PageType::Sop`.
 
-### Phase 5: Integration
-1. Add `AgentSession.process_with_plan()` and `process_auto()` methods
-2. Refactor `KernelExecutor` to use internal `SteppableExecutor`; wire `Compactor.checkpoint()` into PlanExecutor's caller-layer step loop
-3. Add user-facing commands (`/plan`, `/verify`)
-4. End-to-end testing and documentation
+### Task 4: Implement MonitoredSpawner
+1. Define `ProgressUpdate` and `Intervention` enums
+2. Create `MonitoredRunner` wrapping `SteppableExecutor`
+3. Add `spawn_monitored` to `SubagentSpawner` trait
+
+**Acceptance Criteria**: `Intervention::Abort` causes subagent to exit after current step.
+
+### Task 5: Implement Checkpoint
+1. Add `checkpoint()` method to `ContextCompactor`
+2. Create `session_checkpoints` SQLite table
+3. Wire `CheckpointConfig` into `ContextCompactor`
+4. Call from `AgentSession` when driving `SteppableExecutor` (e.g., in monitored subagent mode)
+
+**Acceptance Criteria**: Checkpoint inserted into `session_checkpoints` at correct interval.
+
+### Bonus: create_plan Tool (after core tasks)
+1. Implement `CreatePlanTool` with SOP search + plan generation
+2. Register in `ToolRegistry`
+3. Test end-to-end planning flow
 
 ---
 
 ## Open Questions
 
 1. **Should `parallel` steps share a subagent provider or use independent instances?** Independent is safer for isolation but costs more tokens.
-2. **How should the fix loop interact with the original plan's steps?** Append new steps with `status = 'pending'` or modify existing `status = 'failed'` steps?
-3. **Should ComplexityAssessor use the same model as the main agent or a cheaper model?** Using a cheaper model (e.g., Haiku) saves cost but may misclassify.
+2. **How detailed should `create_plan` output be?** Full step-by-step with tool calls, or high-level goals left to LLM improvisation?
+3. **Should checkpointing be enabled for direct mode too?** Requires adding a `BeforeIteration` hook point to `KernelExecutor`.
 
 ## References
 
