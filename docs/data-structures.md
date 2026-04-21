@@ -542,7 +542,7 @@ AgentSession::process_direct()
 
 ---
 
-## 4. 记忆结构
+## 4. 记忆与 Wiki 结构
 
 ### 4.1 MemoryMeta
 
@@ -615,41 +615,74 @@ MemoryHit {
 }
 ```
 
-### 4.5 MemoryProvider Trait
+### 4.5 TokenBudget
 
-> **来源**: `gasket-engine::session::store::MemoryProvider`
+> **来源**: `gasket-storage::wiki::types`
 
-解耦 HistoryCoordinator 与 MemoryManager 的窄接口。
+Token 预算配置，用于 wiki 上下文注入。定义不同阶段上下文加载的最大 token 预算。
 
 ```rust
-#[async_trait]
-pub trait MemoryProvider: Send + Sync {
-    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
-    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
-    async fn update_from_event(&self, event: &SessionEvent) -> Result<()>;
-    async fn create_memory(&self, scenario, filename, title, tags, frequency, content) -> Result<()>;
-    async fn update_memory(&self, scenario, filename, content) -> Result<()>;
-    async fn delete_memory(&self, scenario, filename) -> Result<()>;
+TokenBudget {
+    bootstrap: usize,                     // 阶段 1 预算 (profile + hot pages, 默认 1500)
+    scenario: usize,                      // 阶段 2 预算 (场景搜索结果, 默认 1500)
+    on_demand: usize,                     // 阶段 3 预算 (按需语义搜索填充, 默认 1000)
+    total_cap: usize,                     // 总上限 (默认 4000)
+}
+// 总预算 = min(total_cap, bootstrap + scenario + on_demand)
+```
+
+### 4.6 Frequency
+
+> **来源**: `gasket-storage::wiki::types`
+
+Wiki 页面访问频率分类。追踪页面的访问时效和频率，影响保留决策和检索排序。
+高频率页面在搜索结果中优先返回，并受到清理保护。
+
+```rust
+enum Frequency {
+    Hot,       // 频繁访问 (24 小时内), rank = 3
+    Warm,      // 中等访问 (7 天内), rank = 2
+    Cold,      // 偶尔访问 (30 天内), rank = 1
+    Archived,  // 长期未访问 (超过 30 天), rank = 0, 默认值
+}
+// 实现: Display, FromStr, Ord, Default (默认 Archived)
+```
+
+### 4.7 DecayCandidate
+
+> **来源**: `gasket-storage::wiki::page_store`
+
+频率衰减候选页面。用于 wiki 页面生命周期管理中的自动衰减操作。
+
+```rust
+DecayCandidate {
+    path: String,                         // Wiki 页面路径 (主键)
+    frequency: Frequency,                 // 当前频率等级
+    last_accessed: String,                // 最后访问时间 (RFC 3339)
 }
 ```
 
-### 4.6 MemoryContext
+### 4.8 WikiPageInput
 
-> **来源**: `gasket-engine::session::memory::MemoryManager`
+> **来源**: `gasket-storage::wiki::page_store`
 
-三阶段加载的结果。
+写入/更新 wiki 页面的输入结构。用于 SQLite 的原子 UPSERT 操作。
 
 ```rust
-MemoryContext {
-    memories: Vec<MemoryFile>,            // 加载的记忆文件（在 token 预算内）
-    tokens_used: usize,                   // 实际使用的 token 数
-    phase_breakdown: PhaseBreakdown,      // 分阶段 token 明细
-}
-
-PhaseBreakdown {
-    bootstrap_tokens: usize,              // 阶段 1 (profile + active)
-    scenario_tokens: usize,               // 阶段 2 (场景 hot/warm)
-    on_demand_tokens: usize,              // 阶段 3 (搜索填充)
+WikiPageInput<'a> {
+    path: &'a str,                        // 页面路径 (主键)
+    title: &'a str,                       // 页面标题
+    page_type: &'a str,                   // 页面类型
+    category: Option<&'a str>,            // 可选分类
+    tags: &'a str,                        // 标签 (JSON 数组字符串)
+    content: &'a str,                     // Markdown 正文
+    source_count: u32,                    // 来源文档数量
+    confidence: f64,                      // 置信度 (0.0–1.0)
+    checksum: Option<&'a str>,            // 内容校验和
+    frequency: Frequency,                 // 访问频率等级
+    access_count: u64,                    // 累计访问次数
+    last_accessed: Option<String>,        // 最后访问时间 (RFC 3339)
+    file_mtime: i64,                      // 磁盘文件修改时间 (Unix 时间戳秒)
 }
 ```
 
@@ -758,31 +791,54 @@ InjectionReport {
 │   ├── embedding BLOB       f32 向量
 │   └── created_at TEXT
 │
-│  ─── 记忆系统 ───
+│  ─── Wiki 知识系统 ───
 │
-├── memory_metadata          记忆文件元数据（替代旧 _INDEX.md）
-│   ├── id TEXT              记忆 ID (mem_xxx)
-│   ├── path TEXT            文件名 (mem_xxx.md)
-│   ├── scenario TEXT        场景目录名
-│   ├── title TEXT           标题
-│   ├── memory_type TEXT     类型 (默认 "note")
-│   ├── frequency TEXT       "hot" | "warm" | "cold" | "archived"
-│   ├── tags TEXT            JSON 数组 (json_each 查询)
-│   ├── tokens INTEGER       token 数
-│   ├── updated TEXT         更新时间
+├── wiki_pages               Wiki 页面（单一事实来源，内容存储在 SQLite）
+│   ├── path TEXT PK         页面路径（主键）
+│   ├── title TEXT NOT NULL  页面标题
+│   ├── type TEXT NOT NULL   页面类型
+│   ├── category TEXT        可选分类
+│   ├── tags TEXT            标签（JSON 数组）
+│   ├── content TEXT         Markdown 正文
+│   ├── created TEXT NOT NULL
+│   ├── updated TEXT NOT NULL
+│   ├── source_count INTEGER DEFAULT 0   来源文档数量
+│   ├── confidence REAL DEFAULT 1.0      置信度
+│   ├── checksum TEXT        内容校验和
+│   ├── frequency TEXT DEFAULT 'warm'     "hot" | "warm" | "cold" | "archived"
+│   ├── access_count INTEGER DEFAULT 0   访问次数
 │   ├── last_accessed TEXT   最后访问时间
-│   ├── file_mtime BIGINT    文件修改时间（纳秒）
-│   └── PRIMARY KEY (scenario, path)
+│   └── file_mtime INTEGER   磁盘文件修改时间（Unix 时间戳秒）
+│   索引: idx_wiki_pages_type, idx_wiki_pages_category,
+│         idx_wiki_pages_updated, idx_wiki_pages_frequency,
+│         idx_wiki_pages_last_accessed
 │
-├── memory_embeddings        记忆嵌入向量
-│   ├── memory_path TEXT PK  文件路径
-│   ├── scenario TEXT        场景
-│   ├── tags TEXT            JSON 数组
-│   ├── frequency TEXT       频率
-│   ├── embedding BLOB       f32 向量
-│   ├── token_count INTEGER  token 数
-│   ├── created_at TEXT
-│   └── updated_at TEXT
+├── raw_sources              原始来源文档
+│   ├── id TEXT PK           来源 ID
+│   ├── path TEXT NOT NULL   文件路径
+│   ├── format TEXT NOT NULL 文件格式
+│   ├── ingested INTEGER DEFAULT 0       是否已摄取
+│   ├── ingested_at TEXT     摄取时间
+│   ├── title TEXT           标题
+│   ├── metadata TEXT        元数据 (JSON)
+│   └── created TEXT NOT NULL
+│   索引: idx_raw_sources_ingested
+│
+├── wiki_relations           Wiki 页面关系
+│   ├── from_page TEXT NOT NULL
+│   ├── to_page TEXT NOT NULL
+│   ├── relation TEXT NOT NULL           关系类型
+│   ├── confidence REAL DEFAULT 1.0      置信度
+│   ├── created TEXT NOT NULL
+│   └── PRIMARY KEY (from_page, to_page, relation)
+│
+├── wiki_log                 Wiki 操作日志
+│   ├── id INTEGER PK AUTOINCREMENT
+│   ├── action TEXT NOT NULL             操作类型
+│   ├── target TEXT          操作目标
+│   ├── detail TEXT          操作详情
+│   └── created TEXT NOT NULL DEFAULT (datetime('now'))
+│   索引: idx_wiki_log_action
 │
 │  ─── 通用存储 ───
 │

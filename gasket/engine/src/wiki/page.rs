@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use gasket_storage::wiki::Frequency;
 use serde::{Deserialize, Serialize};
 
 /// Page type classification
@@ -64,10 +65,26 @@ pub struct WikiPage {
     pub source_count: u32,
     #[serde(default = "default_confidence")]
     pub confidence: f64,
+    /// Machine runtime state: access frequency (never written to Markdown).
+    #[serde(skip, default = "default_frequency")]
+    pub frequency: Frequency,
+    /// Machine runtime state: total access count (never written to Markdown).
+    #[serde(skip, default)]
+    pub access_count: u64,
+    /// Machine runtime state: last access timestamp (never written to Markdown).
+    #[serde(skip, default)]
+    pub last_accessed: Option<DateTime<Utc>>,
+    /// Machine runtime state: disk file mtime in Unix epoch seconds (never written to Markdown).
+    #[serde(skip, default)]
+    pub file_mtime: i64,
 }
 
 fn default_confidence() -> f64 {
     1.0
+}
+
+fn default_frequency() -> Frequency {
+    Frequency::Warm
 }
 
 impl WikiPage {
@@ -85,6 +102,10 @@ impl WikiPage {
             updated: now,
             source_count: 0,
             confidence: 1.0,
+            frequency: Frequency::Warm,
+            access_count: 0,
+            last_accessed: None,
+            file_mtime: 0,
         }
     }
 
@@ -131,6 +152,12 @@ pub struct PageSummary {
     pub tags: Vec<String>,
     pub updated: DateTime<Utc>,
     pub confidence: f64,
+    /// Machine runtime state: access frequency.
+    pub frequency: Frequency,
+    /// Machine runtime state: total access count.
+    pub access_count: u64,
+    /// Machine runtime state: last access timestamp.
+    pub last_accessed: Option<DateTime<Utc>>,
 }
 
 /// Filter for listing pages

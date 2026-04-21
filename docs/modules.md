@@ -110,6 +110,9 @@ trait Tool: Send + Sync {
 |------|------|
 | `registry.rs` | `ToolRegistry` — 工具注册表，管理所有可用工具 |
 | `base.rs` | 工具基础类型和辅助函数 |
+| `wiki_decay.rs` | `WikiDecayTool` — Wiki 页面衰减工具（原 memory_decay） |
+| `wiki_refresh.rs` | `WikiRefreshTool` — Wiki 索引刷新工具（原 memory_refresh） |
+| `wiki_tools.rs` | `WikiReadTool`, `WikiSearchTool`, `WikiWriteTool` — Wiki 读写搜索工具 |
 
 > **注意**: 沙箱相关类型（`ProcessManager`, `SandboxConfig`）从 `sandbox` crate re-export。
 
@@ -284,31 +287,30 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
 
 ---
 
-## 7. memory/ — 存储抽象层
+## 7. storage/ — 存储抽象层
 
 > **注意**: 实际实现从 `storage` crate re-export。
 
-### MemoryStore Trait
+### 核心组件
 
-```rust
-#[async_trait]
-trait MemoryStore: Send + Sync {
-    async fn save(&self, entry: &MemoryEntry) -> Result<()>;
-    async fn get(&self, id: &str) -> Result<Option<MemoryEntry>>;
-    async fn delete(&self, id: &str) -> Result<bool>;
-    async fn search(&self, query: &MemoryQuery) -> Result<Vec<MemoryEntry>>;
-}
-```
+| 组件 | 说明 |
+|------|------|
+| `EventStore` | 事件溯源存储（session_events 表） |
+| `SqliteStore` | SQLite 通用存储（sessions, summaries, cron jobs, kv） |
+| `processor` | `process_history()` — Token-budget-aware 历史处理 |
+| `query` | `HistoryQueryBuilder` — 历史查询构建器 |
+| `search/` | FTS5 全文搜索类型 |
+| `wiki/` | Wiki 页面存储（page_store, relation_store, source_store） |
 
-### SqliteStore 实现
+### SqliteStore
 
 - 使用 `sqlx::SqlitePool` 原生异步 I/O
-- FTS5 全文搜索支持
-- 子模块: `memories.rs` (FTS5), `session.rs` (会话持久化), `kv.rs` (键值存储), `cron.rs` (定时任务)
+- WAL 模式支持并发读
+- 子模块: `fs.rs` (文件系统), `event_store.rs` (事件), `wiki/` (知识库)
 
 ---
 
-## 8. session/ — 会话管理（事件溯源）
+## 8. 事件溯源（Event Sourcing）
 
 > **注意**: 事件溯源类型定义在 `types` crate（`SessionEvent`, `EventType`, `Session`），持久化在 `storage` crate（`EventStore`）。
 
@@ -333,17 +335,28 @@ trait MemoryStore: Send + Sync {
 
 ---
 
-## 9. session/ — 会话管理（原 agent/）
+## 9. session/ — 会话管理
 
-| 文件 | 职责 |
+> **注意**: `engine/src/agent/` 已重构为 `kernel/` + `session/` + `subagents/`
+
+| 文件/目录 | 职责 |
 |------|------|
 | `mod.rs` | `AgentSession` — 会话管理核心，包装 kernel 执行 |
 | `config.rs` | `AgentConfig` — Agent 配置（含 kernel 转换支持） |
 | `context.rs` | `AgentContext` 枚举 — 零成本枚举分发（Persistent/Stateless） |
-| `compactor.rs` | `ContextCompactor` — 同步上下文压缩 |
-| `memory.rs` | `MemoryManager`, `MemoryContext`, `MemoryProvider` — 记忆管理 |
+| `compactor.rs` | `ContextCompactor` — 上下文压缩（基于 token budget） |
 | `prompt.rs` | 引导文件加载、技能上下文、token 截断 |
-| `store.rs` | `MemoryStore` — 内存存储包装器 |
+| `store.rs` | `MemoryStore` — 内存存储包装器（仅导出 MemoryStore） |
+| `history/` | 事件溯源历史处理 |
+
+### history/ 子模块
+
+| 文件 | 职责 |
+|------|------|
+| `builder.rs` | `HistoryBuilder` — 历史消息构建器 |
+| `coordinator.rs` | `HistoryCoordinator` — 历史加载协调器 |
+| `indexing.rs` | `HistoryIndexingService` — 消息索引服务 |
+| `mod.rs` | 模块导出 |
 
 ### AgentSession
 
@@ -360,8 +373,7 @@ pub struct AgentSession {
     hooks: Arc<HookRegistry>,       // Hook 注册表
     history_config: gasket_storage::HistoryConfig, // 历史配置
     compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
-    memory_manager: Option<Arc<MemoryManager>>, // 记忆管理器
-    indexing_service: Option<Arc<IndexingService>>, // 索引服务
+    indexing_service: Option<Arc<HistoryIndexingService>>, // 索引服务
     pricing: Option<ModelPricing>,  // 可选价格配置
     pending_done: tokio_util::task::TaskTracker, // 优雅关闭追踪器
 }
@@ -571,3 +583,41 @@ always_load: false
 
 - **always_load: true** — 启动时自动加载
 - **always_load: false** — 按需加载
+
+---
+
+## 17. wiki/ — Wiki 知识系统
+
+> 位于 `engine/src/wiki/`，三层架构：原始来源 → 编译 Wiki → 搜索索引。
+
+### 模块结构
+
+| 文件 | 职责 |
+|------|------|
+| `mod.rs` | Wiki 模块导出与 re-export |
+| `page.rs` | `WikiPage`, `PageType`, `PageSummary`, `PageFilter`, `slugify()` |
+| `store.rs` | `PageStore` — Wiki 页面 CRUD |
+| `index.rs` | `PageIndex` — Tantivy BM25 全文搜索 |
+| `query/mod.rs` | `WikiQueryEngine`, `QueryResult`, `ScoredCandidate`, `SearchHit`, `Reranker`, `TantivyIndex` |
+| `ingest/mod.rs` | 知识摄入管线（parser, extractor, dedup） |
+| `ingest/parser.rs` | `SourceParser`, `MarkdownParser`, `HtmlParser`, `PlainTextParser`, `ConversationParser` |
+| `ingest/extractor.rs` | `KnowledgeExtractor`, `ExtractedItem`, `ExtractionResult` |
+| `ingest/dedup.rs` | `SemanticDeduplicator`, `DedupResult` |
+| `lint/mod.rs` | `WikiLinter`, `LintReport`, `FixReport` — 健康检查（仅结构化检查） |
+| `lint/structural.rs` | `StructuralIssue`, `StructuralIssueType`, `Severity`, `StructuralLintConfig` |
+| `log.rs` | `WikiLog`, `LogEntry` — 操作日志 |
+| `lifecycle.rs` | `DecayReport`, `FrequencyManager` — 频率衰减与晋升管理 |
+
+### Storage Wiki 模块
+
+> 位于 `storage/src/wiki/`
+
+| 文件 | 职责 |
+|------|------|
+| `mod.rs` | Wiki storage 模块导出 |
+| `page_store.rs` | `WikiPageStore`, `PageRow`, `DecayCandidate`, `WikiPageInput` |
+| `tables.rs` | `create_wiki_tables()` — DDL 建表 |
+| `types.rs` | `Frequency`, `TokenBudget` — 核心类型定义 |
+| `log_store.rs` | `WikiLogStore` — 日志持久化 |
+| `relation_store.rs` | `WikiRelationStore` — 页面关系 |
+| `source_store.rs` | `WikiSourceStore` — 来源追踪 |

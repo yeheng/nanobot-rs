@@ -137,6 +137,9 @@ impl WikiQueryEngine {
                     tags: page.tags,
                     updated: page.updated,
                     confidence: page.confidence,
+                    frequency: page.frequency,
+                    access_count: page.access_count,
+                    last_accessed: page.last_accessed,
                 });
             }
         }

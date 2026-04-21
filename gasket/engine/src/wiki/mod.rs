@@ -1,5 +1,6 @@
 pub mod index;
 pub mod ingest;
+pub mod lifecycle;
 pub mod lint;
 pub mod log;
 pub mod page;
@@ -8,15 +9,15 @@ pub mod store;
 
 // Re-exports
 pub use index::PageIndex;
+pub use lifecycle::{DecayReport, FrequencyManager};
 pub use ingest::{
-    ConversationParser, CostEstimate, DedupResult, ExtractedItem, ExtractedItemType,
-    ExtractionResult, HtmlParser, IngestConfig, IngestReport, IngestTier, KnowledgeExtractor,
-    MarkdownParser, ParsedSource, PlainTextParser, SemanticDeduplicator, SourceFormat,
-    SourceMetadata, SourceParser, WikiIntegrator,
+    ConversationParser, DedupResult, ExtractedItem, ExtractedItemType, ExtractionResult,
+    HtmlParser, KnowledgeExtractor, MarkdownParser, ParsedSource, PlainTextParser,
+    SemanticDeduplicator, SourceFormat, SourceMetadata, SourceParser,
 };
 pub use lint::{
-    FixReport, LintReport, SemanticIssue, SemanticIssueType, Severity, StructuralIssue,
-    StructuralIssueType, StructuralLintConfig, WikiLinter,
+    FixReport, LintReport, Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig,
+    WikiLinter,
 };
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};

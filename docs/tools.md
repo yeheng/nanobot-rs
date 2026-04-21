@@ -75,6 +75,10 @@ mindmap
     记忆管理
       搜索记忆
       保存记忆
+    Wiki知识
+      搜索Wiki
+      读写Wiki
+      衰减与刷新
     任务管理
       创建子代理
       定时任务
@@ -216,35 +220,72 @@ sequenceDiagram
     participant AI as AI
     participant M as 记忆工具
     participant Store as 记忆存储
-    
+
     U->>AI: 我叫小明，做后端开发
-    
+
     Note over AI: 判断这是重要信息
-    
+
     AI->>M: 保存记忆 (type: note/skill)
     Note over M: 判断类型：事实→note，流程→skill
     M->>Store: 写入对应抽屉
     M-->>AI: 保存成功 (type: note)
-    
+
     ...第二天...
-    
+
     U->>AI: 帮我写段代码
     AI->>M: 搜索用户相关信息
     M->>Store: 查询记忆
     Store-->>M: 小明，后端开发
     M-->>AI: 用户信息
-    
+
     Note over AI: 根据用户背景调整回答
-    
+
     AI-->>U: 小明，这段后端代码...
 ```
 
 **包含的工具：**
 - `memory_search` - 搜索记忆
 - `memorize` - 保存新记忆（支持 `memory_type`: `"note"` 或 `"skill"`）
-- `memory_decay` - 运行记忆频率衰减（Hot→Warm→Cold→Archived）
-- `memory_refresh` - 刷新并重新索引记忆文件
 - `history_query` (`HistoryQueryTool`) - 查询 SQLite 中的对话历史
+
+### 4.1 Wiki 知识工具
+
+让 AI 能读写和检索结构化知识库（基于 Tantivy BM25 全文搜索 + SQLite 存储）：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant AI as AI
+    participant W as Wiki工具
+    participant Store as SQLite + Tantivy
+
+    U->>AI: 查一下关于Rust所有权的信息
+
+    AI->>W: wiki_search("Rust所有权")
+    W->>Store: Tantivy BM25 搜索
+    Store-->>W: 匹配的Wiki页面
+    W-->>AI: 搜索结果列表
+
+    AI->>W: wiki_read("rust/ownership")
+    W->>Store: 读取页面详情
+    Store-->>W: 完整Markdown内容
+    W-->>AI: 页面内容
+
+    AI-->>U: 根据Wiki知识库，Rust所有权的核心概念是...
+
+    U->>AI: 把这个总结写到知识库里
+    AI->>W: wiki_write("rust/summary", ...)
+    W->>Store: 写入页面 + 更新索引
+    Store-->>W: 保存成功
+    W-->>AI: 页面已创建
+```
+
+**包含的工具：**
+- `wiki_search` (`WikiSearchTool`) - 使用 Tantivy BM25 搜索 Wiki 页面。参数：`query`（必填，搜索关键词），`limit`（可选，默认 10）。返回格式化的搜索结果。
+- `wiki_write` (`WikiWriteTool`) - 写入/更新 Wiki 页面。参数：`path`、`title`、`content`（必填），`page_type`（可选，默认 `"topic"`），`tags`（可选，数组）。
+- `wiki_read` (`WikiReadTool`) - 按路径读取 Wiki 页面。参数：`path`（必填）。返回完整 Markdown 内容及元数据。
+- `wiki_decay` (`WikiDecayTool`) - 运行自动化频率衰减，零 LLM 消耗。返回扫描/衰减/错误的页面统计。
+- `wiki_refresh` (`WikiRefreshTool`) - 将磁盘 Markdown 文件同步到 SQLite 和 Tantivy。参数：`action` - `"sync"`（增量同步）、`"reindex"`（完全重建）、`"stats"`（统计信息）。
 
 ### 5. 子代理工具
 
@@ -335,6 +376,7 @@ flowchart TB
         R --> T2[网络工具]
         R --> T3[Shell工具]
         R --> T4[记忆工具]
+        R --> T4a[Wiki知识工具]
         R --> T5[子代理工具]
         R --> T6[定时任务]
         R --> T7[历史查询]
@@ -348,6 +390,7 @@ flowchart TB
     AI -->|需要执行命令| T3
     AI -->|需要查历史| T7
     AI -->|需要扩展功能| T8
+    AI -->|需要查知识库| T4a
 ```
 
 ### 语义路由
@@ -363,6 +406,7 @@ flowchart TB
     Understand -->|运行测试| Shell[命令执行]
     Understand -->|记住这个| Memory[保存记忆]
     Understand -->|任务太复杂| Subagent[创建子代理]
+    Understand -->|查知识库| Wiki[Wiki搜索]
     
     style Understand fill:#FFD700
 ```

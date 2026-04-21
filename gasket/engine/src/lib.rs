@@ -35,8 +35,7 @@ pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
-    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryContext, MemoryProvider,
-    MemoryStore, PersistentContext, PhaseBreakdown,
+    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryStore, PersistentContext,
 };
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;
@@ -97,8 +96,7 @@ pub use hooks::{
 pub use search::{bytes_to_embedding, embedding_to_bytes, TextEmbedder};
 pub use search::{cosine_similarity, top_k_similar};
 
-// ── Memory (re-export from storage) ────────────────────────
-pub use gasket_storage::memory::{Embedder, NoopEmbedder};
+// ── Search / Embedding ─────────────────────────────────────
 
 // ── Skills ─────────────────────────────────────────────────
 pub use skills::{parse_skill_file, Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
@@ -186,13 +184,9 @@ pub mod providers {
     };
 }
 
-// Memory
+// Core storage types (memory module name kept for backward compatibility)
 pub mod memory {
     pub use crate::session::MemoryStore;
-    pub use gasket_storage::memory::{
-        memory_base_dir, AutoIndexHandler, FileMemoryStore, FrequencyManager, RefreshReport,
-    };
-    pub use gasket_storage::memory::{EmbeddingStore, MetadataStore};
     pub use gasket_storage::{EventStore, SqliteStore, StoreError};
 }
 

@@ -498,7 +498,7 @@ ProcessedHistory {
 
 ---
 
-## 5. Memory Structures
+## 5. Memory and Wiki Structures
 
 ### 5.1 MemoryMeta
 
@@ -571,41 +571,73 @@ MemoryHit {
 }
 ```
 
-### 5.5 MemoryProvider Trait
+### 5.5 TokenBudget
 
-> **Source**: `gasket-engine::agent::memory_provider`
+> **Source**: `gasket-storage::wiki::types`
 
-Narrow interface decoupling HistoryCoordinator from MemoryManager.
+Token budget configuration for wiki context injection. Defines the maximum token budget for different phases of context loading.
 
 ```rust
-#[async_trait]
-pub trait MemoryProvider: Send + Sync {
-    async fn load_for_context(&self, query: &MemoryQuery) -> Result<MemoryContext>;
-    async fn search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>>;
-    async fn update_from_event(&self, event: &SessionEvent) -> Result<()>;
-    async fn create_memory(&self, scenario, filename, title, tags, frequency, content) -> Result<()>;
-    async fn update_memory(&self, scenario, filename, content) -> Result<()>;
-    async fn delete_memory(&self, scenario, filename) -> Result<()>;
+TokenBudget {
+    bootstrap: usize,                     // Phase 1 budget (profile + hot pages, default 1500)
+    scenario: usize,                      // Phase 2 budget (scenario search results, default 1500)
+    on_demand: usize,                     // Phase 3 budget (on-demand semantic search fill, default 1000)
+    total_cap: usize,                     // Total cap (default 4000)
+}
+// Total budget = min(total_cap, bootstrap + scenario + on_demand)
+```
+
+### 5.6 Frequency
+
+> **Source**: `gasket-storage::wiki::types`
+
+Wiki page access frequency classification. Tracks how recently and often a page is accessed, influencing retention decisions and retrieval ordering. Higher frequency pages are prioritized in search results and protected from cleanup.
+
+```rust
+enum Frequency {
+    Hot,       // Frequently accessed (within 24 hours), rank = 3
+    Warm,      // Moderately accessed (within 7 days), rank = 2
+    Cold,      // Rarely accessed (within 30 days), rank = 1
+    Archived,  // Not accessed recently (older than 30 days), rank = 0, default
+}
+// Implements: Display, FromStr, Ord, Default (defaults to Archived)
+```
+
+### 5.7 DecayCandidate
+
+> **Source**: `gasket-storage::wiki::page_store`
+
+Candidate page for frequency decay. Used in wiki page lifecycle management for automatic decay operations.
+
+```rust
+DecayCandidate {
+    path: String,                         // Wiki page path (primary key)
+    frequency: Frequency,                 // Current frequency tier
+    last_accessed: String,                // Last access timestamp (RFC 3339)
 }
 ```
 
-### 5.6 MemoryContext
+### 5.8 WikiPageInput
 
-> **Source**: `gasket-engine::agent::memory_manager`
+> **Source**: `gasket-storage::wiki::page_store`
 
-Result of three-phase loading.
+Input struct for upserting a wiki page. Used for atomic SQLite UPSERT operations.
 
 ```rust
-MemoryContext {
-    memories: Vec<MemoryFile>,            // Loaded memory files (within token budget)
-    tokens_used: usize,                   // Actual tokens used
-    phase_breakdown: PhaseBreakdown,      // Per-phase token breakdown
-}
-
-PhaseBreakdown {
-    bootstrap_tokens: usize,              // Phase 1 (profile + active)
-    scenario_tokens: usize,               // Phase 2 (scenario hot/warm)
-    on_demand_tokens: usize,              // Phase 3 (search fill)
+WikiPageInput<'a> {
+    path: &'a str,                        // Page path (primary key)
+    title: &'a str,                       // Page title
+    page_type: &'a str,                   // Page type
+    category: Option<&'a str>,            // Optional category
+    tags: &'a str,                        // Tags (JSON array string)
+    content: &'a str,                     // Markdown body
+    source_count: u32,                    // Source document count
+    confidence: f64,                      // Confidence score (0.0–1.0)
+    checksum: Option<&'a str>,            // Content checksum
+    frequency: Frequency,                 // Access frequency tier
+    access_count: u64,                    // Cumulative access count
+    last_accessed: Option<String>,        // Last access timestamp (RFC 3339)
+    file_mtime: i64,                      // Disk file modification time (Unix epoch seconds)
 }
 ```
 
@@ -708,31 +740,54 @@ InjectionReport {
 │   ├── embedding BLOB       f32 vector
 │   └── created_at TEXT
 │
-│  ─── Memory System ───
+│  ─── Wiki Knowledge System ───
 │
-├── memory_metadata          Memory file metadata (replaces old _INDEX.md)
-│   ├── id TEXT              Memory ID (mem_xxx)
-│   ├── path TEXT            Filename (mem_xxx.md)
-│   ├── scenario TEXT        Scenario directory name
+├── wiki_pages               Wiki pages (single source of truth, content in SQLite)
+│   ├── path TEXT PK         Page path (primary key)
+│   ├── title TEXT NOT NULL  Page title
+│   ├── type TEXT NOT NULL   Page type
+│   ├── category TEXT        Optional category
+│   ├── tags TEXT            Tags (JSON array)
+│   ├── content TEXT         Markdown body
+│   ├── created TEXT NOT NULL
+│   ├── updated TEXT NOT NULL
+│   ├── source_count INTEGER DEFAULT 0   Source document count
+│   ├── confidence REAL DEFAULT 1.0      Confidence score
+│   ├── checksum TEXT        Content checksum
+│   ├── frequency TEXT DEFAULT 'warm'     "hot" | "warm" | "cold" | "archived"
+│   ├── access_count INTEGER DEFAULT 0   Access count
+│   ├── last_accessed TEXT   Last access timestamp
+│   └── file_mtime INTEGER   Disk file modification time (Unix epoch seconds)
+│   Indexes: idx_wiki_pages_type, idx_wiki_pages_category,
+│            idx_wiki_pages_updated, idx_wiki_pages_frequency,
+│            idx_wiki_pages_last_accessed
+│
+├── raw_sources              Raw source documents
+│   ├── id TEXT PK           Source ID
+│   ├── path TEXT NOT NULL   File path
+│   ├── format TEXT NOT NULL File format
+│   ├── ingested INTEGER DEFAULT 0       Whether ingested
+│   ├── ingested_at TEXT     Ingestion timestamp
 │   ├── title TEXT           Title
-│   ├── memory_type TEXT     Type (default "note")
-│   ├── frequency TEXT       "hot" | "warm" | "cold" | "archived"
-│   ├── tags TEXT            JSON array (json_each queries)
-│   ├── tokens INTEGER       Token count
-│   ├── updated TEXT         Update time
-│   ├── last_accessed TEXT   Last access time
-│   ├── file_mtime BIGINT    File modification time (nanoseconds)
-│   └── PRIMARY KEY (scenario, path)
+│   ├── metadata TEXT        Metadata (JSON)
+│   └── created TEXT NOT NULL
+│   Index: idx_raw_sources_ingested
 │
-├── memory_embeddings        Memory embedding vectors
-│   ├── memory_path TEXT PK  File path
-│   ├── scenario TEXT        Scenario
-│   ├── tags TEXT            JSON array
-│   ├── frequency TEXT       Frequency
-│   ├── embedding BLOB       f32 vector
-│   ├── token_count INTEGER  Token count
-│   ├── created_at TEXT
-│   └── updated_at TEXT
+├── wiki_relations           Wiki page relations
+│   ├── from_page TEXT NOT NULL
+│   ├── to_page TEXT NOT NULL
+│   ├── relation TEXT NOT NULL           Relation type
+│   ├── confidence REAL DEFAULT 1.0      Confidence score
+│   ├── created TEXT NOT NULL
+│   └── PRIMARY KEY (from_page, to_page, relation)
+│
+├── wiki_log                 Wiki operation log
+│   ├── id INTEGER PK AUTOINCREMENT
+│   ├── action TEXT NOT NULL             Action type
+│   ├── target TEXT          Action target
+│   ├── detail TEXT          Action details
+│   └── created TEXT NOT NULL DEFAULT (datetime('now'))
+│   Index: idx_wiki_log_action
 │
 │  ─── General Storage ───
 │

@@ -374,31 +374,31 @@ mod tests {
     #[test]
     fn test_extract_frontmatter_raw_basic() {
         let content = "---\nname: Test Job\ncron: \"0 9 * * *\"\n---\n\nHello World";
-        let (yaml, body) = gasket_storage::memory::extract_frontmatter_raw(content).unwrap();
+        let (yaml, body) = super::parser::extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Test Job"));
         assert_eq!(body, "Hello World");
     }
     #[test]
     fn test_extract_frontmatter_raw_with_crlf() {
         let content = "---\r\nname: Test\r\ncron: \"0 9 * * *\"\r\n---\r\n\r\nBody content";
-        let (yaml, body) = gasket_storage::memory::extract_frontmatter_raw(content).unwrap();
+        let (yaml, body) = super::parser::extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Test"));
         assert_eq!(body, "Body content");
     }
     #[test]
     fn test_extract_frontmatter_raw_with_code_block() {
         let content = "---\nname: Code Job\ncron: \"*/5 * * * *\"\n---\n\nSome code:\n```\n---\n```\n\nMore content";
-        let (yaml, body) = gasket_storage::memory::extract_frontmatter_raw(content).unwrap();
+        let (yaml, body) = super::parser::extract_frontmatter_raw(content).unwrap();
         assert!(yaml.contains("name: Code Job"));
         assert!(body.contains("---"));
     }
     #[test]
     fn test_extract_frontmatter_raw_missing_start() {
-        assert!(gasket_storage::memory::extract_frontmatter_raw("No frontmatter here").is_err());
+        assert!(super::parser::extract_frontmatter_raw("No frontmatter here").is_err());
     }
     #[test]
     fn test_extract_frontmatter_raw_missing_end() {
-        assert!(gasket_storage::memory::extract_frontmatter_raw(
+        assert!(super::parser::extract_frontmatter_raw(
             "---\nname: Test\nNo end delimiter"
         )
         .is_err());

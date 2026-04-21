@@ -84,36 +84,36 @@ Like a notebook getting full - tear out old pages, keep a summary, continue writ
 
 ---
 
-## Memory System (Long-term Memory)
+## Memory System (Long-term Memory) — Wiki Knowledge Base
 
 ### What is Memory?
 
-Unlike history (automatic recording), **memory is curated knowledge**:
+Unlike history (automatic recording), **memory is curated knowledge** stored in the Wiki system:
 
 ```mermaid
 flowchart TB
-    subgraph Memory["📚 Long-term Memory"]
+    subgraph Memory["📚 Wiki Knowledge Base"]
         direction TB
-        P["👤 Profile<br/>Who you are"] 
+        P["👤 Profile<br/>Who you are"]
         K["🧠 Knowledge<br/>What AI learned"]
         D["✅ Decisions<br/>Choices made"]
         A["📋 Active<br/>Current focus"]
         E["📖 Episodes<br/>Experiences"]
         R["🔗 Reference<br/>External info"]
     end
-    
+
     subgraph History["📒 History"]
         H["Today's chat"]
     end
-    
+
     History -.->|Extract important info| Memory
 ```
 
-### Six Drawers of Memory
+### Six Categories of Wiki Pages
 
 ```mermaid
 mindmap
-  root((Memory))
+  root((Wiki Pages))
     Profile
       ::icon(👤)
       Your name
@@ -146,8 +146,8 @@ mindmap
       Documentation
 ```
 
-| Drawer | Purpose | Example |
-|--------|---------|---------|
+| Category | Purpose | Example |
+|----------|---------|---------|
 | Profile | Who you are | "User is a Rust developer, prefers concise answers" |
 | Active | Current work | "Working on Project X, deadline next Friday" |
 | Knowledge | Learned facts | "Rust uses ownership instead of GC" |
@@ -157,18 +157,20 @@ mindmap
 
 ### Memory Types: Note vs Skill
 
-Memories have a `memory_type` field that controls how they are loaded and prioritized:
+Wiki pages have a `memory_type` field that controls how they are loaded and prioritized:
 
 | Type | Purpose | Example |
 |------|---------|---------|
 | `note` | Facts, observations, learned knowledge | "User prefers dark mode" |
 | `skill` | Procedures, workflows, reusable patterns | "How to deploy a Rust service" |
 
-**Skill memories are prioritized during loading** - they are loaded before `note` memories within each phase, ensuring procedural knowledge is always available.
+**Skill pages are prioritized during loading** - they are loaded before `note` pages within each phase, ensuring procedural knowledge is always available.
 
 ---
 
-### Memory Temperature
+### Memory Temperature (Frequency)
+
+Page access frequency is tracked by the `Frequency` enum (`gasket_storage::wiki::types::Frequency`) with four levels:
 
 ```mermaid
 flowchart LR
@@ -176,33 +178,39 @@ flowchart LR
         H1[User name]
         H2[Current project]
     end
-    
+
     subgraph Warm["🌡️ Warm - Often Loaded"]
         W1[Common preferences]
         W2[Relevant knowledge]
     end
-    
+
     subgraph Cold["🧊 Cold - Search to Load"]
         C1[Old projects]
         C2[Background knowledge]
     end
-    
+
     subgraph Archive["📦 Archived - Not Loaded"]
         A1[Very old info]
         A2[Superseded data]
     end
-    
+
     Hot --> Warm --> Cold --> Archive
 ```
 
-| Temperature | Load Strategy | Access Frequency | Decay Threshold |
-|-------------|---------------|------------------|-----------------|
+| Frequency | Load Strategy | Access Frequency | Decay Threshold |
+|-----------|---------------|------------------|-----------------|
 | Hot | Always in context | Every conversation | → Warm after 7 days |
 | Warm | If topic matches | Often | → Cold after 30 days |
 | Cold | Search to find | Rarely | → Archived after 90 days |
 | Archived | Not loaded unless asked | Almost never | — |
 
+Frequency decay is managed by `FrequencyManager` (`engine/src/wiki/lifecycle.rs`) and executed via `WikiDecayTool` (tool name: `wiki_decay`) as a system cron job.
+
+The following paths are **exempt from decay** and always stay Hot: `profile/*`, `entities/people/*`, `sops/*`, `sources/*`, and any path containing `/decisions/`.
+
 ### Three-Phase Memory Loading
+
+Token budgets are defined by `TokenBudget` (`gasket_storage::wiki::TokenBudget`) with the same defaults:
 
 ```mermaid
 flowchart TB
@@ -229,14 +237,14 @@ flowchart TB
 ```
 
 1. **Bootstrap** (must have): Profile + current focus
-2. **Scenario-aware** (likely relevant): Topic-matched memories
+2. **Scenario-aware** (likely relevant): Topic-matched wiki pages
 3. **On-demand** (search for): Specific query matching
 
 **Hard limit**: ~4000 tokens total. Results are injected as a **User Message** (not appended to the system prompt) to preserve Prompt Cache.
 
 ---
 
-## Memory vs History: Complete Comparison
+## Memory (Wiki) vs History: Complete Comparison
 
 ```mermaid
 flowchart TB
@@ -254,10 +262,10 @@ flowchart TB
             H4["Survives restart"]
         end
         
-        subgraph MemCol["📚 Memory"]
+        subgraph MemCol["📚 Memory (Wiki)"]
             M1["Curated storage"]
             M2["Long-term (forever)"]
-            M3["Structured knowledge"]
+            M3["Structured wiki pages"]
             M4["Survives restart"]
         end
     end
@@ -266,13 +274,13 @@ flowchart TB
     User --> MemCol
 ```
 
-| Aspect | History | Memory |
+| Aspect | History | Memory (Wiki) |
 |--------|---------|--------|
 | **What** | Conversation log | Curated knowledge |
 | **When** | Automatic | Extracted/created manually |
 | **How long** | Forever (compacted) | Forever |
-| **Format** | Raw messages | Structured files |
-| **Storage** | SQLite (`session_events`) | Markdown files |
+| **Format** | Raw messages | Structured wiki pages |
+| **Storage** | SQLite (`session_events`) | SQLite (wiki tables) |
 | **Persistence** | Permanent | Permanent |
 | **Growth** | Linear (every message) | Curated (important only) |
 
@@ -290,10 +298,9 @@ flowchart TB
         HC[HistoryCoordinator]
     end
     
-    subgraph MemSys["Memory System"]
-        MS[(MetadataStore)]
-        ES[(EmbeddingStore)]
-        FS[(FileMemoryStore)]
+    subgraph MemSys["Wiki Knowledge System"]
+        WS[(Wiki Store<br/>SQLite)]
+        TI[(Search Index<br/>Tantivy)]
     end
     
     subgraph HistSys["History System"]
@@ -301,9 +308,8 @@ flowchart TB
     end
     
     Query --> HC
-    HC -->|Long-term memory| MS
-    MS --> ES
-    MS --> FS
+    HC -->|Long-term memory| WS
+    WS --> TI
     HC -->|Short-term history| SE
     
     HC -->|Combine results| Response
@@ -324,12 +330,12 @@ flowchart TB
 User: I'm Alice
 
 [Session saves to History]
-[AI extracts to Memory - Profile]
+[AI extracts to Wiki - Profile page]
 
 --- Next conversation ---
 
 User: What's my name?
-Session: [Loads Profile from Memory]
+Session: [Loads Profile from Wiki]
 AI: You're Alice!
 ```
 
@@ -338,11 +344,11 @@ AI: You're Alice!
 ```
 Session 1:
 User: Working on Project X using Rust
-[Saved to Active memory]
+[Saved to Active wiki page]
 
 Session 2 (next day):
 User: Any progress?
-Session: [Loads Active memory]
+Session: [Loads Active wiki page]
 AI: Last time we were working on Project X in Rust...
 ```
 
@@ -351,8 +357,8 @@ AI: Last time we were working on Project X in Rust...
 ```
 User: How do I handle errors in Rust?
 
-Session: 
-  1. [Semantic search Memory - Knowledge]
+Session:
+  1. [Semantic search Wiki - Knowledge]
   2. [Found: "Rust error handling patterns"]
   3. [Load into context]
 
@@ -367,10 +373,10 @@ AI: Based on what we discussed before about Rust...
 A: No. History remembers recent conversations. Only important information is extracted to long-term Memory.
 
 **Q: How do I make AI remember something?**
-A: Explicitly ask: "Remember that I prefer dark mode" or edit `~/.gasket/memory/profile/preferences.md` directly.
+A: Explicitly ask: "Remember that I prefer dark mode" or use the `memorize` tool / Wiki CLI to manage pages.
 
 **Q: Can I delete memories?**
-A: Yes. Delete the corresponding `.md` file in `~/.gasket/memory/`.
+A: Yes. Use the `wiki_write` tool to remove pages, or manage them via the Wiki CLI (`gasket wiki`).
 
 **Q: Where is data stored?**
-A: History in `~/.gasket/gasket.db` (SQLite), Memory in `~/.gasket/memory/` (Markdown files).
+A: History in `~/.gasket/gasket.db` (SQLite), Wiki knowledge in `~/.gasket/wiki/` (SQLite with optional Tantivy search index).

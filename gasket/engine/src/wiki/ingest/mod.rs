@@ -2,7 +2,6 @@
 
 pub mod dedup;
 pub mod extractor;
-pub mod integrator;
 pub mod parser;
 
 pub use parser::{
@@ -11,7 +10,5 @@ pub use parser::{
 };
 
 pub use extractor::{ExtractedItem, ExtractedItemType, ExtractionResult, KnowledgeExtractor};
-
-pub use integrator::{CostEstimate, IngestConfig, IngestReport, IngestTier, WikiIntegrator};
 
 pub use dedup::{DedupResult, SemanticDeduplicator};

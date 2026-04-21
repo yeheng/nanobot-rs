@@ -1,5 +1,15 @@
 use anyhow::Result;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
+
+use super::types::Frequency;
+
+/// A candidate for frequency decay.
+#[derive(Debug, Clone)]
+pub struct DecayCandidate {
+    pub path: String,
+    pub frequency: Frequency,
+    pub last_accessed: String,
+}
 
 /// Input for upserting a wiki page into SQLite.
 #[derive(Debug)]
@@ -13,6 +23,14 @@ pub struct WikiPageInput<'a> {
     pub source_count: u32,
     pub confidence: f64,
     pub checksum: Option<&'a str>,
+    /// Machine runtime state: access frequency tier.
+    pub frequency: Frequency,
+    /// Machine runtime state: total access count.
+    pub access_count: u64,
+    /// Machine runtime state: last access timestamp (RFC3339).
+    pub last_accessed: Option<String>,
+    /// Machine runtime state: disk file mtime (Unix epoch seconds).
+    pub file_mtime: i64,
 }
 
 /// SQLite-backed wiki page store. Single source of truth.
@@ -31,8 +49,8 @@ impl WikiPageStore {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 type = excluded.type,
@@ -42,7 +60,10 @@ impl WikiPageStore {
                 updated = excluded.updated,
                 source_count = excluded.source_count,
                 confidence = excluded.confidence,
-                checksum = excluded.checksum
+                checksum = excluded.checksum,
+                frequency = excluded.frequency,
+                access_count = excluded.access_count,
+                last_accessed = excluded.last_accessed
             "#,
         )
         .bind(page.path)
@@ -53,9 +74,13 @@ impl WikiPageStore {
         .bind(page.content)
         .bind(&now)
         .bind(&now)
-        .bind(page.source_count)
+        .bind(page.source_count as i64)
         .bind(page.confidence)
         .bind(page.checksum)
+        .bind(page.frequency.to_string())
+        .bind(page.access_count as i64)
+        .bind(page.last_accessed.as_deref())
+        .bind(page.file_mtime as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -63,7 +88,7 @@ impl WikiPageStore {
 
     pub async fn get(&self, path: &str) -> Result<Option<PageRow>> {
         let row = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE path = $1"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE path = $1"
         )
         .bind(path)
         .fetch_optional(&self.pool)
@@ -89,7 +114,7 @@ impl WikiPageStore {
 
     pub async fn list_by_type(&self, page_type: &str) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
         )
         .bind(page_type)
         .fetch_all(&self.pool)
@@ -99,11 +124,50 @@ impl WikiPageStore {
 
     pub async fn list_all(&self) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum FROM wiki_pages ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages ORDER BY updated DESC"
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Get decay candidates: pages whose last_accessed is older than `days` and
+    /// are not already archived.
+    pub async fn get_decay_candidates(&self, days: i64) -> Result<Vec<DecayCandidate>> {
+        let sql = format!(
+            "SELECT path, frequency, last_accessed
+             FROM wiki_pages
+             WHERE frequency != 'archived'
+               AND last_accessed IS NOT NULL
+               AND last_accessed != ''
+               AND datetime(last_accessed) < datetime('now', '-{} days')",
+            days
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let candidates: Vec<_> = rows
+            .into_iter()
+            .map(|row| {
+                let freq_str: String = row.get("frequency");
+                DecayCandidate {
+                    path: row.get("path"),
+                    frequency: Frequency::from_str_lossy(&freq_str),
+                    last_accessed: row.get("last_accessed"),
+                }
+            })
+            .collect();
+        Ok(candidates)
+    }
+
+    /// Update only the frequency of a page (used by decay).
+    pub async fn update_frequency(&self, path: &str, frequency: Frequency) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE wiki_pages SET frequency = ? WHERE path = ?"
+        )
+        .bind(frequency.to_string())
+        .bind(path)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -121,4 +185,8 @@ pub struct PageRow {
     pub source_count: i64,
     pub confidence: f64,
     pub checksum: Option<String>,
+    pub frequency: String,
+    pub access_count: i64,
+    pub last_accessed: Option<String>,
+    pub file_mtime: i64,
 }

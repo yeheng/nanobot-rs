@@ -62,6 +62,11 @@ mindmap
       ::icon(🧠)
       Search memories
       Create memories
+    Wiki
+      ::icon(📚)
+      Search wiki
+      Read/write pages
+      Decay and refresh
     Schedule
       ::icon(⏰)
       Create cron jobs
@@ -170,8 +175,6 @@ flowchart LR
 |------|---------|---------|
 | `memory_search` | Search long-term memory | "What did I learn about DB?" |
 | `memorize` | Create new memory | "Remember my API key is..." |
-| `memory_decay` | Downgrade stale memories | Automated frequency decay |
-| `memory_refresh` | Reindex memory files | Sync or rebuild memory index |
 
 The `memorize` tool accepts a `memory_type` parameter:
 - `"note"` (default) - Facts, observations, learned knowledge
@@ -191,6 +194,46 @@ sequenceDiagram
     Store-->>Tool: OK
     Tool-->>AI: Memory created
 ```
+
+### 5.1 Wiki Tools
+
+Wiki tools provide structured knowledge management powered by Tantivy BM25 full-text search and SQLite storage:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI
+    participant W as Wiki Tool
+    participant Store as SQLite + Tantivy
+
+    U->>AI: Search for Rust ownership info
+
+    AI->>W: wiki_search("Rust ownership")
+    W->>Store: Tantivy BM25 search
+    Store-->>W: Matching wiki pages
+    W-->>AI: Search results list
+
+    AI->>W: wiki_read("rust/ownership")
+    W->>Store: Read page details
+    Store-->>W: Full Markdown content
+    W-->>AI: Page content
+
+    AI-->>U: Based on the wiki, Rust ownership means...
+
+    U->>AI: Save this summary to the knowledge base
+    AI->>W: wiki_write("rust/summary", ...)
+    W->>Store: Write page + update index
+    Store-->>W: Saved
+    W-->>AI: Page created
+```
+
+| Tool | Purpose | Parameters |
+|------|---------|------------|
+| `wiki_search` (`WikiSearchTool`) | Search wiki pages using Tantivy BM25 | `query` (required), `limit` (optional, default 10) |
+| `wiki_write` (`WikiWriteTool`) | Write/update a wiki page | `path`, `title`, `content` (required), `page_type` (optional, default `"topic"`), `tags` (optional array) |
+| `wiki_read` (`WikiReadTool`) | Read a wiki page by path | `path` (required). Returns full Markdown content with metadata. |
+| `wiki_decay` (`WikiDecayTool`) | Run automated frequency decay on wiki pages | No parameters required. Zero LLM cost. Returns summary of scanned/decayed/errored pages. |
+| `wiki_refresh` (`WikiRefreshTool`) | Sync on-disk Markdown files into SQLite and Tantivy | `action`: `"sync"` (incremental), `"reindex"` (full rebuild), `"stats"` (statistics) |
 
 ### 6. Schedule Tools
 
@@ -229,25 +272,27 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     Input["User Input"] --> Think["AI Thinking"]
-    
+
     Think --> Decision{"Need tool?"}
-    
+
     Decision -->|Yes| Which{"Which tool?"}
     Decision -->|No| Direct["Direct Answer"]
-    
+
     Which -->|File| FileTool["Read/Write File"]
     Which -->|Info| WebTool["Web Search"]
     Which -->|Command| ExecTool["Execute Command"]
     Which -->|Memory| MemTool["Search Memory"]
-    
+    Which -->|Knowledge| WikiTool["Search Wiki"]
+
     FileTool --> Result["Tool Result"]
     WebTool --> Result
     ExecTool --> Result
     MemTool --> Result
-    
+    WikiTool --> Result
+
     Result --> ThinkAgain["Think Again"]
     ThinkAgain --> Decision
-    
+
     Direct --> Output["Final Response"]
 ```
 
@@ -318,13 +363,16 @@ flowchart TB
         T4["exec"]
         T5["spawn"]
         T6["memory_search"]
-        T7["memory_decay"]
-        T8["memory_refresh"]
-        T9["history_query"]
-        T10["script"]
+        T7["wiki_search"]
+        T8["wiki_write"]
+        T9["wiki_read"]
+        T10["wiki_decay"]
+        T11["wiki_refresh"]
+        T12["history_query"]
+        T13["script"]
         TN["...more"]
     end
-    
+
     Kernel -->|Query| Registry
     Registry -->|Return list| Kernel
     Kernel -->|Select| Selected["Appropriate tools"]

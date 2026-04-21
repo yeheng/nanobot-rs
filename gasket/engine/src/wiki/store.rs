@@ -1,5 +1,5 @@
 use anyhow::Result;
-use gasket_storage::wiki::WikiPageStore;
+use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -18,6 +18,16 @@ impl PageStore {
             db: WikiPageStore::new(pool),
             wiki_root,
         }
+    }
+
+    /// Get the wiki root directory.
+    pub fn wiki_root(&self) -> &PathBuf {
+        &self.wiki_root
+    }
+
+    /// Get a reference to the underlying `WikiPageStore`.
+    pub fn db(&self) -> &WikiPageStore {
+        &self.db
     }
 
     /// Ensure wiki directory structure exists
@@ -61,6 +71,14 @@ impl PageStore {
                 .unwrap_or_default(),
             source_count: row.source_count as u32,
             confidence: row.confidence,
+            frequency: Frequency::from_str_lossy(&row.frequency),
+            access_count: row.access_count as u64,
+            last_accessed: row
+                .last_accessed
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc)),
+            file_mtime: row.file_mtime,
         })
     }
 
@@ -79,6 +97,10 @@ impl PageStore {
                 source_count: page.source_count,
                 confidence: page.confidence,
                 checksum: checksum.as_deref(),
+                frequency: page.frequency,
+                access_count: page.access_count,
+                last_accessed: page.last_accessed.map(|dt| dt.to_rfc3339()),
+                file_mtime: page.file_mtime,
             })
             .await?;
 
@@ -120,6 +142,13 @@ impl PageStore {
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_default(),
                 confidence: r.confidence,
+                frequency: Frequency::from_str_lossy(&r.frequency),
+                access_count: r.access_count as u64,
+                last_accessed: r
+                    .last_accessed
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc)),
             })
             .collect())
     }

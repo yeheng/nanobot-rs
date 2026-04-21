@@ -18,7 +18,7 @@ use gasket_engine::session::{AgentSession, ContextCompactor};
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::ContextTool;
-use gasket_engine::tools::MemoryDecayTool;
+use gasket_engine::tools::WikiDecayTool;
 use gasket_engine::tools::{build_tool_registry, CronTool, Tool, ToolContext, ToolRegistryConfig};
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
 use gasket_engine::SubagentSpawner;
@@ -197,41 +197,40 @@ pub async fn cmd_gateway() -> Result<()> {
             },
         ));
 
-        // MemoryRefreshTool (wiki-only) - only add if page_store is available
+        // Wiki tools (wiki-only) - only add if page_store is available
         if let Some(ref ps) = page_store {
+            if let Some(ref pi) = page_index {
+                ext.push((
+                    Box::new(gasket_engine::tools::WikiRefreshTool::new(ps.clone(), pi.clone())) as Box<dyn Tool>,
+                    ToolMetadata {
+                        display_name: "Wiki Refresh".to_string(),
+                        category: "system".to_string(),
+                        tags: vec![
+                            "wiki".to_string(),
+                            "refresh".to_string(),
+                            "index".to_string(),
+                        ],
+                        requires_approval: false,
+                        is_mutating: true,
+                    },
+                ));
+            }
+
             ext.push((
-                Box::new(gasket_engine::tools::MemoryRefreshTool::new(ps.clone())) as Box<dyn Tool>,
+                Box::new(WikiDecayTool::new(ps.clone())) as Box<dyn Tool>,
                 ToolMetadata {
-                    display_name: "Memory Refresh".to_string(),
+                    display_name: "Wiki Decay".to_string(),
                     category: "system".to_string(),
                     tags: vec![
-                        "memory".to_string(),
-                        "refresh".to_string(),
-                        "index".to_string(),
+                        "wiki".to_string(),
+                        "decay".to_string(),
+                        "maintenance".to_string(),
                     ],
                     requires_approval: false,
                     is_mutating: true,
                 },
             ));
         }
-
-        ext.push((
-            Box::new(MemoryDecayTool::new(
-                workspace.clone(),
-                sqlite_store.clone(),
-            )) as Box<dyn Tool>,
-            ToolMetadata {
-                display_name: "Memory Decay".to_string(),
-                category: "system".to_string(),
-                tags: vec![
-                    "memory".to_string(),
-                    "decay".to_string(),
-                    "maintenance".to_string(),
-                ],
-                requires_approval: false,
-                is_mutating: true,
-            },
-        ));
 
         // Context management tool — uses the same SqliteStore as the session
         let ctx_sqlite = Arc::new(memory_store.sqlite_store().clone());

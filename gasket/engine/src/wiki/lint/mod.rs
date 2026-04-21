@@ -6,10 +6,8 @@
 //!
 //! The linter produces a `LintReport` and can auto-fix simple issues.
 
-pub mod semantic;
 pub mod structural;
 
-pub use semantic::{SemanticIssue, SemanticIssueType};
 pub use structural::{Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig};
 
 use std::sync::Arc;
@@ -18,8 +16,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use gasket_providers::LlmProvider;
-
 use crate::wiki::store::PageStore;
 
 /// Complete lint report.
@@ -27,8 +23,6 @@ use crate::wiki::store::PageStore;
 pub struct LintReport {
     /// Structural issues (fast checks).
     pub structural: Vec<StructuralIssue>,
-    /// Semantic issues (LLM-driven checks).
-    pub semantic: Vec<SemanticIssue>,
     /// Total pages checked.
     pub pages_checked: usize,
 }
@@ -36,7 +30,7 @@ pub struct LintReport {
 impl LintReport {
     /// Total number of issues found.
     pub fn total_issues(&self) -> usize {
-        self.structural.len() + self.semantic.len()
+        self.structural.len()
     }
 
     /// Whether any high-severity issues exist.
@@ -70,19 +64,6 @@ impl LintReport {
             }
         }
 
-        if !self.semantic.is_empty() {
-            out.push_str(&format!("\nSemantic ({} issues):\n", self.semantic.len()));
-            for issue in &self.semantic {
-                let paths = issue.pages.join(", ");
-                out.push_str(&format!(
-                    "  {} — {}: {}\n",
-                    issue.issue_type.as_str(),
-                    paths,
-                    issue.description
-                ));
-            }
-        }
-
         out
     }
 }
@@ -104,56 +85,23 @@ impl FixReport {
     }
 }
 
-/// Provide a string representation for SemanticIssueType.
-impl SemanticIssueType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Contradiction => "contradiction",
-            Self::StaleClaim => "stale_claim",
-        }
-    }
-}
-
-/// Wiki linter — runs structural and semantic checks.
+/// Wiki linter — runs structural checks only.
 pub struct WikiLinter {
     store: Arc<PageStore>,
-    provider: Option<Arc<dyn LlmProvider>>,
-    model: Option<String>,
-    semantic_enabled: bool,
     structural_config: StructuralLintConfig,
 }
 
 impl WikiLinter {
-    /// Create a new linter with structural checks only (no LLM).
+    /// Create a new linter with structural checks only.
     pub fn new(store: Arc<PageStore>) -> Self {
         Self {
             store,
-            provider: None,
-            model: None,
-            semantic_enabled: false,
             structural_config: StructuralLintConfig::default(),
         }
     }
 
-    /// Create with LLM support for semantic checks.
-    pub fn with_llm(
-        store: Arc<PageStore>,
-        provider: Arc<dyn LlmProvider>,
-        model: String,
-        semantic_enabled: bool,
-    ) -> Self {
-        Self {
-            store,
-            provider: Some(provider),
-            model: Some(model),
-            semantic_enabled,
-            structural_config: StructuralLintConfig::default(),
-        }
-    }
-
-    /// Run all lint checks and produce a report.
+    /// Run lint checks and produce a report.
     pub async fn lint(&self) -> Result<LintReport> {
-        // Structural checks (always run)
         info!("Running structural lint...");
         let structural =
             structural::run_structural_lint(&self.store, &self.structural_config).await?;
@@ -161,28 +109,8 @@ impl WikiLinter {
         let summaries = self.store.list(Default::default()).await?;
         let pages_checked = summaries.len();
 
-        // Semantic checks (optional, requires LLM)
-        let semantic = if self.semantic_enabled {
-            if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
-                info!("Running semantic lint...");
-                match semantic::run_semantic_lint(&self.store, provider, model).await {
-                    Ok(issues) => issues,
-                    Err(e) => {
-                        tracing::warn!("Semantic lint failed: {}", e);
-                        vec![]
-                    }
-                }
-            } else {
-                tracing::debug!("Semantic lint skipped: no LLM provider configured");
-                vec![]
-            }
-        } else {
-            vec![]
-        };
-
         let report = LintReport {
             structural,
-            semantic,
             pages_checked,
         };
 

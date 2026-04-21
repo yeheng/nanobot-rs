@@ -12,9 +12,10 @@ use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{
-    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemoryRefreshTool,
-    MemorySearchTool, ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry,
-    WebFetchTool, WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemorySearchTool,
+    ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry, WebFetchTool,
+    WebSearchTool, WikiDecayTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
+    WriteFileTool,
 };
 
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
@@ -233,15 +234,63 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             },
         );
 
-        // Memory refresh tool
+        // Unified wiki tools (require both page_store and page_index)
+        if let Some(ref index) = page_index {
+            tools.register_with_metadata(
+                Box::new(WikiSearchTool::new(store.clone(), index.clone())),
+                ToolMetadata {
+                    display_name: "Wiki Search".to_string(),
+                    category: "memory".to_string(),
+                    tags: vec!["search".to_string(), "wiki".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            );
+
+            tools.register_with_metadata(
+                Box::new(WikiWriteTool::new(store.clone(), index.clone())),
+                ToolMetadata {
+                    display_name: "Wiki Write".to_string(),
+                    category: "memory".to_string(),
+                    tags: vec!["write".to_string(), "wiki".to_string()],
+                    requires_approval: false,
+                    is_mutating: true,
+                },
+            );
+
+            tools.register_with_metadata(
+                Box::new(WikiRefreshTool::new(store.clone(), index.clone())),
+                ToolMetadata {
+                    display_name: "Wiki Refresh".to_string(),
+                    category: "memory".to_string(),
+                    tags: vec!["refresh".to_string(), "wiki".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            );
+        }
+
+        // Wiki read tool (only needs page_store)
         tools.register_with_metadata(
-            Box::new(MemoryRefreshTool::new(store.clone())),
+            Box::new(WikiReadTool::new(store.clone())),
             ToolMetadata {
-                display_name: "Memory Refresh".to_string(),
+                display_name: "Wiki Read".to_string(),
                 category: "memory".to_string(),
-                tags: vec!["refresh".to_string(), "memory".to_string()],
+                tags: vec!["read".to_string(), "wiki".to_string()],
                 requires_approval: false,
                 is_mutating: false,
+            },
+        );
+
+        // Wiki decay tool (downgrades stale pages)
+        tools.register_with_metadata(
+            Box::new(WikiDecayTool::new(store.clone())),
+            ToolMetadata {
+                display_name: "Wiki Decay".to_string(),
+                category: "memory".to_string(),
+                tags: vec!["decay".to_string(), "wiki".to_string()],
+                requires_approval: false,
+                is_mutating: true,
             },
         );
     }

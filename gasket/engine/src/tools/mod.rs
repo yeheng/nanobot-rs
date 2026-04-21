@@ -22,8 +22,8 @@ mod format;
 mod history_query;
 mod http;
 mod memorize;
-mod memory_decay;
-mod memory_refresh;
+mod wiki_decay;
+mod wiki_refresh;
 mod memory_search;
 mod message;
 mod registry;
@@ -33,6 +33,7 @@ mod spawn;
 mod spawn_parallel;
 mod web_fetch;
 mod web_search;
+mod wiki_tools;
 
 // Re-export tool trait and base types from gasket-types
 pub use gasket_types::{
@@ -50,8 +51,8 @@ pub use format::format_subagent_response;
 pub use history_query::HistoryQueryTool;
 pub use http::build_client_with_proxy;
 pub use memorize::MemorizeTool;
-pub use memory_decay::MemoryDecayTool;
-pub use memory_refresh::MemoryRefreshTool;
+pub use wiki_decay::WikiDecayTool;
+pub use wiki_refresh::WikiRefreshTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
@@ -61,3 +62,4 @@ pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
+pub use wiki_tools::{WikiReadTool, WikiSearchTool, WikiWriteTool};

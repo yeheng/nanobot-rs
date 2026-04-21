@@ -279,8 +279,8 @@ struct AgentSession {
     hooks: HookRegistry,                 // Extension points
     history_config: HistoryConfig,       // History loading config
     compactor: Option<ContextCompactor>, // Compression
-    memory_manager: Option<MemoryManager>, // Long-term memory
     indexing_service: Option<Arc<IndexingService>>, // Search indexing
+    wiki: Option<WikiComponents>,         // Wiki knowledge system
     pricing: Option<ModelPricing>,       // Cost calculation
     pending_done: TaskTracker,           // Graceful shutdown tracker
 }

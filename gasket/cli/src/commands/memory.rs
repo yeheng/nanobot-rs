@@ -1,18 +1,9 @@
 //! Memory and Wiki knowledge system commands.
 
 use anyhow::Result;
-use gasket_engine::memory::{
-    memory_base_dir, AutoIndexHandler, EmbeddingStore, FileMemoryStore, FrequencyManager,
-    MetadataStore, SqliteStore,
-};
 use gasket_engine::wiki::{slugify, PageFilter, PageStore, PageType, WikiLinter, WikiPage};
-#[cfg(feature = "local-embedding")]
-use gasket_engine::TextEmbedder;
-use gasket_engine::{Embedder, NoopEmbedder};
 use std::path::PathBuf;
-use tracing::info;
-#[cfg(feature = "local-embedding")]
-use tracing::warn;
+
 
 fn wiki_base_dir() -> PathBuf {
     dirs::home_dir()
@@ -20,102 +11,113 @@ fn wiki_base_dir() -> PathBuf {
         .expect("Could not find home directory")
 }
 
-/// Manually refresh memory files from disk, comparing mtime and size to detect changes.
-///
-/// Only processes files that have changed since the last sync.
-/// This is the unified memory refresh command (formerly `reindex` and `refresh`).
+/// Refresh wiki pages from Markdown files → SQLite → Tantivy.
 pub async fn cmd_memory_refresh() -> Result<()> {
-    println!("Refreshing memory files from disk...");
+    println!("Refreshing wiki from Markdown files...");
 
-    let base_dir = memory_base_dir();
-    if !base_dir.exists() {
-        println!("Memory directory does not exist: {}", base_dir.display());
+    let wiki_root = wiki_base_dir();
+    if !wiki_root.exists() {
+        println!("Wiki directory does not exist: {}", wiki_root.display());
         println!("Nothing to refresh.");
         return Ok(());
     }
 
-    let store = SqliteStore::new().await?;
-    let pool = store.pool();
+    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let ps = PageStore::new(store.pool(), wiki_root.clone());
 
-    // Use TextEmbedder if local-embedding feature is enabled, otherwise use NoopEmbedder
-    let embedder: Box<dyn Embedder> = {
-        #[cfg(feature = "local-embedding")]
-        {
-            match TextEmbedder::new() {
-                Ok(embedder) => {
-                    info!("Refresh using TextEmbedder (local-embedding enabled)");
-                    Box::new(embedder) as Box<dyn Embedder>
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to initialize TextEmbedder, falling back to NoopEmbedder: {}",
-                        e
-                    );
-                    Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
+    // Collect all .md files first (sync scan)
+    let files = collect_md_files(&wiki_root, &wiki_root)?;
+
+    // Sync all .md files
+    let mut synced = 0;
+    let mut errors = 0;
+    for (rel_str, full_path) in files {
+        let content = match tokio::fs::read_to_string(&full_path).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to read {}: {}", full_path.display(), e);
+                errors += 1;
+                continue;
+            }
+        };
+
+        match WikiPage::from_markdown(rel_str.clone(), &content) {
+            Ok(page) => {
+                if let Err(e) = ps.write(&page).await {
+                    tracing::warn!("Failed to write {}: {}", rel_str, e);
+                    errors += 1;
+                } else {
+                    synced += 1;
                 }
             }
+            Err(e) => {
+                tracing::warn!("Failed to parse {}: {}", rel_str, e);
+                errors += 1;
+            }
         }
-        #[cfg(not(feature = "local-embedding"))]
-        {
-            info!("Refresh using NoopEmbedder (local-embedding disabled)");
-            Box::new(NoopEmbedder::new(384)) as Box<dyn Embedder>
-        }
-    };
-
-    let metadata_store = MetadataStore::new(pool.clone());
-    let embedding_store = EmbeddingStore::new(pool.clone());
-    let auto_index = AutoIndexHandler::new(
-        metadata_store,
-        embedding_store,
-        base_dir.clone(),
-        embedder.into(),
-    );
-
-    let report = auto_index.refresh_all_files().await?;
-
-    println!("Refresh complete:");
-    println!("  {} files processed", report.processed);
-    println!("  {} files updated", report.updated);
-    println!("  {} files skipped (unchanged)", report.skipped);
-    if report.errors > 0 {
-        println!("  {} files with errors", report.errors);
     }
 
+    // Rebuild Tantivy index
+    let tantivy_dir = wiki_root.join(".tantivy");
+    if tantivy_dir.exists() {
+        match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
+            Ok(index) => {
+                let count = index.rebuild(&ps).await?;
+                println!("Tantivy index rebuilt with {} pages.", count);
+            }
+            Err(e) => {
+                println!("Tantivy rebuild skipped: {}", e);
+            }
+        }
+    }
+
+    println!("Refresh complete: {} synced, {} errors", synced, errors);
     Ok(())
 }
 
-/// Manually run memory frequency decay.
-///
-/// Scans all memories and demotes stale entries:
-/// - Hot → Warm (7 days without access)
-/// - Warm → Cold (30 days without access)
-/// - Cold → Archived (90 days without access)
-///
-/// Useful for manual maintenance or non-Gateway (CLI-only) usage.
-pub async fn cmd_memory_decay() -> Result<()> {
-    println!("Running memory frequency decay...");
+fn collect_md_files(root: &PathBuf, dir: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_md_files(root, &path)?);
+        } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+            let rel = path.strip_prefix(root)?;
+            let rel_str = {
+                let s = rel.to_string_lossy();
+                s.strip_suffix(".md").unwrap_or(&s).to_string()
+            };
+            files.push((rel_str, path));
+        }
+    }
+    Ok(files)
+}
 
-    let base_dir = memory_base_dir();
-    if !base_dir.exists() {
-        println!("Memory directory does not exist: {}", base_dir.display());
+/// Run wiki frequency decay (replaces memory decay).
+pub async fn cmd_memory_decay() -> Result<()> {
+    println!("Running wiki frequency decay...");
+
+    let wiki_root = wiki_base_dir();
+    if !wiki_root.exists() {
+        println!("Wiki directory does not exist: {}", wiki_root.display());
         println!("Nothing to decay.");
         return Ok(());
     }
 
-    let store = FileMemoryStore::new(base_dir);
-    let sqlite = SqliteStore::new().await?;
-    let metadata_store = MetadataStore::new(sqlite.pool().clone());
+    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let ps = PageStore::new(store.pool(), wiki_root);
 
-    let report = FrequencyManager::run_decay_batch(&store, &metadata_store).await?;
+    let report = gasket_engine::wiki::FrequencyManager::run_decay_batch(ps.db()).await?;
 
     println!("Decay complete:");
     println!("  {} candidates scanned", report.total_scanned);
-    println!("  {} memories decayed", report.decayed);
+    println!("  {} pages decayed", report.decayed);
     if report.errors > 0 {
         println!("  {} errors", report.errors);
     }
     if report.decayed == 0 {
-        println!("  All memories are fresh — no decay needed.");
+        println!("  All pages are fresh — no decay needed.");
     }
 
     Ok(())
@@ -124,7 +126,7 @@ pub async fn cmd_memory_decay() -> Result<()> {
 /// Initialize wiki directory structure and SQLite tables.
 pub async fn cmd_wiki_init() -> Result<()> {
     let wiki_root = wiki_base_dir();
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root.clone());
     ps.init_dirs().await?;
 
@@ -153,7 +155,7 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
     }
 
     let wiki_root = wiki_base_dir();
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
 
     // Ensure wiki tables exist
     gasket_engine::create_wiki_tables(&store.pool()).await?;
@@ -237,6 +239,41 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
     let cached = ps.rebuild_disk_cache().await?;
     println!("  {} disk cache files written", cached);
 
+    // Rebuild Tantivy index from SQLite
+    let tantivy_dir = wiki_root.join(".tantivy");
+    std::fs::create_dir_all(&tantivy_dir).ok();
+    match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
+        Ok(index) => {
+            let count = index.rebuild(&ps).await?;
+            println!("  Tantivy index rebuilt with {} pages", count);
+        }
+        Err(e) => {
+            println!("  Tantivy index rebuild skipped: {}", e);
+        }
+    }
+
+    // If no errors, remove empty memory directories
+    if errors == 0 {
+        let mut all_empty = true;
+        for (scenario, _) in &scenario_map {
+            let dir = memory_dir.join(scenario);
+            if dir.exists() {
+                let has_files = std::fs::read_dir(&dir)?.any(|e| {
+                    e.ok().map(|entry| entry.path().is_file()).unwrap_or(false)
+                });
+                if has_files {
+                    all_empty = false;
+                } else {
+                    std::fs::remove_dir(&dir).ok();
+                }
+            }
+        }
+        if all_empty {
+            std::fs::remove_dir(&memory_dir).ok();
+            println!("  Old memory directory removed");
+        }
+    }
+
     Ok(())
 }
 
@@ -248,7 +285,7 @@ pub async fn cmd_wiki_stats() -> Result<()> {
         return Ok(());
     }
 
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let all = ps.list(PageFilter::default()).await?;
@@ -282,7 +319,7 @@ pub async fn cmd_wiki_ingest(path: &str, tier: &str) -> Result<()> {
     }
 
     let wiki_root = wiki_base_dir();
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     gasket_engine::create_wiki_tables(&store.pool()).await?;
 
     let ps = PageStore::new(store.pool().clone(), wiki_root);
@@ -326,7 +363,7 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     // Try Tantivy search first
@@ -391,7 +428,7 @@ pub async fn cmd_wiki_list(page_type: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let filter = match page_type {
@@ -442,7 +479,7 @@ pub async fn cmd_wiki_lint(auto_fix: bool) -> Result<()> {
         return Ok(());
     }
 
-    let store = SqliteStore::new().await?;
+    let store = gasket_engine::memory::SqliteStore::new().await?;
     let ps = std::sync::Arc::new(PageStore::new(store.pool(), wiki_root));
 
     let linter = WikiLinter::new(ps);

@@ -3,9 +3,40 @@
 use std::path::Path;
 
 use anyhow::anyhow;
-use gasket_storage::memory::extract_frontmatter_raw;
 
 use super::types::{CronJob, CronJobFrontmatter};
+
+/// Extract YAML frontmatter and body from markdown content.
+pub(super) fn extract_frontmatter_raw(content: &str) -> anyhow::Result<(String, String)> {
+    let content = content.trim_start();
+
+    if !content.starts_with("---") {
+        anyhow::bail!("Invalid markdown format: missing frontmatter start delimiter '---'");
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        anyhow::bail!("Invalid markdown format: missing frontmatter end delimiter '---'");
+    }
+
+    let mut close_idx = None;
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if line.trim() == "---" {
+            close_idx = Some(i);
+            break;
+        }
+    }
+
+    let close_idx = close_idx.ok_or_else(|| anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'"))?;
+
+    let yaml_lines = &lines[1..close_idx];
+    let body_lines = &lines[close_idx + 1..];
+
+    let yaml_str = yaml_lines.join("\n");
+    let body = body_lines.join("\n").trim_start().to_string();
+
+    Ok((yaml_str, body))
+}
 
 /// Parse markdown content into a CronJob.
 pub(super) fn parse_markdown(content: &str, file_path: &Path) -> anyhow::Result<CronJob> {

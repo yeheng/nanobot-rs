@@ -200,16 +200,21 @@ impl EventStore {
         Self { pool, tx }
     }
 
-    async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+    /// Parse a session key string into (channel, chat_id).
+    /// Falls back to ChannelType::Cli if no channel prefix.
+    fn parse_session_key_str(session_key: &str) -> (String, String) {
         let key = SessionKey::parse(session_key)
             .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, session_key));
-        let channel = key.channel.to_string();
-        let chat_id = &key.chat_id;
+        (key.channel.to_string(), key.chat_id)
+    }
+
+    async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
+        let (channel, chat_id) = Self::parse_session_key_str(session_key);
         let max_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
         )
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
@@ -234,10 +239,7 @@ impl EventStore {
         let extra = serde_json::to_string(&event.metadata.extra)?;
 
         // Parse session_key into channel/chat_id
-        let key = SessionKey::parse(&event.session_key)
-            .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, &event.session_key));
-        let channel = key.channel.to_string();
-        let chat_id = &key.chat_id;
+        let (channel, chat_id) = Self::parse_session_key_str(&event.session_key);
 
         let mut tx = self.pool.begin().await?;
 
@@ -247,7 +249,7 @@ impl EventStore {
         )
         .bind(&event.session_key)
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -273,7 +275,7 @@ impl EventStore {
         .bind(event.id.to_string())
         .bind(&event.session_key)
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .bind(event_type_tag)
         .bind(&event.content)
         .bind(
@@ -297,7 +299,7 @@ impl EventStore {
         )
         .bind(&now)
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .execute(&mut *tx)
         .await?;
 
@@ -333,7 +335,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -361,7 +363,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .bind(after_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -395,7 +397,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .bind(target_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -442,12 +444,12 @@ impl EventStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM session_events WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(chat_id)
+            .bind(&chat_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM sessions_v2 WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(chat_id)
+            .bind(&chat_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -487,7 +489,7 @@ impl EventStore {
             "DELETE FROM session_events WHERE channel = ? AND chat_id = ? AND sequence <= ?",
         )
         .bind(&channel)
-        .bind(chat_id)
+        .bind(&chat_id)
         .bind(target_sequence)
         .execute(&self.pool)
         .await?;
@@ -547,7 +549,7 @@ impl EventStore {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT key FROM sessions_v2 WHERE chat_id = ? ORDER BY updated_at DESC",
         )
-        .bind(chat_id)
+        .bind(&chat_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(k,)| k).collect())

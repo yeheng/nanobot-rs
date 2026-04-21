@@ -11,8 +11,8 @@
 //! machine-state.
 
 mod event_store;
+mod migrations;
 pub mod fs;
-pub mod memory;
 pub mod wiki;
 
 // ── Merged from gasket-history ──
@@ -347,10 +347,7 @@ impl SqliteStore {
     /// Explicit long-term memory lives exclusively in `~/.gasket/memory/*.md` files
     /// (Single Source of Truth — no SQLite `memories` table).
     async fn init_db(&self) -> anyhow::Result<()> {
-        // ── Session summaries ──
-        // Stores the rolling summary with a sequence watermark (high-water mark)
-        // indicating which events are already covered by the summary.
-        // Events with sequence <= covered_upto_sequence can be garbage-collected.
+        // ── Core session tables ────────────────────────────────────────────────
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_summaries (
@@ -363,9 +360,99 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
-        // ── Cron state (execution state, separate from config) ──
-        // Config lives in ~/.gasket/cron/*.md files (SSOT)
-        // State (last_run/next_run) lives here (high-frequency writes)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions_v2 (
+                key             TEXT PRIMARY KEY,
+                channel         TEXT NOT NULL DEFAULT '',
+                chat_id         TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                last_consolidated_event TEXT,
+                total_events    INTEGER NOT NULL DEFAULT 0,
+                total_tokens    INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS session_events (
+                id              TEXT PRIMARY KEY,
+                session_key     TEXT NOT NULL,
+                channel         TEXT NOT NULL DEFAULT '',
+                chat_id         TEXT NOT NULL DEFAULT '',
+                event_type      TEXT NOT NULL,
+                content         TEXT NOT NULL,
+                embedding       BLOB,
+                tools_used      TEXT DEFAULT '[]',
+                token_usage     TEXT,
+                token_len       INTEGER NOT NULL DEFAULT 0,
+                event_data      TEXT,
+                extra           TEXT DEFAULT '{}',
+                created_at      TEXT NOT NULL,
+                sequence        INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // ── Session indexes ──────────────────────────────────────────────────────
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(event_type)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_type_created \
+             ON session_events(session_key, event_type, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // ── Summary index ───────────────────────────────────────────────────────
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS summary_index (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key     TEXT NOT NULL,
+                event_id        TEXT NOT NULL,
+                summary_type    TEXT NOT NULL,
+                topic           TEXT,
+                covered_events  TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_session ON summary_index(session_key)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_type ON summary_index(summary_type)")
+            .execute(&self.pool)
+            .await?;
+
+        // ── Cron state ─────────────────────────────────────────────────────────
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS cron_state (
@@ -376,14 +463,13 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_cron_state_next_run ON cron_state(next_run_at)",
         )
         .execute(&self.pool)
         .await?;
 
-        // ── Session embeddings (for semantic history recall) ──
+        // ── Session embeddings (semantic history recall) ─────────────────────────
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_embeddings (
@@ -396,15 +482,14 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_session_embeddings_session_key
+            "CREATE INDEX IF NOT EXISTS idx_session_embeddings_session_key \
              ON session_embeddings(session_key)",
         )
         .execute(&self.pool)
         .await?;
 
-        // ── Memory system tables ──
+        // ── Memory system tables ───────────────────────────────────────────────
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -420,17 +505,13 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_mem_emb_scenario
-             ON memory_embeddings(scenario)",
+            "CREATE INDEX IF NOT EXISTS idx_mem_emb_scenario ON memory_embeddings(scenario)",
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_mem_emb_frequency
-             ON memory_embeddings(frequency)",
+            "CREATE INDEX IF NOT EXISTS idx_mem_emb_frequency ON memory_embeddings(frequency)",
         )
         .execute(&self.pool)
         .await?;
@@ -456,208 +537,21 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_meta_scenario_freq
+            "CREATE INDEX IF NOT EXISTS idx_meta_scenario_freq \
              ON memory_metadata(scenario, frequency)",
         )
         .execute(&self.pool)
         .await?;
 
-        // === Event sourcing new tables ===
+        // ── KV store and checkpoints ─────────────────────────────────────────────
 
-        // Session metadata table
         sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS sessions_v2 (
-                key             TEXT PRIMARY KEY,
-                channel         TEXT NOT NULL DEFAULT '',
-                chat_id         TEXT NOT NULL DEFAULT '',
-                created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL,
-                last_consolidated_event TEXT,
-                total_events    INTEGER NOT NULL DEFAULT 0,
-                total_tokens    INTEGER NOT NULL DEFAULT 0
-            )
-            "#,
+            "CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         )
         .execute(&self.pool)
         .await?;
 
-        // Event table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS session_events (
-                id              TEXT PRIMARY KEY,
-                session_key     TEXT NOT NULL,
-                channel         TEXT NOT NULL DEFAULT '',
-                chat_id         TEXT NOT NULL DEFAULT '',
-                event_type      TEXT NOT NULL,
-                content         TEXT NOT NULL,
-                embedding       BLOB,
-                tools_used      TEXT DEFAULT '[]',
-                token_usage     TEXT,
-                token_len       INTEGER NOT NULL DEFAULT 0,
-                event_data      TEXT,
-                extra           TEXT DEFAULT '{}',
-                created_at      TEXT NOT NULL,
-                sequence        INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Indexes for session_events
-
-        // Indexes for channel/chat_id queries
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(event_type)")
-            .execute(&self.pool)
-            .await?;
-
-        // Covering index for get_latest_summary: single seek, no table scan
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_session_type_created \
-             ON session_events(session_key, event_type, created_at DESC)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Summary index table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS summary_index (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_key     TEXT NOT NULL,
-                event_id        TEXT NOT NULL,
-                summary_type    TEXT NOT NULL,
-                topic           TEXT,
-                covered_events  TEXT NOT NULL,
-                created_at      TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_session ON summary_index(session_key)")
-            .execute(&self.pool)
-            .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_type ON summary_index(summary_type)")
-            .execute(&self.pool)
-            .await?;
-
-        // ── Migrations for existing databases ──
-
-        // Add covered_upto_sequence column to session_summaries if it doesn't exist.
-        // SQLite ALTER TABLE ADD COLUMN is safe — it's a no-op if the column already exists
-        // in modern SQLite versions, but we guard with a pragma check for older versions.
-        let has_watermark: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('session_summaries') WHERE name = 'covered_upto_sequence'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false);
-
-        if !has_watermark {
-            sqlx::query(
-                "ALTER TABLE session_summaries ADD COLUMN covered_upto_sequence INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        // Add sequence column to session_events if it doesn't exist (migration for older DBs).
-        let has_sequence: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('session_events') WHERE name = 'sequence'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false);
-
-        if !has_sequence {
-            sqlx::query(
-                "ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        // Add needs_embedding column to memory_metadata if it doesn't exist.
-        let has_needs_embedding: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('memory_metadata') WHERE name = 'needs_embedding'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false);
-
-        if !has_needs_embedding {
-            sqlx::query(
-                "ALTER TABLE memory_metadata ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 1",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        // Add access_count column to memory_metadata if it doesn't exist.
-        // This column stores the machine runtime state (access tracking) that was
-        // previously written to Markdown frontmatter. Now SQLite is the sole source of truth.
-        let has_access_count: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('memory_metadata') WHERE name = 'access_count'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false);
-
-        if !has_access_count {
-            sqlx::query(
-                "ALTER TABLE memory_metadata ADD COLUMN access_count BIGINT NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        // Index for efficient watermark-based queries on session_events
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON session_events(session_key, sequence)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // ── Generic KV store for machine-state (e.g. evolution watermarks) ──
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS kv_store (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // ── Session checkpoints ──
-        // Proactive working-memory snapshots every N sequence increments.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_checkpoints (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -670,16 +564,19 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_seq
+            "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_seq \
              ON session_checkpoints(session_key, target_sequence)",
         )
         .execute(&self.pool)
         .await?;
 
+        // ── Run schema migrations (add columns to existing databases) ────────────
+        migrations::run_all(&self.pool).await?;
+
         Ok(())
     }
+
 
     // ── Generic KV API ──
 

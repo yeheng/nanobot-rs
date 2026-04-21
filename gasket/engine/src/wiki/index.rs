@@ -65,6 +65,9 @@ impl PageIndex {
                         tags: page.tags,
                         updated: page.updated,
                         confidence: page.confidence,
+                        frequency: page.frequency,
+                        access_count: page.access_count,
+                        last_accessed: page.last_accessed,
                     }),
                     Err(e) => {
                         tracing::debug!("PageIndex: could not load page '{}': {}", hit.path, e);

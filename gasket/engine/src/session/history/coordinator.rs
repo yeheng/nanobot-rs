@@ -5,22 +5,18 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use gasket_storage::memory::{MemoryHit, MemoryQuery};
 use gasket_storage::{EventFilter, EventStoreTrait, SqliteStore};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::session::compactor::ContextCompactor;
-use crate::session::store::{MemoryContext, MemoryProvider};
 
 /// History query intent — the only query entry point type.
 ///
 /// Each variant routes to a specific backend component:
 /// - `SessionContext` → EventStore + token budget trimming
 /// - `LatestSummary` → SqliteStore::load_session_summary() (watermark-based)
-/// - `SemanticSearch` → MemoryProvider::search()
-/// - `MemoryContext` → MemoryProvider::load_for_context()
 /// - `TimeRange` → EventStore::query()
 #[derive(Debug)]
 pub enum HistoryQuery {
@@ -32,12 +28,6 @@ pub enum HistoryQuery {
     /// Get the latest summary with its sequence watermark.
     /// Routes to SqliteStore::load_session_summary().
     LatestSummary { session_key: String },
-    /// Cross-session semantic search.
-    /// Routes to MemoryProvider::search().
-    SemanticSearch { query: String, top_k: usize },
-    /// Three-phase memory loading.
-    /// Routes to MemoryProvider::load_for_context().
-    MemoryContext { query: MemoryQuery },
     /// Raw events in a time range.
     /// Routes to EventStore::query().
     TimeRange {
@@ -54,10 +44,6 @@ pub enum HistoryResult {
     Context(Vec<ContextMessage>),
     /// Summary from session_summaries table: (content, covered_upto_sequence).
     Summary(Option<(String, i64)>),
-    /// Memory hits from semantic search.
-    Memories(Vec<MemoryHit>),
-    /// Full memory context from three-phase loading.
-    MemoryContext(MemoryContext),
     /// Raw events from event store.
     Events(Vec<SessionEvent>),
 }
@@ -79,7 +65,6 @@ pub struct HistoryCoordinator {
     event_store: Arc<dyn EventStoreTrait>,
     _compactor: Arc<ContextCompactor>,
     sqlite_store: Arc<SqliteStore>,
-    memory: Arc<dyn MemoryProvider>,
 }
 
 impl HistoryCoordinator {
@@ -87,13 +72,11 @@ impl HistoryCoordinator {
         event_store: Arc<dyn EventStoreTrait>,
         compactor: Arc<ContextCompactor>,
         sqlite_store: Arc<SqliteStore>,
-        memory: Arc<dyn MemoryProvider>,
     ) -> Self {
         Self {
             event_store,
             _compactor: compactor,
             sqlite_store,
-            memory,
         }
     }
 
@@ -162,20 +145,6 @@ impl HistoryCoordinator {
                     summary.is_some()
                 );
                 Ok(HistoryResult::Summary(summary))
-            }
-            HistoryQuery::SemanticSearch { query, top_k } => {
-                let memory_query = MemoryQuery {
-                    text: Some(query),
-                    tags: vec![],
-                    scenario: None,
-                    max_tokens: Some(top_k * 200),
-                };
-                let ctx = self.memory.load_for_context(&memory_query).await?;
-                Ok(HistoryResult::MemoryContext(ctx))
-            }
-            HistoryQuery::MemoryContext { query } => {
-                let ctx = self.memory.load_for_context(&query).await?;
-                Ok(HistoryResult::MemoryContext(ctx))
             }
             HistoryQuery::TimeRange {
                 session_key,

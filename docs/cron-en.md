@@ -278,8 +278,8 @@ flowchart TB
 ```
 
 These tasks **execute tools directly**, bypassing AI, zero cost:
-- `system-memory-decay`: Clean expired memory
-- `system-memory-refresh`: Refresh memory index
+- `system-wiki-decay`: Clean expired wiki knowledge
+- `system-wiki-refresh`: Refresh wiki index
 - `system-cron-refresh`: Reload task configuration
 
 ### Scenario 3: Missed Task Catch-up

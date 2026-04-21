@@ -194,7 +194,7 @@ pub struct AgentConfig {
     /// Embedding configuration for semantic search and memory indexing.
     pub embedding_config: Option<crate::config::EmbeddingConfig>,
     /// Memory token budget for three-phase context loading.
-    pub memory_budget: Option<gasket_storage::memory::TokenBudget>,
+    pub memory_budget: Option<gasket_storage::wiki::TokenBudget>,
     /// Self-evolution configuration (auto-learning from conversations).
     pub evolution: Option<EvolutionConfig>,
     /// Wiki knowledge system configuration (replaces memory system).

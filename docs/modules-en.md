@@ -106,6 +106,9 @@ trait Tool: Send + Sync {
 |------|-------------|
 | `registry.rs` | `ToolRegistry` — Tool registry with semantic routing support |
 | `base.rs` | Re-exports `Tool` trait, `ToolContext`, `ToolError` from types crate |
+| `wiki_decay.rs` | `WikiDecayTool` — Wiki page decay tool (formerly memory_decay) |
+| `wiki_refresh.rs` | `WikiRefreshTool` — Wiki index refresh tool (formerly memory_refresh) |
+| `wiki_tools.rs` | `WikiReadTool`, `WikiSearchTool`, `WikiWriteTool` — Wiki read/write/search tools |
 
 ---
 
@@ -274,29 +277,30 @@ Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
 
 ---
 
-## 7. memory/ — Storage Abstraction Layer
+## 7. storage/ — Storage Abstraction Layer
 
-### MemoryStore Trait
+> **Note**: Implementation re-exported from `storage` crate.
 
-```rust
-#[async_trait]
-trait MemoryStore: Send + Sync {
-    async fn save(&self, entry: &MemoryEntry) -> Result<()>;
-    async fn get(&self, id: &str) -> Result<Option<MemoryEntry>>;
-    async fn delete(&self, id: &str) -> Result<bool>;
-    async fn search(&self, query: &MemoryQuery) -> Result<Vec<MemoryEntry>>;
-}
-```
+### Core Components
 
-### SqliteStore Implementation
+| Component | Description |
+|-----------|-------------|
+| `EventStore` | Event sourcing storage (session_events table) |
+| `SqliteStore` | SQLite general storage (sessions, summaries, cron jobs, kv) |
+| `processor` | `process_history()` — Token-budget-aware history processing |
+| `query` | `HistoryQueryBuilder` — History query builder |
+| `search/` | FTS5 full-text search types |
+| `wiki/` | Wiki page storage (page_store, relation_store, source_store) |
+
+### SqliteStore
 
 - Uses `sqlx::SqlitePool` native async I/O
-- FTS5 full-text search support
-- Submodules: `memories.rs` (FTS5), `session.rs` (session persistence), `kv.rs` (key-value store), `cron.rs` (scheduled tasks)
+- WAL mode for concurrent reads
+- Submodules: `fs.rs` (filesystem), `event_store.rs` (events), `wiki/` (knowledge base)
 
 ---
 
-## 8. session/ — Session Management (Event Sourcing)
+## 8. Event Sourcing
 
 > **Note**: Event sourcing types defined in `types` crate (`SessionEvent`, `EventType`, `Session`), persistence in `storage` crate (`EventStore`).
 
@@ -321,17 +325,28 @@ trait MemoryStore: Send + Sync {
 
 ---
 
-## 9. session/ — Session Management (formerly agent/)
+## 9. session/ — Session Management
 
-| File | Responsibility |
+> **Note**: `engine/src/agent/` has been restructured into `kernel/` + `session/` + `subagents/`
+
+| File/Directory | Responsibility |
 |------|----------------|
 | `mod.rs` | `AgentSession` — Session management core, wraps kernel execution |
 | `config.rs` | `AgentConfig` — Agent configuration with kernel conversion support |
 | `context.rs` | `AgentContext` enum — Zero-cost enum dispatch (Persistent/Stateless) |
-| `compactor.rs` | `ContextCompactor` — Context compression |
-| `memory.rs` | `MemoryManager`, `MemoryContext`, `MemoryProvider` — Memory management |
+| `compactor.rs` | `ContextCompactor` — Context compression (based on token budget) |
 | `prompt.rs` | Bootstrap file loading, skills context, token truncation |
-| `store.rs` | `MemoryStore` — Memory store wrapper |
+| `store.rs` | `MemoryStore` — Memory store wrapper (exports MemoryStore only) |
+| `history/` | Event sourcing history processing |
+
+### history/ Submodule
+
+| File | Responsibility |
+|------|----------------|
+| `builder.rs` | `HistoryBuilder` — History message builder |
+| `coordinator.rs` | `HistoryCoordinator` — History loading coordinator |
+| `indexing.rs` | `HistoryIndexingService` — Message indexing service |
+| `mod.rs` | Module exports |
 
 ### AgentSession
 
@@ -348,8 +363,8 @@ pub struct AgentSession {
     hooks: Arc<HookRegistry>,       // Hook registry
     history_config: gasket_storage::HistoryConfig, // History configuration
     compactor: Option<Arc<ContextCompactor>>, // Context compactor
-    memory_manager: Option<Arc<MemoryManager>>, // Memory manager
     indexing_service: Option<Arc<IndexingService>>, // Indexing service
+    wiki: Option<WikiComponents>,  // Wiki knowledge system
     pricing: Option<ModelPricing>,  // Optional pricing for cost calculation
     pending_done: tokio_util::task::TaskTracker, // Graceful shutdown tracker
 }
@@ -571,3 +586,41 @@ Detailed description and usage of the skill...
 
 - **always_load: true** — Auto-load at startup
 - **always_load: false** — Load on demand
+
+---
+
+## 17. wiki/ — Wiki Knowledge System
+
+> Located at `engine/src/wiki/`, three-layer architecture: Raw Sources → Compiled Wiki → Search Index.
+
+### Module Structure
+
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | Wiki module exports and re-exports |
+| `page.rs` | `WikiPage`, `PageType`, `PageSummary`, `PageFilter`, `slugify()` |
+| `store.rs` | `PageStore` — Wiki page CRUD |
+| `index.rs` | `PageIndex` — Tantivy BM25 full-text search |
+| `query/mod.rs` | `WikiQueryEngine`, `QueryResult`, `ScoredCandidate`, `SearchHit`, `Reranker`, `TantivyIndex` |
+| `ingest/mod.rs` | Knowledge ingestion pipeline (parser, extractor, dedup) |
+| `ingest/parser.rs` | `SourceParser`, `MarkdownParser`, `HtmlParser`, `PlainTextParser`, `ConversationParser` |
+| `ingest/extractor.rs` | `KnowledgeExtractor`, `ExtractedItem`, `ExtractionResult` |
+| `ingest/dedup.rs` | `SemanticDeduplicator`, `DedupResult` |
+| `lint/mod.rs` | `WikiLinter`, `LintReport`, `FixReport` — Health checks (structural only) |
+| `lint/structural.rs` | `StructuralIssue`, `StructuralIssueType`, `Severity`, `StructuralLintConfig` |
+| `log.rs` | `WikiLog`, `LogEntry` — Operation logging |
+| `lifecycle.rs` | `DecayReport`, `FrequencyManager` — Frequency decay and promotion management |
+
+### Storage Wiki Module
+
+> Located at `storage/src/wiki/`
+
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | Wiki storage module exports |
+| `page_store.rs` | `WikiPageStore`, `PageRow`, `DecayCandidate`, `WikiPageInput` |
+| `tables.rs` | `create_wiki_tables()` — DDL table creation |
+| `types.rs` | `Frequency`, `TokenBudget` — Core type definitions |
+| `log_store.rs` | `WikiLogStore` — Log persistence |
+| `relation_store.rs` | `WikiRelationStore` — Page relations |
+| `source_store.rs` | `WikiSourceStore` — Source tracking |

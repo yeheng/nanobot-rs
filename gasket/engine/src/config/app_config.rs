@@ -79,7 +79,7 @@ pub struct AgentDefaults {
     #[serde(default)]
     pub streaming: bool,
     #[serde(default, alias = "memoryBudget")]
-    pub memory_budget: Option<gasket_storage::memory::TokenBudget>,
+    pub memory_budget: Option<gasket_storage::wiki::TokenBudget>,
 }
 
 impl Default for AgentDefaults {

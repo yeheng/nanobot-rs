@@ -263,8 +263,8 @@ flowchart TB
 ```
 
 这些任务**直接执行工具**，不经过 AI，零成本：
-- `memory_refresh`：刷新记忆索引
-- `memory_decay`：清理过期记忆
+- `wiki_refresh`：刷新知识库索引
+- `wiki_decay`：清理过期知识
 - `cron refresh`：重新加载任务配置
 
 ### 场景3：错过的任务补执行

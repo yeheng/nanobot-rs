@@ -7,17 +7,21 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS wiki_pages (
-            path        TEXT PRIMARY KEY,
-            title       TEXT NOT NULL,
-            type        TEXT NOT NULL,
-            category    TEXT,
-            tags        TEXT,
-            content     TEXT NOT NULL DEFAULT '',
-            created     TEXT NOT NULL,
-            updated     TEXT NOT NULL,
+            path         TEXT PRIMARY KEY,
+            title        TEXT NOT NULL,
+            type         TEXT NOT NULL,
+            category     TEXT,
+            tags         TEXT,
+            content      TEXT NOT NULL DEFAULT '',
+            created      TEXT NOT NULL,
+            updated      TEXT NOT NULL,
             source_count INTEGER DEFAULT 0,
-            confidence  REAL DEFAULT 1.0,
-            checksum    TEXT
+            confidence   REAL DEFAULT 1.0,
+            checksum     TEXT,
+            frequency    TEXT DEFAULT 'warm',
+            access_count INTEGER DEFAULT 0,
+            last_accessed TEXT,
+            file_mtime   INTEGER
         )
         "#,
     )
@@ -78,6 +82,12 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_updated ON wiki_pages(updated)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_frequency ON wiki_pages(frequency)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_last_accessed ON wiki_pages(last_accessed)")
         .execute(pool)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_raw_sources_ingested ON raw_sources(ingested)")

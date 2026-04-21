@@ -32,7 +32,7 @@
         └────────────┴──────┬─────┴────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         消息总线层 (Bus)                          │
+│                         消息总线层 (Broker)                        │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
 │  │ Router Actor │───▶│ Session Actor│───▶│Outbound Actor│      │
 │  │  (路由分发)   │    │  (业务处理)   │    │  (渠道回发)   │      │
@@ -47,8 +47,8 @@
 │  │  (状态管理)   │    │  (LLM 循环)   │    │  (工具执行)   │      │
 │  └──────────────┘    └──────────────┘    └──────────────┘      │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
-│  │    Hooks     │    │   Memory     │    │   Skills     │      │
-│  │  (生命周期)   │    │  (记忆系统)   │    │  (技能系统)   │      │
+│  │    Hooks     │    │    Wiki      │    │   Skills     │      │
+│  │  (生命周期)   │    │  (知识系统)   │    │  (技能系统)   │      │
 │  └──────────────┘    └──────────────┘    └──────────────┘      │
 └─────────────────────────────────────────────────────────────────┘
                             │
@@ -67,11 +67,12 @@
 | Crate | 职责 | 关键模块 |
 |-------|------|----------|
 | `gasket-types` | 核心类型定义 | `SessionKey`, `SessionEvent`, `EventType` |
-| `gasket-storage` | 持久化层 | `EventStore`, `SqliteStore`, `memory` |
+| `gasket-storage` | 持久化层 | `EventStore`, `SqliteStore`, `processor`, `query`, `wiki` |
 | `gasket-providers` | LLM  Provider 抽象 | `LlmProvider`, `OpenAICompatibleProvider` |
 | `gasket-channels` | 渠道适配器 | `Channel`, `InboundMessage`, `OutboundMessage` |
-| `gasket-engine` | 核心编排引擎 | `AgentSession`, `AgentExecutor`, `ToolRegistry` |
-| `gasket-vault` | 密钥管理 | `VaultStore`, `VaultInjector` |
+| `gasket-broker` | 消息总线 | `Router`, `Session`, `Outbound` Actors |
+| `gasket-engine` | 核心编排引擎 | `AgentSession`, `Kernel`, `ToolRegistry`, `Hooks` |
+| `gasket-vault` | 密钥管理 | `VaultStore`, `VaultInjector` (位于 `engine/src/vault/`) |
 | `gasket-cli` | CLI 入口 | 命令行交互、Gateway 启动 |
 
 ### 1.3 设计原则
@@ -549,6 +550,8 @@ pub trait PipelineHook: Send + Sync {
 
 ### 5.2 Memory 系统
 
+> **⚠️ 已废弃**: Memory 系统已被 Wiki 知识系统取代。见 [architecture.md](architecture.md) 和 [modules.md](modules.md) 中的 Wiki 部分。
+
 ```rust
 /// 记忆存储结构
 pub struct FileMemoryStore {
@@ -895,10 +898,11 @@ impl LlmProvider for CustomProvider {
 /// 1. 使用 Arc 共享大对象
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,           // Clone: 增加 Arc 计数
-    context: AgentContext,                 // Clone: 增加 Arc 计数  
+    context: AgentContext,                 // Clone: 增加 Arc 计数
     hooks: Arc<HookRegistry>,              // 共享
     compactor: Option<Arc<ContextCompactor>>, // 共享
-    memory_manager: Option<Arc<MemoryManager>>, // 共享
+    indexing_service: Option<Arc<IndexingService>>, // 共享
+    wiki: Option<WikiComponents>,         // Wiki 知识系统
 }
 
 /// 2. 流式处理避免内存拷贝

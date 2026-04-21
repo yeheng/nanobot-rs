@@ -13,7 +13,7 @@ pub mod store;
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
-pub use store::{MemoryContext, MemoryProvider, MemoryStore, PhaseBreakdown};
+pub use store::MemoryStore;
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 
@@ -151,6 +151,13 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
     None
 }
 
+/// Wiki knowledge system components — always exist together or not at all.
+struct WikiComponents {
+    page_store: Arc<PageStore>,
+    page_index: Arc<PageIndex>,
+    wiki_log: Arc<WikiLog>,
+}
+
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
 /// Owns session state (events, prompts, wiki knowledge, compaction) and delegates
@@ -166,10 +173,8 @@ pub struct AgentSession {
     history_config: gasket_storage::HistoryConfig,
     compactor: Option<Arc<ContextCompactor>>,
     indexing_service: Option<Arc<IndexingService>>,
-    /// Wiki knowledge system.
-    page_store: Option<Arc<PageStore>>,
-    page_index: Option<Arc<PageIndex>>,
-    wiki_log: Option<Arc<WikiLog>>,
+    /// Wiki knowledge system. None when wiki is disabled.
+    wiki: Option<WikiComponents>,
     /// Optional pricing configuration for cost calculation.
     pricing: Option<ModelPricing>,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
@@ -267,14 +272,15 @@ impl AgentSession {
         let compactor = Arc::new(compactor);
 
         let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-        let wiki_components = Self::try_init_wiki(&config, sqlite_store_for_evo.pool());
-        let (page_store, page_index, wiki_log) = match wiki_components {
-            Some((store, index, log)) => (Some(store), Some(index), Some(log)),
-            None => (None, None, None),
-        };
+        let wiki_components = Self::try_init_wiki(&config, sqlite_store_for_evo.pool()).await;
+        let wiki = wiki_components.map(|(store, index, log)| WikiComponents {
+            page_store: store,
+            page_index: index,
+            wiki_log: log,
+        });
 
         let hooks = Self::build_hooks(
-            page_store.as_ref(),
+            wiki.as_ref().map(|w| &w.page_store),
             &config,
             sqlite_store_for_evo,
             event_store_for_evo,
@@ -292,11 +298,9 @@ impl AgentSession {
             history_config,
             compactor: Some(compactor),
             indexing_service: Some(indexing_service),
+            wiki,
             pricing,
             pending_done: tokio_util::task::TaskTracker::new(),
-            page_store,
-            page_index,
-            wiki_log,
         })
     }
 
@@ -385,17 +389,17 @@ impl AgentSession {
 
     /// Get the wiki page store.
     pub fn page_store(&self) -> Option<&Arc<PageStore>> {
-        self.page_store.as_ref()
+        self.wiki.as_ref().map(|w| &w.page_store)
     }
 
     /// Get the wiki page index.
     pub fn page_index(&self) -> Option<&Arc<PageIndex>> {
-        self.page_index.as_ref()
+        self.wiki.as_ref().map(|w| &w.page_index)
     }
 
     /// Get the wiki log.
     pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
-        self.wiki_log.as_ref()
+        self.wiki.as_ref().map(|w| &w.wiki_log)
     }
 
     /// Clear session for the given key.
@@ -635,7 +639,7 @@ impl AgentSession {
     }
 
     /// Try to initialize the wiki knowledge system.
-    fn try_init_wiki(
+    async fn try_init_wiki(
         config: &AgentConfig,
         pool: sqlx::SqlitePool,
     ) -> Option<(Arc<PageStore>, Arc<PageIndex>, Arc<WikiLog>)> {
@@ -656,14 +660,10 @@ impl AgentSession {
         let log = WikiLog::new(pool.clone());
 
         // Ensure directory structure + SQLite tables exist
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                store.init_dirs().await.ok()?;
-                gasket_storage::wiki::tables::create_wiki_tables(&pool)
-                    .await
-                    .ok()
-            })
-        })?;
+        store.init_dirs().await.ok()?;
+        gasket_storage::wiki::tables::create_wiki_tables(&pool)
+            .await
+            .ok()?;
 
         tracing::info!(
             "Wiki knowledge system initialized at {}",
