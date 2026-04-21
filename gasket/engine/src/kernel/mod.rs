@@ -8,8 +8,8 @@ pub mod error;
 pub mod executor;
 pub(crate) mod kernel_executor;
 pub(crate) mod request_handler;
-pub mod stream;
 pub(crate) mod steppable_executor;
+pub mod stream;
 pub(crate) mod tool_executor;
 
 pub use context::{KernelConfig, RuntimeContext};

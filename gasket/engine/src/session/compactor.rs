@@ -509,7 +509,12 @@ impl ContextCompactor {
     // -----------------------------------------------------------------------
 
     /// Clone all fields and spawn the background compaction task.
-    fn spawn_compaction_task(&self, session_key: &SessionKey, vault_values: &[String], guard: CompactionGuard) {
+    fn spawn_compaction_task(
+        &self,
+        session_key: &SessionKey,
+        vault_values: &[String],
+        guard: CompactionGuard,
+    ) {
         let event_store = self.event_store.clone();
         let sqlite_store = self.sqlite_store.clone();
         let provider = self.provider.clone();

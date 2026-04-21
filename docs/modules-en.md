@@ -215,25 +215,42 @@ trait Channel: Send + Sync {
 
 ---
 
-## 5. broker/ — Message Bus (Actor Model)
+## 5. broker/ — Message Broker
 
-### Module Structure
+> Detailed design: [broker-module-design.md](broker-module-design-en.md)
 
-| File | Responsibility |
+### Core Abstractions
+
+| Type | Responsibility |
 |------|----------------|
-| `events.rs` | Re-exported from `types`: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
-| `actors.rs` | Three Actors: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
-| `queue.rs` | Message queue encapsulation |
+| `Topic` | Strongly-typed topic enum (Inbound, Outbound, SystemEvent, ToolCall, etc.) |
+| `DeliveryMode` | Compile-time decision: `PointToPoint` (work-stealing) or `Broadcast` (fan-out) |
+| `Envelope` | Message wrapper: `id`, `timestamp`, `topic`, `payload` |
+| `Subscriber` | Unified receiver: `PointToPoint` or `Broadcast` |
 
-### Actor Pipeline
+### Delivery Modes
 
 ```
-Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outbound Actor] → HTTP
+Topic::Inbound          → PointToPoint (async_channel)
+Topic::Outbound         → PointToPoint (async_channel)
+Topic::SystemEvent      → Broadcast (tokio::broadcast)
+Topic::ToolCall(String) → PointToPoint
 ```
 
-- **Router Actor**: Owns routing table `HashMap<SessionKey, Sender>`, distributes by session, lazy creation/cleanup
-- **Session Actor**: Processes single session messages serially, shares `Arc<AgentSession>`, self-destructs on idle timeout
-- **Outbound Actor**: Dedicated network sending, isolates external API latency
+### MemoryBroker Implementation
+
+Uses DashMap + async-channel:
+- `publish(envelope)` — Blocking publish with backpressure
+- `try_publish(envelope)` — Non-blocking publish
+- `subscribe(topic)` — Subscribe and return Subscriber
+- `metrics(topic)` — Queue state snapshot
+
+### SessionManager
+
+Manages per-session message routing:
+- Subscribes to `Topic::Inbound`
+- Dispatches to per-session mpsc channels
+- Idle timeout GC every 300s
 
 ---
 
@@ -591,6 +608,8 @@ Detailed description and usage of the skill...
 
 ## 17. wiki/ — Wiki Knowledge System
 
+> Detailed design: [wiki-module-design-en.md](wiki-module-design-en.md)
+
 > Located at `engine/src/wiki/`, three-layer architecture: Raw Sources → Compiled Wiki → Search Index.
 
 ### Module Structure
@@ -624,3 +643,37 @@ Detailed description and usage of the skill...
 | `log_store.rs` | `WikiLogStore` — Log persistence |
 | `relation_store.rs` | `WikiRelationStore` — Page relations |
 | `source_store.rs` | `WikiSourceStore` — Source tracking |
+
+---
+
+## 18. tantivy/ — Standalone Tantivy CLI Tool
+
+> Detailed design: [tantivy-module-design-en.md](tantivy-module-design-en.md)
+
+Standalone CLI tool for managing multiple Tantivy full-text search indexes.
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `index create/list/stats/drop/compact/rebuild` | Index management |
+| `doc add/add-batch/delete/commit` | Document operations |
+| `search` | Full-text search |
+
+### Core Components
+
+| Component | Responsibility |
+|-----------|----------------|
+| `IndexManager` | Multi-index management, HashMap in-memory registry |
+| `FieldDef` | Field definition (Text, String, I64, DateTime, etc.) |
+| `SearchQuery` | BM25 + filtering + pagination + highlighting |
+| `IndexLock` | Process-level file lock (RAII) |
+
+### Maintenance Operations
+
+| Operation | Description |
+|-----------|-------------|
+| `backup/restore` | Index backup and restore |
+| `compact` | Merge segments, remove deleted documents |
+| `expire` | TTL-based document expiration |
+| `rebuild` | Streaming rebuild with schema migration |

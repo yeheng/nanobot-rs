@@ -241,7 +241,10 @@ impl AgentContext {
                             {
                                 warn!("Failed to save embedding for event {}: {}", event_id, e);
                             } else {
-                                debug!("Saved embedding for event {} in session {}", event_id, session_key);
+                                debug!(
+                                    "Saved embedding for event {} in session {}",
+                                    event_id, session_key
+                                );
                             }
                         }
                         Err(e) => {
@@ -287,7 +290,10 @@ impl AgentContext {
                 };
 
                 if embeddings.is_empty() {
-                    debug!("No embeddings found for session {}, returning empty recall", key);
+                    debug!(
+                        "No embeddings found for session {}, returning empty recall",
+                        key
+                    );
                     return Ok(Vec::new());
                 }
 
@@ -298,7 +304,8 @@ impl AgentContext {
                     .collect();
 
                 // Find top-K similar messages using cosine similarity
-                let top_results = gasket_storage::top_k_similar(query_embedding, &candidates, top_k);
+                let top_results =
+                    gasket_storage::top_k_similar(query_embedding, &candidates, top_k);
 
                 if top_results.is_empty() {
                     debug!("No similar messages found for session {}", key);

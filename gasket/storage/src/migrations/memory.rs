@@ -54,16 +54,12 @@ async fn create_memory_metadata_table(pool: &SqlitePool) -> anyhow::Result<()> {
 }
 
 async fn create_memory_indexes(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_mem_emb_scenario ON memory_embeddings(scenario)",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_mem_emb_frequency ON memory_embeddings(frequency)",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_mem_emb_scenario ON memory_embeddings(scenario)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_mem_emb_frequency ON memory_embeddings(frequency)")
+        .execute(pool)
+        .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_meta_scenario_freq ON memory_metadata(scenario, frequency)",
     )

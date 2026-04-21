@@ -23,10 +23,8 @@ async fn create_cron_state_table(pool: &SqlitePool) -> anyhow::Result<()> {
 }
 
 async fn create_cron_indexes(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_cron_state_next_run ON cron_state(next_run_at)",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_state_next_run ON cron_state(next_run_at)")
+        .execute(pool)
+        .await?;
     Ok(())
 }

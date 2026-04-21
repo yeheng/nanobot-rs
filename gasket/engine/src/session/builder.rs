@@ -9,14 +9,14 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::error::AgentError;
 use crate::hooks::HookRegistry;
 use crate::kernel::RuntimeContext;
 use crate::session::compactor::ContextCompactor;
+use crate::session::config::AgentConfigExt;
 use crate::session::context::AgentContext;
 use crate::session::history::indexing::IndexingService;
 use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
-use crate::error::AgentError;
-use crate::session::config::AgentConfigExt;
 use crate::token_tracker::ModelPricing;
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 use gasket_providers::LlmProvider;
@@ -104,18 +104,14 @@ impl SessionBuilder {
         let compactor = Some(Arc::new(compactor));
 
         // ── 7. System prompt and skills ──────────────────────────────
-        let system_prompt = match prompt::load_system_prompt(
-            &self.workspace,
-            prompt::BOOTSTRAP_FILES_FULL,
-        )
-        .await
-        {
-            Ok(sp) => sp,
-            Err(e) => {
-                warn!("Failed to load system prompt: {}", e);
-                String::new()
-            }
-        };
+        let system_prompt =
+            match prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_FULL).await {
+                Ok(sp) => sp,
+                Err(e) => {
+                    warn!("Failed to load system prompt: {}", e);
+                    String::new()
+                }
+            };
         let skills_context = prompt::load_skills_context(&self.workspace).await;
 
         // ── 8. Wiki knowledge system ─────────────────────────────────

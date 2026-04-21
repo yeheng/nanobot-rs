@@ -8,10 +8,10 @@
 
 use sqlx::SqlitePool;
 
-pub mod session;
-pub mod memory;
 pub mod cron;
 pub mod kv;
+pub mod memory;
+pub mod session;
 
 /// Run all migrations on an existing pool.
 pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {

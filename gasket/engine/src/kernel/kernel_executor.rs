@@ -6,13 +6,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::kernel::{
-    context::KernelConfig,
-    error::KernelError,
-    steppable_executor::SteppableExecutor,
+    context::KernelConfig, error::KernelError, steppable_executor::SteppableExecutor,
     stream::StreamEvent,
 };
-use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::token_tracker::TokenUsage;
+use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
 use gasket_providers::{ChatMessage, ChatResponse, LlmProvider};
 

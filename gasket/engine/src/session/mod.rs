@@ -122,7 +122,10 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
     if let Ok(env_dir) = std::env::var("GASKET_SKILLS_DIR") {
         let candidate = PathBuf::from(env_dir);
         if candidate.exists() {
-            info!("Found builtin skills from GASKET_SKILLS_DIR at {:?}", candidate);
+            info!(
+                "Found builtin skills from GASKET_SKILLS_DIR at {:?}",
+                candidate
+            );
             return Some(candidate);
         }
         warn!(
@@ -573,13 +576,15 @@ async fn execute_after_response_hooks(
         })
         .collect();
 
-    let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
-        crate::token_tracker::TokenUsage {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-        }
-    });
+    let token_usage_for_hooks =
+        result
+            .token_usage
+            .as_ref()
+            .map(|usage| crate::token_tracker::TokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+            });
 
     let mut hook_ctx = MutableContext {
         session_key: &ctx.session_key_str,

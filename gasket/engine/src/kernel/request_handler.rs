@@ -7,9 +7,7 @@ use tracing::warn;
 
 use crate::kernel::context::KernelConfig;
 use crate::tools::ToolRegistry;
-use gasket_providers::{
-    ChatRequest, ChatStream, LlmProvider, ThinkingConfig,
-};
+use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ThinkingConfig};
 
 /// Handler for LLM requests with retry support.
 pub struct RequestHandler<'a> {

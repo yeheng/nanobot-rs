@@ -225,25 +225,42 @@ trait Channel: Send + Sync {
 
 ---
 
-## 5. broker/ — 消息总线 (Actor 模型)
+## 5. broker/ — 消息代理
 
-### 模块结构
+> 详细设计文档: [broker-module-design.md](broker-module-design.md)
 
-| 文件 | 职责 |
+### 核心抽象
+
+| 类型 | 职责 |
 |------|------|
-| `events.rs` | 从 `types` re-export 事件类型: `ChannelType`, `SessionKey`, `InboundMessage`, `OutboundMessage`, `MediaAttachment` |
-| `actors.rs` | 三个 Actor: `run_router_actor`, `run_session_actor`, `run_outbound_actor` |
-| `queue.rs` | 消息队列封装 |
+| `Topic` | 强类型 Topic 枚举 (Inbound, Outbound, SystemEvent, ToolCall 等) |
+| `DeliveryMode` | 编译时决策: `PointToPoint` (工作窃取) 或 `Broadcast` (广播) |
+| `Envelope` | 消息包装器: `id`, `timestamp`, `topic`, `payload` |
+| `Subscriber` | 统一接收器: `PointToPoint` 或 `Broadcast` |
 
-### Actor 流水线
+### 投递模式
 
 ```
-Inbound → [Router Actor] → per-session channel → [Session Actor] → [Outbound Actor] → HTTP
+Topic::Inbound          → PointToPoint (async_channel)
+Topic::Outbound         → PointToPoint (async_channel)
+Topic::SystemEvent      → Broadcast (tokio::broadcast)
+Topic::ToolCall(String) → PointToPoint
 ```
 
-- **Router Actor**: 拥有路由表 `HashMap<SessionKey, Sender>`，按 session 分发，懒创建/清理
-- **Session Actor**: 串行处理单 session 消息，共享 `Arc<AgentSession>`，空闲超时自毁
-- **Outbound Actor**: 专职网络发送，隔离外部 API 延迟
+### MemoryBroker 实现
+
+使用 DashMap + async-channel 实现：
+- `publish(envelope)` — 阻塞发布，队列满时背压
+- `try_publish(envelope)` — 非阻塞发布
+- `subscribe(topic)` — 订阅返回 Subscriber
+- `metrics(topic)` — 队列状态快照
+
+### SessionManager
+
+管理 per-session 消息路由：
+- 订阅 `Topic::Inbound`
+- 分发到 per-session mpsc 通道
+- 每 300 秒空闲超时 GC
 
 ---
 
@@ -588,6 +605,8 @@ always_load: false
 
 ## 17. wiki/ — Wiki 知识系统
 
+> 详细设计文档: [wiki-module-design.md](wiki-module-design.md)
+
 > 位于 `engine/src/wiki/`，三层架构：原始来源 → 编译 Wiki → 搜索索引。
 
 ### 模块结构
@@ -621,3 +640,37 @@ always_load: false
 | `log_store.rs` | `WikiLogStore` — 日志持久化 |
 | `relation_store.rs` | `WikiRelationStore` — 页面关系 |
 | `source_store.rs` | `WikiSourceStore` — 来源追踪 |
+
+---
+
+## 18. tantivy/ — 独立 Tantivy CLI 工具
+
+> 详细设计文档: [tantivy-module-design.md](tantivy-module-design.md)
+
+独立 CLI 工具，管理多个 Tantivy 全文搜索索引。
+
+### CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `index create/list/stats/drop/compact/rebuild` | 索引管理 |
+| `doc add/add-batch/delete/commit` | 文档操作 |
+| `search` | 全文搜索 |
+
+### 核心组件
+
+| 组件 | 职责 |
+|------|------|
+| `IndexManager` | 多索引管理，HashMap 内存注册表 |
+| `FieldDef` | 字段定义 (Text, String, I64, DateTime 等) |
+| `SearchQuery` | BM25 + 过滤 + 分页 + 高亮 |
+| `IndexLock` | 进程级文件锁 (RAII) |
+
+### 维护操作
+
+| 操作 | 说明 |
+|------|------|
+| `backup/restore` | 索引备份与恢复 |
+| `compact` | 合并段，移除已删除文档 |
+| `expire` | TTL 文档过期清理 |
+| `rebuild` | 流式重建，支持 schema 迁移 |
