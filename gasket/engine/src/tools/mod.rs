@@ -54,7 +54,7 @@ pub use memorize::MemorizeTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
-pub use search_sops::search_sops;
+pub use search_sops::{search_sops, SearchSopsTool};
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;

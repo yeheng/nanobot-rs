@@ -76,6 +76,7 @@ impl SessionBuilder {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
+            checkpoint_callback: None,
         };
 
         // ── 3. Agent context ─────────────────────────────────────────
@@ -101,6 +102,7 @@ impl SessionBuilder {
         if let Some(ref prompt_text) = self.config.summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt_text.clone());
         }
+        compactor = compactor.with_checkpoint_config(crate::session::compactor::CheckpointConfig::default());
         let compactor = Some(Arc::new(compactor));
 
         // ── 7. System prompt and skills ──────────────────────────────

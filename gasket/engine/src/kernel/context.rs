@@ -13,6 +13,10 @@ pub struct RuntimeContext {
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+    /// Optional checkpoint callback for proactive working-memory injection.
+    /// Called before each `step()` with the current message count; returns
+    /// a summary to inject, or `None` to skip.
+    pub checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
 }
 
 impl Clone for RuntimeContext {
@@ -23,6 +27,7 @@ impl Clone for RuntimeContext {
             config: self.config.clone(),
             spawner: self.spawner.clone(),
             token_tracker: self.token_tracker.clone(),
+            checkpoint_callback: self.checkpoint_callback.clone(),
         }
     }
 }

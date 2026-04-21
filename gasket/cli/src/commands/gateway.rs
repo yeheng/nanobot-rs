@@ -149,6 +149,8 @@ pub async fn cmd_gateway() -> Result<()> {
         sqlite_store: None,
         page_store: page_store.clone(),
         page_index: page_index.clone(),
+        provider: Some(provider_info.provider.clone()),
+        model: Some(provider_info.model.clone()),
     });
 
     let mut subagent_tools = common_tools.clone();

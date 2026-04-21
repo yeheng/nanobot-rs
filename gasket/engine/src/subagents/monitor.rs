@@ -58,6 +58,15 @@ impl MonitoredSpawner {
         tools: Arc<ToolRegistry>,
         spec: TaskSpec,
     ) -> Result<MonitoredHandle, anyhow::Error> {
+        Self::spawn_with_checkpoint(provider, tools, spec, None)
+    }
+
+    pub fn spawn_with_checkpoint(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        spec: TaskSpec,
+        checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    ) -> Result<MonitoredHandle, anyhow::Error> {
         let (progress_tx, progress_rx) = mpsc::channel(64);
         let (interventor_tx, interventor_rx) = mpsc::channel(16);
 
@@ -71,7 +80,10 @@ impl MonitoredSpawner {
         };
         let kernel_config = config.to_kernel_config();
 
-        let steppable = SteppableExecutor::new(provider, tools, kernel_config);
+        let mut steppable = SteppableExecutor::new(provider, tools, kernel_config);
+        if let Some(cb) = checkpoint_callback {
+            steppable = steppable.with_checkpoint(cb);
+        }
 
         let handle = tokio::spawn(async move {
             let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
