@@ -12,10 +12,10 @@ use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{
-    EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemorySearchTool,
-    ReadFileTool, SpawnParallelTool, SpawnTool, Tool, ToolMetadata, ToolRegistry, WebFetchTool,
-    WebSearchTool, WikiDecayTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
-    WriteFileTool,
+    CreatePlanTool, EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool,
+    MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, Tool,
+    ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool,
+    WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
 };
 
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
@@ -64,6 +64,10 @@ pub struct ToolRegistryConfig {
     /// Optional wiki PageIndex for semantic search.
     #[allow(dead_code)]
     pub page_index: Option<Arc<crate::wiki::PageIndex>>,
+    /// Optional LLM provider for plan-generation tools.
+    pub provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
+    /// Model identifier for plan-generation tools.
+    pub model: Option<String>,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
@@ -79,6 +83,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         sqlite_store,
         page_store,
         page_index,
+        provider,
+        model,
     } = registry_config;
 
     // Suppress unused warnings when tool-spawn feature is disabled
@@ -268,6 +274,18 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
                     is_mutating: false,
                 },
             );
+
+            // SOP search tool (filters wiki search to SOP pages only)
+            tools.register_with_metadata(
+                Box::new(SearchSopsTool::new(index.clone())),
+                ToolMetadata {
+                    display_name: "Search SOPs".to_string(),
+                    category: "memory".to_string(),
+                    tags: vec!["search".to_string(), "sop".to_string(), "wiki".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            );
         }
 
         // Wiki read tool (only needs page_store)
@@ -293,6 +311,20 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
                 is_mutating: true,
             },
         );
+
+        // Plan generation tool (requires provider + model)
+        if let (Some(ref prov), Some(ref mdl)) = (&provider, &model) {
+            tools.register_with_metadata(
+                Box::new(CreatePlanTool::new(prov.clone(), mdl.clone(), store.clone())),
+                ToolMetadata {
+                    display_name: "Create Plan".to_string(),
+                    category: "system".to_string(),
+                    tags: vec!["plan".to_string(), "markdown".to_string()],
+                    requires_approval: false,
+                    is_mutating: true,
+                },
+            );
+        }
     }
 
     // History query tool — direct SQL query over session_events

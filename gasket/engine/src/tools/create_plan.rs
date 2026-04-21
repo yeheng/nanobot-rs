@@ -4,12 +4,17 @@
 //! The LLM calls this when it determines a task requires multiple steps.
 //! The plan is persisted to the wiki as a `PageType::Topic` page.
 
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 use tracing::info;
 
 use crate::wiki::{PageStore, PageType, WikiPage};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
+
+use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
 /// Simplified create_plan tool — Markdown-based, no JSON AST.
 ///
@@ -110,6 +115,80 @@ fn slugify(s: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect()
+}
+
+#[derive(Deserialize)]
+struct CreatePlanArgs {
+    goal: String,
+    #[serde(default)]
+    context: String,
+}
+
+#[async_trait]
+impl Tool for CreatePlanTool {
+    fn name(&self) -> &str {
+        "create_plan"
+    }
+
+    fn description(&self) -> &str {
+        "Generate a structured Markdown execution plan for a complex task and persist it to the wiki. \
+         The LLM should call this when a user request clearly requires multiple steps or phases. \
+         Returns a confirmation message and the wiki path where the plan was saved."
+    }
+
+    fn parameters(&self) -> Value {
+        simple_schema(&[
+            (
+                "goal",
+                "string",
+                true,
+                "High-level goal or task description to plan for",
+            ),
+            (
+                "context",
+                "string",
+                false,
+                "Optional additional context to inform the plan",
+            ),
+        ])
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Tool>> {
+        Some(Box::new(Self {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            page_store: self.page_store.clone(),
+        }))
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
+        let parsed: CreatePlanArgs = serde_json::from_value(args)
+            .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
+
+        let goal = parsed.goal.trim();
+        if goal.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "goal must not be empty".to_string(),
+            ));
+        }
+
+        let context_msg = if parsed.context.is_empty() {
+            ChatMessage::system("No additional context provided.".to_string())
+        } else {
+            ChatMessage::user(parsed.context)
+        };
+
+        let (confirmation, path) = self
+            .invoke(goal, &[context_msg])
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
+
+        Ok(format!("{}\nPath: {}", confirmation, path))
+    }
 }
 
 #[cfg(test)]

@@ -120,6 +120,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             sqlite_store: Some(memory_store.sqlite_store().clone()),
             page_store,
             page_index,
+            provider: Some(provider_info.provider.clone()),
+            model: Some(provider_info.model.clone()),
         });
 
     let mut tools = common_tools.clone();
