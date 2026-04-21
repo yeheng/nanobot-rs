@@ -41,6 +41,10 @@ pub enum AgentError {
     #[error("Request aborted by hook: {0}")]
     AbortedByHook(String),
 
+    /// Maximum iterations reached
+    #[error("Max iterations ({0}) reached")]
+    MaxIterations(u32),
+
     /// Generic error with message
     #[error("{0}")]
     Other(String),
@@ -131,7 +135,13 @@ pub enum PipelineError {
 
 impl From<crate::kernel::KernelError> for AgentError {
     fn from(err: crate::kernel::KernelError) -> Self {
-        AgentError::Other(err.to_string())
+        match err {
+            crate::kernel::KernelError::MaxIterations(n) => AgentError::MaxIterations(n),
+            crate::kernel::KernelError::Provider(e) => {
+                AgentError::ProviderError(ProviderError::Other(e))
+            }
+            crate::kernel::KernelError::ToolExecution(e) => AgentError::ToolError(e),
+        }
     }
 }
 

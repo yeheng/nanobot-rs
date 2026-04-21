@@ -76,3 +76,25 @@ impl KernelConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kernel_config_builder() {
+        let config = KernelConfig::new("test-model".to_string())
+            .with_max_iterations(10)
+            .with_max_retries(5)
+            .with_temperature(0.5)
+            .with_max_tokens(4096)
+            .with_thinking(true);
+
+        assert_eq!(config.model, "test-model");
+        assert_eq!(config.max_iterations, 10);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.temperature, 0.5);
+        assert_eq!(config.max_tokens, 4096);
+        assert!(config.thinking_enabled);
+    }
+}

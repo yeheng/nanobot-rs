@@ -146,7 +146,7 @@ impl ContextBuilder {
 
         // ── 2. Load summary with watermark (read path optimization) ─────
         let (existing_summary, watermark) =
-            self.context.load_summary_with_watermark(session_key).await;
+            self.context.load_summary_with_watermark(session_key).await?;
 
         // ── 3. Save user event ────────────────
         let user_event = SessionEvent {
@@ -165,7 +165,7 @@ impl ContextBuilder {
         let history_events = self
             .context
             .get_events_after_watermark(session_key, watermark)
-            .await;
+            .await?;
 
         // ── 4.5. Token-budget trimming (safety net) ──────────────────
         let processed = process_history(history_events, &self.history_config);

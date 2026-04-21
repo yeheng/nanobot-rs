@@ -3,6 +3,7 @@
 //! AgentSession owns session state (events, prompts, memory, compaction)
 //! and delegates the core LLM loop to `kernel::execute()`.
 
+pub mod builder;
 pub mod compactor;
 pub mod config;
 pub mod context;
@@ -28,8 +29,6 @@ use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
-use config::AgentConfigExt;
-use gasket_storage::EventStore;
 use gasket_types::events::ChatEvent;
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
 
@@ -69,13 +68,6 @@ impl FinalizeContext {
         }
     }
 }
-
-/// Conditional type for shared embedder.
-#[cfg(feature = "local-embedding")]
-type SharedEmbedder = Arc<gasket_storage::TextEmbedder>;
-
-#[cfg(not(feature = "local-embedding"))]
-type SharedEmbedder = ();
 
 // ── Skill loading (inlined from agent/core/mod.rs) ──
 
@@ -120,7 +112,26 @@ pub async fn load_skills(workspace: &Path) -> Option<String> {
 }
 
 /// Find the builtin skills directory.
+///
+/// Resolution order:
+/// 1. `GASKET_SKILLS_DIR` environment variable
+/// 2. Executable-relative heuristic (for dev builds)
+/// 3. Current working directory fallback
 pub fn find_builtin_skills_dir() -> Option<PathBuf> {
+    // 1. Environment variable override (production deployments)
+    if let Ok(env_dir) = std::env::var("GASKET_SKILLS_DIR") {
+        let candidate = PathBuf::from(env_dir);
+        if candidate.exists() {
+            info!("Found builtin skills from GASKET_SKILLS_DIR at {:?}", candidate);
+            return Some(candidate);
+        }
+        warn!(
+            "GASKET_SKILLS_DIR set to {:?} but directory does not exist",
+            candidate
+        );
+    }
+
+    // 2. Executable-relative heuristic (development builds)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(project_root) = exe
             .parent()
@@ -135,6 +146,7 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
         }
     }
 
+    // 3. Current working directory fallback
     if let Ok(cwd) = std::env::current_dir() {
         let candidate = cwd.join("engine").join("skills");
         if candidate.exists() {
@@ -204,104 +216,7 @@ impl AgentSession {
         memory_store: Arc<MemoryStore>,
         pricing: Option<ModelPricing>,
     ) -> Result<Self, AgentError> {
-        let sqlite_store = Arc::new(memory_store.sqlite_store().clone());
-        let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
-
-        // Keep clones for evolution hook (before moving into compactor/context)
-        let sqlite_store_for_evo = sqlite_store.clone();
-        let event_store_for_evo = event_store.clone();
-        let provider_for_evo = provider.clone();
-
-        // Create IndexingService
-        let mut indexing_service = IndexingService::new(sqlite_store.clone());
-
-        // Shared embedder
-        #[cfg(feature = "local-embedding")]
-        let _shared_embedder: Option<SharedEmbedder> = {
-            let embedder_config = config
-                .embedding_config
-                .as_ref()
-                .map(|c| gasket_storage::EmbeddingConfig::from(c.clone()))
-                .unwrap_or_default();
-            match gasket_storage::TextEmbedder::with_config(embedder_config) {
-                Ok(embedder) => {
-                    info!("TextEmbedder initialized successfully");
-                    let arc: SharedEmbedder = Arc::new(embedder);
-                    indexing_service.set_embedder(arc.clone());
-                    Some(arc)
-                }
-                Err(e) => {
-                    warn!("Failed to initialize TextEmbedder: {}", e);
-                    None
-                }
-            }
-        };
-        #[cfg(not(feature = "local-embedding"))]
-        let _shared_embedder: Option<SharedEmbedder> = None;
-
-        indexing_service.enable_queue(10000);
-        indexing_service.start_worker();
-        let indexing_service = Arc::new(indexing_service);
-
-        let history_config = gasket_storage::HistoryConfig {
-            max_events: config.memory_window,
-            ..Default::default()
-        };
-
-        let kernel_config = config.to_kernel_config();
-        let runtime_ctx = RuntimeContext {
-            provider: provider.clone(),
-            tools: tools.clone(),
-            config: kernel_config,
-            spawner: None,
-            token_tracker: None,
-        };
-
-        let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
-
-        let mut compactor = ContextCompactor::new(
-            provider,
-            event_store,
-            sqlite_store,
-            config.model.clone(),
-            history_config.token_budget,
-        );
-        if let Some(ref prompt) = config.summarization_prompt {
-            compactor = compactor.with_summarization_prompt(prompt.clone());
-        }
-        let compactor = Arc::new(compactor);
-
-        let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
-        let wiki_components = Self::try_init_wiki(&config, sqlite_store_for_evo.pool()).await;
-        let wiki = wiki_components.map(|(store, index, log)| WikiComponents {
-            page_store: store,
-            page_index: index,
-            wiki_log: log,
-        });
-
-        let hooks = Self::build_hooks(
-            wiki.as_ref().map(|w| &w.page_store),
-            &config,
-            sqlite_store_for_evo,
-            event_store_for_evo,
-            provider_for_evo,
-        );
-
-        Ok(Self {
-            runtime_ctx,
-            context,
-            config,
-            workspace,
-            system_prompt,
-            skills_context,
-            hooks,
-            history_config,
-            compactor: Some(compactor),
-            indexing_service: Some(indexing_service),
-            wiki,
-            pricing,
-            pending_done: tokio_util::task::TaskTracker::new(),
-        })
+        builder::build_session(provider, workspace, config, tools, memory_store, pricing).await
     }
 
     /// Create with pricing configuration.
@@ -314,45 +229,6 @@ impl AgentSession {
         pricing: Option<ModelPricing>,
     ) -> Result<Self, AgentError> {
         Self::with_services(provider, workspace, config, tools, memory_store, pricing).await
-    }
-
-    async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
-        let system_prompt =
-            prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
-        let skills_context = prompt::load_skills_context(workspace).await;
-        Ok((system_prompt, skills_context))
-    }
-
-    fn build_hooks(
-        page_store: Option<&Arc<PageStore>>,
-        config: &AgentConfig,
-        sqlite_store: Arc<gasket_storage::SqliteStore>,
-        event_store: Arc<EventStore>,
-        provider: Arc<dyn gasket_providers::LlmProvider>,
-    ) -> Arc<HookRegistry> {
-        use crate::hooks::EvolutionHook;
-
-        let mut builder = history::builder::build_default_hooks_builder();
-
-        if let (Some(ps), Some(evo_config)) = (page_store, config.evolution.as_ref()) {
-            if evo_config.enabled {
-                let mut evo_hook = EvolutionHook::new(
-                    sqlite_store,
-                    event_store,
-                    provider,
-                    config.model.clone(),
-                    evo_config.clone(),
-                );
-                evo_hook = evo_hook.with_page_store(ps.clone());
-                builder = builder.with_hook(Arc::new(evo_hook));
-                tracing::info!(
-                    "EvolutionHook registered (batch_messages={})",
-                    evo_config.batch_messages
-                );
-            }
-        }
-
-        builder.build_shared()
     }
 
     /// Set the subagent spawner.
@@ -574,7 +450,8 @@ impl AgentSession {
         // Translate kernel StreamEvents into clean ChatEvents for consumers.
         // System events (TokenStats, subagent lifecycle) are dropped here;
         // TokenStats are already handled by the kernel's TokenTracker.
-        tokio::spawn(async move {
+        // Tracked by pending_done for graceful shutdown.
+        self.pending_done.spawn(async move {
             while let Some(event) = kernel_rx.recv().await {
                 if let Some(chat) = event.to_chat_event() {
                     if chat_tx.send(chat).await.is_err() {
@@ -637,61 +514,21 @@ impl AgentSession {
 
         builder.build(content, session_key).await
     }
-
-    /// Try to initialize the wiki knowledge system.
-    async fn try_init_wiki(
-        config: &AgentConfig,
-        pool: sqlx::SqlitePool,
-    ) -> Option<(Arc<PageStore>, Arc<PageIndex>, Arc<WikiLog>)> {
-        let wiki_config = config.wiki.as_ref()?;
-        if !wiki_config.enabled {
-            return None;
-        }
-        let wiki_base = std::path::PathBuf::from(&wiki_config.base_path);
-        let store = PageStore::new(pool.clone(), wiki_base.clone());
-        let tantivy_dir = wiki_base.join(".tantivy");
-        let index = match PageIndex::open(tantivy_dir) {
-            Ok(idx) => idx,
-            Err(e) => {
-                tracing::warn!("Failed to open Tantivy index, search disabled: {}", e);
-                return None;
-            }
-        };
-        let log = WikiLog::new(pool.clone());
-
-        // Ensure directory structure + SQLite tables exist
-        store.init_dirs().await.ok()?;
-        gasket_storage::wiki::tables::create_wiki_tables(&pool)
-            .await
-            .ok()?;
-
-        tracing::info!(
-            "Wiki knowledge system initialized at {}",
-            wiki_config.base_path
-        );
-        Some((Arc::new(store), Arc::new(index), Arc::new(log)))
-    }
 }
 
 // ── Post-processing (shared between direct and streaming) ──────────────────
 
-async fn finalize_response(
-    result: ExecutionResult,
-    ctx: &FinalizeContext,
+/// Save the assistant's response as a session event.
+async fn save_assistant_event(
     context: &AgentContext,
-    hooks: &HookRegistry,
-    model: &str,
-    compactor: Option<&Arc<ContextCompactor>>,
-    pricing: Option<&ModelPricing>,
-) -> AgentResponse {
-    let session_key_str = &ctx.session_key_str;
-    let local_vault_values = &ctx.local_vault_values;
-
-    // Save assistant event
-    let history_content = redact_secrets(&result.content, local_vault_values);
+    result: &ExecutionResult,
+    ctx: &FinalizeContext,
+    vault_values: &[String],
+) {
+    let history_content = redact_secrets(&result.content, vault_values);
     let assistant_event = SessionEvent {
         id: uuid::Uuid::now_v7(),
-        session_key: session_key_str.to_string(),
+        session_key: ctx.session_key_str.to_string(),
         event_type: EventType::AssistantMessage,
         content: history_content,
         embedding: None,
@@ -705,15 +542,27 @@ async fn finalize_response(
     if let Err(e) = context.save_event(assistant_event).await {
         warn!("Failed to persist assistant event: {}", e);
     }
+}
 
-    // Non-blocking compaction
+/// Trigger non-blocking context compaction if token budget is exceeded.
+fn trigger_compaction(
+    compactor: Option<&Arc<ContextCompactor>>,
+    ctx: &FinalizeContext,
+    vault_values: &[String],
+) {
     if ctx.estimated_tokens > 0 {
-        if let Some(compactor) = compactor {
-            compactor.try_compact(&ctx.session_key, ctx.estimated_tokens, local_vault_values);
+        if let Some(comp) = compactor {
+            comp.try_compact(&ctx.session_key, ctx.estimated_tokens, vault_values);
         }
     }
+}
 
-    // AfterResponse hooks
+/// Execute AfterResponse hooks with the result context.
+async fn execute_after_response_hooks(
+    hooks: &HookRegistry,
+    result: &ExecutionResult,
+    ctx: &FinalizeContext,
+) {
     let tools_used: Vec<crate::hooks::ToolCallInfo> = result
         .tools_used
         .iter()
@@ -724,18 +573,16 @@ async fn finalize_response(
         })
         .collect();
 
-    let token_usage_for_hooks =
-        result
-            .token_usage
-            .as_ref()
-            .map(|usage| crate::token_tracker::TokenUsage {
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                total_tokens: usage.total_tokens,
-            });
+    let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
+        crate::token_tracker::TokenUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+        }
+    });
 
     let mut hook_ctx = MutableContext {
-        session_key: session_key_str,
+        session_key: &ctx.session_key_str,
         messages: &mut vec![],
         user_input: Some(&ctx.content),
         response: Some(&result.content),
@@ -746,19 +593,46 @@ async fn finalize_response(
     if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut hook_ctx).await {
         warn!("AfterResponse hook failed (ignored): {}", e);
     }
+}
 
-    let cost = if let (Some(usage), Some(pricing)) = (result.token_usage.as_ref(), pricing) {
-        pricing.calculate_cost(usage.input_tokens, usage.output_tokens)
-    } else {
-        0.0
-    };
+/// Calculate the cost of the response based on token usage.
+fn calculate_cost(
+    token_usage: &Option<gasket_types::TokenUsage>,
+    pricing: Option<&ModelPricing>,
+) -> f64 {
+    match (token_usage, pricing) {
+        (Some(usage), Some(p)) => p.calculate_cost(usage.input_tokens, usage.output_tokens),
+        _ => 0.0,
+    }
+}
 
-    if let Some(ref usage) = result.token_usage {
+/// Log token usage statistics.
+fn log_token_stats(usage: &Option<gasket_types::TokenUsage>, cost: f64) {
+    if let Some(u) = usage {
         info!(
             "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-            usage.input_tokens, usage.output_tokens, usage.total_tokens, cost
+            u.input_tokens, u.output_tokens, u.total_tokens, cost
         );
     }
+}
+
+async fn finalize_response(
+    result: ExecutionResult,
+    ctx: &FinalizeContext,
+    context: &AgentContext,
+    hooks: &HookRegistry,
+    model: &str,
+    compactor: Option<&Arc<ContextCompactor>>,
+    pricing: Option<&ModelPricing>,
+) -> AgentResponse {
+    let vault_values = &ctx.local_vault_values;
+
+    save_assistant_event(context, &result, ctx, vault_values).await;
+    trigger_compaction(compactor, ctx, vault_values);
+    execute_after_response_hooks(hooks, &result, ctx).await;
+
+    let cost = calculate_cost(&result.token_usage, pricing);
+    log_token_stats(&result.token_usage, cost);
 
     AgentResponse {
         content: result.content,

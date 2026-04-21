@@ -1,13 +1,33 @@
 //! Database schema migrations.
 //!
-//! Each `run_*` function is a migration step. They are idempotent: checking
-//! for column existence before ALTERing, using CREATE IF NOT EXISTS for tables
-//! and indexes.
+//! Each domain has its own migration module:
+//! - `session` — conversation history tables
+//! - `memory` — memory embedding tables
+//! - `cron` — scheduled task state
+//! - `kv` — key-value store and checkpoints
 
 use sqlx::SqlitePool;
 
+pub mod session;
+pub mod memory;
+pub mod cron;
+pub mod kv;
+
 /// Run all migrations on an existing pool.
 pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
+    // Run schema migrations first (table creation)
+    session::run_schema(pool).await?;
+    memory::run_schema(pool).await?;
+    cron::run_schema(pool).await?;
+    kv::run_schema(pool).await?;
+
+    // Run incremental migrations (column additions)
+    run_incremental(pool).await?;
+    Ok(())
+}
+
+/// Incremental migrations for adding columns to existing tables.
+async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
     migrate_add_watermark_to_summaries(pool).await?;
     migrate_add_sequence_to_events(pool).await?;
     migrate_add_needs_embedding_to_metadata(pool).await?;
@@ -27,7 +47,7 @@ async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ─── Individual migrations ────────────────────────────────────────────────────
+// ─── Incremental migrations ────────────────────────────────────────────────────
 
 /// Add `covered_upto_sequence` column to `session_summaries` if it doesn't exist.
 async fn migrate_add_watermark_to_summaries(pool: &SqlitePool) -> anyhow::Result<()> {

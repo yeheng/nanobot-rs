@@ -124,6 +124,9 @@ mod tests {
             tags: vec![],
             updated: Utc::now(),
             confidence,
+            frequency: gasket_storage::wiki::Frequency::Warm,
+            access_count: 0,
+            last_accessed: None,
         }
     }
 

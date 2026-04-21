@@ -36,7 +36,8 @@ use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{Session, SessionEvent};
 
-use super::history::coordinator::HistoryCoordinator;
+#[cfg(feature = "local-embedding")]
+use gasket_storage::TextEmbedder;
 
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
@@ -54,38 +55,27 @@ pub enum AgentContext {
 
 /// Persistent context data for main agents.
 ///
-/// Holds references to the event store needed for session persistence,
-/// and an optional text embedder for automatic embedding generation
-/// on every saved event (decoupled from summarization/compaction).
+/// Holds references to the event store and sqlite store for session persistence.
+/// All fields are populated at construction time — no partial initialization.
 #[derive(Clone)]
 pub struct PersistentContext {
     /// Event store for persisting events
     pub event_store: Arc<EventStore>,
     /// SQLite store for saving embeddings (semantic recall index)
     pub sqlite_store: Arc<gasket_storage::SqliteStore>,
-    /// Optional text embedder for automatic embedding generation.
-    /// When present, every saved event gets an embedding for semantic recall,
-    /// regardless of whether compaction/summarization is enabled.
+    /// Optional text embedder for synchronous embedding on save.
+    /// When present, every saved event gets an embedding for semantic recall.
     #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<gasket_storage::TextEmbedder>>,
-    /// Optional HistoryCoordinator for unified history queries.
-    /// Set after construction once all dependencies are available.
-    pub coordinator: Option<Arc<HistoryCoordinator>>,
+    pub embedder: Option<Arc<TextEmbedder>>,
 }
 
 impl std::fmt::Debug for PersistentContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentContext")
             .field("event_store", &"EventStore { .. }")
+            .field("sqlite_store", &"SqliteStore { .. }")
+            .field("embedder", &"Option<TextEmbedder> { .. }")
             .finish()
-    }
-}
-
-impl PersistentContext {
-    /// Set the HistoryCoordinator for this context.
-    /// Called after construction once all dependencies are available.
-    pub fn set_coordinator(&mut self, coordinator: Arc<HistoryCoordinator>) {
-        self.coordinator = Some(coordinator);
     }
 }
 
@@ -114,7 +104,20 @@ impl AgentContext {
             sqlite_store,
             #[cfg(feature = "local-embedding")]
             embedder: None,
-            coordinator: None,
+        })
+    }
+
+    /// Create a persistent context with embedder for semantic indexing.
+    #[cfg(feature = "local-embedding")]
+    pub fn persistent_with_embedder(
+        event_store: Arc<EventStore>,
+        sqlite_store: Arc<gasket_storage::SqliteStore>,
+        embedder: Arc<gasket_storage::TextEmbedder>,
+    ) -> Self {
+        Self::Persistent(PersistentContext {
+            event_store,
+            sqlite_store,
+            embedder: Some(embedder),
         })
     }
 
@@ -129,19 +132,22 @@ impl AgentContext {
     ///
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// For `Stateless` context or if no summary exists, returns `("", 0)`.
-    pub async fn load_summary_with_watermark(&self, session_key: &SessionKey) -> (String, i64) {
+    pub async fn load_summary_with_watermark(
+        &self,
+        session_key: &SessionKey,
+    ) -> Result<(String, i64), AgentError> {
         match self {
             Self::Persistent(ctx) => {
                 match ctx.sqlite_store.load_session_summary(session_key).await {
-                    Ok(Some((content, watermark))) => (content, watermark),
-                    Ok(None) => (String::new(), 0),
-                    Err(e) => {
-                        warn!("Failed to load summary for {}: {}", session_key, e);
-                        (String::new(), 0)
-                    }
+                    Ok(Some((content, watermark))) => Ok((content, watermark)),
+                    Ok(None) => Ok((String::new(), 0)),
+                    Err(e) => Err(AgentError::SessionError(format!(
+                        "Failed to load summary for {}: {}",
+                        session_key, e
+                    ))),
                 }
             }
-            Self::Stateless => (String::new(), 0),
+            Self::Stateless => Ok((String::new(), 0)),
         }
     }
 
@@ -153,32 +159,24 @@ impl AgentContext {
         &self,
         session_key: &SessionKey,
         watermark: i64,
-    ) -> Vec<SessionEvent> {
+    ) -> Result<Vec<SessionEvent>, AgentError> {
         match self {
             Self::Persistent(ctx) => {
-                if watermark == 0 {
-                    // No summary exists — load all history
-                    ctx.event_store
-                        .get_session_history(session_key)
-                        .await
-                        .unwrap_or_else(|e| {
-                            warn!("Failed to load history for '{}': {}", session_key, e);
-                            Vec::new()
-                        })
+                let result = if watermark == 0 {
+                    ctx.event_store.get_session_history(session_key).await
                 } else {
                     ctx.event_store
                         .get_events_after_sequence(session_key, watermark)
                         .await
-                        .unwrap_or_else(|e| {
-                            warn!(
-                                "Failed to load events after watermark for '{}': {}",
-                                session_key, e
-                            );
-                            Vec::new()
-                        })
-                }
+                };
+                result.map_err(|e| {
+                    AgentError::SessionError(format!(
+                        "Failed to load history for '{}': {}",
+                        session_key, e
+                    ))
+                })
             }
-            Self::Stateless => vec![],
+            Self::Stateless => Ok(vec![]),
         }
     }
 
@@ -186,38 +184,38 @@ impl AgentContext {
     ///
     /// For `Persistent` context, loads events from EventStore and reconstructs session state.
     /// For `Stateless` context, creates a new in-memory session.
-    pub async fn load_session(&self, key: &SessionKey) -> Session {
+    pub async fn load_session(&self, key: &SessionKey) -> Result<Session, AgentError> {
         match self {
             Self::Persistent(ctx) => {
                 let events = ctx
                     .event_store
                     .get_session_history(key)
                     .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to load session history for '{}': {}", key, e);
-                        Vec::new()
-                    });
+                    .map_err(|e| {
+                        AgentError::SessionError(format!(
+                            "Failed to load session history for '{}': {}",
+                            key, e
+                        ))
+                    })?;
 
                 let mut session = Session::new(key.to_string());
                 session.update_from_events(&events);
                 debug!("Loaded session {} with {} events", key, events.len());
-                session
+                Ok(session)
             }
-            Self::Stateless => Session::new(key.to_string()),
+            Self::Stateless => Ok(Session::new(key.to_string())),
         }
     }
 
     /// Save an event to the session.
     ///
-    /// For `Persistent` context, persists the event to the EventStore.
+    /// For `Persistent` context, persists the event to the EventStore and
+    ///同步生成 embedding for semantic recall (if embedder is configured).
     /// For `Stateless` context, this is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the event cannot be persisted to the database.
     pub async fn save_event(&self, event: SessionEvent) -> Result<(), AgentError> {
         match self {
             Self::Persistent(ctx) => {
+                // Save event to EventStore
                 ctx.event_store
                     .append_event(&event)
                     .await
@@ -229,60 +227,94 @@ impl AgentContext {
                     event.session_key
                 );
 
+                // Synchronously generate and save embedding (if embedder is configured)
+                #[cfg(feature = "local-embedding")]
+                if let Some(ref embedder) = ctx.embedder {
+                    let event_id = event.id.to_string();
+                    let session_key = event.session_key.clone();
+                    match embedder.embed(&event.content) {
+                        Ok(embedding) => {
+                            if let Err(e) = ctx
+                                .sqlite_store
+                                .save_embedding(&event_id, &session_key, &embedding)
+                                .await
+                            {
+                                warn!("Failed to save embedding for event {}: {}", event_id, e);
+                            } else {
+                                debug!("Saved embedding for event {} in session {}", event_id, session_key);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to embed event {}: {}", event_id, e);
+                        }
+                    }
+                }
+
                 Ok(())
             }
             Self::Stateless => Ok(()),
         }
     }
 
-    /// Recall relevant historical messages based on recency and content heuristics.
+    /// Recall relevant historical messages using semantic embedding similarity.
     ///
-    /// Returns the top-K most relevant messages from the event store using
-    /// a scoring function that combines recency and content length.
+    /// Returns the top-K most relevant messages based on cosine similarity
+    /// between the query embedding and stored session embeddings.
+    /// Falls back to recency scoring if no embeddings are available.
     /// For `Stateless` context, returns an empty vector.
-    ///
-    /// # Note
-    /// The `_query_embedding` parameter is currently unused but reserved for
-    /// future semantic search support via `HistoryCoordinator`.
     pub async fn recall_history(
         &self,
         key: &SessionKey,
-        _query_embedding: &[f32],
+        query_embedding: &[f32],
         top_k: usize,
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> Result<Vec<String>, AgentError> {
         match self {
             Self::Persistent(ctx) => {
-                let events = ctx
-                    .event_store
-                    .get_session_history(key)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to load events for recall: {}", e);
-                        Vec::new()
-                    });
-
-                if events.is_empty() {
+                // Fallback: if no embedder or empty query, return empty
+                if query_embedding.is_empty() {
                     return Ok(Vec::new());
                 }
 
-                let mut scored: Vec<(f32, String)> = events
+                let key_str = key.to_string();
+
+                // Load pre-computed embeddings for this session
+                let embeddings = match ctx.sqlite_store.load_session_embeddings(&key_str).await {
+                    Ok(embs) => embs,
+                    Err(e) => {
+                        warn!("Failed to load session embeddings for recall: {}", e);
+                        return Ok(Vec::new());
+                    }
+                };
+
+                if embeddings.is_empty() {
+                    debug!("No embeddings found for session {}, returning empty recall", key);
+                    return Ok(Vec::new());
+                }
+
+                // Prepare candidates for top-k search
+                let candidates: Vec<(String, Vec<f32>)> = embeddings
                     .iter()
-                    .enumerate()
-                    .map(|(idx, event)| {
-                        let recency = idx as f32 / events.len() as f32;
-                        let length = (event.content.len() as f32).ln() / 10.0;
-                        (recency + length, event.content.clone())
-                    })
+                    .map(|(_, content, emb)| (content.clone(), emb.clone()))
                     .collect();
 
-                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                // Find top-K similar messages using cosine similarity
+                let top_results = gasket_storage::top_k_similar(query_embedding, &candidates, top_k);
 
-                let results: Vec<String> = scored.into_iter().take(top_k).map(|(_, c)| c).collect();
+                if top_results.is_empty() {
+                    debug!("No similar messages found for session {}", key);
+                    return Ok(Vec::new());
+                }
+
+                let results: Vec<String> = top_results
+                    .into_iter()
+                    .map(|(content, _score)| content.to_string())
+                    .collect();
                 debug!(
-                    "Recalled {} history items for {} (top_k={})",
+                    "Recalled {} history items for {} (top_k={}, candidates={})",
                     results.len(),
                     key,
-                    top_k
+                    top_k,
+                    candidates.len()
                 );
                 Ok(results)
             }
@@ -387,7 +419,7 @@ mod tests {
     async fn test_stateless_load_session() {
         let context = AgentContext::Stateless;
         let key = SessionKey::new(gasket_types::ChannelType::Cli, "test");
-        let session = context.load_session(&key).await;
+        let session = context.load_session(&key).await.expect("load session");
         assert_eq!(session.key, key.to_string());
     }
 

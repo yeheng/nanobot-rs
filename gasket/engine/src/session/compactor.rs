@@ -264,7 +264,7 @@ impl ContextCompactor {
             summary_tokens,
             uncompacted_events: events.len(),
             event_tokens,
-            is_compressing: self.is_compressing.load(Ordering::Relaxed),
+            is_compressing: self.is_compressing.load(Ordering::Acquire),
         })
     }
 
@@ -315,8 +315,9 @@ impl ContextCompactor {
             debug!("Force compaction skipped: already in progress for {}", sk);
             return false;
         }
+        let guard = CompactionGuard(self.is_compressing.clone());
         info!("Force compaction triggered for {}", sk);
-        self.spawn_compaction_task(session_key, vault_values);
+        self.spawn_compaction_task(session_key, vault_values, guard);
         true
     }
 
@@ -448,7 +449,8 @@ impl ContextCompactor {
         if !self.try_acquire_lock(&sk) {
             return false;
         }
-        self.spawn_compaction_task(session_key, vault_values);
+        let guard = CompactionGuard(self.is_compressing.clone());
+        self.spawn_compaction_task(session_key, vault_values, guard);
         true
     }
 
@@ -460,7 +462,7 @@ impl ContextCompactor {
     ///
     /// Returns `false` if already compressing or below the token threshold.
     fn should_compact(&self, session_key: &str, current_tokens: usize) -> bool {
-        if self.is_compressing.load(Ordering::Relaxed) {
+        if self.is_compressing.load(Ordering::Acquire) {
             debug!(
                 "Compaction already in progress for {}, skipping",
                 session_key
@@ -507,7 +509,7 @@ impl ContextCompactor {
     // -----------------------------------------------------------------------
 
     /// Clone all fields and spawn the background compaction task.
-    fn spawn_compaction_task(&self, session_key: &SessionKey, vault_values: &[String]) {
+    fn spawn_compaction_task(&self, session_key: &SessionKey, vault_values: &[String], guard: CompactionGuard) {
         let event_store = self.event_store.clone();
         let sqlite_store = self.sqlite_store.clone();
         let provider = self.provider.clone();
@@ -515,10 +517,9 @@ impl ContextCompactor {
         let summarization_prompt = self.summarization_prompt.clone();
         let sk = session_key.clone();
         let vault = vault_values.to_vec();
-        let flag = self.is_compressing.clone();
 
         tokio::spawn(async move {
-            let _guard = CompactionGuard(flag);
+            let _guard = guard;
             debug!("Background compaction started for {}", sk);
 
             if let Err(e) = run_compaction(

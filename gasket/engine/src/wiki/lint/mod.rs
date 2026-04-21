@@ -188,7 +188,6 @@ mod tests {
                 description: "Not referenced".to_string(),
                 severity: Severity::Low,
             }],
-            semantic: vec![],
             pages_checked: 10,
         };
         let summary = report.summary();
@@ -201,7 +200,6 @@ mod tests {
     fn test_lint_report_total() {
         let report = LintReport {
             structural: vec![],
-            semantic: vec![],
             pages_checked: 5,
         };
         assert_eq!(report.total_issues(), 0);

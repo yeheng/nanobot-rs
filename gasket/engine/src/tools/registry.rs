@@ -48,10 +48,15 @@ pub struct ToolRegistry {
 }
 
 impl Clone for ToolRegistry {
+    /// Creates a shallow copy of the registry.
+    ///
+    /// The embeddings cache is shared via `Arc`. If the clone registers new tools,
+    /// it will create a new empty cache for itself (see `register()`), leaving the
+    /// original registry's cache intact.
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
-            embeddings: Arc::new(OnceLock::new()),
+            embeddings: self.embeddings.clone(),
         }
     }
 }

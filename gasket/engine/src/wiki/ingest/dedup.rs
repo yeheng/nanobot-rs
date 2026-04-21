@@ -214,6 +214,9 @@ mod tests {
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
             updated: Utc::now(),
             confidence: 1.0,
+            frequency: gasket_storage::wiki::Frequency::Warm,
+            access_count: 0,
+            last_accessed: None,
         }
     }
 
