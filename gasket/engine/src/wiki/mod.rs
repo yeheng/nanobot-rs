@@ -94,6 +94,27 @@ mod tests {
         assert_eq!("entity".parse(), Ok(PageType::Entity));
         assert_eq!("topic".parse(), Ok(PageType::Topic));
         assert_eq!("source".parse(), Ok(PageType::Source));
+        assert_eq!("sop".parse(), Ok(PageType::Sop));
         assert!("unknown".parse::<PageType>().is_err());
+    }
+
+    #[test]
+    fn test_page_type_sop_directory() {
+        assert_eq!(PageType::Sop.as_str(), "sop");
+        assert_eq!(PageType::Sop.directory(), "sops");
+    }
+
+    #[test]
+    fn test_sop_page_roundtrip() {
+        let page = WikiPage::new(
+            "sops/docker-build".to_string(),
+            "Docker Build SOP".to_string(),
+            PageType::Sop,
+            "1. Check Dockerfile exists\n2. Run docker build".to_string(),
+        );
+        let md = page.to_markdown();
+        let parsed = WikiPage::from_markdown("sops/docker-build".to_string(), &md).unwrap();
+        assert_eq!(parsed.page_type, PageType::Sop);
+        assert_eq!(parsed.title, "Docker Build SOP");
     }
 }

@@ -104,6 +104,36 @@ pub struct WatermarkInfo {
     pub compacted_percent: f64,
 }
 
+/// Configuration for proactive checkpointing.
+#[derive(Debug, Clone)]
+pub struct CheckpointConfig {
+    /// Trigger checkpoint every N sequence increments (0 = disabled).
+    pub interval_turns: usize,
+    /// Prompt template for checkpoint generation.
+    pub prompt: String,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            interval_turns: 7,
+            prompt: r#"Summarize current task state for working memory.
+Output ONLY in this format:
+
+<key_info>
+- Current goal: [one sentence]
+- Completed: [list]
+- Blocked on: [if any]
+- Next step: [one sentence]
+- Key facts learned: [list]
+</key_info>
+
+Be concise."#
+                .into(),
+        }
+    }
+}
+
 /// Watermark-based context compactor.
 ///
 /// Called via `tokio::spawn` after each agent response when the token budget
@@ -130,6 +160,8 @@ pub struct ContextCompactor {
     summarization_prompt: String,
     /// Guard preventing concurrent compaction for the same session.
     is_compressing: Arc<AtomicBool>,
+    /// Optional checkpoint configuration for proactive working-memory snapshots.
+    checkpoint_config: Option<CheckpointConfig>,
 }
 
 impl ContextCompactor {
@@ -153,12 +185,19 @@ impl ContextCompactor {
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
             summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
             is_compressing: Arc::new(AtomicBool::new(false)),
+            checkpoint_config: None,
         }
     }
 
     /// Set a custom summarization prompt (overrides built-in default).
     pub fn with_summarization_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.summarization_prompt = prompt.into();
+        self
+    }
+
+    /// Enable proactive checkpointing.
+    pub fn with_checkpoint_config(mut self, config: CheckpointConfig) -> Self {
+        self.checkpoint_config = Some(config);
         self
     }
 
@@ -308,6 +347,82 @@ impl ContextCompactor {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Compaction failed for {}: {}", sk, e))
+    }
+
+    /// Generate a proactive checkpoint for the current session state.
+    ///
+    /// Called every N sequence increments. Returns `Some(summary)` if a
+    /// checkpoint was generated, `None` if skipped.
+    ///
+    /// `current_max_sequence` must be fetched from `EventStore` — never pass
+    /// a transient turn counter.
+    pub async fn checkpoint(
+        &self,
+        session_key: &SessionKey,
+        current_max_sequence: i64,
+    ) -> Result<Option<String>> {
+        let config = match &self.checkpoint_config {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        if config.interval_turns == 0
+            || current_max_sequence == 0
+            || current_max_sequence % config.interval_turns as i64 != 0
+        {
+            return Ok(None);
+        }
+
+        // Load recent events for context
+        let events = self
+            .event_store
+            .get_events_after_sequence(
+                session_key,
+                current_max_sequence.saturating_sub(config.interval_turns as i64),
+            )
+            .await
+            .unwrap_or_default();
+
+        let events_text = events
+            .iter()
+            .map(|e| format!("{}: {}", e.event_type, e.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!("{}\n\nRecent events:\n{}", config.prompt, events_text);
+
+        let request = gasket_providers::ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage::system("You are a state summarizer."),
+                ChatMessage::user(prompt),
+            ],
+            tools: None,
+            temperature: Some(0.2),
+            max_tokens: Some(512),
+            thinking: None,
+        };
+
+        let response = self.provider.chat(request).await?;
+        let summary = response.content.unwrap_or_default().trim().to_string();
+
+        if summary.is_empty() {
+            warn!("Checkpoint generated empty summary for {}", session_key);
+            return Ok(None);
+        }
+
+        self.sqlite_store
+            .save_checkpoint(&session_key.to_string(), current_max_sequence, &summary)
+            .await?;
+
+        info!(
+            "Checkpoint saved for {} at sequence {} ({} chars)",
+            session_key,
+            current_max_sequence,
+            summary.len()
+        );
+
+        Ok(Some(summary))
     }
 
     /// Try to trigger background compaction.
@@ -607,6 +722,13 @@ mod tests {
     #[test]
     fn test_summarization_prompt_not_empty() {
         assert!(!SUMMARIZATION_PROMPT.is_empty());
+    }
+
+    #[test]
+    fn test_checkpoint_config_default() {
+        let config = CheckpointConfig::default();
+        assert_eq!(config.interval_turns, 7);
+        assert!(config.prompt.contains("Current goal"));
     }
 
     #[test]

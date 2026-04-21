@@ -127,6 +127,7 @@ impl WikiIntegrator {
             PageType::Entity => "entities",
             PageType::Topic => "topics",
             PageType::Source => "sources",
+            PageType::Sop => "sops",
         };
         let path = format!("{}/{}", prefix, slugify(title));
 

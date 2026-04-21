@@ -656,6 +656,28 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
+        // ── Session checkpoints ──
+        // Proactive working-memory snapshots every N sequence increments.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_checkpoints (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key     TEXT NOT NULL,
+                target_sequence INTEGER NOT NULL,
+                summary         TEXT NOT NULL,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(session_key, target_sequence)
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_seq
+             ON session_checkpoints(session_key, target_sequence)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -689,6 +711,46 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    // ── Session Checkpoints API ──
+
+    /// Save a checkpoint summary for a session at a specific target_sequence.
+    pub async fn save_checkpoint(
+        &self,
+        session_key: &str,
+        target_sequence: i64,
+        summary: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_checkpoints (session_key, target_sequence, summary, created_at)
+             VALUES (?1, ?2, ?3, datetime('now'))",
+        )
+        .bind(session_key)
+        .bind(target_sequence)
+        .bind(summary)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Load the most recent checkpoint for a session before or at a given target_sequence.
+    pub async fn load_checkpoint(
+        &self,
+        session_key: &str,
+        target_sequence: i64,
+    ) -> anyhow::Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT summary, target_sequence FROM session_checkpoints
+             WHERE session_key = ?1 AND target_sequence <= ?2
+             ORDER BY target_sequence DESC
+             LIMIT 1",
+        )
+        .bind(session_key)
+        .bind(target_sequence)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 }
 

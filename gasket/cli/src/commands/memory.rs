@@ -422,6 +422,7 @@ pub async fn cmd_wiki_list(page_type: Option<&str>) -> Result<()> {
             PageType::Entity => "[E]",
             PageType::Topic => "[T]",
             PageType::Source => "[S]",
+            PageType::Sop => "[P]",
         };
         let tags = if page.tags.is_empty() {
             String::new()
