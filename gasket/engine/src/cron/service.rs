@@ -14,7 +14,7 @@ use super::parser;
 use super::persistence::CronPersistence;
 use super::registry::CronRegistry;
 use super::scheduler;
-use super::types::{CronJob, FileMetadata, RefreshNextRunEntry, RefreshReport};
+use super::types::{CronJob, RefreshNextRunEntry, RefreshReport};
 
 /// Cron service for scheduled tasks.
 ///
@@ -98,14 +98,11 @@ impl CronService {
         let mut report = RefreshReport::default();
         let (changed, meta_errors) = self.get_changed_files();
         report.errors += meta_errors;
-        for (ref path, ref job_id, ref metadata) in changed {
+        for (ref path, ref job_id) in changed {
             let is_update = self.registry.read().contains(job_id);
             match self.parse_and_restore(path).await {
                 Ok(job) => {
                     self.registry.write().insert(job);
-                    self.registry
-                        .write()
-                        .set_file_metadata(job_id.clone(), metadata.clone());
                     if is_update {
                         report.updated += 1;
                     } else {
@@ -126,7 +123,7 @@ impl CronService {
         Ok(report)
     }
 
-    fn get_changed_files(&self) -> (Vec<(PathBuf, String, FileMetadata)>, usize) {
+    fn get_changed_files(&self) -> (Vec<(PathBuf, String)>, usize) {
         let cron_dir = self.workspace.join("cron");
         if !cron_dir.exists() {
             return (Vec::new(), 0);
@@ -139,36 +136,16 @@ impl CronService {
                 if path.extension().and_then(|s| s.to_str()) != Some("md") {
                     continue;
                 }
-                let Ok(fm) = std::fs::metadata(&path) else {
+                if std::fs::metadata(&path).is_err() {
                     errors += 1;
                     continue;
                 };
-                let disk_mtime = fm
-                    .modified()
-                    .ok()
-                    .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0);
-                let disk_size = fm.len();
                 let job_id = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
-                let cached = self.registry.read().get_file_metadata(&job_id).cloned();
-                if let Some(c) = cached {
-                    if c.mtime == disk_mtime && c.size == disk_size {
-                        continue;
-                    }
-                }
-                changed.push((
-                    path,
-                    job_id,
-                    FileMetadata {
-                        mtime: disk_mtime,
-                        size: disk_size,
-                    },
-                ));
+                changed.push((path, job_id));
             }
         }
         (changed, errors)

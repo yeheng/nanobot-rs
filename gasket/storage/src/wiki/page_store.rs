@@ -49,8 +49,8 @@ impl WikiPageStore {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 type = excluded.type,
@@ -60,10 +60,7 @@ impl WikiPageStore {
                 updated = excluded.updated,
                 source_count = excluded.source_count,
                 confidence = excluded.confidence,
-                checksum = excluded.checksum,
-                frequency = excluded.frequency,
-                access_count = excluded.access_count,
-                last_accessed = excluded.last_accessed
+                checksum = excluded.checksum
             "#,
         )
         .bind(page.path)

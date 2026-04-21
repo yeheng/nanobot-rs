@@ -1,23 +1,19 @@
-//! Wiki query pipeline — three-phase retrieval with hybrid reranking.
+//! Wiki query pipeline — two-phase retrieval with Tantivy boost.
 //!
-//! Phase 1: Tantivy BM25 → candidate set (top-50)
-//! Phase 2: Reranker → combined score (BM25 + confidence + recency)
-//! Phase 3: Budget-aware selection → load full pages from SQLite
+//! Phase 1: Tantivy BM25 → candidate set (top-50, title boosted)
+//! Phase 2: Budget-aware selection → load full pages from SQLite
 //!
-//! Task 14: TantivyIndex (BM25 only)
-//! Task 15: WikiQueryEngine + Reranker + file_answer
+//! Reranker removed: title boost is handled in Tantivy query parsing.
 
-pub mod reranker;
 pub mod tantivy_adapter;
 
-pub use reranker::{Reranker, ScoredCandidate};
 pub use tantivy_adapter::{SearchHit, TantivyIndex};
 
 use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::page::{slugify, PageSummary, PageType, WikiPage};
+use super::page::{slugify, PageType, WikiPage};
 use super::store::PageStore;
 
 /// Token budget for query results (controls how much content to return).
@@ -77,11 +73,10 @@ impl QueryResult {
     }
 }
 
-/// Wiki query engine — three-phase retrieval over wiki pages.
+/// Wiki query engine — two-phase retrieval over wiki pages.
 pub struct WikiQueryEngine {
     tantivy: Arc<TantivyIndex>,
     store: Arc<PageStore>,
-    reranker: Reranker,
 }
 
 impl WikiQueryEngine {
@@ -90,28 +85,13 @@ impl WikiQueryEngine {
         Self {
             tantivy,
             store,
-            reranker: Reranker::new(),
         }
     }
 
-    /// Create with custom reranker weights.
-    pub fn with_reranker(
-        tantivy: Arc<TantivyIndex>,
-        store: Arc<PageStore>,
-        reranker: Reranker,
-    ) -> Self {
-        Self {
-            tantivy,
-            store,
-            reranker,
-        }
-    }
-
-    /// Full three-phase query with budget-aware selection.
+    /// Full two-phase query with budget-aware selection.
     ///
-    /// Phase 1: Tantivy BM25 → top-50 candidates
-    /// Phase 2: Rerank by combined score (BM25 + confidence + recency)
-    /// Phase 3: Budget selection → load pages from SQLite
+    /// Phase 1: Tantivy BM25 → top-50 candidates (title boosted)
+    /// Phase 2: Budget selection → load pages from SQLite
     pub async fn query(&self, query: &str, budget: TokenBudget) -> Result<QueryResult> {
         // Phase 1: Candidate retrieval
         let candidates = self.tantivy.search(query, 50)?;
@@ -125,35 +105,14 @@ impl WikiQueryEngine {
             });
         }
 
-        // Phase 2: Load summaries for reranking metadata
-        let mut summaries = Vec::new();
-        for hit in &candidates {
-            if let Ok(page) = self.store.read(&hit.path).await {
-                summaries.push(PageSummary {
-                    path: page.path,
-                    title: page.title,
-                    page_type: page.page_type,
-                    category: page.category,
-                    tags: page.tags,
-                    updated: page.updated,
-                    confidence: page.confidence,
-                    frequency: page.frequency,
-                    access_count: page.access_count,
-                    last_accessed: page.last_accessed,
-                });
-            }
-        }
-
-        let ranked = self.reranker.rerank(candidates, &summaries);
-
-        // Phase 3: Budget-aware selection + load full pages
+        // Phase 2: Budget-aware selection + load full pages
         let chars_budget = budget.chars_budget();
         let mut used_chars = 0usize;
         let mut pages = Vec::new();
         let mut estimated_tokens = 0usize;
 
-        for candidate in &ranked {
-            match self.store.read(&candidate.hit.path).await {
+        for hit in &candidates {
+            match self.store.read(&hit.path).await {
                 Ok(page) => {
                     let page_chars = page.content.len();
                     if used_chars + page_chars > chars_budget && !pages.is_empty() {
@@ -164,7 +123,7 @@ impl WikiQueryEngine {
                     pages.push(page);
                 }
                 Err(e) => {
-                    tracing::debug!("WikiQuery: skip '{}': {}", candidate.hit.path, e);
+                    tracing::debug!("WikiQuery: skip '{}': {}", hit.path, e);
                 }
             }
         }

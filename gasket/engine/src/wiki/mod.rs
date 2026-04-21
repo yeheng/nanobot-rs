@@ -22,7 +22,7 @@ pub use lint::{
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
 pub use query::{
-    QueryResult, Reranker, ScoredCandidate, SearchHit, TantivyIndex, TokenBudget, WikiQueryEngine,
+    QueryResult, SearchHit, TantivyIndex, TokenBudget, WikiQueryEngine,
 };
 pub use store::PageStore;
 

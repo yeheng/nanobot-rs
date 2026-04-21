@@ -1,4 +1,5 @@
 use anyhow::Result;
+use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
 use tokio::fs;
@@ -82,8 +83,12 @@ impl PageStore {
         })
     }
 
-    /// Write a page to SQLite (single truth) + optional disk sync
+    /// Write a page: Markdown is SSOT. Write to disk atomically first,
+    /// then update SQLite. If disk write fails, the operation fails entirely.
     pub async fn write(&self, page: &WikiPage) -> Result<()> {
+        // SSOT write: atomic Markdown write first. If this fails, fail the operation.
+        self.sync_to_disk(page).await?;
+
         let tags_str = serde_json::to_string(&page.tags)?;
         let checksum = Some(format!("{}", page.content.len()));
         self.db
@@ -104,8 +109,6 @@ impl PageStore {
             })
             .await?;
 
-        // Lazy disk sync (best effort)
-        let _ = self.sync_to_disk(page).await;
         Ok(())
     }
 
@@ -153,13 +156,13 @@ impl PageStore {
             .collect())
     }
 
-    /// Sync page to disk as markdown (optional, for human readability)
+    /// Sync page to disk as markdown using atomic write (crash-safe).
     pub async fn sync_to_disk(&self, page: &WikiPage) -> Result<()> {
         let path = self.wiki_root.join(format!("{}.md", page.path));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::write(&path, page.to_markdown()).await?;
+        atomic_write(&path, page.to_markdown()).await?;
         Ok(())
     }
 

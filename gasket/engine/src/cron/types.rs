@@ -56,13 +56,6 @@ fn default_true() -> bool {
     true
 }
 
-/// Cached file metadata for change detection
-#[derive(Debug, Clone)]
-pub(super) struct FileMetadata {
-    pub mtime: u64,
-    pub size: u64,
-}
-
 /// Report from refresh_all_jobs operation
 #[derive(Debug, Clone, Default)]
 pub struct RefreshReport {

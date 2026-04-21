@@ -35,8 +35,14 @@
 //! watermark wasn't updated, so the next startup loads slightly more history
 //! and triggers compaction again. This is **natural idempotency**.
 
+/// Cooldown after LLM failure: skip compaction for 60s to avoid hammering a failing API.
+const COMPACTION_COOLDOWN_SECS: u64 = 60;
+
+/// Watermark-based context compactor.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use tracing::{debug, info, warn};
@@ -160,6 +166,8 @@ pub struct ContextCompactor {
     summarization_prompt: String,
     /// Guard preventing concurrent compaction for the same session.
     is_compressing: Arc<AtomicBool>,
+    /// Timestamp of last compaction failure (for cooldown backoff).
+    last_failed_attempt: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Optional checkpoint configuration for proactive working-memory snapshots.
     checkpoint_config: Option<CheckpointConfig>,
 }
@@ -185,6 +193,7 @@ impl ContextCompactor {
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
             summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
             is_compressing: Arc::new(AtomicBool::new(false)),
+            last_failed_attempt: Arc::new(parking_lot::Mutex::new(None)),
             checkpoint_config: None,
         }
     }
@@ -460,7 +469,7 @@ impl ContextCompactor {
 
     /// Check whether compaction should be triggered.
     ///
-    /// Returns `false` if already compressing or below the token threshold.
+    /// Returns `false` if already compressing, below threshold, or in cooldown.
     fn should_compact(&self, session_key: &str, current_tokens: usize) -> bool {
         if self.is_compressing.load(Ordering::Acquire) {
             debug!(
@@ -468,6 +477,18 @@ impl ContextCompactor {
                 session_key
             );
             return false;
+        }
+
+        // Cooldown check: skip if last failure was within COOLDOWN_SECS
+        if let Some(last_fail) = *self.last_failed_attempt.lock() {
+            if last_fail.elapsed().as_secs() < COMPACTION_COOLDOWN_SECS {
+                debug!(
+                    "Compaction in cooldown for {}: {}s since last failure",
+                    session_key,
+                    last_fail.elapsed().as_secs()
+                );
+                return false;
+            }
         }
 
         let threshold = (self.token_budget as f32 * self.compaction_threshold) as usize;
@@ -522,6 +543,7 @@ impl ContextCompactor {
         let summarization_prompt = self.summarization_prompt.clone();
         let sk = session_key.clone();
         let vault = vault_values.to_vec();
+        let last_failed = self.last_failed_attempt.clone();
 
         tokio::spawn(async move {
             let _guard = guard;
@@ -539,6 +561,9 @@ impl ContextCompactor {
             .await
             {
                 warn!("Compaction failed for {}: {}", sk, e);
+                *last_failed.lock() = Some(Instant::now());
+            } else {
+                *last_failed.lock() = None;
             }
         });
     }
