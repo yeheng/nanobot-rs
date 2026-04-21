@@ -6,18 +6,16 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
-use super::types::{CronJob, FileMetadata};
+use super::types::CronJob;
 
 pub(super) struct CronRegistry {
     jobs: HashMap<String, CronJob>,
-    file_metadata: HashMap<String, FileMetadata>,
 }
 
 impl CronRegistry {
     pub fn new() -> Self {
         Self {
             jobs: HashMap::new(),
-            file_metadata: HashMap::new(),
         }
     }
 
@@ -26,7 +24,6 @@ impl CronRegistry {
     }
 
     pub fn remove(&mut self, id: &str) -> Option<CronJob> {
-        self.file_metadata.remove(id);
         self.jobs.remove(id)
     }
 
@@ -68,16 +65,8 @@ impl CronRegistry {
 
         for id in &orphaned {
             self.jobs.remove(id);
-            self.file_metadata.remove(id);
         }
         orphaned
     }
 
-    pub fn get_file_metadata(&self, id: &str) -> Option<&FileMetadata> {
-        self.file_metadata.get(id)
-    }
-
-    pub fn set_file_metadata(&mut self, id: String, meta: FileMetadata) {
-        self.file_metadata.insert(id, meta);
-    }
 }

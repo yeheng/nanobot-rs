@@ -72,7 +72,9 @@ impl WikiRefreshTool {
         Ok(())
     }
 
-    /// Incremental sync: only process files newer than their SQLite record.
+    /// Sync: upsert all disk files to SQLite + Tantivy.
+    /// Since upsert now preserves machine state (frequency, access_count),
+    /// we can safely upsert everything without mtime comparison.
     async fn sync_changed(&self) -> Result<usize, ToolError> {
         let disk_files = self.scan_disk_files().map_err(|e| {
             ToolError::ExecutionError(format!("Failed to scan wiki directory: {}", e))
@@ -80,16 +82,6 @@ impl WikiRefreshTool {
 
         let mut synced = 0usize;
         for (rel_path, disk_mtime, full_path) in disk_files {
-            let needs_update = match self.page_store.read(&rel_path).await {
-                Ok(page) => page.file_mtime < disk_mtime,
-                Err(_) => true, // Not in SQLite → must insert
-            };
-
-            if !needs_update {
-                debug!("WikiRefresh: {} is up-to-date", rel_path);
-                continue;
-            }
-
             let markdown = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
                 ToolError::ExecutionError(format!("Failed to read {}: {}", full_path.display(), e))
             })?;
@@ -118,7 +110,7 @@ impl WikiRefreshTool {
             synced += 1;
         }
 
-        info!("WikiRefresh: synced {} changed pages", synced);
+        info!("WikiRefresh: synced {} pages", synced);
         Ok(synced)
     }
 

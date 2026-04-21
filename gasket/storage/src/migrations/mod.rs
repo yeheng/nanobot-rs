@@ -1,10 +1,8 @@
 //! Database schema migrations.
 //!
-//! Each domain has its own migration module:
-//! - `session` — conversation history tables
-//! - `memory` — memory embedding tables
-//! - `cron` — scheduled task state
-//! - `kv` — key-value store and checkpoints
+//! Base table creation via `run_schema` (idempotent, backward compatible).
+//! Column additions via defensive `column_exists` checks.
+//! The `./migrations` directory is reserved for future use.
 
 use sqlx::SqlitePool;
 
@@ -15,14 +13,15 @@ pub mod session;
 
 /// Run all migrations on an existing pool.
 pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
-    // Run schema migrations first (table creation)
+    // Run schema migrations first (table creation, idempotent via CREATE TABLE IF NOT EXISTS)
     session::run_schema(pool).await?;
     memory::run_schema(pool).await?;
     cron::run_schema(pool).await?;
     kv::run_schema(pool).await?;
 
-    // Run incremental migrations (column additions)
+    // Run incremental migrations (column additions) with defensive checks
     run_incremental(pool).await?;
+
     Ok(())
 }
 
