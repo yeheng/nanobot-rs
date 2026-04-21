@@ -9,12 +9,12 @@ pub mod store;
 
 // Re-exports
 pub use index::PageIndex;
-pub use lifecycle::{DecayReport, FrequencyManager};
 pub use ingest::{
     ConversationParser, DedupResult, ExtractedItem, ExtractedItemType, ExtractionResult,
     HtmlParser, KnowledgeExtractor, MarkdownParser, ParsedSource, PlainTextParser,
     SemanticDeduplicator, SourceFormat, SourceMetadata, SourceParser,
 };
+pub use lifecycle::{DecayReport, FrequencyManager};
 pub use lint::{
     FixReport, LintReport, Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig,
     WikiLinter,

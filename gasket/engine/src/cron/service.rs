@@ -398,10 +398,9 @@ mod tests {
     }
     #[test]
     fn test_extract_frontmatter_raw_missing_end() {
-        assert!(super::parser::extract_frontmatter_raw(
-            "---\nname: Test\nNo end delimiter"
-        )
-        .is_err());
+        assert!(
+            super::parser::extract_frontmatter_raw("---\nname: Test\nNo end delimiter").is_err()
+        );
     }
     #[test]
     fn test_parse_markdown_complete() {

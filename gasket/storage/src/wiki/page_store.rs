@@ -80,7 +80,7 @@ impl WikiPageStore {
         .bind(page.frequency.to_string())
         .bind(page.access_count as i64)
         .bind(page.last_accessed.as_deref())
-        .bind(page.file_mtime as i64)
+        .bind(page.file_mtime)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -160,13 +160,11 @@ impl WikiPageStore {
 
     /// Update only the frequency of a page (used by decay).
     pub async fn update_frequency(&self, path: &str, frequency: Frequency) -> Result<bool> {
-        let result = sqlx::query(
-            "UPDATE wiki_pages SET frequency = ? WHERE path = ?"
-        )
-        .bind(frequency.to_string())
-        .bind(path)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("UPDATE wiki_pages SET frequency = ? WHERE path = ?")
+            .bind(frequency.to_string())
+            .bind(path)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 }

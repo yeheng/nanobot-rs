@@ -27,7 +27,9 @@ pub(super) fn extract_frontmatter_raw(content: &str) -> anyhow::Result<(String, 
         }
     }
 
-    let close_idx = close_idx.ok_or_else(|| anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'"))?;
+    let close_idx = close_idx.ok_or_else(|| {
+        anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'")
+    })?;
 
     let yaml_lines = &lines[1..close_idx];
     let body_lines = &lines[close_idx + 1..];

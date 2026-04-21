@@ -49,5 +49,3 @@ impl MemoryStore {
         self.store.pool()
     }
 }
-
-

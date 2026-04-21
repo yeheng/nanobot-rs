@@ -542,80 +542,27 @@ AgentSession::process_direct()
 
 ---
 
-## 4. 记忆与 Wiki 结构
+## 4. Wiki 数据结构
 
-### 4.1 MemoryMeta
+> **注意**: 以下结构定义在 `gasket-storage::wiki` 模块中。
 
-> **来源**: `gasket-storage::memory::types`
+### 4.1 WikiPageInput
 
-记忆文件的 YAML 前置元数据。
+> **来源**: `gasket-storage::wiki::page_store`
+
+创建或更新 Wiki 页面的输入结构。
 
 ```rust
-MemoryMeta {
-    id: String,                           // UUID v4 唯一标识
-    title: String,                        // 人类可读标题
-    r#type: String,                       // 记忆类型（自由标签）
-    scenario: Scenario,                   // 场景分类（6 种）
-    tags: Vec<String>,                    // 用户定义标签
-    frequency: Frequency,                 // 访问频率（hot/warm/cold/archived）
-    access_count: u64,                    // 访问次数
-    created: String,                      // RFC 3339 时间戳
-    updated: String,                      // 最后更新时间
-    last_accessed: String,                // 最后访问时间
-    auto_expire: bool,                    // 是否自动过期
-    expires: Option<String>,              // 过期时间
-    tokens: usize,                        // token 数量估算
-    superseded_by: Option<String>,        // 替代此记忆的新记忆 ID
+WikiPageInput<'a> {
+    path: &'a Path,                       // 页面路径
+    title: String,                        // 页面标题
+    page_type: PageType,                 // 页面类型
+    content: String,                      // Markdown 内容
+    source: Option<WikiSourceInput>,      // 来源信息
 }
 ```
 
-### 4.2 MemoryFile
-
-> **来源**: `gasket-storage::memory::types`
-
-完整的记忆文件（元数据 + Markdown 内容）。
-
-```rust
-MemoryFile {
-    metadata: MemoryMeta,                 // YAML 前置元数据
-    content: String,                      // Markdown 正文
-}
-```
-
-### 4.3 MemoryQuery
-
-> **来源**: `gasket-storage::memory::types`
-
-记忆搜索查询参数。
-
-```rust
-MemoryQuery {
-    text: Option<String>,                 // 全文/语义搜索
-    tags: Vec<String>,                    // 按标签过滤（ANY 语义）
-    scenario: Option<Scenario>,           // 场景过滤
-    max_tokens: Option<usize>,            // 最大 token 限制
-}
-```
-
-### 4.4 MemoryHit
-
-> **来源**: `gasket-storage::memory::types`
-
-带相关性评分的搜索结果。
-
-```rust
-MemoryHit {
-    path: String,                         // 相对于 ~/.gasket/memory/ 的路径
-    scenario: Scenario,                   // 场景分类
-    title: String,                        // 标题
-    tags: Vec<String>,                    // 标签
-    frequency: Frequency,                 // 频率
-    score: f32,                           // 相关性评分 (0.0–1.0)
-    tokens: usize,                        // token 数
-}
-```
-
-### 4.5 TokenBudget
+### 4.2 TokenBudget
 
 > **来源**: `gasket-storage::wiki::types`
 
@@ -631,7 +578,7 @@ TokenBudget {
 // 总预算 = min(total_cap, bootstrap + scenario + on_demand)
 ```
 
-### 4.6 Frequency
+### 4.3 Frequency
 
 > **来源**: `gasket-storage::wiki::types`
 

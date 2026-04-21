@@ -11,8 +11,8 @@
 //! machine-state.
 
 mod event_store;
-mod migrations;
 pub mod fs;
+mod migrations;
 pub mod wiki;
 
 // ── Merged from gasket-history ──
@@ -576,7 +576,6 @@ impl SqliteStore {
 
         Ok(())
     }
-
 
     // ── Generic KV API ──
 

@@ -201,7 +201,10 @@ pub async fn cmd_gateway() -> Result<()> {
         if let Some(ref ps) = page_store {
             if let Some(ref pi) = page_index {
                 ext.push((
-                    Box::new(gasket_engine::tools::WikiRefreshTool::new(ps.clone(), pi.clone())) as Box<dyn Tool>,
+                    Box::new(gasket_engine::tools::WikiRefreshTool::new(
+                        ps.clone(),
+                        pi.clone(),
+                    )) as Box<dyn Tool>,
                     ToolMetadata {
                         display_name: "Wiki Refresh".to_string(),
                         category: "system".to_string(),

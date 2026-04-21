@@ -4,7 +4,6 @@ use anyhow::Result;
 use gasket_engine::wiki::{slugify, PageFilter, PageStore, PageType, WikiLinter, WikiPage};
 use std::path::PathBuf;
 
-
 fn wiki_base_dir() -> PathBuf {
     dirs::home_dir()
         .map(|p| p.join(".gasket/wiki"))
@@ -258,9 +257,8 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
         for (scenario, _) in &scenario_map {
             let dir = memory_dir.join(scenario);
             if dir.exists() {
-                let has_files = std::fs::read_dir(&dir)?.any(|e| {
-                    e.ok().map(|entry| entry.path().is_file()).unwrap_or(false)
-                });
+                let has_files = std::fs::read_dir(&dir)?
+                    .any(|e| e.ok().map(|entry| entry.path().is_file()).unwrap_or(false));
                 if has_files {
                     all_empty = false;
                 } else {

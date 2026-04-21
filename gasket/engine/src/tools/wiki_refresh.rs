@@ -51,9 +51,7 @@ impl WikiRefreshTool {
             let path = entry.path();
             if path.is_dir() {
                 Self::scan_dir_recursive(root, &path, out)?;
-            } else if path.is_file()
-                && path.extension().and_then(|s| s.to_str()) == Some("md")
-            {
+            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
                 let rel = path.strip_prefix(root)?;
                 let rel_str = {
                     let s = rel.to_string_lossy();
@@ -96,13 +94,12 @@ impl WikiRefreshTool {
                 ToolError::ExecutionError(format!("Failed to read {}: {}", full_path.display(), e))
             })?;
 
-            let mut page =
-                WikiPage::from_markdown(rel_path.clone(), &markdown).map_err(|e| {
-                    ToolError::ExecutionError(format!(
-                        "Failed to parse markdown for {}: {}",
-                        rel_path, e
-                    ))
-                })?;
+            let mut page = WikiPage::from_markdown(rel_path.clone(), &markdown).map_err(|e| {
+                ToolError::ExecutionError(format!(
+                    "Failed to parse markdown for {}: {}",
+                    rel_path, e
+                ))
+            })?;
             page.file_mtime = disk_mtime;
 
             self.page_store.write(&page).await.map_err(|e| {
@@ -110,7 +107,10 @@ impl WikiRefreshTool {
             })?;
 
             if let Err(e) = self.page_index.upsert(&page) {
-                warn!("WikiRefresh: failed to upsert {} to Tantivy: {}", rel_path, e);
+                warn!(
+                    "WikiRefresh: failed to upsert {} to Tantivy: {}",
+                    rel_path, e
+                );
             } else {
                 debug!("WikiRefresh: upserted {} to Tantivy", rel_path);
             }
@@ -156,7 +156,10 @@ impl WikiRefreshTool {
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Tantivy rebuild failed: {}", e)))?;
 
-        info!("WikiRefresh: full rebuild complete with {} pages", pages.len());
+        info!(
+            "WikiRefresh: full rebuild complete with {} pages",
+            pages.len()
+        );
         Ok(pages.len())
     }
 
@@ -169,10 +172,22 @@ impl WikiRefreshTool {
             .map_err(|e| ToolError::ExecutionError(format!("Failed to get wiki stats: {}", e)))?;
 
         let total = all_pages.len();
-        let topics = all_pages.iter().filter(|p| matches!(p.page_type, PageType::Topic)).count();
-        let entities = all_pages.iter().filter(|p| matches!(p.page_type, PageType::Entity)).count();
-        let sources = all_pages.iter().filter(|p| matches!(p.page_type, PageType::Source)).count();
-        let sops = all_pages.iter().filter(|p| matches!(p.page_type, PageType::Sop)).count();
+        let topics = all_pages
+            .iter()
+            .filter(|p| matches!(p.page_type, PageType::Topic))
+            .count();
+        let entities = all_pages
+            .iter()
+            .filter(|p| matches!(p.page_type, PageType::Entity))
+            .count();
+        let sources = all_pages
+            .iter()
+            .filter(|p| matches!(p.page_type, PageType::Source))
+            .count();
+        let sops = all_pages
+            .iter()
+            .filter(|p| matches!(p.page_type, PageType::Sop))
+            .count();
         let index_docs = self.page_index.doc_count();
 
         Ok(format!(
@@ -223,7 +238,10 @@ impl Tool for WikiRefreshTool {
         match args.action.as_str() {
             "sync" => {
                 let count = self.sync_changed().await?;
-                Ok(format!("✓ Wiki sync complete\n\nSynced {} changed pages.", count))
+                Ok(format!(
+                    "✓ Wiki sync complete\n\nSynced {} changed pages.",
+                    count
+                ))
             }
             "reindex" => {
                 let count = self.full_rebuild().await?;

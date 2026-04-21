@@ -19,14 +19,12 @@ pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
 // ─── Migration helpers ───────────────────────────────────────────────────────
 
 async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
-    )
-    .bind(table)
-    .bind(column)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(false)
+    sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2")
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
 }
 
 // ─── Individual migrations ────────────────────────────────────────────────────
@@ -46,11 +44,9 @@ async fn migrate_add_watermark_to_summaries(pool: &SqlitePool) -> anyhow::Result
 /// Add `sequence` column to `session_events` if it doesn't exist.
 async fn migrate_add_sequence_to_events(pool: &SqlitePool) -> anyhow::Result<()> {
     if !column_exists(pool, "session_events", "sequence").await {
-        sqlx::query(
-            "ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }

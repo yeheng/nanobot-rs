@@ -508,16 +508,18 @@ fi
 
 ### 3. 编程方式注册钩子
 
-```rust
-// 创建钩子注册表
-let registry = HookBuilder::new()
-    .with_hook(Arc::new(VaultHook::new(vault)))
-    .with_hook(Arc::new(LoggingHook::new()))
-    .build_shared();
+> **注意**: 钩子通过 `AgentConfig` 配置，不再直接传递给 `AgentSession`。
 
-// 在 Session 中使用
-let session = AgentSession::new(...)
-    .with_hooks(registry);
+```rust
+// 通过 AgentConfig 配置钩子
+let config = AgentConfig {
+    evolution: Some(EvolutionConfig::default()),  // 启用 EvolutionHook
+    wiki: Some(WikiConfig { ... }),              // 启用 Wiki 系统
+    ..Default::default()
+};
+
+// Session 内部自动构建钩子
+let session = AgentSession::new(provider, workspace, config, tools).await?;
 ```
 
 ---

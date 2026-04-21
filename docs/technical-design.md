@@ -363,16 +363,12 @@ async fn prepare_pipeline(&self, content: &str, session_key: &SessionKey)
     
     // 4. 执行 AfterHistory Hooks
     hooks.execute(HookPoint::AfterHistory, &mut hook_ctx).await?;
-    
-    // 5. 加载长期记忆（语义检索）
-    let memory_ctx = memory_manager.load_for_context(&query).await?;
-    
-    // 6. 组装 Prompt
+
+    // 5. 组装 Prompt
     let messages = assemble_prompt(
         system_prompt,      // PROFILE.md + SOUL.md + ...
         skills_context,     // 激活的技能
         history.messages,   // 处理后历史
-        memory_ctx,         // 相关记忆
         content,            // 当前输入
     );
     
@@ -551,67 +547,6 @@ pub trait PipelineHook: Send + Sync {
 ### 5.2 Memory 系统
 
 > **⚠️ 已废弃**: Memory 系统已被 Wiki 知识系统取代。见 [architecture.md](architecture.md) 和 [modules.md](modules.md) 中的 Wiki 部分。
-
-```rust
-/// 记忆存储结构
-pub struct FileMemoryStore {
-    base_dir: PathBuf,
-    metadata_store: MetadataStore,
-    embedding_store: Option<EmbeddingStore>,
-}
-
-/// 记忆元数据
-pub struct MemoryMetadata {
-    pub id: String,
-    pub title: String,
-    pub scenario: Scenario,  // Profile | Active | Knowledge | Decisions | Episodes | Reference
-    pub created_at: DateTime<Utc>,
-    pub access_count: u32,
-    pub last_accessed: DateTime<Utc>,
-}
-
-/// 记忆管理器
-pub struct MemoryManager {
-    file_store: FileMemoryStore,
-    sqlite_pool: SqlitePool,
-    embedder: Box<dyn Embedder>,
-    access_log: Arc<Mutex<Vec<AccessRecord>>>,
-}
-
-impl MemoryManager {
-    /// 语义检索
-    pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<Memory>> {
-        // 1. 生成查询向量
-        let query_embedding = self.embedder.embed(&query.text).await?;
-        
-        // 2. 向量检索
-        let candidates = self.file_store
-            .search_by_embedding(&query_embedding, query.limit * 3)
-            .await?;
-        
-        // 3. 重排序（结合时间衰减和相关性）
-        let scored: Vec<_> = candidates
-            .into_iter()
-            .map(|m| (m, self.score_memory(&m, &query)))
-            .collect();
-        
-        // 4. 返回 Top-K
-        Ok(scored.into_iter()
-            .filter(|(_, score)| *score > query.threshold)
-            .take(query.limit)
-            .map(|(m, _)| m)
-            .collect())
-    }
-    
-    fn score_memory(&self, memory: &Memory, query: &MemoryQuery) -> f32 {
-        let relevance = cosine_similarity(&memory.embedding, &query.embedding);
-        let recency = time_decay(memory.last_accessed);
-        let frequency = (memory.access_count as f32).ln() / 10.0;
-        
-        relevance * 0.6 + recency * 0.3 + frequency * 0.1
-    }
-}
-```
 
 ### 5.3 Cron 系统
 

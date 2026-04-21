@@ -498,80 +498,27 @@ ProcessedHistory {
 
 ---
 
-## 5. Memory and Wiki Structures
+## 5. Wiki Data Structures
 
-### 5.1 MemoryMeta
+> **Note**: The following structures are defined in the `gasket-storage::wiki` module.
 
-> **Source**: `gasket-storage::memory::types`
+### 5.1 WikiPageInput
 
-YAML frontmatter metadata for memory files.
+> **Source**: `gasket-storage::wiki::page_store`
+
+Input structure for creating or updating Wiki pages.
 
 ```rust
-MemoryMeta {
-    id: String,                           // UUID v4 unique identifier
-    title: String,                        // Human-readable title
-    r#type: String,                       // Memory type (freeform tag)
-    scenario: Scenario,                   // Scenario classification (6 types)
-    tags: Vec<String>,                    // User-defined tags
-    frequency: Frequency,                 // Access frequency (hot/warm/cold/archived)
-    access_count: u64,                    // Access count
-    created: String,                      // RFC 3339 timestamp
-    updated: String,                      // Last update time
-    last_accessed: String,                // Last access time
-    auto_expire: bool,                    // Whether auto-expiring
-    expires: Option<String>,              // Expiration time
-    tokens: usize,                        // Estimated token count
-    superseded_by: Option<String>,        // ID of replacement memory
+WikiPageInput<'a> {
+    path: &'a Path,                       // Page path
+    title: String,                        // Page title
+    page_type: PageType,                 // Page type
+    content: String,                      // Markdown content
+    source: Option<WikiSourceInput>,      // Source information
 }
 ```
 
-### 5.2 MemoryFile
-
-> **Source**: `gasket-storage::memory::types`
-
-Complete memory file (metadata + Markdown content).
-
-```rust
-MemoryFile {
-    metadata: MemoryMeta,                 // YAML frontmatter metadata
-    content: String,                      // Markdown body
-}
-```
-
-### 5.3 MemoryQuery
-
-> **Source**: `gasket-storage::memory::types`
-
-Memory search query parameters.
-
-```rust
-MemoryQuery {
-    text: Option<String>,                 // Full-text/semantic search
-    tags: Vec<String>,                    // Filter by tags (ANY semantics)
-    scenario: Option<Scenario>,           // Scenario filter
-    max_tokens: Option<usize>,            // Max token limit
-}
-```
-
-### 5.4 MemoryHit
-
-> **Source**: `gasket-storage::memory::types`
-
-Search result with relevance scoring.
-
-```rust
-MemoryHit {
-    path: String,                         // Path relative to ~/.gasket/memory/
-    scenario: Scenario,                   // Scenario classification
-    title: String,                        // Title
-    tags: Vec<String>,                    // Tags
-    frequency: Frequency,                 // Frequency
-    score: f32,                           // Relevance score (0.0–1.0)
-    tokens: usize,                        // Token count
-}
-```
-
-### 5.5 TokenBudget
+### 5.2 TokenBudget
 
 > **Source**: `gasket-storage::wiki::types`
 
@@ -587,7 +534,7 @@ TokenBudget {
 // Total budget = min(total_cap, bootstrap + scenario + on_demand)
 ```
 
-### 5.6 Frequency
+### 5.3 Frequency
 
 > **Source**: `gasket-storage::wiki::types`
 
@@ -603,7 +550,7 @@ enum Frequency {
 // Implements: Display, FromStr, Ord, Default (defaults to Archived)
 ```
 
-### 5.7 DecayCandidate
+### 5.4 DecayCandidate
 
 > **Source**: `gasket-storage::wiki::page_store`
 

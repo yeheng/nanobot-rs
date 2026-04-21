@@ -335,7 +335,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -363,7 +363,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(after_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -397,7 +397,7 @@ impl EventStore {
             "#,
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(target_sequence)
         .fetch_all(&self.pool)
         .await?;
@@ -444,12 +444,12 @@ impl EventStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM session_events WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(&chat_id)
+            .bind(chat_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM sessions_v2 WHERE channel = ? AND chat_id = ?")
             .bind(&channel)
-            .bind(&chat_id)
+            .bind(chat_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -489,7 +489,7 @@ impl EventStore {
             "DELETE FROM session_events WHERE channel = ? AND chat_id = ? AND sequence <= ?",
         )
         .bind(&channel)
-        .bind(&chat_id)
+        .bind(chat_id)
         .bind(target_sequence)
         .execute(&self.pool)
         .await?;
@@ -549,7 +549,7 @@ impl EventStore {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT key FROM sessions_v2 WHERE chat_id = ? ORDER BY updated_at DESC",
         )
-        .bind(&chat_id)
+        .bind(chat_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(k,)| k).collect())

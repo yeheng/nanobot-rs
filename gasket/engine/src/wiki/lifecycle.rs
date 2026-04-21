@@ -128,18 +128,11 @@ impl FrequencyManager {
                         );
                     }
                     Ok(false) => {
-                        tracing::warn!(
-                            "Decay candidate {} not found in SQLite",
-                            candidate.path
-                        );
+                        tracing::warn!("Decay candidate {} not found in SQLite", candidate.path);
                         report.errors += 1;
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to update frequency for {}: {}",
-                            candidate.path,
-                            e
-                        );
+                        tracing::warn!("Failed to update frequency for {}: {}", candidate.path, e);
                         report.errors += 1;
                     }
                 }

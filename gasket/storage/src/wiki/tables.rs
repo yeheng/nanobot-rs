@@ -87,9 +87,11 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_frequency ON wiki_pages(frequency)")
         .execute(pool)
         .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_pages_last_accessed ON wiki_pages(last_accessed)")
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_wiki_pages_last_accessed ON wiki_pages(last_accessed)",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_raw_sources_ingested ON raw_sources(ingested)")
         .execute(pool)
         .await?;

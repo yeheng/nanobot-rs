@@ -72,10 +72,15 @@ impl Tool for WikiSearchTool {
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
         if parsed.query.trim().is_empty() {
-            return Err(ToolError::InvalidArguments("query must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "query must not be empty".to_string(),
+            ));
         }
 
-        debug!("wiki_search: query='{}' limit={}", parsed.query, parsed.limit);
+        debug!(
+            "wiki_search: query='{}' limit={}",
+            parsed.query, parsed.limit
+        );
 
         let hits = self
             .page_index
@@ -173,7 +178,12 @@ impl Tool for WikiWriteTool {
                 false,
                 "Page type: topic (default), entity, source, sop",
             ),
-            ("tags", "array", false, "Optional tags (e.g. [\"rust\", \"async\"])"),
+            (
+                "tags",
+                "array",
+                false,
+                "Optional tags (e.g. [\"rust\", \"async\"])",
+            ),
         ])
     }
 
@@ -191,10 +201,14 @@ impl Tool for WikiWriteTool {
         let content = parsed.content.trim();
 
         if path.is_empty() {
-            return Err(ToolError::InvalidArguments("path must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "path must not be empty".to_string(),
+            ));
         }
         if title.is_empty() {
-            return Err(ToolError::InvalidArguments("title must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "title must not be empty".to_string(),
+            ));
         }
 
         let pt = match parsed.page_type.to_lowercase().as_str() {
@@ -216,7 +230,10 @@ impl Tool for WikiWriteTool {
             tracing::warn!("wiki_write: failed to upsert {} to Tantivy: {}", path, e);
         }
 
-        Ok(format!("Wiki page written: {} [{}] at {}", title, pt_str, path))
+        Ok(format!(
+            "Wiki page written: {} [{}] at {}",
+            title, pt_str, path
+        ))
     }
 }
 
@@ -268,7 +285,9 @@ impl Tool for WikiReadTool {
 
         let path = parsed.path.trim();
         if path.is_empty() {
-            return Err(ToolError::InvalidArguments("path must not be empty".to_string()));
+            return Err(ToolError::InvalidArguments(
+                "path must not be empty".to_string(),
+            ));
         }
 
         let page = self.page_store.read(path).await.map_err(|e| {
@@ -288,7 +307,9 @@ impl Tool for WikiReadTool {
             page.page_type.as_str(),
             page.updated.format("%Y-%m-%d %H:%M UTC"),
             tags_display,
-            page.category.map(|c| format!("\nCategory: {}", c)).unwrap_or_default(),
+            page.category
+                .map(|c| format!("\nCategory: {}", c))
+                .unwrap_or_default(),
             page.content
         ))
     }
