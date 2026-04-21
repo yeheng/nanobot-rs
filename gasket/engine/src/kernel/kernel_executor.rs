@@ -114,6 +114,7 @@ pub struct KernelExecutor<'a> {
     config: &'a KernelConfig,
     spawner: Option<Arc<dyn SubagentSpawner>>,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+    checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
 }
 
 impl<'a> KernelExecutor<'a> {
@@ -128,6 +129,7 @@ impl<'a> KernelExecutor<'a> {
             config,
             spawner: None,
             token_tracker: None,
+            checkpoint_callback: None,
         }
     }
 
@@ -138,6 +140,14 @@ impl<'a> KernelExecutor<'a> {
 
     pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
         self.token_tracker = Some(tracker);
+        self
+    }
+
+    pub fn with_checkpoint(
+        mut self,
+        callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.checkpoint_callback = Some(callback);
         self
     }
 
@@ -197,6 +207,9 @@ impl<'a> KernelExecutor<'a> {
         }
         if let Some(ref tracker) = self.token_tracker {
             steppable = steppable.with_token_tracker(tracker.clone());
+        }
+        if let Some(ref cb) = self.checkpoint_callback {
+            steppable = steppable.with_checkpoint(cb.clone());
         }
 
         for iteration in 1..=self.config.max_iterations {

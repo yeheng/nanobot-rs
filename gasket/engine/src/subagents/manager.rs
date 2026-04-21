@@ -151,6 +151,7 @@ pub fn spawn_subagent(
             config: config.to_kernel_config(),
             spawner: None,
             token_tracker: token_tracker.clone(),
+            checkpoint_callback: None,
         };
 
         // Execute with timeout, cancellable via token

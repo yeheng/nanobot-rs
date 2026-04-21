@@ -37,6 +37,9 @@ fn build_executor(ctx: &RuntimeContext) -> KernelExecutor<'_> {
     if let Some(ref tracker) = ctx.token_tracker {
         exec = exec.with_token_tracker(tracker.clone());
     }
+    if let Some(ref cb) = ctx.checkpoint_callback {
+        exec = exec.with_checkpoint(cb.clone());
+    }
     exec
 }
 

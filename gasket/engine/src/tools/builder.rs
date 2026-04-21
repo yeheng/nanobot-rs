@@ -315,7 +315,11 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         // Plan generation tool (requires provider + model)
         if let (Some(ref prov), Some(ref mdl)) = (&provider, &model) {
             tools.register_with_metadata(
-                Box::new(CreatePlanTool::new(prov.clone(), mdl.clone(), store.clone())),
+                Box::new(CreatePlanTool::new(
+                    prov.clone(),
+                    mdl.clone(),
+                    store.clone(),
+                )),
                 ToolMetadata {
                     display_name: "Create Plan".to_string(),
                     category: "system".to_string(),

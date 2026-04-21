@@ -76,6 +76,7 @@ impl SessionBuilder {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
+            checkpoint_callback: None,
         };
 
         // ── 3. Agent context ─────────────────────────────────────────

@@ -440,12 +440,56 @@ impl AgentSession {
         let messages = request.messages;
 
         // Clone Arc fields for spawned task
-        let runtime_ctx = self.runtime_ctx.clone();
+        let mut runtime_ctx = self.runtime_ctx.clone();
         let hooks = self.hooks.clone();
         let context = self.context.clone();
         let model = self.config.model.clone();
         let compactor = self.compactor.clone();
         let pricing = self.pricing.clone();
+
+        // Wire checkpoint callback into the kernel if compactor is available.
+        if let (Some(ref compactor), AgentContext::Persistent(ref persistent_ctx)) =
+            (&compactor, &context)
+        {
+            let session_key_ck = fctx.session_key.clone();
+            let compactor_ck = compactor.clone();
+            let event_store_ck = persistent_ctx.event_store.clone();
+            runtime_ctx.checkpoint_callback = Some(Arc::new(move |msg_len: usize| {
+                // Only check after a minimum number of messages to avoid
+                // checkpoint noise at the start of a conversation.
+                if msg_len < 3 {
+                    return None;
+                }
+                tokio::task::block_in_place(|| {
+                    let rt = tokio::runtime::Handle::current();
+                    rt.block_on(async {
+                        let max_seq = match event_store_ck.get_max_sequence(&session_key_ck).await {
+                            Ok(seq) => seq,
+                            Err(e) => {
+                                tracing::debug!("Checkpoint: get_max_sequence failed: {}", e);
+                                return None;
+                            }
+                        };
+                        match compactor_ck.checkpoint(&session_key_ck, max_seq).await {
+                            Ok(Some(summary)) => {
+                                tracing::info!(
+                                    "Checkpoint injected for {} at seq {} ({} chars)",
+                                    session_key_ck,
+                                    max_seq,
+                                    summary.len()
+                                );
+                                Some(summary)
+                            }
+                            Ok(None) => None,
+                            Err(e) => {
+                                tracing::warn!("Checkpoint generation failed: {}", e);
+                                None
+                            }
+                        }
+                    })
+                })
+            }));
+        }
 
         let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
