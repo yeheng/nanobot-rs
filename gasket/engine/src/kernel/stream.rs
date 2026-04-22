@@ -131,11 +131,12 @@ pub fn stream_events(
 ) -> (
     impl Stream<Item = StreamEvent>,
     impl std::future::Future<Output = Result<ChatResponse>>,
+    tokio::task::JoinHandle<()>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(32);
     let (response_tx, response_rx) = tokio::sync::oneshot::channel::<Result<ChatResponse>>();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         debug!("[StreamEvents] Producer task started");
         let mut llm_stream = llm_stream;
         let mut acc = StreamAccumulator::new();
@@ -210,7 +211,7 @@ pub fn stream_events(
             .map_err(|_| anyhow::anyhow!("Producer task died"))?
     };
 
-    (event_stream, response_future)
+    (event_stream, response_future, handle)
 }
 
 /// Collect LLM stream into a response without emitting events.

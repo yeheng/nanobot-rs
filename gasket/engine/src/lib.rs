@@ -168,8 +168,12 @@ pub mod channels {
 // Providers
 pub mod providers {
     pub use crate::config::app_config::ProviderRegistry;
+    #[cfg(feature = "provider-anthropic")]
+    pub use gasket_providers::AnthropicProvider;
     #[cfg(feature = "provider-gemini")]
     pub use gasket_providers::GeminiProvider;
+    #[cfg(feature = "provider-minimax")]
+    pub use gasket_providers::MinimaxProvider;
     pub use gasket_providers::{
         build_http_client, parse_json_args, streaming, ChatMessage, ChatRequest, ChatResponse,
         ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall,

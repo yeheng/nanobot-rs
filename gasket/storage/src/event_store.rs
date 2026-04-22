@@ -278,12 +278,9 @@ impl EventStore {
         .bind(&chat_id)
         .bind(event_type_tag)
         .bind(&event.content)
-        .bind(
-            event
-                .embedding
-                .as_ref()
-                .map(|e| bytemuck::cast_slice(e) as &[u8]),
-        )
+        // Embedding is no longer stored in the event row. Semantic embeddings
+        // are written separately to `session_embeddings` by `AgentContext::save_event`.
+        .bind(None::<&[u8]>)
         .bind(&tools_used)
         .bind(token_usage.as_deref())
         .bind(token_len)
@@ -624,6 +621,7 @@ struct EventRow {
     chat_id: String,
     event_type: String,
     content: String,
+    #[allow(dead_code)]
     embedding: Option<Vec<u8>>,
     tools_used: String,
     token_usage: Option<String>,
@@ -656,7 +654,6 @@ impl TryFrom<EventRow> for SessionEvent {
             .map(serde_json::from_str)
             .transpose()?;
         let extra: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&row.extra)?;
-        let embedding = row.embedding.map(|b| bytemuck::cast_slice(&b).to_vec());
 
         // Reconstruct session_key from channel/chat_id for backward compatibility
         let session_key = if !row.channel.is_empty() && !row.chat_id.is_empty() {
@@ -673,7 +670,6 @@ impl TryFrom<EventRow> for SessionEvent {
             session_key,
             event_type,
             content: row.content,
-            embedding,
             metadata: EventMetadata {
                 tools_used,
                 token_usage,
@@ -768,7 +764,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Hello, world!".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -796,7 +791,6 @@ mod tests {
                 arguments: serde_json::json!({"path": "/test.txt"}),
             },
             content: "".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -835,7 +829,6 @@ mod tests {
                 is_error: false,
             },
             content: "file contents".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -878,7 +871,6 @@ mod tests {
                 covered_event_ids: covered_ids.clone(),
             },
             content: "Summary of the discussion...".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -916,7 +908,6 @@ mod tests {
             session_key: "auto:session".into(),
             event_type: EventType::UserMessage,
             content: "Test".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -939,17 +930,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_append_event_with_embedding() {
+    async fn test_append_event_embedding_column_is_null() {
         let pool = setup_test_db().await;
         let store = EventStore::new(pool);
 
-        let embedding = vec![0.1_f32, 0.2, 0.3, 0.4];
         let event = SessionEvent {
             id: Uuid::now_v7(),
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
-            content: "Message with embedding".into(),
-            embedding: Some(embedding.clone()),
+            content: "Message without embedding field".into(),
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -964,11 +953,9 @@ mod tests {
         .await
         .unwrap();
 
-        let stored_bytes = row.0.expect("embedding should be stored");
-        assert_eq!(stored_bytes.len(), 16);
-
-        let stored_embedding: Vec<f32> = bytemuck::cast_slice(&stored_bytes).to_vec();
-        assert_eq!(stored_embedding, embedding);
+        // Embedding is no longer stored in the event row; it is written
+        // separately to `session_embeddings` by `AgentContext::save_event`.
+        assert!(row.0.is_none(), "embedding column should be NULL");
     }
 
     #[tokio::test]
@@ -981,7 +968,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Hello".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -993,7 +979,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::AssistantMessage,
             content: "Hi!".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -1031,7 +1016,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Event 1".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -1043,7 +1027,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::AssistantMessage,
             content: "Event 2".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -1055,7 +1038,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Event 3".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -1091,7 +1073,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Event 1".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,
@@ -1103,7 +1084,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::AssistantMessage,
             content: "Event 2".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,

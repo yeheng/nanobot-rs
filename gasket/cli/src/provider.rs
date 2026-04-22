@@ -68,10 +68,34 @@ pub fn build_provider(
     let proxy_username = provider_config.proxy_username.clone();
     let proxy_password = provider_config.proxy_password.clone();
 
-    // Create provider based on provider_type
-    match provider_config.provider_type {
-        ProviderType::Gemini => {
-            // Gemini provider (requires feature flag)
+    // Route by provider name first. Known native providers get their native
+    // implementation regardless of provider_type. Fallback to provider_type
+    // only for unknown provider names.
+    match name {
+        // === Native providers ===
+        "minimax" | "minimaxi" => {
+            #[cfg(feature = "provider-minimax")]
+            {
+                let provider = gasket_engine::providers::MinimaxProvider::with_config(
+                    api_key.to_string(),
+                    Some(provider_config.api_base.clone()),
+                    Some(model.to_string()),
+                    provider_config.client_id.clone(),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    provider_config.extra_headers.clone(),
+                );
+                Ok(Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-minimax"))]
+            {
+                anyhow::bail!(
+                    "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+                )
+            }
+        }
+        "gemini" => {
             #[cfg(feature = "provider-gemini")]
             {
                 let provider = gasket_engine::providers::GeminiProvider::with_config(
@@ -81,6 +105,7 @@ pub fn build_provider(
                     proxy_url,
                     proxy_username,
                     proxy_password,
+                    provider_config.extra_headers.clone(),
                 );
                 Ok(Arc::new(provider))
             }
@@ -91,12 +116,80 @@ pub fn build_provider(
                 );
             }
         }
-        ProviderType::Anthropic | ProviderType::Openai => {
-            // OpenAI-compatible provider (includes Anthropic's /v1 endpoint)
-            match name {
-                // GitHub Copilot requires special handling for OAuth token management
-                #[cfg(feature = "provider-copilot")]
-                "copilot" => Ok(Arc::new(
+        "moonshot" | "kimi" => {
+            // Moonshot/Kimi has two API formats:
+            // - Standard API (api.moonshot.cn/v1) - OpenAI-compatible format
+            // - Coding API (api.kimi.com/coding) - Anthropic message format
+            let api_base = &provider_config.api_base;
+            let is_coding_api = api_base.contains("/coding") || api_base.contains("/anthropic");
+
+            if is_coding_api {
+                #[cfg(feature = "provider-anthropic")]
+                {
+                    let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                        api_key.to_string(),
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        None,
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
+                        provider_config.extra_headers.clone(),
+                    );
+                    Ok(Arc::new(provider))
+                }
+                #[cfg(not(feature = "provider-anthropic"))]
+                {
+                    anyhow::bail!(
+                        "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                    )
+                }
+            } else {
+                let config = gasket_engine::providers::ProviderConfig {
+                    provider_type: ProviderType::Openai,
+                    api_base: provider_config.api_base.clone(),
+                    api_key: Some(api_key.to_string()),
+                    default_model: model.to_string(),
+                    models: std::collections::HashMap::new(),
+                    extra_headers: provider_config.extra_headers.clone(),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    client_id: provider_config.client_id.clone(),
+                    default_currency: provider_config.default_currency.clone(),
+                    supports_thinking: true,
+                };
+                Ok(Arc::new(
+                    gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
+                ))
+            }
+        }
+        "anthropic" | "claude" => {
+            #[cfg(feature = "provider-anthropic")]
+            {
+                let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                    api_key.to_string(),
+                    Some(provider_config.api_base.clone()),
+                    Some(model.to_string()),
+                    None,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    provider_config.extra_headers.clone(),
+                );
+                Ok(Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-anthropic"))]
+            {
+                anyhow::bail!(
+                    "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                )
+            }
+        }
+        "copilot" => {
+            #[cfg(feature = "provider-copilot")]
+            {
+                Ok(Arc::new(
                     gasket_engine::providers::CopilotProvider::with_proxy(
                         api_key,
                         Some(provider_config.api_base.clone()),
@@ -104,35 +197,153 @@ pub fn build_provider(
                         proxy_url,
                         proxy_username,
                         proxy_password,
+                        provider_config.extra_headers.clone(),
                     ),
-                )),
-                // All other providers build from a fully populated ProviderConfig
-                _ => {
-                    let extra_headers = provider_config.extra_headers.clone();
-                    // MiniMax requires special handling for group_id header
-                    if name == "minimax" {
-                        // group_id is not supported in CLI provider config yet;
-                        // preserve any existing X-Group-Id if already in extra_headers
+                ))
+            }
+            #[cfg(not(feature = "provider-copilot"))]
+            {
+                anyhow::bail!(
+                    "Copilot provider is not compiled in. Rebuild with --features provider-copilot"
+                )
+            }
+        }
+
+        // === Fallback: unknown name — use provider_type to decide ===
+        _ => match provider_config.provider_type {
+            ProviderType::Gemini => {
+                #[cfg(feature = "provider-gemini")]
+                {
+                    let provider = gasket_engine::providers::GeminiProvider::with_config(
+                        api_key.to_string(),
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
+                        provider_config.extra_headers.clone(),
+                    );
+                    Ok(Arc::new(provider))
+                }
+                #[cfg(not(feature = "provider-gemini"))]
+                {
+                    anyhow::bail!(
+                        "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+                    );
+                }
+            }
+            ProviderType::Minimax => {
+                #[cfg(feature = "provider-minimax")]
+                {
+                    let provider = gasket_engine::providers::MinimaxProvider::with_config(
+                        api_key.to_string(),
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        provider_config.client_id.clone(),
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
+                        provider_config.extra_headers.clone(),
+                    );
+                    Ok(Arc::new(provider))
+                }
+                #[cfg(not(feature = "provider-minimax"))]
+                {
+                    anyhow::bail!(
+                        "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+                    )
+                }
+            }
+            ProviderType::Moonshot => {
+                let api_base = &provider_config.api_base;
+                let is_coding_api = api_base.contains("/coding") || api_base.contains("/anthropic");
+
+                if is_coding_api {
+                    #[cfg(feature = "provider-anthropic")]
+                    {
+                        let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            None,
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        );
+                        Ok(Arc::new(provider))
                     }
+                    #[cfg(not(feature = "provider-anthropic"))]
+                    {
+                        anyhow::bail!(
+                            "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                        )
+                    }
+                } else {
                     let config = gasket_engine::providers::ProviderConfig {
                         provider_type: ProviderType::Openai,
                         api_base: provider_config.api_base.clone(),
                         api_key: Some(api_key.to_string()),
                         default_model: model.to_string(),
                         models: std::collections::HashMap::new(),
-                        extra_headers,
+                        extra_headers: provider_config.extra_headers.clone(),
                         proxy_url,
                         proxy_username,
                         proxy_password,
                         client_id: provider_config.client_id.clone(),
                         default_currency: provider_config.default_currency.clone(),
+                        supports_thinking: true,
                     };
                     Ok(Arc::new(
                         gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
                     ))
                 }
             }
-        }
+            ProviderType::Anthropic => {
+                #[cfg(feature = "provider-anthropic")]
+                {
+                    let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                        api_key.to_string(),
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        None,
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
+                        provider_config.extra_headers.clone(),
+                    );
+                    Ok(Arc::new(provider))
+                }
+                #[cfg(not(feature = "provider-anthropic"))]
+                {
+                    anyhow::bail!(
+                        "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                    )
+                }
+            }
+            ProviderType::Openai => {
+                let extra_headers = provider_config.extra_headers.clone();
+                let supports_thinking =
+                    matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
+                let config = gasket_engine::providers::ProviderConfig {
+                    provider_type: ProviderType::Openai,
+                    api_base: provider_config.api_base.clone(),
+                    api_key: Some(api_key.to_string()),
+                    default_model: model.to_string(),
+                    models: std::collections::HashMap::new(),
+                    extra_headers,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    client_id: provider_config.client_id.clone(),
+                    default_currency: provider_config.default_currency.clone(),
+                    supports_thinking,
+                };
+                Ok(Arc::new(
+                    gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
+                ))
+            }
+        },
     }
 }
 
@@ -144,7 +355,7 @@ pub fn get_default_model_for_provider(name: &str) -> &'static str {
         "anthropic" => "claude-4-6-sonnet",
         "zhipu" => "glm-5",
         "dashscope" => "Qwen/Qwen3.5-397B-A17B",
-        "moonshot" => "kimi-k2.5",
+        "moonshot" | "kimi" => "kimi-k2.5",
         "minimax" => "MiniMax-M2.5",
         "ollama" => "llama3",
         "litellm" => "gpt-4o", // LiteLLM proxies to configured models
@@ -160,6 +371,9 @@ const DEFAULT_PROVIDER_ORDER: &[&str] = &[
     "deepseek",
     "openai",
     "anthropic",
+    "minimax",
+    "kimi",
+    "moonshot",
     "litellm",
     "ollama",
 ];

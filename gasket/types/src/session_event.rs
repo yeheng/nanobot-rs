@@ -19,9 +19,6 @@ pub struct SessionEvent {
     /// Message content
     pub content: String,
 
-    /// Semantic vector (per-message embedding)
-    pub embedding: Option<Vec<f32>>,
-
     /// Event metadata
     pub metadata: EventMetadata,
 
@@ -225,7 +222,6 @@ mod tests {
             session_key: "test:session".into(),
             event_type: EventType::UserMessage,
             content: "Hello".into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,

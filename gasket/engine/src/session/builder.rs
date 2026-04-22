@@ -102,7 +102,8 @@ impl SessionBuilder {
         if let Some(ref prompt_text) = self.config.summarization_prompt {
             compactor = compactor.with_summarization_prompt(prompt_text.clone());
         }
-        compactor = compactor.with_checkpoint_config(crate::session::compactor::CheckpointConfig::default());
+        compactor = compactor
+            .with_checkpoint_config(crate::session::compactor::CheckpointConfig::default());
         let compactor = Some(Arc::new(compactor));
 
         // ── 7. System prompt and skills ──────────────────────────────

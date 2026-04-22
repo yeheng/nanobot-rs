@@ -2,12 +2,10 @@
 //!
 //! Provides token counting and budget enforcement for parent and subagent coordination.
 //!
-//! Cost tracking uses `parking_lot::Mutex<f64>` instead of fixed-point `AtomicU64`.
-//! For a personal AI assistant with single-digit subagent concurrency, uncontended
-//! mutex lock/unlock is nanosecond-scale — the CAS-loop and scaling overhead of
-//! `AtomicU64` was pure mental tax with no measurable benefit.
+//! Cost tracking uses `AtomicU64` with fixed-point arithmetic (nano-cents) for
+//! lock-free, wait-free accumulation. No `Mutex` overhead, no precision loss
+//! from non-associative f64 addition across millions of operations.
 
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Token usage information from an LLM response
@@ -133,25 +131,33 @@ impl SessionTokenStats {
     }
 }
 
+/// Scaling factor for fixed-point cost: 1 unit = 1e-9 cents (nano-cents).
+///
+/// Using 1_000_000_000 gives us 9 decimal digits of precision,
+/// enough to represent any realistic API cost without rounding error.
+const COST_SCALE: f64 = 1_000_000_000.0;
+
 /// Shared token tracker for budget enforcement across parent and subagents.
 ///
 /// Uses `Arc` for shared ownership — parent and subagents all accumulate
 /// to the same tracker, enabling unified budget enforcement.
 ///
-/// Cost accumulation uses `parking_lot::Mutex<f64>` for simplicity.
-/// Uncontended lock/unlock is ~2ns, negligible compared to LLM round-trips.
+/// Cost accumulation uses `AtomicU64` with fixed-point arithmetic (nano-cents).
+/// Lock-free `fetch_add` eliminates mutex contention and guarantees
+/// associativity across millions of operations — something f64 addition
+/// cannot provide.
 #[derive(Debug)]
 pub struct TokenTracker {
     /// Total input tokens across all requests (including subagents)
     total_input_tokens: std::sync::atomic::AtomicUsize,
     /// Total output tokens across all requests (including subagents)
     total_output_tokens: std::sync::atomic::AtomicUsize,
-    /// Total cost accumulated (including subagents) — direct f64, no scaling
-    total_cost: Mutex<f64>,
+    /// Total cost accumulated (including subagents) — fixed-point nano-cents
+    total_cost: std::sync::atomic::AtomicU64,
     /// Number of LLM requests made (including subagents)
     request_count: std::sync::atomic::AtomicUsize,
-    /// Optional budget limit (0.0 = unlimited, immutable after construction)
-    budget_limit: f64,
+    /// Optional budget limit in nano-cents (0 = unlimited, immutable after construction)
+    budget_limit_nanos: u64,
     /// Currency for cost display (immutable after construction)
     currency: String,
 }
@@ -161,9 +167,9 @@ impl Default for TokenTracker {
         Self {
             total_input_tokens: std::sync::atomic::AtomicUsize::new(0),
             total_output_tokens: std::sync::atomic::AtomicUsize::new(0),
-            total_cost: Mutex::new(0.0),
+            total_cost: std::sync::atomic::AtomicU64::new(0),
             request_count: std::sync::atomic::AtomicUsize::new(0),
-            budget_limit: 0.0,
+            budget_limit_nanos: 0,
             currency: String::new(),
         }
     }
@@ -172,9 +178,10 @@ impl Default for TokenTracker {
 impl TokenTracker {
     /// Create a new token tracker with optional budget limit.
     pub fn new(currency: &str, budget_limit: Option<f64>) -> Self {
+        let budget_limit_nanos = budget_limit.map(|b| (b * COST_SCALE) as u64).unwrap_or(0);
         Self {
             currency: currency.to_string(),
-            budget_limit: budget_limit.unwrap_or(0.0),
+            budget_limit_nanos,
             ..Default::default()
         }
     }
@@ -186,15 +193,17 @@ impl TokenTracker {
 
     /// Accumulate token usage from a single request.
     ///
-    /// Token counts use atomics (lock-free). Cost uses a `Mutex<f64>` —
-    /// uncontended lock is ~2ns, dwarfed by any LLM round-trip.
+    /// All counters use lock-free atomics. Cost is converted to fixed-point
+    /// nano-cents and accumulated via `fetch_add` with `Ordering::Relaxed`.
     pub fn accumulate(&self, usage: &TokenUsage, cost: f64) {
         self.total_input_tokens
             .fetch_add(usage.input_tokens, std::sync::atomic::Ordering::Relaxed);
         self.total_output_tokens
             .fetch_add(usage.output_tokens, std::sync::atomic::Ordering::Relaxed);
 
-        *self.total_cost.lock() += cost;
+        let cost_nanos = (cost * COST_SCALE) as u64;
+        self.total_cost
+            .fetch_add(cost_nanos, std::sync::atomic::Ordering::Relaxed);
 
         self.request_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -217,9 +226,9 @@ impl TokenTracker {
         self.input_tokens() + self.output_tokens()
     }
 
-    /// Get total cost
+    /// Get total cost (converts fixed-point nano-cents back to f64).
     pub fn total_cost(&self) -> f64 {
-        *self.total_cost.lock()
+        self.total_cost.load(std::sync::atomic::Ordering::Relaxed) as f64 / COST_SCALE
     }
 
     /// Get request count
@@ -230,19 +239,21 @@ impl TokenTracker {
 
     /// Get budget limit (0.0 = unlimited)
     pub fn budget_limit(&self) -> f64 {
-        self.budget_limit
+        self.budget_limit_nanos as f64 / COST_SCALE
     }
 
     /// Check if budget is exceeded
     pub fn is_budget_exceeded(&self) -> bool {
-        self.budget_limit > 0.0 && *self.total_cost.lock() > self.budget_limit
+        self.budget_limit_nanos > 0
+            && self.total_cost.load(std::sync::atomic::Ordering::Relaxed) > self.budget_limit_nanos
     }
 
     /// Get remaining budget (returns None if unlimited)
     pub fn remaining_budget(&self) -> Option<f64> {
-        if self.budget_limit > 0.0 {
-            let spent = *self.total_cost.lock();
-            Some((self.budget_limit - spent).max(0.0))
+        if self.budget_limit_nanos > 0 {
+            let spent = self.total_cost.load(std::sync::atomic::Ordering::Relaxed);
+            let remaining = self.budget_limit_nanos.saturating_sub(spent);
+            Some(remaining as f64 / COST_SCALE)
         } else {
             None
         }
@@ -257,7 +268,7 @@ impl TokenTracker {
     pub fn format_summary(&self) -> String {
         let currency = self.currency();
         let currency_symbol = if currency == "CNY" { "¥" } else { "$" };
-        let budget_info = if self.budget_limit > 0.0 {
+        let budget_info = if self.budget_limit() > 0.0 {
             format!(
                 " (Budget: {}{:.4}, Remaining: {}{:.4})",
                 currency_symbol,
@@ -461,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_repeated_accumulation_precision() {
-        // Direct f64 accumulation — no fixed-point needed
+        // Fixed-point accumulation — exact for values representable at nano-cent scale
         let tracker = TokenTracker::unlimited("USD");
         for _ in 0..1_000 {
             tracker.accumulate(&TokenUsage::new(1, 0), 0.000_001);

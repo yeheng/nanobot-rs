@@ -19,6 +19,23 @@ pub struct RuntimeContext {
     pub checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
 }
 
+impl RuntimeContext {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        config: KernelConfig,
+    ) -> Self {
+        Self {
+            provider,
+            tools,
+            config,
+            spawner: None,
+            token_tracker: None,
+            checkpoint_callback: None,
+        }
+    }
+}
+
 impl Clone for RuntimeContext {
     fn clone(&self) -> Self {
         Self {

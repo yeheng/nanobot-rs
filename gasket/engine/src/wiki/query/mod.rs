@@ -82,19 +82,19 @@ pub struct WikiQueryEngine {
 impl WikiQueryEngine {
     /// Create a new query engine.
     pub fn new(tantivy: Arc<TantivyIndex>, store: Arc<PageStore>) -> Self {
-        Self {
-            tantivy,
-            store,
-        }
+        Self { tantivy, store }
     }
 
     /// Full two-phase query with budget-aware selection.
     ///
     /// Phase 1: Tantivy BM25 → top-50 candidates (title boosted)
-    /// Phase 2: Budget selection → load pages from SQLite
+    /// Phase 2: Batch-load lightweight summaries → budget-filter → load full pages
     pub async fn query(&self, query: &str, budget: TokenBudget) -> Result<QueryResult> {
-        // Phase 1: Candidate retrieval
-        let candidates = self.tantivy.search(query, 50)?;
+        // Phase 1: Candidate retrieval (offloaded to blocking thread)
+        let candidates = self
+            .tantivy
+            .search_async(query.to_string(), 50)
+            .await?;
         let total_candidates = candidates.len();
 
         if candidates.is_empty() {
@@ -105,25 +105,41 @@ impl WikiQueryEngine {
             });
         }
 
-        // Phase 2: Budget-aware selection + load full pages
+        // Phase 2a: Batch-load summaries (N+1 fix — one query, not N)
+        let paths: Vec<String> = candidates.iter().map(|h| h.path.clone()).collect();
+        let summaries = self.store.read_summaries(&paths).await?;
+
+        // Build path → summary lookup for budget filtering
+        let summary_by_path: std::collections::HashMap<&str, &super::page::PageSummary> =
+            summaries.iter().map(|s| (s.path.as_str(), s)).collect();
+
+        // Phase 2b: Budget-aware selection using lightweight summaries
         let chars_budget = budget.chars_budget();
         let mut used_chars = 0usize;
-        let mut pages = Vec::new();
+        let mut selected_paths = Vec::new();
         let mut estimated_tokens = 0usize;
 
         for hit in &candidates {
-            match self.store.read(&hit.path).await {
-                Ok(page) => {
-                    let page_chars = page.content.len();
-                    if used_chars + page_chars > chars_budget && !pages.is_empty() {
-                        break; // Budget exhausted
-                    }
-                    used_chars += page_chars;
-                    estimated_tokens += page_chars / 4;
-                    pages.push(page);
-                }
+            let Some(summary) = summary_by_path.get(hit.path.as_str()) else {
+                tracing::debug!("WikiQuery: summary not found for '{}'", hit.path);
+                continue;
+            };
+            let page_chars = summary.content_length as usize;
+            if used_chars + page_chars > chars_budget && !selected_paths.is_empty() {
+                break; // Budget exhausted
+            }
+            used_chars += page_chars;
+            estimated_tokens += page_chars / 4;
+            selected_paths.push(hit.path.as_str());
+        }
+
+        // Phase 2c: Load full pages only for selected candidates
+        let mut pages = Vec::new();
+        for path in selected_paths {
+            match self.store.read(path).await {
+                Ok(page) => pages.push(page),
                 Err(e) => {
-                    tracing::debug!("WikiQuery: skip '{}': {}", hit.path, e);
+                    tracing::debug!("WikiQuery: skip loading '{}': {}", path, e);
                 }
             }
         }
@@ -136,14 +152,18 @@ impl WikiQueryEngine {
     }
 
     /// Simple BM25 search returning search hits (no reranking, no page loading).
-    pub fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        self.tantivy.search(query, limit)
+    /// Offloaded to a blocking thread to avoid stalling the async runtime.
+    pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        self.tantivy.search_async(query.to_string(), limit).await
     }
 
     /// File a good answer back into the wiki as a new topic page.
     ///
     /// This is the "answer filing" feature: after a good Q&A exchange,
     /// the agent can save the knowledge for future retrieval.
+    ///
+    /// Tantivy upsert is offloaded to `spawn_blocking` to avoid blocking
+    /// the async runtime during disk I/O.
     pub async fn file_answer(&self, question: &str, answer: &str) -> Result<String> {
         let path = format!("topics/{}", slugify(question));
         let page = WikiPage::new(
@@ -154,15 +174,21 @@ impl WikiQueryEngine {
         );
         self.store.write(&page).await?;
 
-        // Also upsert into Tantivy index
+        // Also upsert into Tantivy index (offloaded to blocking thread)
         let full_page = self.store.read(&path).await?;
-        self.tantivy.upsert(&full_page)?;
+        let tantivy = self.tantivy.clone();
+        tokio::task::spawn_blocking(move || tantivy.upsert(&full_page))
+            .await
+            .map_err(|e| anyhow::anyhow!("Tantivy upsert spawn_blocking failed: {}", e))??;
 
         tracing::info!("Filed answer as wiki page: '{}'", path);
         Ok(path)
     }
 
     /// Rebuild the Tantivy index from all pages in the store.
+    ///
+    /// Tantivy rebuild is offloaded to `spawn_blocking` to avoid blocking
+    /// the async runtime during disk I/O.
     pub async fn rebuild_index(&self) -> Result<usize> {
         let summaries = self.store.list(Default::default()).await?;
         let mut full_pages = Vec::new();
@@ -171,7 +197,11 @@ impl WikiQueryEngine {
                 full_pages.push(page);
             }
         }
-        self.tantivy.rebuild(&full_pages)?;
+        let tantivy = self.tantivy.clone();
+        let pages_for_blocking = full_pages.clone();
+        tokio::task::spawn_blocking(move || tantivy.rebuild(&pages_for_blocking))
+            .await
+            .map_err(|e| anyhow::anyhow!("Tantivy rebuild spawn_blocking failed: {}", e))??;
         Ok(full_pages.len())
     }
 

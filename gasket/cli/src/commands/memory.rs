@@ -372,7 +372,7 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
     if tantivy_dir.exists() {
         match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
             Ok(index) => {
-                let hits = index.search_raw(query, limit)?;
+                let hits = index.search_raw(query, limit).await?;
                 if hits.is_empty() {
                     println!("No results for '{}'", query);
                     return Ok(());

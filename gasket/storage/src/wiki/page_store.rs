@@ -164,6 +164,53 @@ impl WikiPageStore {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// Batch-load lightweight page summaries for a set of paths.
+    ///
+    /// Returns only the metadata fields needed for reranking and display
+    /// (title, tags, confidence, etc.) — NOT the heavy `content` column.
+    /// This is the N+1 fix: one query for N paths instead of N separate
+    /// `SELECT *` queries pulling megabytes of content into memory.
+    pub async fn get_summaries_by_paths(&self, paths: &[String]) -> Result<Vec<PageSummary>> {
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT path, title, type, category, tags, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length \
+             FROM wiki_pages \
+             WHERE path IN ({})",
+            placeholders
+        );
+
+        let mut query = sqlx::query_as::<_, PageSummary>(&sql);
+        for p in paths {
+            query = query.bind(p);
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+}
+
+/// Lightweight page summary — excludes the heavy `content` column.
+#[derive(Debug, sqlx::FromRow)]
+pub struct PageSummary {
+    pub path: String,
+    pub title: String,
+    #[sqlx(rename = "type")]
+    pub page_type: String,
+    pub category: Option<String>,
+    pub tags: Option<String>,
+    pub confidence: f64,
+    pub frequency: String,
+    pub access_count: i64,
+    pub last_accessed: Option<String>,
+    pub updated: String,
+    /// Content length in bytes (for budget-aware selection without loading full content).
+    #[sqlx(rename = "content_length")]
+    pub content_length: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

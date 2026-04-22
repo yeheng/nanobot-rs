@@ -61,12 +61,12 @@ async fn test_full_ingest_query_lint_cycle() {
     assert_eq!(rebuilt, 3);
 
     // Search for rust
-    let hits = index.search_raw("rust programming", 10).unwrap();
+    let hits = index.search_raw("rust programming", 10).await.unwrap();
     assert!(!hits.is_empty());
     assert_eq!(hits[0].path, "topics/rust");
 
     // Search for async
-    let hits = index.search_raw("async tokio", 10).unwrap();
+    let hits = index.search_raw("async tokio", 10).await.unwrap();
     assert!(!hits.is_empty());
     assert_eq!(hits[0].path, "topics/async");
 

@@ -39,7 +39,6 @@
 const COMPACTION_COOLDOWN_SECS: u64 = 60;
 
 /// Watermark-based context compactor.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -166,6 +165,9 @@ pub struct ContextCompactor {
     summarization_prompt: String,
     /// Guard preventing concurrent compaction for the same session.
     is_compressing: Arc<AtomicBool>,
+    /// Pending compaction flag: set when threshold is exceeded but lock is held.
+    /// Checked by the background task on completion to trigger a follow-up run.
+    pending_compaction: Arc<AtomicBool>,
     /// Timestamp of last compaction failure (for cooldown backoff).
     last_failed_attempt: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Optional checkpoint configuration for proactive working-memory snapshots.
@@ -193,6 +195,7 @@ impl ContextCompactor {
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
             summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
             is_compressing: Arc::new(AtomicBool::new(false)),
+            pending_compaction: Arc::new(AtomicBool::new(false)),
             last_failed_attempt: Arc::new(parking_lot::Mutex::new(None)),
             checkpoint_config: None,
         }
@@ -324,7 +327,10 @@ impl ContextCompactor {
             debug!("Force compaction skipped: already in progress for {}", sk);
             return false;
         }
-        let guard = CompactionGuard(self.is_compressing.clone());
+        let guard = CompactionGuard {
+            is_compressing: self.is_compressing.clone(),
+            pending_compaction: Some(self.pending_compaction.clone()),
+        };
         info!("Force compaction triggered for {}", sk);
         self.spawn_compaction_task(session_key, vault_values, guard);
         true
@@ -344,7 +350,10 @@ impl ContextCompactor {
             bail!("Compaction already in progress for {}", sk);
         }
         info!("Force compaction (blocking) started for {}", sk);
-        let _guard = CompactionGuard(self.is_compressing.clone());
+        let _guard = CompactionGuard {
+            is_compressing: self.is_compressing.clone(),
+            pending_compaction: Some(self.pending_compaction.clone()),
+        };
 
         run_compaction(
             &self.event_store,
@@ -453,12 +462,23 @@ impl ContextCompactor {
     ) -> bool {
         let sk = session_key.to_string();
         if !self.should_compact(&sk, current_tokens) {
+            // Clear pending if we drop below threshold — no need to re-trigger.
+            self.pending_compaction.store(false, Ordering::Release);
             return false;
         }
         if !self.try_acquire_lock(&sk) {
+            // Lock held but threshold exceeded — mark pending for re-trigger.
+            self.pending_compaction.store(true, Ordering::Release);
+            debug!(
+                "Compaction deferred for {}: already in progress, marked pending",
+                sk
+            );
             return false;
         }
-        let guard = CompactionGuard(self.is_compressing.clone());
+        let guard = CompactionGuard {
+            is_compressing: self.is_compressing.clone(),
+            pending_compaction: Some(self.pending_compaction.clone()),
+        };
         self.spawn_compaction_task(session_key, vault_values, guard);
         true
     }
@@ -544,6 +564,7 @@ impl ContextCompactor {
         let sk = session_key.clone();
         let vault = vault_values.to_vec();
         let last_failed = self.last_failed_attempt.clone();
+        let pending = self.pending_compaction.clone();
 
         tokio::spawn(async move {
             let _guard = guard;
@@ -565,16 +586,54 @@ impl ContextCompactor {
             } else {
                 *last_failed.lock() = None;
             }
+
+            // If pending was set while we were running, clear it and re-trigger.
+            if pending
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                info!(
+                    "Pending compaction detected for {} — re-triggering immediately",
+                    sk
+                );
+                // Spawn a follow-up compaction.  We intentionally do NOT pass
+                // the guard forward; a new lock will be acquired inline.
+                let _ = tokio::spawn(async move {
+                    if let Err(e) = run_compaction(
+                        &event_store,
+                        &sqlite_store,
+                        &*provider,
+                        &model,
+                        &summarization_prompt,
+                        &sk,
+                        &vault,
+                    )
+                    .await
+                    {
+                        warn!("Follow-up compaction failed for {}: {}", sk, e);
+                    }
+                });
+            }
         });
     }
 }
 
 /// RAII guard that resets the compaction flag on drop, ensuring panic safety.
-struct CompactionGuard(Arc<AtomicBool>);
+/// Optionally clears the pending flag so a follow-up run is not triggered
+/// when the lock was released by a synchronous path (e.g., force_compact_and_wait).
+struct CompactionGuard {
+    is_compressing: Arc<AtomicBool>,
+    pending_compaction: Option<Arc<AtomicBool>>,
+}
 
 impl Drop for CompactionGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.is_compressing.store(false, Ordering::Release);
+        // If this guard owns the pending flag, clear it on drop so the
+        // background task does not spin forever on synchronous paths.
+        if let Some(ref pending) = self.pending_compaction {
+            pending.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -827,7 +886,6 @@ mod tests {
             content: "hello".to_string(),
             sequence: 1,
             created_at: chrono::Utc::now(),
-            embedding: None,
             metadata: Default::default(),
         };
 

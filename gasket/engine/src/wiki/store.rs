@@ -152,6 +152,42 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
+                content_length: r.content.len() as u64,
+            })
+            .collect())
+    }
+
+    /// Batch-load lightweight page summaries for a set of paths.
+    ///
+    /// Returns only metadata (title, tags, confidence, content_length, etc.) —
+    /// NOT the heavy `content` column. This is the N+1 fix: one query for N
+    /// paths instead of N separate `SELECT *` queries.
+    pub async fn read_summaries(&self, paths: &[String]) -> Result<Vec<PageSummary>> {
+        let rows = self.db.get_summaries_by_paths(paths).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| PageSummary {
+                path: r.path,
+                title: r.title,
+                page_type: r.page_type.parse().unwrap_or(PageType::Topic),
+                category: r.category,
+                tags: r
+                    .tags
+                    .as_ref()
+                    .and_then(|t| serde_json::from_str(t).ok())
+                    .unwrap_or_default(),
+                updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_default(),
+                confidence: r.confidence,
+                frequency: Frequency::from_str_lossy(&r.frequency),
+                access_count: r.access_count as u64,
+                last_accessed: r
+                    .last_accessed
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                content_length: r.content_length as u64,
             })
             .collect())
     }

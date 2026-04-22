@@ -10,14 +10,14 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::kernel::{
-    context::KernelConfig,
+    context::RuntimeContext,
     error::KernelError,
     request_handler::RequestHandler,
     stream,
     tool_executor::{ToolCallResult, ToolExecutor},
 };
-use crate::tools::{SubagentSpawner, ToolContext, ToolRegistry};
-use gasket_providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
+use crate::tools::ToolContext;
+use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
 
 /// Result of executing one LLM iteration.
@@ -32,39 +32,21 @@ pub struct StepResult {
 }
 
 pub struct SteppableExecutor {
-    provider: Arc<dyn LlmProvider>,
-    tools: Arc<ToolRegistry>,
-    config: KernelConfig,
-    spawner: Option<Arc<dyn SubagentSpawner>>,
-    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
-    /// Optional checkpoint interceptor. Called before each step().
-    /// Returns summary to inject, or None to skip.
-    checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    ctx: RuntimeContext,
 }
 
 impl SteppableExecutor {
-    pub fn new(
-        provider: Arc<dyn LlmProvider>,
-        tools: Arc<ToolRegistry>,
-        config: KernelConfig,
-    ) -> Self {
-        Self {
-            provider,
-            tools,
-            config,
-            spawner: None,
-            token_tracker: None,
-            checkpoint_callback: None,
-        }
+    pub fn new(ctx: RuntimeContext) -> Self {
+        Self { ctx }
     }
 
-    pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
-        self.spawner = Some(spawner);
+    pub fn with_spawner(mut self, spawner: Arc<dyn crate::tools::SubagentSpawner>) -> Self {
+        self.ctx.spawner = Some(spawner);
         self
     }
 
     pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
-        self.token_tracker = Some(tracker);
+        self.ctx.token_tracker = Some(tracker);
         self
     }
 
@@ -73,7 +55,7 @@ impl SteppableExecutor {
         mut self,
         callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
     ) -> Self {
-        self.checkpoint_callback = Some(callback);
+        self.ctx.checkpoint_callback = Some(callback);
         self
     }
 
@@ -88,15 +70,16 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Result<StepResult, KernelError> {
         // Proactive checkpoint injection (before LLM call)
-        if let Some(ref cb) = self.checkpoint_callback {
+        if let Some(ref cb) = self.ctx.checkpoint_callback {
             if let Some(summary) = cb(messages.len()) {
                 debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
                 messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
             }
         }
 
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
+        let request_handler =
+            RequestHandler::new(&self.ctx.provider, &self.ctx.tools, &self.ctx.config);
+        let executor = ToolExecutor::new(&self.ctx.tools, self.ctx.config.max_tool_result_chars);
 
         let request = request_handler.build_chat_request(messages);
         let stream_result = request_handler
@@ -137,7 +120,7 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         ledger: &mut crate::kernel::kernel_executor::TokenLedger,
     ) -> Result<ChatResponse, KernelError> {
-        let (mut event_stream, response_future) = stream::stream_events(stream_result);
+        let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
 
         if let Some(tx) = event_tx {
             let mut event_count = 0usize;
@@ -177,34 +160,17 @@ impl SteppableExecutor {
         messages: &mut Vec<ChatMessage>,
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Vec<ToolCallResult> {
-        if response.tool_calls.is_empty() {
-            if let Some(ref c) = response.content {
-                messages.push(ChatMessage::assistant(c));
-            }
-            return vec![];
-        }
-
-        debug!(
-            "[Steppable] Executing {} tool call(s): {}",
-            response.tool_calls.len(),
-            response
-                .tool_calls
-                .iter()
-                .map(|tc| tc.function.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
+        // Note: caller already checked `has_tool_calls()`, so `tool_calls` is non-empty.
         messages.push(ChatMessage::assistant_with_tools(
             response.content.clone(),
             response.tool_calls.clone(),
         ));
 
         let mut ctx = ToolContext::default();
-        if let Some(ref spawner) = self.spawner {
+        if let Some(ref spawner) = self.ctx.spawner {
             ctx = ctx.spawner(spawner.clone());
         }
-        if let Some(ref tracker) = self.token_tracker {
+        if let Some(ref tracker) = self.ctx.token_tracker {
             ctx = ctx.token_tracker(tracker.clone());
         }
 

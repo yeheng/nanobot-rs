@@ -80,7 +80,8 @@ impl MonitoredSpawner {
         };
         let kernel_config = config.to_kernel_config();
 
-        let mut steppable = SteppableExecutor::new(provider, tools, kernel_config);
+        let ctx = crate::kernel::RuntimeContext::new(provider, tools, kernel_config);
+        let mut steppable = SteppableExecutor::new(ctx);
         if let Some(cb) = checkpoint_callback {
             steppable = steppable.with_checkpoint(cb);
         }

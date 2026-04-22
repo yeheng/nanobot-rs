@@ -1,10 +1,13 @@
 //! LLM Provider abstractions and implementations for gasket
 //!
-//! All OpenAI-compatible providers (OpenAI, DashScope, Moonshot, Zhipu, MiniMax)
-//! are handled by `OpenAICompatibleProvider` with vendor-specific constructors.
-//! Only providers with genuinely different API formats (DeepSeek for reasoning_content,
-//! Gemini for native Google format, Copilot for OAuth token management) retain
-//! their own modules.
+//! OpenAI-compatible providers (OpenAI, DashScope, Zhipu) are handled by
+//! `OpenAICompatibleProvider` with vendor-specific constructors.
+//! Providers with genuinely different API formats retain their own modules:
+//! - Anthropic: native Messages API
+//! - Gemini: native Google Generative AI API
+//! - Copilot: OAuth token management
+//! - Minimax: custom API with group_id header
+//! - Moonshot: OpenAI-compatible with Context Caching, Partial Mode, etc.
 
 use thiserror::Error;
 
@@ -56,6 +59,8 @@ impl ProviderError {
     }
 }
 
+#[cfg(feature = "provider-anthropic")]
+mod anthropic;
 mod base;
 mod common;
 #[cfg(feature = "provider-copilot")]
@@ -64,7 +69,11 @@ mod copilot;
 mod copilot_oauth;
 #[cfg(feature = "provider-gemini")]
 mod gemini;
+#[cfg(feature = "provider-minimax")]
+mod minimax;
 mod model_spec;
+#[cfg(feature = "provider-moonshot")]
+mod moonshot;
 pub mod streaming;
 
 // Re-export base types
@@ -81,6 +90,8 @@ pub use common::{
 };
 
 // Re-export specialized providers
+#[cfg(feature = "provider-anthropic")]
+pub use anthropic::AnthropicProvider;
 #[cfg(feature = "provider-copilot")]
 pub use copilot::CopilotProvider;
 #[cfg(feature = "provider-copilot")]
@@ -90,6 +101,10 @@ pub use copilot_oauth::{
 };
 #[cfg(feature = "provider-gemini")]
 pub use gemini::GeminiProvider;
+#[cfg(feature = "provider-minimax")]
+pub use minimax::MinimaxProvider;
+#[cfg(feature = "provider-moonshot")]
+pub use moonshot::MoonshotProvider;
 
 // Re-export model spec
 pub use model_spec::ModelSpec;

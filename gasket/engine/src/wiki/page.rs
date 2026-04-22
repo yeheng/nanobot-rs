@@ -158,6 +158,8 @@ pub struct PageSummary {
     pub access_count: u64,
     /// Machine runtime state: last access timestamp.
     pub last_accessed: Option<DateTime<Utc>>,
+    /// Content length in bytes (for budget-aware selection without loading full content).
+    pub content_length: u64,
 }
 
 /// Filter for listing pages

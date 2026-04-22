@@ -47,14 +47,16 @@ pub struct ProcessedHistory {
 
 /// Process history with token budget awareness.
 ///
-/// Simple algorithm:
-/// 1. Take up to `max_events` most recent events
-/// 2. Always keep the last `recent_keep` events verbatim
-/// 3. For older events, include them only if they fit within the token budget
+/// Algorithm (O(1) splits, no reverse iteration):
+/// 1. Drop events beyond `max_events`.
+/// 2. Always keep the last `recent_keep` events verbatim.
+/// 3. Walk backwards through older events, accumulating tokens until budget is hit.
+/// 4. Single `split_off` separates evicted from kept events.
 ///
 /// Token counting uses tiktoken-rs (cl100k_base BPE encoding) for accuracy.
-pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> ProcessedHistory {
-    if history.is_empty() {
+pub fn process_history(mut history: Vec<SessionEvent>, config: &HistoryConfig) -> ProcessedHistory {
+    let n = history.len();
+    if n == 0 {
         return ProcessedHistory {
             events: Vec::new(),
             estimated_tokens: 0,
@@ -63,65 +65,61 @@ pub fn process_history(history: Vec<SessionEvent>, config: &HistoryConfig) -> Pr
         };
     }
 
-    // Take up to max_events from the end
-    let total = history.len().min(config.max_events);
-    let start_idx = history.len().saturating_sub(total);
-    let mut events: Vec<SessionEvent> = history.into_iter().skip(start_idx).collect();
+    // 1. Drop events beyond max_events (chronologically oldest).
+    let total = n.min(config.max_events);
+    let start_idx = n.saturating_sub(total);
+    let mut relevant = history.split_off(start_idx);
+    let filtered_count = start_idx; // Events [0..start_idx] are filtered out
 
-    // Split into protected (recent) and older events using zero-copy split_off
-    let protected_start = events.len().saturating_sub(config.recent_keep);
-    let protected = events.split_off(protected_start);
-    let older = events; // Remaining events are the older ones
+    // 2. Protected events: the last `recent_keep` of the relevant slice.
+    let protected_start = total.saturating_sub(config.recent_keep);
 
     // Calculate tokens for protected events (always included).
     // Use pre-computed token count from DB (content_token_len) when available,
     // fall back to BPE encoding for events created in-memory.
-    let protected_tokens: usize = protected.iter().map(token_len_or_count).sum();
+    let protected_tokens: usize = relevant[protected_start..]
+        .iter()
+        .map(token_len_or_count)
+        .sum();
     let mut current_tokens = protected_tokens;
-    let mut included_older: Vec<SessionEvent> = Vec::new();
-    let mut evicted: Vec<SessionEvent> = Vec::new();
 
-    // Add older events from most recent to oldest, respecting budget
-    // Use into_iter() to take ownership instead of cloning
-    let mut budget_exceeded = false;
-    for event in older.into_iter().rev() {
-        let event_tokens = token_len_or_count(&event);
-
-        if !budget_exceeded
-            && (config.token_budget == 0 || current_tokens + event_tokens <= config.token_budget)
-        {
+    // 3. Walk backwards through older events to find the split point.
+    // split_offset is the first event to KEEP within `relevant`.
+    let mut split_offset = protected_start;
+    for i in (0..protected_start).rev() {
+        let event_tokens = token_len_or_count(&relevant[i]);
+        if config.token_budget == 0 || current_tokens + event_tokens <= config.token_budget {
             current_tokens += event_tokens;
-            included_older.push(event);
+            split_offset = i;
         } else {
-            // Budget exceeded - this event and all older events are evicted
-            budget_exceeded = true;
-            evicted.push(event);
+            break;
         }
     }
 
-    // Reorder: older events first, then protected
-    included_older.reverse();
-    // Evicted events are in reverse order (newest first), reorder to chronological
-    evicted.reverse();
+    // 4. Single split: separate evicted ([0..split_offset]) from kept.
+    let mut kept = relevant.split_off(split_offset);
+    // relevant now holds evicted events in chronological order.
 
-    let mut result = included_older;
-    result.extend(protected);
+    // 5. Within kept, split off protected events and append them.
+    let protected_offset = protected_start.saturating_sub(split_offset);
+    let protected = kept.split_off(protected_offset);
+    kept.extend(protected);
 
-    let filtered_count = total - result.len();
+    let filtered_count = n - kept.len();
 
     debug!(
-        "Processed history: {} input, {} kept, {} evicted, {} tokens",
-        total,
-        result.len(),
+        "Processed history: {} input, {} kept, {} filtered/evicted, {} tokens",
+        n,
+        kept.len(),
         filtered_count,
         current_tokens
     );
 
     ProcessedHistory {
-        events: result,
+        events: kept,
         estimated_tokens: current_tokens,
         filtered_count,
-        evicted,
+        evicted: relevant,
     }
 }
 
@@ -179,7 +177,6 @@ mod tests {
             session_key: "test".into(),
             event_type,
             content: content.to_string().into(),
-            embedding: None,
             metadata: EventMetadata::default(),
             created_at: Utc::now(),
             sequence: 0,

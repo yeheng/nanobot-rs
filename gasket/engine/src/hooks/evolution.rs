@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -75,27 +76,31 @@ impl EvolutionHook {
     }
 
     /// Extract JSON array from an LLM response.
-    /// Handles markdown code blocks (```json ... ```) and trims surrounding whitespace/text.
+    ///
+    /// Handles markdown code blocks, trims surrounding text, and attempts to
+    /// salvage truncated JSON (e.g., from `max_tokens` cut-off).
     fn extract_json(text: &str) -> Result<Vec<EvolutionMemory>, serde_json::Error> {
         let trimmed = text.trim();
 
-        // Try direct parse first.
+        // 1. Try direct parse first.
         if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(trimmed) {
             return Ok(val);
         }
 
-        // Try stripping markdown code block fences.
-        let without_fences = trimmed
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
-
-        if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(without_fences) {
-            return Ok(val);
+        // 2. Extract JSON from markdown code blocks using regex.
+        let code_block_re = Regex::new(r"(?s)```(?:json)?\s*(\[.*?\])\s*```").unwrap();
+        if let Some(caps) = code_block_re.captures(trimmed) {
+            let block = caps.get(1).map(|m| m.as_str()).unwrap_or(trimmed);
+            if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(block) {
+                return Ok(val);
+            }
+            // Block detected but parse failed — might be truncated; fall through.
+            if let Ok(val) = Self::try_fix_truncated(block) {
+                return Ok(val);
+            }
         }
 
-        // Try finding the first '[' and last ']' to extract the JSON array.
+        // 3. Fallback: find the first '[' and last ']' to extract the JSON array.
         if let Some(start) = trimmed.find('[') {
             if let Some(end) = trimmed.rfind(']') {
                 if end > start {
@@ -105,10 +110,50 @@ impl EvolutionHook {
                     }
                 }
             }
+            // Array started but no closing ']' — truncated JSON.
+            let slice = &trimmed[start..];
+            if let Ok(val) = Self::try_fix_truncated(slice) {
+                return Ok(val);
+            }
         }
 
-        // Final attempt: parse the stripped version for a clearer error message.
-        serde_json::from_str::<Vec<EvolutionMemory>>(without_fences)
+        // 4. Final attempt: parse whatever is left for a clear error message.
+        serde_json::from_str::<Vec<EvolutionMemory>>(trimmed)
+    }
+
+    /// Try to salvage a truncated JSON array by progressively adding closing brackets.
+    ///
+    /// LLMs may hit `max_tokens` mid-array, leaving output like:
+    /// `[{"title":"t","type":"note","content":"x"`
+    /// We attempt to close open strings, objects, and the array itself.
+    fn try_fix_truncated(text: &str) -> Result<Vec<EvolutionMemory>, serde_json::Error> {
+        let trimmed = text.trim();
+
+        // Progressive closing — try increasingly complete suffixes.
+        let suffixes = [
+            "]",
+            "\"}]",
+            "}\"]",
+            "}\"}]",
+            "}\"}]]",
+        ];
+        for suffix in &suffixes {
+            let fixed = format!("{}{}", trimmed, suffix);
+            if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(&fixed) {
+                return Ok(val);
+            }
+        }
+
+        // Last resort: find the last complete object and truncate there.
+        // Scan backwards for "}," which usually marks the end of a complete object.
+        if let Some(last_boundary) = trimmed.rfind("},") {
+            let truncated = format!("{}]", &trimmed[..=last_boundary + 1]);
+            if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(&truncated) {
+                return Ok(val);
+            }
+        }
+
+        Err(serde::de::Error::custom("unable to repair truncated JSON"))
     }
 
     /// Format events into a conversation transcript for the LLM prompt.
@@ -231,7 +276,7 @@ impl PipelineHook for EvolutionHook {
                 ChatMessage::user(user_prompt),
             ],
             tools: None,
-            temperature: Some(0.3),
+            temperature: Some(0.0),
             max_tokens: Some(4096),
             thinking: None,
         };
@@ -459,5 +504,54 @@ mod tests {
         assert_eq!(mems.len(), 1);
         assert!(!mems[0].verified);
         assert_eq!(mems[0].confidence, 0.0);
+    }
+
+    #[test]
+    fn test_extract_json_from_markdown_code_block() {
+        let response = r#"Here is the result:
+```json
+[{"title":"Docker","type":"skill","scenario":"procedure","content":"Build","tags":[],"verified":true,"confidence":0.9}]
+```
+Hope that helps!"#;
+        let mems = EvolutionHook::extract_json(response).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].title, "Docker");
+    }
+
+    #[test]
+    fn test_extract_json_from_plain_code_block() {
+        let response = r#"```
+[{"title":"Test","type":"note","scenario":"knowledge","content":"fact","tags":[],"verified":false,"confidence":0.5}]
+```"#;
+        let mems = EvolutionHook::extract_json(response).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].title, "Test");
+    }
+
+    #[test]
+    fn test_extract_json_truncated_array() {
+        // Simulates max_tokens cut-off — missing closing ]
+        let truncated = r#"[{"title":"A","type":"note","scenario":"knowledge","content":"fact A","tags":[]},{"title":"B","type":"note","scenario":"knowledge","content":"fact B""#;
+        let mems = EvolutionHook::extract_json(truncated).unwrap();
+        assert!(!mems.is_empty(), "Should salvage at least some items from truncated JSON");
+    }
+
+    #[test]
+    fn test_extract_json_truncated_inside_object() {
+        // Truncated inside the second object
+        let truncated = r#"[{"title":"A","type":"note","scenario":"knowledge","content":"fact A","tags":[]},{"title":"B","type":"note","scenario":"knowledge","content":"fact B","tags":[]},{"title":"C","type":"note","scenario":"knowledge","content":"fact C""#;
+        let mems = EvolutionHook::extract_json(truncated).unwrap();
+        // Should recover the first two complete objects
+        assert!(mems.len() >= 2, "Should recover at least 2 complete objects");
+    }
+
+    #[test]
+    fn test_extract_json_with_noise_prefix() {
+        let noisy = r#"Sure! Here's what I found:
+[{"title":"X","type":"note","scenario":"knowledge","content":"y","tags":[]}]
+Let me know if you need more."#;
+        let mems = EvolutionHook::extract_json(noisy).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].title, "X");
     }
 }

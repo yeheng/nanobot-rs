@@ -10,6 +10,7 @@ use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, instrument};
+use std::collections::HashMap;
 
 /// Gemini provider using Google's Generative AI API
 pub struct GeminiProvider {
@@ -24,6 +25,9 @@ pub struct GeminiProvider {
 
     /// Default model
     default_model: String,
+
+    /// Extra HTTP headers to send with every request
+    extra_headers: HashMap<String, String>,
 }
 
 impl GeminiProvider {
@@ -34,6 +38,7 @@ impl GeminiProvider {
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-pro".to_string(),
+            extra_headers: HashMap::new(),
         }
     }
 
@@ -53,6 +58,7 @@ impl GeminiProvider {
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-pro".to_string(),
+            extra_headers: HashMap::new(),
         }
     }
 
@@ -63,6 +69,7 @@ impl GeminiProvider {
             api_key,
             api_base,
             default_model: "gemini-pro".to_string(),
+            extra_headers: HashMap::new(),
         }
     }
 
@@ -74,6 +81,7 @@ impl GeminiProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
+        extra_headers: HashMap<String, String>,
     ) -> Self {
         Self {
             client: build_http_client(
@@ -85,6 +93,7 @@ impl GeminiProvider {
             api_base: api_base
                 .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
             default_model: default_model.unwrap_or_else(|| "gemini-pro".to_string()),
+            extra_headers,
         }
     }
 
@@ -297,11 +306,17 @@ impl LlmProvider for GeminiProvider {
 
         debug!("[gemini] POST {}", url);
 
-        let response = self
+        let mut req = self
             .client
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        for (key, value) in &self.extra_headers {
+            req = req.header(key, value);
+        }
+
+        let response = req
             .json(&body)
             .send()
             .await
@@ -352,11 +367,17 @@ impl LlmProvider for GeminiProvider {
 
         debug!("[gemini] POST {} (stream)", url);
 
-        let response = self
+        let mut req = self
             .client
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        for (key, value) in &self.extra_headers {
+            req = req.header(key, value);
+        }
+
+        let response = req
             .json(&body)
             .send()
             .await

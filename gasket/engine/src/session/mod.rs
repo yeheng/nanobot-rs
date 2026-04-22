@@ -518,7 +518,7 @@ impl AgentSession {
                         reasoning_content: None,
                         tools_used: vec![],
                         token_usage: None,
-                        cost: 0.0,
+                        cost: None,
                     }
                 }
                 Err(e) => return Err(e.into()),
@@ -578,7 +578,6 @@ async fn save_assistant_event(
         session_key: ctx.session_key_str.to_string(),
         event_type: EventType::AssistantMessage,
         content: history_content,
-        embedding: None,
         metadata: EventMetadata {
             tools_used: result.tools_used.clone(),
             ..Default::default()

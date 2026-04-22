@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::kernel::{
-    context::KernelConfig, error::KernelError, steppable_executor::SteppableExecutor,
+    context::{KernelConfig, RuntimeContext}, error::KernelError, steppable_executor::SteppableExecutor,
     stream::StreamEvent,
 };
 use crate::token_tracker::TokenUsage;
@@ -41,7 +41,7 @@ pub struct ExecutionResult {
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
     pub token_usage: Option<gasket_types::TokenUsage>,
-    pub cost: f64,
+    pub cost: Option<f64>,
 }
 
 /// Accumulated execution state — message history and tool tracking only.
@@ -70,7 +70,7 @@ impl ExecutionState {
             reasoning_content,
             tools_used: self.tools_used.clone(),
             token_usage: ledger.total_usage.clone(),
-            cost: 0.0,
+            cost: None,
         }
     }
 }
@@ -108,38 +108,28 @@ impl TokenLedger {
 }
 
 /// Kernel executor - core LLM loop
-pub struct KernelExecutor<'a> {
-    provider: Arc<dyn LlmProvider>,
-    tools: Arc<ToolRegistry>,
-    config: &'a KernelConfig,
-    spawner: Option<Arc<dyn SubagentSpawner>>,
-    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
-    checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+pub struct KernelExecutor {
+    ctx: RuntimeContext,
 }
 
-impl<'a> KernelExecutor<'a> {
+impl KernelExecutor {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         tools: Arc<ToolRegistry>,
-        config: &'a KernelConfig,
+        config: KernelConfig,
     ) -> Self {
         Self {
-            provider,
-            tools,
-            config,
-            spawner: None,
-            token_tracker: None,
-            checkpoint_callback: None,
+            ctx: RuntimeContext::new(provider, tools, config),
         }
     }
 
     pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
-        self.spawner = Some(spawner);
+        self.ctx.spawner = Some(spawner);
         self
     }
 
     pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
-        self.token_tracker = Some(tracker);
+        self.ctx.token_tracker = Some(tracker);
         self
     }
 
@@ -147,7 +137,7 @@ impl<'a> KernelExecutor<'a> {
         mut self,
         callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
     ) -> Self {
-        self.checkpoint_callback = Some(callback);
+        self.ctx.checkpoint_callback = Some(callback);
         self
     }
 
@@ -197,22 +187,9 @@ impl<'a> KernelExecutor<'a> {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        let mut steppable = SteppableExecutor::new(
-            self.provider.clone(),
-            self.tools.clone(),
-            self.config.clone(),
-        );
-        if let Some(ref spawner) = self.spawner {
-            steppable = steppable.with_spawner(spawner.clone());
-        }
-        if let Some(ref tracker) = self.token_tracker {
-            steppable = steppable.with_token_tracker(tracker.clone());
-        }
-        if let Some(ref cb) = self.checkpoint_callback {
-            steppable = steppable.with_checkpoint(cb.clone());
-        }
+        let steppable = SteppableExecutor::new(self.ctx.clone());
 
-        for iteration in 1..=self.config.max_iterations {
+        for iteration in 1..=self.ctx.config.max_iterations {
             debug!("[Kernel] iteration {}", iteration);
 
             let result = steppable
@@ -240,9 +217,9 @@ impl<'a> KernelExecutor<'a> {
 
         info!(
             "[Kernel] Max iterations ({}) reached",
-            self.config.max_iterations
+            self.ctx.config.max_iterations
         );
-        Err(KernelError::MaxIterations(self.config.max_iterations))
+        Err(KernelError::MaxIterations(self.ctx.config.max_iterations))
     }
 
     fn log_token_usage(ledger: &TokenLedger, iteration: u32) {

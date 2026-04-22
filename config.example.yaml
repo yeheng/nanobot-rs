@@ -2,32 +2,40 @@
 # This file demonstrates the provider configuration format
 
 # Provider configurations
-# All providers require:
-#   - type: openai | anthropic | gemini (protocol type)
-#   - api_base: The API endpoint URL (required)
-#   - api_key: Your API key (optional for local providers)
+#
+# Provider name determines the native implementation automatically.
+# You usually do NOT need to set 'provider_type' — the name is enough:
+#   "minimax"/"minimaxi" → native MiniMax API
+#   "gemini"             → native Gemini API
+#   "moonshot"/"kimi"    → native Moonshot API (OpenAI-compatible or Anthropic format)
+#   "anthropic"/"claude" → native Anthropic Messages API
+#   "copilot"            → native GitHub Copilot API
+#   "openai", "deepseek", "zhipu", "openrouter", "ollama", "litellm" → OpenAI-compatible
+#
+# Only set 'provider_type' if you use a custom provider name that the system
+# cannot recognize (e.g., "my-proxy" with provider_type: anthropic).
+#
+# Required fields:
+#   - api_base: The API endpoint URL
+#   - api_key:  Your API key (optional for local providers)
 providers:
   # OpenAI - uses OpenAI-compatible protocol
   openai:
-    type: openai
     api_base: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
 
-  # Anthropic - /v1 endpoint is OpenAI-compatible
+  # Anthropic - native Messages API
   anthropic:
-    type: openai
     api_base: "https://api.anthropic.com/v1"
     api_key: "${ANTHROPIC_API_KEY}"
 
-  # Zhipu (智谱) - Chinese LLM provider
+  # Zhipu (智谱) - Chinese LLM provider, OpenAI-compatible
   zhipu:
-    type: openai
     api_base: "https://open.bigmodel.cn/api/paas/v4"
     api_key: "${ZHIPU_API_KEY}"
 
   # DeepSeek - with model-level configuration
   deepseek:
-    type: openai
     api_base: "https://api.deepseek.com/v1"
     api_key: "${DEEPSEEK_API_KEY}"
     default_currency: USD
@@ -41,26 +49,22 @@ providers:
         thinking_enabled: true
         max_tokens: 8192
 
-  # OpenRouter - multi-provider gateway
+  # OpenRouter - multi-provider gateway, OpenAI-compatible
   openrouter:
-    type: openai
     api_base: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
 
   # Google Gemini - uses native Gemini protocol
   gemini:
-    type: gemini
     api_base: "https://generativelanguage.googleapis.com/v1beta"
     api_key: "${GOOGLE_API_KEY}"
 
-  # Ollama - local provider (no API key needed)
+  # Ollama - local provider, OpenAI-compatible (no API key needed)
   ollama:
-    type: openai
     api_base: "http://localhost:11434/v1"
 
-  # LiteLLM - local proxy server
+  # LiteLLM - local proxy server, OpenAI-compatible
   litellm:
-    type: openai
     api_base: "http://localhost:4000/v1"
 
 # Agent configuration with model profiles

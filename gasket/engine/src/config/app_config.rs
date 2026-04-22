@@ -12,10 +12,6 @@ use crate::config_dir;
 use crate::error::ConfigValidationError;
 use crate::vault::contains_placeholders;
 use crate::vault::VaultStore;
-use crate::vault::{replace_placeholders, scan_placeholders};
-
-use std::env;
-use tracing::{debug, warn};
 
 // Re-export channel config types
 pub use gasket_channels::ChannelsConfig;
@@ -137,62 +133,6 @@ impl Config {
             Err(errors)
         }
     }
-}
-
-/// Resolve `{{vault:key}}` placeholders in raw YAML before deserialization.
-///
-/// Resolution order for each placeholder:
-/// 1. **VaultStore** — if the vault file exists and is unlocked
-/// 2. **Environment variable** — key uppercased (e.g. `zhipu_api_key` → `ZHIPU_API_KEY`)
-///
-/// Unresolved placeholders are left as-is in the text and a warning is logged.
-/// This prevents accidental `{{vault:...}}` patterns in system prompt text or
-/// other non-critical fields from crashing config loading. Critical fields
-/// (e.g. `api_key`) are resolved again at JIT time via `ProviderRegistry`.
-#[allow(dead_code)] // Available for eager resolution; production uses JIT via ProviderRegistry
-fn resolve_config_placeholders(content: &str) -> anyhow::Result<String> {
-    let placeholders = scan_placeholders(content);
-    if placeholders.is_empty() {
-        return Ok(content.to_string());
-    }
-
-    debug!(
-        "[Config] Found {} vault placeholder(s) in config.yaml",
-        placeholders.len()
-    );
-
-    // Build replacement map from environment variables only.
-    // Vault resolution is intentionally removed from config parsing to avoid
-    // triggering expensive Argon2id KDF operations during load_config().
-    // Critical fields (api_key) are resolved at JIT time via ProviderRegistry.
-    let mut replacements = HashMap::new();
-    let mut unresolved = Vec::new();
-
-    for p in &placeholders {
-        let env_key = p.key.to_uppercase();
-        if let Ok(value) = env::var(&env_key) {
-            replacements.insert(p.key.clone(), value);
-            debug!("[Config] Resolved '{}' from env var {}", p.key, env_key);
-            continue;
-        }
-
-        unresolved.push(p.key.clone());
-    }
-
-    if !unresolved.is_empty() {
-        // Non-fatal: warn and leave unresolved placeholders as-is.
-        // Critical fields (api_key) are resolved again at JIT time.
-        for key in &unresolved {
-            warn!(
-                "[Config] Unresolved vault placeholder '{{{{vault:{}}}}}' — \
-                 left as-is. Set env {} or unlock vault to resolve.",
-                key,
-                key.to_uppercase()
-            );
-        }
-    }
-
-    Ok(replace_placeholders(content, &replacements))
 }
 
 /// Load configuration from file.
@@ -437,60 +377,26 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
 
-    /// Without placeholders, content is returned unchanged.
+    /// Config validates correctly with no providers.
     #[test]
-    fn test_resolve_config_no_placeholders() {
-        let yaml = "providers:\n  openai:\n    api_key: sk-123\n";
-        let result = resolve_config_placeholders(yaml).unwrap();
-        assert_eq!(result, yaml);
+    fn test_config_validate_empty() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
     }
 
-    /// Placeholders that have a matching env var are resolved.
+    /// Config detects unavailable provider (missing api_key).
     #[test]
-    fn test_resolve_config_from_env() {
-        env::set_var("GASKET_TEST_ZHIPU_KEY", "sk-from-env");
-        let yaml = "api_key: {{vault:gasket_test_zhipu_key}}";
-        let result = resolve_config_placeholders(yaml).unwrap();
-        env::remove_var("GASKET_TEST_ZHIPU_KEY");
-        assert_eq!(result, "api_key: sk-from-env");
-    }
-
-    /// Multiple placeholders are resolved in one pass.
-    #[test]
-    fn test_resolve_config_multiple_from_env() {
-        env::set_var("GASKET_TEST_KEY_A", "val-a");
-        env::set_var("GASKET_TEST_KEY_B", "val-b");
-        let yaml = "a: {{vault:gasket_test_key_a}}\nb: {{vault:gasket_test_key_b}}";
-        let result = resolve_config_placeholders(yaml).unwrap();
-        env::remove_var("GASKET_TEST_KEY_A");
-        env::remove_var("GASKET_TEST_KEY_B");
-        assert_eq!(result, "a: val-a\nb: val-b");
-    }
-
-    /// Unresolved placeholders no longer produce an error — they are left as-is.
-    #[test]
-    fn test_resolve_config_unresolved_warns_not_fails() {
-        let yaml = "api_key: {{vault:nonexistent_gasket_test_key_xyz}}";
-        let result = resolve_config_placeholders(yaml).unwrap();
-        // Placeholder is left unchanged, not stripped or replaced
-        assert!(result.contains("{{vault:nonexistent_gasket_test_key_xyz}}"));
-    }
-
-    /// Placeholders in non-critical fields (e.g. system prompt text) should not
-    /// crash config loading — they are simply left as literal text.
-    #[test]
-    fn test_resolve_config_placeholders_in_prompt_text_resilient() {
-        let yaml = r#"
-system_prompt: |
-  You can reference {{vault:some_key}} but it won't crash if missing.
-  This is just documentation text with {{vault:another_missing_key}}.
-api_key: "sk-real-key"
-"#;
-        let result = resolve_config_placeholders(yaml).unwrap();
-        // Both unresolved placeholders preserved as literal text
-        assert!(result.contains("{{vault:some_key}}"));
-        assert!(result.contains("{{vault:another_missing_key}}"));
-        // Non-placeholder content is untouched
-        assert!(result.contains("sk-real-key"));
+    fn test_config_validate_unavailable_provider() {
+        let mut config = Config::default();
+        config.providers.insert(
+            "test".to_string(),
+            ProviderConfig {
+                provider_type: ProviderType::Openai,
+                api_base: "https://api.example.com".to_string(),
+                ..Default::default()
+            },
+        );
+        let result = config.validate();
+        assert!(result.is_err());
     }
 }

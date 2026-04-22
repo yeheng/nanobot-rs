@@ -34,9 +34,12 @@ all-channels = ["gasket-engine/all-channels", "axum", "teloxide", "dep:tower-htt
 local-embedding = ["gasket-engine/local-embedding"]
 
 # Providers
+provider-anthropic = ["gasket-engine/provider-anthropic"]
 provider-gemini = ["gasket-engine/provider-gemini"]
 provider-copilot = ["gasket-engine/provider-copilot"]
-all-providers = ["provider-gemini", "provider-copilot"]
+provider-minimax = ["gasket-engine/provider-minimax"]
+provider-moonshot = ["gasket-engine/provider-moonshot"]
+all-providers = ["provider-anthropic", "provider-gemini", "provider-copilot", "provider-minimax", "provider-moonshot"]
 
 # Workspace template download (now in CLI, not core)
 workspace-download = ["dep:tar", "dep:flate2"]

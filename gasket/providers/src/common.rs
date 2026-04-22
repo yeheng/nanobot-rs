@@ -112,6 +112,8 @@ pub enum ProviderType {
     Openai,
     Anthropic,
     Gemini,
+    Moonshot,
+    Minimax,
 }
 
 /// Model-specific configuration
@@ -168,6 +170,8 @@ pub struct ProviderConfig {
     pub client_id: Option<String>,
     #[serde(default, alias = "defaultCurrency")]
     pub default_currency: Option<String>,
+    #[serde(default, alias = "supportsThinking")]
+    pub supports_thinking: bool,
 }
 
 impl ProviderConfig {
@@ -287,6 +291,7 @@ impl OpenAICompatibleProvider {
                 proxy_password,
                 client_id: None,
                 default_currency: None,
+                supports_thinking: false,
             },
         )
     }
@@ -597,6 +602,7 @@ mod tests {
             proxy_password: None,
             client_id: None,
             default_currency: None,
+            supports_thinking: false,
         };
 
         assert_eq!(config.api_base, "https://api.example.com/v1");
@@ -605,6 +611,7 @@ mod tests {
         assert!(config.proxy_url.is_none());
         assert!(config.proxy_username.is_none());
         assert!(config.proxy_password.is_none());
+        assert!(!config.supports_thinking);
     }
 
     #[test]

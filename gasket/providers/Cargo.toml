@@ -8,9 +8,12 @@ description = "LLM provider abstractions and implementations for gasket"
 
 [features]
 default = []
+provider-anthropic = []
 provider-gemini = []
 provider-copilot = []
-all-providers = ["provider-gemini", "provider-copilot"]
+provider-minimax = []
+provider-moonshot = []
+all-providers = ["provider-anthropic", "provider-gemini", "provider-copilot", "provider-minimax", "provider-moonshot"]
 
 [dependencies]
 # Async

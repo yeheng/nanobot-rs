@@ -21,9 +21,7 @@ pub use lint::{
 };
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
-pub use query::{
-    QueryResult, SearchHit, TantivyIndex, TokenBudget, WikiQueryEngine,
-};
+pub use query::{QueryResult, SearchHit, TantivyIndex, TokenBudget, WikiQueryEngine};
 pub use store::PageStore;
 
 #[cfg(test)]

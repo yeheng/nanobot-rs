@@ -27,6 +27,7 @@ use crate::copilot_oauth::CopilotOAuth;
 use crate::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
 };
+use std::collections::HashMap;
 
 /// Default API base for Copilot
 const COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
@@ -64,6 +65,9 @@ pub struct CopilotProvider {
     proxy_url: Option<String>,
     proxy_username: Option<String>,
     proxy_password: Option<String>,
+
+    /// Extra HTTP headers to send with every request
+    extra_headers: HashMap<String, String>,
 }
 
 impl CopilotProvider {
@@ -87,6 +91,7 @@ impl CopilotProvider {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            extra_headers: HashMap::new(),
         }
     }
 
@@ -106,6 +111,7 @@ impl CopilotProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
+        extra_headers: HashMap<String, String>,
     ) -> Self {
         Self {
             client: build_http_client(
@@ -120,6 +126,7 @@ impl CopilotProvider {
             proxy_url: proxy_url.clone(),
             proxy_username: proxy_username.clone(),
             proxy_password: proxy_password.clone(),
+            extra_headers,
         }
     }
 
@@ -195,6 +202,16 @@ impl CopilotProvider {
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().unwrap(),
         );
+
+        // Apply user-configured extra headers
+        for (key, value) in &self.extra_headers {
+            if let Ok(header_name) = key.parse::<reqwest::header::HeaderName>() {
+                if let Ok(header_value) = value.parse::<reqwest::header::HeaderValue>() {
+                    headers.insert(header_name, header_value);
+                }
+            }
+        }
+
         headers
     }
 }

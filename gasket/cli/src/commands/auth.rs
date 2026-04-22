@@ -106,6 +106,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             proxy_url,
             proxy_username,
             proxy_password,
+            supports_thinking: true,
         },
     );
 

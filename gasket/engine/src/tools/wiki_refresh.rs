@@ -30,15 +30,22 @@ impl WikiRefreshTool {
 
     /// Recursively scan `wiki_root` for `.md` files and return
     /// (relative_path, disk_mtime, full_path) tuples.
-    fn scan_disk_files(&self) -> anyhow::Result<Vec<(String, i64, std::path::PathBuf)>> {
-        let wiki_root = self.page_store.wiki_root();
+    ///
+    /// Runs the synchronous filesystem walk inside `spawn_blocking` to avoid
+    /// blocking the Tokio runtime during recursive directory traversal.
+    async fn scan_disk_files(&self) -> anyhow::Result<Vec<(String, i64, std::path::PathBuf)>> {
+        let wiki_root = self.page_store.wiki_root().to_path_buf();
         if !wiki_root.exists() {
             return Ok(vec![]);
         }
 
-        let mut files = Vec::new();
-        Self::scan_dir_recursive(wiki_root, wiki_root, &mut files)?;
-        Ok(files)
+        tokio::task::spawn_blocking(move || {
+            let mut files = Vec::new();
+            Self::scan_dir_recursive(&wiki_root, &wiki_root, &mut files)?;
+            Ok(files)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Wiki scan task panicked: {}", e))?
     }
 
     fn scan_dir_recursive(
@@ -76,7 +83,7 @@ impl WikiRefreshTool {
     /// Since upsert now preserves machine state (frequency, access_count),
     /// we can safely upsert everything without mtime comparison.
     async fn sync_changed(&self) -> Result<usize, ToolError> {
-        let disk_files = self.scan_disk_files().map_err(|e| {
+        let disk_files = self.scan_disk_files().await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to scan wiki directory: {}", e))
         })?;
 
@@ -98,7 +105,7 @@ impl WikiRefreshTool {
                 ToolError::ExecutionError(format!("Failed to write {} to SQLite: {}", rel_path, e))
             })?;
 
-            if let Err(e) = self.page_index.upsert(&page) {
+            if let Err(e) = self.page_index.upsert(&page).await {
                 warn!(
                     "WikiRefresh: failed to upsert {} to Tantivy: {}",
                     rel_path, e
@@ -116,7 +123,7 @@ impl WikiRefreshTool {
 
     /// Full rebuild: delete Tantivy index, re-import all files from disk.
     async fn full_rebuild(&self) -> Result<usize, ToolError> {
-        let disk_files = self.scan_disk_files().map_err(|e| {
+        let disk_files = self.scan_disk_files().await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to scan wiki directory: {}", e))
         })?;
 

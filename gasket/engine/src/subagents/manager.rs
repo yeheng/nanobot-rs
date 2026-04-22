@@ -198,7 +198,7 @@ pub fn spawn_subagent(
             if let Some(ref usage) = response.token_usage {
                 let token_usage =
                     gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
-                tracker.accumulate(&token_usage, response.cost);
+                tracker.accumulate(&token_usage, response.cost.unwrap_or(0.0));
             }
         }
 
@@ -223,7 +223,7 @@ pub fn spawn_subagent(
                 tools_used: response.tools_used,
                 model: model.clone(),
                 token_usage: response.token_usage,
-                cost: response.cost,
+                cost: response.cost.unwrap_or(0.0),
             },
             model,
         };

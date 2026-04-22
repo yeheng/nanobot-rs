@@ -226,7 +226,7 @@ impl Tool for WikiWriteTool {
             ToolError::ExecutionError(format!("Failed to write wiki page '{}': {}", path, e))
         })?;
 
-        if let Err(e) = self.page_index.upsert(&page) {
+        if let Err(e) = self.page_index.upsert(&page).await {
             tracing::warn!("wiki_write: failed to upsert {} to Tantivy: {}", path, e);
         }
 

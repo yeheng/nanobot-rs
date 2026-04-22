@@ -156,7 +156,6 @@ impl ContextBuilder {
             session_key: session_key_str.clone(),
             event_type: gasket_types::EventType::UserMessage,
             content: content.clone(),
-            embedding: None,
             metadata: gasket_types::EventMetadata::default(),
             created_at: chrono::Utc::now(),
             sequence: 0,

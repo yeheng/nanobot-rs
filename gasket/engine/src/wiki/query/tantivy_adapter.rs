@@ -13,9 +13,10 @@
 //! - confidence (F64): relevance boosting
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
@@ -33,6 +34,7 @@ use super::super::page::{PageType, WikiPage};
 // ── Schema Fields ──────────────────────────────────────────────────
 
 /// Holds all Tantivy field handles for the wiki index.
+#[derive(Clone)]
 pub struct WikiFields {
     pub path: Field,
     pub title: Field,
@@ -96,12 +98,14 @@ pub struct SearchHit {
 
 /// Tantivy-backed full-text index for wiki pages.
 ///
-/// Thread-safe: uses `parking_lot::Mutex` for writer access.
-/// Reader is always available (Tantivy's `IndexReader` is `Send + Sync`).
+/// Thread-safe: `Clone` shares the same underlying writer mutex.
+/// Search methods have `spawn_blocking` async wrappers (`search_async`,
+/// `search_by_type_async`, `search_by_tags_async`).
+#[derive(Clone)]
 pub struct TantivyIndex {
     index: Index,
     reader: IndexReader,
-    writer: Mutex<IndexWriter>,
+    writer: Arc<Mutex<IndexWriter>>,
     fields: WikiFields,
 }
 
@@ -121,7 +125,7 @@ impl TantivyIndex {
         Ok(Self {
             index,
             reader,
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             fields,
         })
     }
@@ -137,14 +141,14 @@ impl TantivyIndex {
         Ok(Self {
             index,
             reader,
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             fields,
         })
     }
 
     /// Upsert a wiki page into the index. Deletes any existing doc with same path first.
     pub fn upsert(&self, page: &WikiPage) -> Result<()> {
-        let mut writer = self.writer.lock();
+        let mut writer = self.writer.lock().unwrap();
 
         // Delete existing document with same path
         let delete_term = Term::from_field_text(self.fields.path, &page.path);
@@ -179,7 +183,7 @@ impl TantivyIndex {
 
     /// Delete a page from the index by path.
     pub fn delete(&self, path: &str) -> Result<()> {
-        let mut writer = self.writer.lock();
+        let mut writer = self.writer.lock().unwrap();
         let delete_term = Term::from_field_text(self.fields.path, path);
         writer.delete_term(delete_term);
         writer.commit()?;
@@ -342,6 +346,46 @@ impl TantivyIndex {
         Ok(hits)
     }
 
+    // ── Async wrappers (spawn_blocking) ──────────────────────────────
+
+    /// Async BM25 search — offloaded to a blocking thread to avoid
+    /// stalling the Tokio runtime on mmap page faults.
+    pub async fn search_async(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.search(&query, limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+    }
+
+    /// Async search with page type filter.
+    pub async fn search_by_type_async(
+        &self,
+        query: String,
+        page_type: PageType,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.search_by_type(&query, page_type, limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+    }
+
+    /// Async search by tags.
+    pub async fn search_by_tags_async(
+        &self,
+        tags: Vec<String>,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.search_by_tags(&tags, limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+    }
+
     /// Get the number of documents in the index.
     pub fn doc_count(&self) -> u64 {
         self.reader.searcher().num_docs()
@@ -350,7 +394,7 @@ impl TantivyIndex {
     /// Rebuild the index from a full set of wiki pages.
     /// Use when the index is corrupted or needs full refresh.
     pub fn rebuild(&self, pages: &[WikiPage]) -> Result<usize> {
-        let mut writer = self.writer.lock();
+        let mut writer = self.writer.lock().unwrap();
 
         // Delete all existing documents
         writer.delete_all_documents()?;
