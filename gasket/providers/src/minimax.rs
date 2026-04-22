@@ -18,20 +18,64 @@ use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// Default API base for MiniMax
 const MINIMAX_API_BASE: &str = "https://api.minimaxi.com/v1";
+
+/// Convert system messages to user messages.
+///
+/// MiniMax API does not support the `system` role (error 2013:
+/// "invalid message role: system"). We collect all system content and prepend it
+/// to the first user message, or create a new user message if none exists.
+fn convert_system_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
+    let mut system_parts: Vec<String> = Vec::new();
+    let mut result: Vec<crate::ChatMessage> = Vec::new();
+
+    for msg in messages {
+        if matches!(msg.role, crate::MessageRole::System) {
+            if let Some(content) = &msg.content {
+                system_parts.push(content.clone());
+            }
+        } else {
+            result.push(msg);
+        }
+    }
+
+    if !system_parts.is_empty() {
+        let system_text = system_parts.join("\n\n");
+        if let Some(first_user) = result
+            .iter_mut()
+            .find(|m| matches!(m.role, crate::MessageRole::User) && m.tool_call_id.is_none())
+        {
+            let new_content = if let Some(content) = &first_user.content {
+                format!("{}\n\n{}", system_text, content)
+            } else {
+                system_text
+            };
+            first_user.content = Some(new_content);
+        } else {
+            result.insert(0, crate::ChatMessage::user(system_text));
+        }
+    }
+
+    result
+}
 
 /// Merge consecutive messages with the same role.
 ///
 /// MiniMax API rejects multiple consecutive messages with the same role (error 2013).
 /// This merges their content with a double newline separator.
+///
+/// **Important:** Tool messages are never merged. Each tool result must retain its
+/// own `tool_call_id` to match the corresponding assistant `tool_call`.
 fn merge_consecutive_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
     let mut merged: Vec<crate::ChatMessage> = Vec::new();
     for msg in messages {
         if let Some(last) = merged.last_mut() {
-            if last.role == msg.role {
+            // Never merge tool messages — each has a unique tool_call_id that
+            // must match a specific assistant tool_call.
+            if last.role == msg.role && !matches!(msg.role, crate::MessageRole::Tool) {
                 // Merge content
                 match (&mut last.content, &msg.content) {
                     (Some(ref mut a), Some(b)) => {
@@ -168,9 +212,10 @@ impl MinimaxProvider {
             &request.model
         };
 
-        // MiniMax API rejects multiple consecutive messages with the same role (error 2013).
-        // Merge consecutive same-role messages to work around this limitation.
-        let messages = merge_consecutive_messages(request.messages);
+        // MiniMax API does not support the `system` role and rejects multiple
+        // consecutive messages with the same role (error 2013).
+        let messages = convert_system_messages(request.messages);
+        let messages = merge_consecutive_messages(messages);
 
         let mut body = json!({
             "model": model,
@@ -328,7 +373,7 @@ impl LlmProvider for MinimaxProvider {
             let body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
-            debug!("[minimax] error response: {}", body);
+            info!("[minimax] error response: {}", body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: body,
@@ -370,7 +415,7 @@ impl LlmProvider for MinimaxProvider {
             let body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
-            debug!("[minimax] error response: {}", body);
+            info!("[minimax] error response: {}", body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: body,
@@ -552,12 +597,105 @@ mod tests {
         let body = provider.build_request(request);
         let msgs = body["messages"].as_array().unwrap();
 
-        // Two consecutive system messages should be merged into one
+        // System messages are converted to user and then merged with consecutive user messages.
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(
+            msgs[0]["content"],
+            "System prompt 1\n\nSystem prompt 2\n\nHello\n\nWorld"
+        );
+    }
+
+    #[test]
+    fn test_system_messages_converted_to_user() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        let request = ChatRequest {
+            model: "MiniMax-M2.7".to_string(),
+            messages: vec![
+                ChatMessage::system("You are helpful"),
+                ChatMessage::user("Hello"),
+                ChatMessage::assistant("Hi!"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // System message must be converted to user — MiniMax rejects `role: system`.
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["role"], "system");
-        assert_eq!(msgs[0]["content"], "System prompt 1\n\nSystem prompt 2");
-        assert_eq!(msgs[1]["role"], "user");
-        assert_eq!(msgs[1]["content"], "Hello\n\nWorld");
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "You are helpful\n\nHello");
+        assert_eq!(msgs[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_system_messages_converted_when_no_user() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        let request = ChatRequest {
+            model: "MiniMax-M2.7".to_string(),
+            messages: vec![
+                ChatMessage::system("You are helpful"),
+                ChatMessage::assistant("Hi!"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // When there is no user message, a new user message should be created.
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "You are helpful");
+        assert_eq!(msgs[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_tool_messages_not_merged() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        let request = ChatRequest {
+            model: "MiniMax-M2.7".to_string(),
+            messages: vec![
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![
+                        ToolCall::new("call_1", "web_fetch", json!({"url": "a"})),
+                        ToolCall::new("call_2", "web_fetch", json!({"url": "b"})),
+                    ],
+                    None,
+                ),
+                ChatMessage::tool_result("call_1", "web_fetch", "Result A"),
+                ChatMessage::tool_result("call_2", "web_fetch", "Result B"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // Tool messages must remain separate so each retains its tool_call_id.
+        // Merging them would cause MiniMax error 2013 ("tool call and result not match").
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_1");
+        assert_eq!(msgs[1]["content"], "Result A");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_2");
+        assert_eq!(msgs[2]["content"], "Result B");
     }
 
     #[test]

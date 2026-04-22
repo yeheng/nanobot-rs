@@ -10,7 +10,7 @@ use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 /// Gemini provider using Google's Generative AI API
 pub struct GeminiProvider {
@@ -329,6 +329,10 @@ impl LlmProvider for GeminiProvider {
         debug!("[gemini] response body:\n{}", response_text);
 
         if !status.is_success() {
+            error!(
+                "Device code response failed: {}, body: {}",
+                status, response_text
+            );
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, response_text),
@@ -387,6 +391,7 @@ impl LlmProvider for GeminiProvider {
                     e
                 ))
             })?;
+            error!("Gemini stream response failed: {}, body: {}", status, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),

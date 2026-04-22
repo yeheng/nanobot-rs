@@ -23,7 +23,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 /// Default API base for Anthropic
 const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
@@ -380,9 +380,9 @@ impl LlmProvider for AnthropicProvider {
         let response_text = response.text().await.map_err(|e| {
             crate::ProviderError::NetworkError(format!("Failed to read Anthropic response: {}", e))
         })?;
-        debug!("[anthropic] response body:\n{}", response_text);
 
         if !status.is_success() {
+            error!("[anthropic] response body:\n{}", response_text);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, response_text),
@@ -431,6 +431,7 @@ impl LlmProvider for AnthropicProvider {
                     e
                 ))
             })?;
+            error!("[anthropic] response body:\n{}", body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),

@@ -141,7 +141,7 @@ impl EvolutionHook {
         // Last resort: find the last complete object and truncate there.
         // Scan backwards for "}," which usually marks the end of a complete object.
         if let Some(last_boundary) = trimmed.rfind("},") {
-            let truncated = format!("{}]", &trimmed[..=last_boundary + 1]);
+            let truncated = format!("{}]", &trimmed[..=last_boundary]);
             if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(&truncated) {
                 return Ok(val);
             }

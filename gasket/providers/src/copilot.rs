@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::common::build_http_client;
@@ -296,6 +296,7 @@ impl LlmProvider for CopilotProvider {
             })?;
 
             if !status.is_success() {
+                error!("Copilot retry response failed: {}, body: {}", status, body);
                 return Err(crate::ProviderError::ApiError {
                     status_code: status.as_u16(),
                     message: format!("{} - {}", status, body),
@@ -311,6 +312,7 @@ impl LlmProvider for CopilotProvider {
         info!("[copilot] response body:\n{}", body);
 
         if !status.is_success() {
+            error!("Copilot response failed: {}, body: {}", status, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),
@@ -364,6 +366,7 @@ impl LlmProvider for CopilotProvider {
                     e
                 ))
             })?;
+            error!("Copilot stream response failed: {}, body: {}", status, body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("{} - {}", status, body),

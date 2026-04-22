@@ -6,7 +6,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::common::build_http_client;
 
@@ -264,6 +264,7 @@ impl CopilotOAuth {
         debug!("Device code response status: {}, body: {}", status, text);
 
         if !status.is_success() {
+            error!("Device code response failed: {}, body: {}", status, text);
             return Err(OAuthError::TokenError(format!(
                 "GitHub returned error {}: {}",
                 status, text
@@ -420,6 +421,7 @@ impl CopilotOAuth {
         debug!("------> Response status: {}", status);
         debug!("------> Response body: {}", body);
         if !status.is_success() {
+            error!("Copilot token response failed: {}, body: {}", status, body);
             return Err(OAuthError::TokenError(format!(
                 "Failed to get Copilot token: {} - {}",
                 status, body

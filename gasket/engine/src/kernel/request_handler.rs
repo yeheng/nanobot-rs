@@ -43,7 +43,7 @@ impl<'a> RequestHandler<'a> {
             },
         };
         if let Ok(json) = serde_json::to_string(&request) {
-            tracing::info!("[RequestHandler] built request: {}", json);
+            tracing::debug!("[RequestHandler] built request: {}", json);
         }
         request
     }
