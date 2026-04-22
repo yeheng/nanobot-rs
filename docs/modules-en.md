@@ -20,36 +20,20 @@ trait LlmProvider: Send + Sync {
 
 ### Provider Implementations
 
-```
-              ┌──────────────────────────┐
-              │  trait LlmProvider       │
-              │  ├── name()             │
-              │  ├── default_model()    │
-              │  ├── chat(ChatRequest)  │
-              │  └── chat_stream()      │
-              └──────────┬───────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-┌────────▼──────┐ ┌──────▼──────┐ ┌──────▼───────┐
-│OpenAI         │ │  Gemini     │ │  Copilot     │
-│Compatible     │ │  Provider   │ │  Provider    │
-│Provider       │ │             │ │              │
-│               │ └─────────────┘ └──────────────┘
-│ from_name():  │
-│ ┌───────────┐ │
-│ │ openai    │ │
-│ │ openrouter│ │
-│ │ deepseek  │ │
-│ │ anthropic │ │
-│ │ zhipu     │ │
-│ │ dashscope │ │
-│ │ moonshot  │ │
-│ │ minimax   │ │
-│ │ ollama    │ │
-│ │ litellm   │ │
-│ └───────────┘ │
-└───────────────┘
+```mermaid
+flowchart TB
+    TP["trait LlmProvider<br/>├── name()<br/>├── default_model()<br/>├── chat(ChatRequest)<br/>└── chat_stream()"]
+
+    TP --> OP["OpenAICompatibleProvider"]
+    TP --> GP["GeminiProvider"]
+    TP --> CP["CopilotProvider"]
+
+    OP --> ON["from_name()<br/>openai · openrouter · deepseek<br/>anthropic · zhipu · dashscope<br/>moonshot · minimax · ollama · litellm"]
+
+    style TP fill:#E3F2FD
+    style OP fill:#FFF3E0
+    style GP fill:#FFF3E0
+    style CP fill:#FFF3E0
 ```
 
 - **OpenAICompatibleProvider**: Configured via `PROVIDER_DEFAULTS` table, adding a new provider only requires adding a row of data, no code needed
@@ -193,15 +177,16 @@ trait Channel: Send + Sync {
 
 ## 4. mcp/ — Model Context Protocol
 
-```
-┌─────────────┐    JSON-RPC 2.0     ┌──────────────────┐
-│  MCP Client │◄───── stdio ───────▶│  MCP Server      │
-│  (gasket)  │                     │  (External proc) │
-│             │                     │                  │
-│  initialize │────────────────────▶│  Return tool list│
-│  tools/list │────────────────────▶│  Return tool def │
-│  tools/call │────────────────────▶│  Execute & return│
-└─────────────┘                     └──────────────────┘
+```mermaid
+flowchart LR
+    MC["MCP Client<br/>(gasket)"] <-->|"JSON-RPC 2.0<br/>stdio"| MS["MCP Server<br/>(External proc)"]
+
+    MC -->|"initialize"| MS
+    MC -->|"tools/list"| MS
+    MC -->|"tools/call"| MS
+
+    style MC fill:#E3F2FD
+    style MS fill:#FFF3E0
 ```
 
 ### Submodule Structure
@@ -230,11 +215,27 @@ trait Channel: Send + Sync {
 
 ### Delivery Modes
 
-```
-Topic::Inbound          → PointToPoint (async_channel)
-Topic::Outbound         → PointToPoint (async_channel)
-Topic::SystemEvent      → Broadcast (tokio::broadcast)
-Topic::ToolCall(String) → PointToPoint
+```mermaid
+flowchart LR
+    subgraph TopicTypes
+        TI["Topic::Inbound"]
+        TO["Topic::Outbound"]
+        TS["Topic::SystemEvent"]
+        TC["Topic::ToolCall(String)"]
+    end
+
+    subgraph DeliveryMode
+        P2P["PointToPoint<br/>(async_channel)"]
+        BC["Broadcast<br/>(tokio::broadcast)"]
+    end
+
+    TI --> P2P
+    TO --> P2P
+    TS --> BC
+    TC --> P2P
+
+    style P2P fill:#E3F2FD
+    style BC fill:#FFF3E0
 ```
 
 ### MemoryBroker Implementation
@@ -282,9 +283,11 @@ Unified pipeline extension mechanism with five execution points and sequential/p
 
 ### External Shell Hooks
 
-```
-Rust → stdin (JSON) → Shell Script → stdout (JSON) → Rust
-                        stderr → tracing::debug!
+```mermaid
+flowchart LR
+    Rust -->|"stdin (JSON)"| Shell
+    Shell -->|"stdout (JSON)"| Rust
+    Shell -->|"stderr"| tracing["tracing::debug!"]
 ```
 
 - Scripts located in `~/.gasket/hooks/`

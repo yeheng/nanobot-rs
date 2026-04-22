@@ -212,29 +212,43 @@ flowchart TB
 
 ### 组装示例
 
-```
-┌─────────────────────────────────────────┐
-│ [system] 系统提示                        │
-│ 你是Gasket，一个AI助手...                │
-├─────────────────────────────────────────┤
-│ [system] 技能                            │
-│ 你擅长Python开发...                      │
-├─────────────────────────────────────────┤
-│ [system] 摘要（如有）                     │
-│ 之前聊了：用户在做一个网站项目...         │
-├─────────────────────────────────────────┤
-│ [user] 历史消息                          │
-│ 用户: 帮我写个登录功能                   │
-│ AI: 好的，用什么框架？                   │
-│ 用户: React                              │
-├─────────────────────────────────────────┤
-│ [user] 长期记忆（动态加载）               │
-│ [SYSTEM: Relevant memories loaded...]    │
-│ 用户叫小明，后端工程师                    │
-├─────────────────────────────────────────┤
-│ [user] 当前问题                          │
-│ 用户: 继续                               │
-└─────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Prompt_Assembly["提示词组装"]
+        subgraph System_Prompt["[system] 系统提示"]
+            SP["你是Gasket，一个AI助手..."]
+        end
+
+        subgraph Skills["[system] 技能"]
+            SK["你擅长Python开发..."]
+        end
+
+        subgraph Summary["[system] 摘要（如有）"]
+            SUM["之前聊了：用户在做一个网站项目..."]
+        end
+
+        subgraph History["[user] 历史消息"]
+            H1["用户: 帮我写个登录功能"]
+            H2["AI: 好的，用什么框架？"]
+            H3["用户: React"]
+        end
+
+        subgraph Memory["[user] 长期记忆（动态加载）"]
+            M1["[SYSTEM: Relevant memories loaded...]"]
+            M2["用户叫小明，后端工程师"]
+        end
+
+        subgraph Current["[user] 当前问题"]
+            CQ["用户: 继续"]
+        end
+    end
+
+    style System_Prompt fill:#E3F2FD
+    style Skills fill:#E3F2FD
+    style Summary fill:#FFF3E0
+    style History fill:#F3E5F5
+    style Memory fill:#C8E6C9
+    style Current fill:#FFE0B2
 ```
 
 **关键设计**：长期记忆作为 **User Message** 注入，而非追加到 System Prompt。这样 System Prompt（workspace markdown + skills）在整个对话中保持不变，可充分利用 Anthropic Prompt Cache，长会话 API 成本降低 90%+。

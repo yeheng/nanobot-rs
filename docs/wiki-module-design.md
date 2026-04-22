@@ -106,78 +106,94 @@ Sop             sops/         标准操作流程
 
 ### 4.1 整体数据流
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         RAW SOURCES (原始文档)                           │
-│   Markdown (.md), HTML, Plain Text, Chat Transcripts                    │
-│   路径: ~/.gasket/sources/                                              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      INGEST PIPELINE (摄取管道)                          │
-│  ┌──────────────┐    ┌───────────────────┐    ┌────────────────────┐  │
-│  │ SourceParser │───▶│ KnowledgeExtractor │───▶│SemanticDeduplicator│  │
-│  │  (按格式解析) │    │   (LLM 知识提取)    │    │   (文本相似度去重)  │  │
-│  └──────────────┘    └───────────────────┘    └────────────────────┘  │
-│         │                       │                        │             │
-│         ▼                       ▼                        ▼             │
-│   ParsedSource            ExtractedItem[]            DedupResult[]      │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       WIKI PAGES (知识页面)                              │
-│   WikiPage: path, title, page_type, content, tags, metadata            │
-│   运行时状态: frequency, access_count, last_accessed                    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                       ┌────────────┴────────────┐
-                       ▼                         ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│      SQLite (SSOT)           │   │     Tantivy (Search)          │
-│   wiki_pages (主表)          │   │   全文字索引                   │
-│   raw_sources (源文档追踪)    │   │   字段: path, title, content  │
-│   wiki_relations (页面关系)   │   │   page_type, category, tags   │
-│   wiki_log (审计日志)         │   │   BM25 评分                    │
-└──────────────────────────────┘   └──────────────────────────────┘
-                       │                       │
-                       └───────────┬───────────┘
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      QUERY PIPELINE (查询管道)                            │
-│   PageIndex.search() → Vec<PageSummary> (相关性排序)                     │
-│   WikiQueryEngine.query() → Vec<WikiPage> (三阶段检索)                   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Sources["RAW SOURCES (原始文档)"]
+        RS["Markdown (.md), HTML, Plain Text, Chat Transcripts<br/>路径: ~/.gasket/sources/"]
+    end
+
+    subgraph Ingest["INGEST PIPELINE (摄取管道)"]
+        SP["SourceParser<br/>按格式解析"]
+        KE["KnowledgeExtractor<br/>LLM 知识提取"]
+        SD["SemanticDeduplicator<br/>文本相似度去重"]
+
+        SP --> KE --> SD
+    end
+
+    subgraph Pages["WIKI PAGES (知识页面)"]
+        WP["WikiPage: path, title, page_type, content, tags, metadata<br/>运行时状态: frequency, access_count, last_accessed"]
+    end
+
+    subgraph Storage["存储层"]
+        SQLite["SQLite (SSOT)<br/>wiki_pages · raw_sources<br/>wiki_relations · wiki_log"]
+        Tantivy["Tantivy (Search)<br/>全文字索引: path, title, content<br/>page_type, category, tags, BM25"]
+    end
+
+    subgraph Query["QUERY PIPELINE (查询管道)"]
+        PQ["PageIndex.search() → Vec<PageSummary><br/>WikiQueryEngine.query() → Vec<WikiPage>"]
+    end
+
+    Sources --> Ingest --> Pages --> Storage
+    Storage --> Query
+
+    style Sources fill:#E3F2FD
+    style Ingest fill:#FFF3E0
+    style Pages fill:#C8E6C9
+    style SQLite fill:#F3E5F5
+    style Tantivy fill:#E1F5FE
+    style Query fill:#FFF8E1
 ```
 
 ### 4.2 SQLite 表结构
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   wiki_pages    │     │  raw_sources    │     │ wiki_relations  │
-├─────────────────┤     ├─────────────────┤     ├─────────────────┤
-│ path (PK)       │     │ id (PK)         │     │ from_page (PK)  │
-│ title           │     │ path            │     │ to_page (PK)    │
-│ type            │     │ format          │     │ relation (PK)   │
-│ category        │     │ ingested        │     │ confidence      │
-│ tags (JSON)     │     │ ingested_at     │     │ created         │
-│ content         │     │ title           │     └─────────────────┘
-│ created         │     │ metadata        │
-│ updated         │     │ created         │
-│ source_count    │     └─────────────────┘
-│ confidence      │            │
-│ frequency       │            │ 1:N
-│ access_count    │            ▼
-│ last_accessed   │     ┌─────────────────┐
-│ file_mtime      │     │   wiki_log      │
-└─────────────────┘     ├─────────────────┤
-                        │ id (PK, AUTO)    │
-                        │ action           │
-                        │ target           │
-                        │ detail           │
-                        │ created          │
-                        └─────────────────┘
+```mermaid
+erDiagram
+    wiki_pages {
+        string path PK
+        string title
+        string type
+        string category
+        json tags
+        text content
+        timestamp created
+        timestamp updated
+        int source_count
+        float confidence
+        string frequency
+        int access_count
+        timestamp last_accessed
+        int file_mtime
+    }
+
+    raw_sources {
+        int id PK
+        string path
+        string format
+        boolean ingested
+        timestamp ingested_at
+        string title
+        json metadata
+        timestamp created
+    }
+
+    wiki_relations {
+        string from_page PK
+        string to_page PK
+        string relation PK
+        float confidence
+        timestamp created
+    }
+
+    wiki_log {
+        int id PK AUTO
+        string action
+        string target
+        text detail
+        timestamp created
+    }
+
+    wiki_pages ||--o{ wiki_relations : "has"
+    raw_sources ||--o{ wiki_log : "generates"
 ```
 
 ---
@@ -186,132 +202,89 @@ Sop             sops/         标准操作流程
 
 ### 5.1 Ingest (摄取) 操作
 
-```
-┌────────┐     ┌──────────────┐     ┌──────────────┐     ┌────────────┐     ┌───────────┐
-│  User  │     │ WikiTools    │     │ PageStore    │     │ WikiPage   │     │ PageIndex │
-│ /CLI   │     │              │     │              │     │ Store      │     │ (Tantivy) │
-└───┬────┘     └──────┬───────┘     └──────┬───────┘     └─────┬──────┘     └─────┬─────┘
-    │                 │                    │                   │                  │
-    │ wiki_refresh   │                    │                   │                  │
-    │────────────────>│                    │                   │                  │
-    │                 │                    │                   │                  │
-    │                 │ scan_dir_recursive()                   │                  │
-    │                 │───────────────────────────────────────────────────────────>
-    │                 │                    │                   │                  │
-    │                 │ <── Vec<(path,mtime)──                  │                  │
-    │                 │                    │                   │                  │
-    │                 │ For each file:     │                   │                  │
-    │                 │   read(path)       │                   │                  │
-    │                 │───────────────────────────────────────────────────────────>
-    │                 │                    │                   │                  │
-    │                 │ <── WikiPage? ───────────────────────────                  │
-    │                 │                    │                   │                  │
-    │                 │ Compare mtime ─────┘                   │                  │
-    │                 │                    │                   │                  │
-    │                 │ (if needs update)  │                   │                  │
-    │                 │ parse(file)       │                   │                  │
-    │                 │───────────────────┼───────────────────┼──────────────────>
-    │                 │                    │                   │                  │
-    │                 │ <── ParsedSource ──┼───────────────────┼──────────────────
-    │                 │                    │                   │                  │
-    │                 │ upsert(WikiPage)   │                   │                  │
-    │                 │────────────────────┼───────────────────┼─────────────────>
-    │                 │                    │                   │                  │
-    │                 │ INSERT or UPDATE ──┼───────────────────┼─────────────────>
-    │                 │                    │                   │                  │
-    │                 │ index.upsert()     │                   │                  │
-    │                 │──────────────────────────────────────────────────────────>
-    │                 │                    │                   │                  │
-    │                 │                    │         commit & reload reader        │
-    │                 │                    │                   │                  │
-    │ <── Ok ─────────│                    │                   │                  │
-    │                 │                    │                   │                  │
+```mermaid
+sequenceDiagram
+    participant U as User/CLI
+    participant T as WikiTools
+    participant PS as PageStore
+    participant WPS as WikiPageStore
+    participant PI as PageIndex
+
+    U->>T: wiki_refresh
+    T->>T: scan_dir_recursive()
+    Note over T: Recursively scan sources directory
+
+    loop For each file
+        T->>T: read(path)
+        T->>WPS: get(path)?
+        alt File not in SQLite or mtime changed
+            T->>T: parse(file) → ParsedSource
+            T->>WPS: upsert(WikiPage)
+            WPS-->>T: Ok
+            T->>PI: index.upsert()
+            Note over PI: Update Tantivy index
+        else No change
+            T->>U: Skip (no update needed)
+        end
+    end
 ```
 
 ### 5.2 Query (查询) 操作
 
-```
-┌────────┐     ┌──────────────┐     ┌───────────────┐     ┌───────────────┐
-│  User  │     │ WikiQuery     │     │  TantivyIndex │     │  PageStore    │
-│ /LLM   │     │ Engine        │     │  (BM25)       │     │  (SQLite)     │
-└───┬────┘     └──────┬───────┘     └───────┬───────┘     └───────┬───────┘
-    │                 │                    │                    │
-    │ query(text,     │                    │                    │
-    │   budget)       │                    │                    │
-    │────────────────>│                    │                    │
-    │                 │                    │                    │
-    │                 │ PHASE 1: BM25检索   │                    │
-    │                 │ search(query,50)   │                    │
-    │                 │───────────────────>│                    │
-    │                 │                    │                    │
-    │                 │ <── Vec<SearchHit>──│                    │
-    │                 │                    │                    │
-    │                 │ PHASE 2: 重排序     │                    │
-    │                 │ rerank(hits)        │                    │
-    │                 │──┐                 │                    │
-    │                 │  │ score = 0.6×BM25 +                    │
-    │                 │  │        0.2×confidence +                │
-    │                 │  │        0.2×recency                     │
-    │                 │  │ (recency = e^(-age/30天))              │
-    │                 │<─┘                 │                    │
-    │                 │                    │                    │
-    │                 │ PHASE 3: 按预算加载  │                    │
-    │                 │ For each candidate │                    │
-    │                 │ until budget full:  │                    │
-    │                 │   load(path)       │                    │
-    │                 │─────────────────────────────────────────>
-    │                 │                    │                    │
-    │                 │ <── Vec<WikiPage>──│                    │
-    │                 │                    │                    │
-    │ <── QueryResult │                    │                    │
-    │                 │                    │                    │
+```mermaid
+sequenceDiagram
+    participant U as User/LLM
+    participant Q as WikiQueryEngine
+    participant TI as TantivyIndex
+    participant PS as PageStore
+
+    U->>Q: query(text, budget)
+
+    Note over Q: PHASE 1: BM25检索
+    Q->>TI: search(query, 50)
+    TI-->>Q: Vec<SearchHit>
+
+    Note over Q: PHASE 2: 重排序
+    Q->>Q: rerank(hits)
+    Note over Q: score = 0.6×BM25 + 0.2×confidence + 0.2×recency<br/>recency = e^(-age/30天)
+
+    Note over Q: PHASE 3: 按预算加载
+    loop Until budget full
+        Q->>PS: load(path)
+        PS-->>Q: WikiPage
+    end
+
+    Q-->>U: QueryResult
 ```
 
 ### 5.3 Lint (质量检查) 操作
 
-```
-┌────────┐     ┌──────────┐     ┌────────────┐     ┌────────────┐
-│  User  │     │ Wiki     │     │ PageStore  │     │  File/Dir  │
-│ /CLI   │     │ Linter   │     │            │     │  System    │
-└───┬────┘     └────┬─────┘     └─────┬──────┘     └─────┬──────┘
-    │                │                  │                 │
-    │ lint()         │                  │                 │
-    │───────────────>│                  │                 │
-    │                │                  │                 │
-    │                │ list_all_pages()  │                 │
-    │                │───────────────────────────────────────>
-    │                │                  │                 │
-    │                │ <── Vec<PageSummary>─────────────────│
-    │                │                  │                 │
-    │                │ For each page:    │                 │
-    │                │   read(path)      │                 │
-    │                │───────────────────────────────────────>
-    │                │                  │                 │
-    │                │ <── WikiPage ─────────────────────────│
-    │                │                  │                 │
-    │                │ Build reference   │                 │
-    │                │ graph from [[]]   │                 │
-    │                │                  │                 │
-    │                │ Run checks:       │                 │
-    │                │   1. Orphan       │                 │
-    │                │   2. Stub (<50ch) │                 │
-    │                │   3. Missing Refs│                 │
-    │                │   4. Naming       │                 │
-    │                │                  │                 │
-    │ <── LintReport │                  │                 │
-    │                │                  │                 │
-    │                │                  │                 │
-    │ auto_fix()     │                  │                 │
-    │───────────────>│                  │                 │
-    │                │                  │                 │
-    │                │ For each fixable: │                 │
-    │                │   write(stub)    │                 │
-    │                │───────────────────────────────────────>
-    │                │                  │                 │
-    │                │                  │         create stub file
-    │                │                  │                 │
-    │ <── FixReport  │                  │                 │
-    │                │                  │                 │
+```mermaid
+sequenceDiagram
+    participant U as User/CLI
+    participant L as WikiLinter
+    participant PS as PageStore
+    participant FS as FileSystem
+
+    U->>L: lint()
+    L->>PS: list_all_pages()
+    PS-->>L: Vec<PageSummary>
+
+    loop For each page
+        L->>FS: read(path)
+        FS-->>L: WikiPage
+        L->>L: Build reference graph from [[]]
+    end
+
+    Note over L: Run checks:<br/>1. Orphan detection<br/>2. Stub detection (<50ch)<br/>3. Missing Refs<br/>4. Naming validation
+    L-->>U: LintReport
+
+    U->>L: auto_fix()
+    loop For each fixable issue
+        L->>FS: write(stub)
+        FS-->>L: Ok
+    end
+    L-->>U: FixReport
 ```
 
 ---

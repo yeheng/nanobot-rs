@@ -6,137 +6,110 @@
 
 ## 1. CLI 模式数据流
 
-```
-用户输入
-  │
-  ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  reedline    │───▶│ AgentSession │───▶│   Prompt     │
-│  (REPL)      │    │  .process_   │    │   Loader     │
-│              │    │   direct()   │    │              │
-└──────────────┘    └──────┬───────┘    └──────┬───────┘
-                           │                    │
-                    ┌──────▼───────┐     ┌──────▼───────┐
-                    │    Agent     │     │ 构建 System  │
-                    │   Context    │     │ Prompt:      │
-                    │  (SQLite)    │     │ PROFILE.md + │
-                    │  ┌────────┐  │     │ SOUL.md +    │
-                    │  │save    │  │     │ AGENTS.md +  │
-                    │  │user msg│  │     │ MEMORY.md +  │
-                    │  └────────┘  │     │ BOOTSTRAP.md │
-                    └──────────────┘     │ + skills     │
-                                         └──────┬───────┘
-                                                │
-                                         ┌──────▼───────┐
-                                         │ ChatRequest  │
-                                         │ (messages,   │
-                                         │  tools,      │
-                                         │  model)      │
-                                         └──────┬───────┘
-                                                │
-                           ┌────────────────────▼─────────────────────┐
-                           │          LLM Provider (chat/stream)      │
-                           │    ┌──────┐  ┌──────┐  ┌──────────────┐│
-                           │    │OpenAI│  │Gemini│  │   Copilot    ││
-                           │    │ API  │  │ API  │  │    API       ││
-                           │    └──────┘  └──────┘  └──────────────┘│
-                           └────────────────────┬────────────────────┘
-                                                │
-                                         ┌──────▼───────┐
-                                         │ ChatResponse │
-                                         │ ┌──────────┐ │
-                                         │ │ content  │ │
-                                         │ │ tool_    │ │
-                                         │ │  calls   │ │
-                                         │ │ reasoning│ │
-                                         │ └──────────┘ │
-                                         └──────┬───────┘
-                                                │
-                              ┌─────────────────┼─────────────────┐
-                              │ has_tool_calls? │                 │
-                              │                 │                 │
-                        ┌─────▼─────┐    ┌─────▼──────┐         │
-                        │  YES      │    │   NO       │         │
-                        │           │    │            │         │
-                  ┌─────▼──────┐   │    │  最终响应   │         │
-                  │  Tool      │   │    │  返回用户   │         │
-                  │  Executor  │   │    └────────────┘         │
-                  │            │   │                           │
-                  │ execute_   │   │                           │
-                  │  batch()   │   │                           │
-                  │ (并行执行)  │   │                           │
-                  └─────┬──────┘   │                           │
-                        │          │                           │
-                  ┌─────▼──────┐   │                           │
-                  │ Tool Result│   │                           │
-                  │ append to  │   │                           │
-                  │ messages   │───┘ (循环回到 LLM Provider)
-                  └────────────┘
+```mermaid
+flowchart TB
+    subgraph 用户输入
+        U[用户输入]
+    end
+
+    subgraph REPL层
+        R[reedline REPL]
+    end
+
+    subgraph AgentSession
+        AS[AgentSession.process_direct]
+    end
+
+    subgraph 上下文组装
+        PL[Prompt Loader]
+        AC[Agent Context<br/>SQLite]
+        SYS[构建 System Prompt<br/>PROFILE.md +<br/>SOUL.md +<br/>AGENTS.md +<br/>MEMORY.md +<br/>BOOTSTRAP.md + skills]
+    end
+
+    subgraph LLM调用
+        CR[ChatRequest<br/>messages + tools + model]
+        LLM[LLM Provider<br/>chat/stream]
+    end
+
+    U --> R --> AS
+
+    AS --> AC
+    AS --> PL
+    PL --> SYS
+    SYS --> CR
+
+    CR --> LLM
+
+    LLM --> CR2[ChatResponse<br/>content + tool_calls<br/>reasoning]
+
+    CR2 --> TC{has_tool_calls?}
+
+    TC -->|YES| TE[Tool Executor<br/>execute_batch<br/>并行执行]
+    TE --> TR[Tool Result<br/>append to messages]
+    TR --> LLM
+
+    TC -->|NO| OUT[最终响应<br/>返回用户]
+
+    style AS fill:#E3F2FD
+    style LLM fill:#FFF3E0
+    style TE fill:#F3E5F5
 ```
 
 ---
 
 ## 2. Gateway 模式数据流 (Actor 模型)
 
-```
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ Telegram │  │ Discord  │  │  Slack   │  │  飞书    │  │ WebSocket│
-│   Bot    │  │   Bot    │  │  WSS     │  │ Webhook  │  │  Server  │
-└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
-     │             │             │             │             │
-     └──────┬──────┴──────┬──────┴──────┬──────┘             │
-            │             │             │                     │
-     ┌──────▼─────────────▼─────────────▼─────────────────────▼───┐
-     │                    InboundMessage                           │
-     │  { channel, sender_id, chat_id, content, media, metadata } │
-     └───────────────────────────┬────────────────────────────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │     Middleware Layer     │
-                    │  ┌──────┐  ┌─────────┐  │
-                    │  │Auth  │  │Rate     │  │
-                    │  │Check │  │Limiter  │  │
-                    │  └──────┘  └─────────┘  │
-                    └────────────┬────────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │      Router Actor       │
-                    │  (单任务,拥有路由表)      │
-                    │                         │
-                    │  HashMap<SessionKey,    │
-                    │    mpsc::Sender>        │
-                    │  • 按 session_key 分发  │
-                    │  • 懒创建 Session Actor │
-                    │  • 清理已关闭的 channel │
-                    └────┬──────┬──────┬──────┘
-                         │      │      │
-              ┌──────────▼┐ ┌──▼────┐ ┌▼──────────┐
-              │ Session   │ │Session│ │ Session   │
-              │ Actor #1  │ │Act #2 │ │ Actor #N  │
-              │           │ │       │ │           │
-              │ 串行处理   │ ...     │ ...         │
-              │AgentSession│ │       │ │           │
-              │ .process_ │ │       │ │           │
-              │  direct() │ │       │ │           │
-              │           │ │       │ │           │
-              │ 空闲超时   │ │       │ │           │
-              │ 自动销毁   │ │       │ │           │
-              └──────┬────┘ └──┬────┘ └─────┬─────┘
-                     │         │            │
-                     └────┬────┘────────────┘
-                          │
-              ┌───────────▼───────────┐
-              │    Outbound Actor     │
-              │  (单任务,专职发送)     │
-              │                       │
-              │  send_outbound()      │
-              │  按 channel 类型路由   │
-              └───┬──────┬──────┬────┘
-                  │      │      │
-        ┌─────────▼┐ ┌──▼────┐ ┌▼────────┐
-        │ Telegram  │ │Slack  │ │WebSocket│  ...
-        │  .send()  │ │.send()│ │ .send() │
-        └───────────┘ └───────┘ └─────────┘
+```mermaid
+flowchart TB
+    subgraph 用户入口
+        TG[Telegram Bot]
+        DC[Discord Bot]
+        SL[Slack WSS]
+        FS[飞书 Webhook]
+        WS[WebSocket Server]
+    end
+
+    subgraph 消息处理
+        IM[InboundMessage<br/>channel + sender_id<br/>chat_id + content<br/>media + metadata]
+        MW[Middleware Layer<br/>Auth Check + Rate Limiter]
+        RT[Router Actor<br/>HashMap SessionKey<br/>mpsc Sender<br/>懒创建/清理Session]
+    end
+
+    subgraph Session层
+        S1[Session Actor #1]
+        S2[Session Actor #2]
+        SN[Session Actor #N]
+    end
+
+    subgraph Outbound层
+        OB[Outbound Actor<br/>单任务专职发送<br/>send_outbound]
+        OT[回复 Telegram]
+        OS[回复 Slack]
+        OW[回复 WebSocket]
+    end
+
+    TG --> IM
+    DC --> IM
+    SL --> IM
+    FS --> IM
+    WS --> IM
+
+    IM --> MW --> RT
+
+    RT --> S1
+    RT --> S2
+    RT --> SN
+
+    S1 --> OB
+    S2 --> OB
+    SN --> OB
+
+    OB --> OT
+    OB --> OS
+    OB --> OW
+
+    style RT fill:#E3F2FD
+    style OB fill:#FFF3E0
 ```
 
 ### Actor 模型设计要点
@@ -149,232 +122,193 @@
 
 ### WebSocket 流式处理
 
-```
-Session Actor
-    │
-    ▼
-AgentSession::process_direct_streaming_with_channel()
-    │
-    ▼
-mpsc::Receiver<StreamEvent>
-    │
-    ▼
-stream_event_to_ws_message()
-    │
-    ├──▶ StreamEvent::Content ──▶ WebSocketMessage::Text
-    ├──▶ StreamEvent::Thinking ──▶ WebSocketMessage::Thinking
-    ├──▶ StreamEvent::ToolStart ──▶ WebSocketMessage::ToolStart
-    ├──▶ StreamEvent::ToolEnd ──▶ WebSocketMessage::ToolEnd
-    └──▶ StreamEvent::Done ──▶ WebSocketMessage::Done
-    │
-    ▼
-Outbound Actor ──▶ WebSocket 客户端
+```mermaid
+flowchart TB
+    SA[Session Actor]
+    AS[AgentSession<br/>process_direct<br/>_streaming_with_channel]
+    CH[mpsc Receiver<br/>StreamEvent]
+    SW[stream_event<br/>_to_ws_message]
+
+    subgraph 事件转换
+        SE1[StreamEvent::Content]
+        SE2[StreamEvent::Thinking]
+        SE3[StreamEvent::ToolStart]
+        SE4[StreamEvent::ToolEnd]
+        SE5[StreamEvent::Done]
+    end
+
+    subgraph WebSocket消息
+        WS1[WebSocketMessage<br/>Text]
+        WS2[WebSocketMessage<br/>Thinking]
+        WS3[WebSocketMessage<br/>ToolStart]
+        WS4[WebSocketMessage<br/>ToolEnd]
+        WS5[WebSocketMessage<br/>Done]
+    end
+
+    SA --> AS --> CH --> SW
+
+    SW --> SE1 --> WS1
+    SW --> SE2 --> WS2
+    SW --> SE3 --> WS3
+    SW --> SE4 --> WS4
+    SW --> SE5 --> WS5
+
+    WS1 --> OUT[Outbound Actor<br/>WebSocket 客户端]
+    WS2 --> OUT
+    WS3 --> OUT
+    WS4 --> OUT
+    WS5 --> OUT
 ```
 
 ---
 
 ## 3. Heartbeat & Cron 数据流
 
-```
-┌─────────────────────────┐    ┌──────────────────────────┐
-│  HeartbeatService       │    │  CronService              │
-│                         │    │                            │
-│  读取 HEARTBEAT.md      │    │  每 60 秒检查 SQLite      │
-│  解析 cron 表达式       │    │  中的 cron_jobs 表         │
-│  到达触发时间 →          │    │  到期任务 →                │
-└───────────┬─────────────┘    └────────────┬──────────────┘
-            │                                │
-            ▼                                ▼
-   InboundMessage                   InboundMessage
-   sender_id: "heartbeat"          sender_id: "cron"
-   content: task_text              content: job.message
-            │                                │
-            └──────────┬─────────────────────┘
-                       │
-              ┌────────▼─────────┐
-              │  Router Actor    │
-              │  (Gateway 模式)   │
-              │  或 AgentSession │
-              │  .process_direct │
-              │  (CLI 模式)      │
-              └────────┬─────────┘
-                       │
-              ┌────────▼─────────┐
-              │  Agent 正常处理   │
-              │  (与普通消息相同) │
-              └──────────────────┘
+```mermaid
+flowchart TB
+    subgraph 定时任务
+        HB[HeartbeatService<br/>读取 HEARTBEAT.md<br/>解析 cron 表达式<br/>到达触发时间]
+        CS[CronService<br/>每60秒检查<br/>cron_jobs 表<br/>到期任务触发]
+    end
+
+    subgraph 消息生成
+        IM1[InboundMessage<br/>sender_id: heartbeat<br/>content: task_text]
+        IM2[InboundMessage<br/>sender_id: cron<br/>content: job.message]
+    end
+
+    IM1 --> HB
+    IM2 --> CS
+
+    HB --> RT[Router Actor<br/>Gateway 模式]
+    CS --> RT
+
+    RT --> AG[Agent 正常处理<br/>与普通消息相同]
+
+    style HB fill:#FFE0B2
+    style CS fill:#E3F2FD
 ```
 
 ---
 
 ## 4. Agent 执行流程图
 
-```
-                              ┌──────────────┐
-                              │   开始处理    │
-                              │ AgentSession │
-                              │.process_direc│
-                              │     t()      │
-                              └──────┬───────┘
-                                     │
-                              ┌──────▼───────┐
-                              │ BeforeRequest│
-                              │ Hook (可选)  │
-                              │ 可修改/中止  │
-                              └──────┬───────┘
-                                     │
-                              ┌──────▼───────┐
-                              │ 处理斜杠命令  │
-                              │ /new → 清空   │
-                              │ /help → 帮助  │
-                              └──────┬───────┘
-                                     │ (非斜杠命令)
-                                     │
-                 ┌───────────────────▼───────────────────┐
-                 │  1. 保存 user message 到 Session       │
-                 │  2. 获取历史快照 (memory_window 条)     │
-                 └───────────────────┬───────────────────┘
-                                     │
-                 ┌───────────────────▼───────────────────┐
-                 │  History Processor (token 感知)        │
-                 │                                        │
-                 │  算法:                                  │
-                 │  1. 取最近 max_messages 条              │
-                 │  2. 始终保留最后 recent_keep 条          │
-                 │  3. 较早消息按 token 预算纳入/驱逐       │
-                 │  → ProcessedHistory {                   │
-                 │      messages: 保留的消息,               │
-                 │      evicted: 被驱逐的消息               │
-                 │    }                                    │
-                 └───────────────────┬───────────────────┘
-                                     │
-                 ┌───────────────────▼───────────────────┐
-                 │  ContextCompactor::compact()           │
-                 │                                        │
-                 │  evicted 不为空 → 同步 LLM 摘要         │
-                 │  evicted 为空 → 加载已有摘要            │
-                 │  → summary: Option<String>             │
-                 └───────────────────┬───────────────────┘
-                                     │
-                 ┌───────────────────▼───────────────────┐
-                 │  Prompt Assembly                       │
-                 │                                        │
-                 │  ┌──────────────────────────────────┐  │
-                 │  │ [system] PROFILE.md + SOUL.md +  │  │
-                 │  │          AGENTS.md + MEMORY.md + │  │
-                 │  │          BOOTSTRAP.md +           │  │
-                 │  │          skills_context             │  │
-                 │  ├──────────────────────────────────┤  │
-                 │  │ [system] 摘要 (如有)              │  │
-                 │  ├──────────────────────────────────┤  │
-                 │  │ [user] 历史消息 × N (已处理)      │  │
-                 │  ├──────────────────────────────────┤  │
-                 │  │ [user] 长期记忆 (动态加载)         │  │
-                 │  │ [SYSTEM: Relevant memories...]    │  │
-                 │  ├──────────────────────────────────┤  │
-                 │  │ [user] 当前输入内容               │  │
-                 │  └──────────────────────────────────┘  │
-                 │                                        │
-                 │  注：长期记忆作为 User Message 注入，   │
-                 │  保护 System Prompt 的 Prompt Cache    │
-                 └───────────────────┬───────────────────┘
-                                     │
-                              ┌──────▼───────┐
-                              │ iteration = 0│
-                              └──────┬───────┘
-                                     │
-                  ┌──────────────────▼──────────────────┐
-            ┌─────│ iteration < max_iterations (默认 20)?│
-            │     └──────────────────┬──────────────────┘
-            │ NO                     │ YES
-            │                 ┌──────▼───────┐
-            │                 │ iteration++  │
-            │                 └──────┬───────┘
-            │                        │
-            │                 ┌──────▼───────────────────┐
-            │                 │ 构建 ChatRequest:         │
-            │                 │  model, messages, tools,  │
-            │                 │  temperature, max_tokens,  │
-            │                 │  thinking                  │
-            │                 └──────┬───────────────────┘
-            │                        │
-            │                 ┌──────▼───────────────────┐
-            │                 │ LLM Provider.chat() /     │
-            │                 │         .chat_stream()    │
-            │                 │                           │
-            │                 │ 失败 → 指数退避重试 ×3    │
-            │                 └──────┬───────────────────┘
-            │                        │
-            │                 ┌──────▼───────┐
-            │                 │ ChatResponse  │
-            │                 └──────┬───────┘
-            │                        │
-            │              ┌─────────┴─────────┐
-            │              │ has_tool_calls()?  │
-            │              └────┬──────────┬───┘
-            │                   │ YES      │ NO
-            │            ┌──────▼──────┐   │
-            │            │ ToolExecutor│   │
-            │            │.execute_    │   │
-            │            │ batch()     │   │
-            │            │             │   │
-            │            │ spawn_parallel│   │
-            │            │ + 并行执行所有 │   │
-            │            │ tool_calls  │   │
-            │            └──────┬──────┘   │
-            │                   │          │
-            │            ┌──────▼──────┐   │
-            │            │ 将 tool     │   │
-            │            │ results    │   │
-            │            │ 追加到     │   │
-            │            │ messages   │   │
-            │            └──────┬──────┘   │
-            │                   │          │
-            │                   ▼          │
-            │           (回到循环顶部)      │
-            │                              │
-            │                       ┌──────▼──────┐
-            └──────────────────────▶│ 返回最终响应 │
-                                    │ AgentResponse│
-                                    │ {content,    │
-                                    │  reasoning,  │
-                                    │  tools_used} │
-                                    └──────┬──────┘
-                                           │
-                                    ┌──────▼───────┐
-                                    │ AfterResponse│
-                                    │ Hook (可选)  │
-                                    │ 审计/告警    │
-                                    └──────┬───────┘
-                                           │
-                                    ┌──────▼──────┐
-                                    │ 保存 assistant│
-                                    │ message 到   │
-                                    │ Session      │
-                                    └─────────────┘
+```mermaid
+flowchart TB
+    START([开始]) --> PR[开始处理<br/>AgentSession<br/>process_direct]
+
+    PR --> BR[BeforeRequest Hook<br/>可选<br/>可修改/中止]
+
+    BR --> SL[处理斜杠命令<br/>/new → 清空<br/>/help → 帮助]
+
+    SL --> SM{斜杠命令?}
+
+    SM -->|YES| EX[执行命令]
+    SM -->|NO| SH
+
+    subgraph 保存消息
+        SH[1. 保存 user message<br/>到 SessionEvent]
+    end
+
+    SH --> HH[History Processor<br/>token 感知]
+
+    subgraph 历史处理
+        HH --> HP[算法：<br/>1. 取最近 max_messages 条<br/>2. 始终保留最后 recent_keep 条<br/>3. 较早消息按 token 预算纳入/驱逐<br/>→ ProcessedHistory<br/>messages + evicted]
+    end
+
+    HP --> CC[ContextCompactor<br/>compact]
+
+    CC --> EV{evicted<br/>不为空?}
+
+    EV -->|YES| SUM[同步 LLM 摘要]
+    EV -->|NO| LS[加载已有摘要]
+    SUM --> SS[summary: Option String]
+    LS --> SS
+
+    SS --> PA[Prompt Assembly]
+
+    subgraph Prompt组装
+        PA --> SYS1["[system] PROFILE.md + SOUL.md +<br/>AGENTS.md + MEMORY.md +<br/>BOOTSTRAP.md + skills_context"]
+        PA --> SYS2["[system] 摘要 (如有)"]
+        PA --> USR1["[user] 历史消息 × N (已处理)"]
+        PA --> USR2["[user] 长期记忆 (动态加载)<br/>Relevant memories..."]
+        PA --> USR3["[user] 当前输入内容"]
+    end
+
+    PA --> I[iteration = 0]
+
+    I --> LP{iteration &lt;<br/>max_iterations<br/>(默认20)?}
+
+    LP -->|YES| INC[iteration++]
+    INC --> CR[构建 ChatRequest<br/>model + messages + tools +<br/>temperature + max_tokens +<br/>thinking]
+
+    CR --> LLM[LLM Provider<br/>chat / chat_stream]
+
+    LLM --> LR{失败?}
+
+    LR -->|YES| RET[指数退避重试 ×3]
+    RET --> LLM
+
+    LR -->|NO| CR2[ChatResponse]
+
+    CR2 --> TC{has_tool<br/>_calls?}
+
+    TC -->|YES| TE[ToolExecutor<br/>execute_batch<br/>并行执行]
+
+    TE --> TR[Tool Result<br/>追加到 messages]
+
+    TR --> I
+
+    TC -->|NO| OUT[返回最终响应<br/>AgentResponse<br/>content + reasoning<br/>+ tools_used]
+
+    LP -->|NO| OUT
+
+    OUT --> AR[AfterResponse Hook<br/>可选<br/>审计/告警]
+
+    AR --> SA[保存 assistant<br/>message 到<br/>Session]
+
+    SA --> END([完成])
+
+    style PR fill:#E3F2FD
+    style LLM fill:#FFF3E0
+    style TE fill:#F3E5F5
 ```
 
 ---
 
 ## 5. 流式输出流程
 
-```
-chat_stream() ──▶ Stream<ChatStreamChunk>
-                        │
-                        ▼
-               accumulate_stream()
-                        │
-           ┌────────────┼────────────┐
-           │            │            │
-    delta.content  delta.reasoning  delta.tool_calls
-           │            │            │
-           ▼            ▼            ▼
-    StreamEvent::   StreamEvent::   tool_calls_map
-    Content(text)   Reasoning(text) (累积直到流结束)
-           │            │            │
-           ▼            ▼            ▼
-    callback()      callback()    解析为 Vec<ToolCall>
-    (实时输出)      (实时输出)    → ChatResponse
+```mermaid
+flowchart TB
+    CS[chat_stream]
+    AS[accumulate_stream]
+    CH[StreamEvent]
+
+    subgraph delta处理
+        DC[delta.content]
+        DR[delta.reasoning]
+        DT[delta.tool_calls]
+    end
+
+    subgraph 事件转换
+        EC[StreamEvent<br/>Content text]
+        ER[StreamEvent<br/>Reasoning text]
+        ET[tool_calls_map<br/>累积直到流结束]
+    end
+
+    CS --> AS --> DC
+    AS --> DR
+    AS --> DT
+
+    DC --> EC
+    DR --> ER
+    DT --> ET
+
+    EC --> CB[callback<br/>实时输出]
+    ER --> CB
+    ET -->|解析为 Vec ToolCall| RESP[ChatResponse]
+
+    style CS fill:#E3F2FD
+    style AS fill:#FFF3E0
 ```
 
 ### 流式事件类型
@@ -398,36 +332,30 @@ pub enum StreamEvent {
 
 ## 6. Vault 注入流程
 
-```
-用户消息: "使用 {{vault:api_key}} 调用 API"
-                    │
-                    ▼
-          ┌─────────────────┐
-          │  VaultInjector  │
-          │  .inject()      │
-          └────────┬────────┘
-                   │
-         ┌─────────▼─────────┐
-         │  scan_placeholders│
-         │  提取 {{vault:*}} │
-         └─────────┬─────────┘
-                   │
-         ┌─────────▼─────────┐
-         │   VaultStore      │
-         │   .get(key)       │
-         │   (可能解密)      │
-         └─────────┬─────────┘
-                   │
-         ┌─────────▼─────────┐
-         │ replace_placeholders│
-         │ 替换为实际值       │
-         └─────────┬─────────┘
-                   │
-                   ▼
-处理后的消息: "使用 sk-xxxx 调用 API"
-                   │
-                   ▼
-            AgentSession 处理
+```mermaid
+sequenceDiagram
+    participant U as 用户消息
+    participant VI as VaultInjector.inject
+    participant SP as scan_placeholders
+    participant VS as VaultStore.get
+    participant RP as replace_placeholders
+    participant AS as AgentSession
+
+    U->>VI: "使用 {{vault:api_key}} 调用 API"
+
+    VI->>SP: 提取 {{vault:*}}
+    SP-->>VI: ["api_key"]
+
+    VI->>VS: .get("api_key")
+    Note over VS: 可能解密
+
+    VS-->>VI: "sk-xxxx"
+
+    VI->>RP: 替换占位符
+    RP-->>VI: "使用 sk-xxxx 调用 API"
+
+    VI->>AS: 处理后的消息
+    AS-->>U: 返回结果
 ```
 
 ### InjectionReport
@@ -446,84 +374,92 @@ InjectionReport {
 
 ### 7.1 纯函数创建（推荐）
 
-```
-调用者 ──▶ TaskSpec::new(id, prompt)
-              │
-              ├──▶ .with_model()
-              ├──▶ .with_system_prompt()
-              │
-              ▼
-    spawn_subagent(provider, tools, workspace, task, event_tx, result_tx, token_tracker)
-              │
-              ▼
-    tokio::spawn(async {
-        AgentSession::process_direct_streaming()
-    })
-              │
-              ▼
-    StreamEvent ──▶ mpsc::channel ──▶ SubagentTracker
+```mermaid
+flowchart TB
+    CALLER[调用者]
+    TS[TaskSpec::new<br/>id + prompt]
+    SP[spawn_subagent<br/>provider + tools + workspace<br/>task + event_tx + result_tx<br/>token_tracker]
+    TK[tokio::spawn<br/>AgentSession<br/>process_direct_streaming]
+    SE[StreamEvent]
+    CH[mpsc channel]
+    ST[SubagentTracker]
+
+    CALLER --> TS
+    TS --> SP
+    SP --> TK
+    TK --> SE
+    SE --> CH --> ST
+
+    style SP fill:#E3F2FD
+    style TK fill:#FFF3E0
 ```
 
 ### 7.2 Fire-and-Forget 模式
 
-```
-调用者 ──▶ spawn_subagent(task, result_tx, ...)
-  │
-  │  返回 JoinHandle
-  │
-  ▼
-tokio::spawn ──▶ AgentSession::process_direct() ──▶ OutboundMessage
-                     │                              │
-                     │  10 分钟超时                  │  通过 outbound_tx
-                     │                              │  发送到渠道
-                     ▼                              ▼
-               (后台运行)                     (结果路由到 chat)
+```mermaid
+flowchart TB
+    C[调用者]
+    SA[spawn_subagent<br/>task + result_tx]
+    JH[返回 JoinHandle]
+    TS[tokio::spawn<br/>AgentSession<br/>process_direct]
+    OM[OutboundMessage]
+
+    C --> SA
+    SA --> JH
+    SA --> TS
+    TS --> OM
+
+    Note over TS: 10分钟超时
+
+    OM -->|通过 outbound_tx<br/>发送到渠道| OUT[结果路由到 chat]
+
+    style SA fill:#FFE0B2
 ```
 
 ### 7.3 同步等待模式
 
-```
-调用者 ──▶ spawn_subagent(task, result_tx, ...)
-  │              │
-  │  await rx    │  tokio::spawn
-  │  (阻塞等待)  │  │
-  ▼              ▼  │
-(收到 SubagentResult │
-  或 channel 关闭)   │
-                    ▼
-              result_tx.send(result)
-                    │
-                    ▼
-              (返回结果给调用者)
+```mermaid
+sequenceDiagram
+    participant C as 调用者
+    participant SA as spawn_subagent
+    participant SP as tokio::spawn
+    participant RT as result_tx.send
+
+    C->>SA: task
+    SA->>SP: AgentSession
+
+    SP-->>SA: result
+    SA->>RT: result
+    RT-->>C: SubagentResult<br/>或 channel 关闭
 ```
 
 ---
 
 ## 8. 上下文压缩数据流
 
-```
-finalize_response()
-    │
-    ▼
-process_history() ──▶ 识别被驱逐消息
-    │
-    ▼
-ContextCompactor::try_compact(key, current_tokens)
-    │
-    ├──▶ token_budget 未超限? ──▶ 返回
-    │
-    ▼
-异步执行 {
-    │
-    ▼
-    LLM 生成摘要
-    │
-    ▼
-    EventStore::save_summary()
-    │
-    ▼
-    SQLite 存储 Summary 事件
-}
+```mermaid
+flowchart TB
+    FR[finalize_response]
+    PH[process_history]
+    CC[ContextCompactor<br/>try_compact]
+
+    FR --> PH --> CC
+
+    CC --> TB{token_budget<br/>未超限?}
+
+    TB -->|是| END([返回])
+    TB -->|否| AS[异步执行]
+
+    subgraph 压缩执行
+        AS --> LL[LLM 生成摘要]
+        LL --> ES[EventStore<br/>save_summary]
+        ES --> SQ[SQLite 存储<br/>Summary 事件]
+    end
+
+    SQ --> END
+
+    style CC fill:#FFE0B2
+    style AS fill:#E3F2FD
 ```
 
 ### 压缩执行策略
@@ -536,33 +472,34 @@ ContextCompactor::try_compact(key, current_tokens)
 
 ## 9. Hook 系统数据流
 
-```
-AgentSession::process_direct()
-    │
-    ├──▶ BeforeRequest Hook ──▶ 可修改/中止请求
-    │
-    ▼
-Load Session / Save User Message
-    │
-    ├──▶ AfterHistory Hook ──▶ 可添加上下文
-    │
-    ▼
-Process History
-    │
-    ├──▶ BeforeLLM Hook ──▶ Vault 注入等最后修改
-    │
-    ▼
-LLM Provider
-    │
-    ├──▶ AfterToolCall Hook ──▶ 并行执行，只读审计
-    │
-    ▼
-Return Response
-    │
-    ├──▶ AfterResponse Hook ──▶ 并行执行，只读审计
-    │
-    ▼
-Save Assistant Message
+```mermaid
+flowchart TB
+    AS[AgentSession<br/>process_direct]
+
+    subgraph Hook执行点
+        BR[BeforeRequest Hook<br/>Sequential<br/>可修改/中止]
+        AH[AfterHistory Hook<br/>Sequential<br/>可添加上下文]
+        BL[BeforeLLM Hook<br/>Sequential<br/>Vault 注入等]
+        AT[AfterToolCall Hook<br/>Parallel<br/>只读审计]
+        AR[AfterResponse Hook<br/>Parallel<br/>只读审计]
+    end
+
+    AS --> BR
+    BR --> SH[Load Session<br/>Save User Message]
+    SH --> AH
+    AH --> PH[Process History]
+    PH --> BL
+    BL --> LLM[LLM Provider]
+    LLM --> AT
+    AT --> RT[Return Response]
+    RT --> AR
+    AR --> SA[Save Assistant<br/>Message]
+
+    style BR fill:#FFE0B2
+    style AH fill:#E3F2FD
+    style BL fill:#FFF3E0
+    style AT fill:#F3E5F5
+    style AR fill:#C8E6C9
 ```
 
 ### Hook 执行策略

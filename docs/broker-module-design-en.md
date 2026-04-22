@@ -76,16 +76,40 @@ Replaces the old Router Actor + Session Actor pattern. Manages per-session proce
 
 ## 4. Topic Hierarchy & Delivery Semantics
 
-```
-Topic::Inbound          → PointToPoint (async_channel)
-Topic::Outbound         → PointToPoint (async_channel)
-Topic::SystemEvent      → Broadcast (tokio::broadcast)
-Topic::ToolCall(String) → PointToPoint
-Topic::LlmRequest       → PointToPoint
-Topic::Stream(String)   → PointToPoint
-Topic::CronTrigger      → PointToPoint
-Topic::Heartbeat        → PointToPoint
-Topic::Custom(String)   → PointToPoint
+```mermaid
+flowchart TB
+    subgraph PointToPoint
+        TI["Topic::Inbound"]
+        TO["Topic::Outbound"]
+        TC["Topic::ToolCall(String)"]
+        LR["Topic::LlmRequest"]
+        ST["Topic::Stream(String)"]
+        CT["Topic::CronTrigger"]
+        HB["Topic::Heartbeat"]
+        CU["Topic::Custom(String)"]
+    end
+
+    subgraph Broadcast
+        SE["Topic::SystemEvent"]
+    end
+
+    subgraph Implementation
+        P2P["PointToPoint<br/>(async_channel)"]
+        BC["Broadcast<br/>(tokio::broadcast)"]
+    end
+
+    TI --> P2P
+    TO --> P2P
+    TC --> P2P
+    LR --> P2P
+    ST --> P2P
+    CT --> P2P
+    HB --> P2P
+    CU --> P2P
+    SE --> BC
+
+    style P2P fill:#E3F2FD
+    style BC fill:#FFF3E0
 ```
 
 **Delivery Semantics:**
@@ -98,53 +122,39 @@ Topic::Custom(String)   → PointToPoint
 
 ### 5.1 Overall Message Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           INBOUND PATH                                   │
-│                                                                         │
-│  Channel Providers (Telegram, Discord, etc.)                            │
-│         │                                                               │
-│         ▼                                                               │
-│  InboundSender (optional rate-limit + auth middleware)                  │
-│         │                                                               │
-│         ▼                                                               │
-│  MemoryBroker::publish(Envelope { Topic::Inbound, BrokerPayload::Inbound }) │
-│         │                                                               │
-│         ▼                                                               │
-│  SessionManager (subscribes to Topic::Inbound)                           │
-│         │                                                               │
-│         ├──────────────────────────────────────┐                          │
-│         ▼                                      ▼                          │
-│  Per-session mpsc channel          Session task processes:               │
-│  (DashMap<SessionKey, Sender>)     - Regular message → AgentSession     │
-│                                        │                                │
-│                                        ▼                                │
-│  ┌─────────────────────────────────────────────────────────────┐       │
-│  │                     AgentSession                             │       │
-│  │  (process_direct / process_direct_streaming_with_channel)    │       │
-│  └─────────────────────────────────────────────────────────────┘       │
-│         │                                                               │
-│         ▼                                                               │
-│  MemoryBroker::publish(Envelope { Topic::Outbound, BrokerPayload::Outbound }) │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Inbound["INBOUND PATH"]
+        CH["Channel Providers<br/>Telegram, Discord, etc."]
+        MW["InboundSender<br/>optional rate-limit + auth middleware"]
+        MB["MemoryBroker::publish<br/>Envelope Topic::Inbound"]
+        SM["SessionManager<br/>subscribes to Topic::Inbound"]
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          OUTBOUND PATH                                  │
-│                                                                         │
-│  OutboundDispatcher (subscribes to Topic::Outbound)                      │
-│         │                                                               │
-│         ▼                                                               │
-│  ImProviders (send to Telegram, Discord, WebSocket, etc.)              │
-└─────────────────────────────────────────────────────────────────────────┘
+        CH --> MW --> MB --> SM
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    BROADCAST PATH (Topic::SystemEvent)                  │
-│                                                                         │
-│  MemoryBroker::publish (tokio::broadcast)                               │
-│         │                                                               │
-│         ▼                                                               │
-│  All subscribers receive the same message (fan-out)                     │
-└─────────────────────────────────────────────────────────────────────────┘
+        SM --> PS1["Per-session mpsc channel<br/>DashMap SessionKey Sender"]
+        SM --> PS2["Session task processes<br/>AgentSession"]
+
+        MB2["MemoryBroker::publish<br/>Envelope Topic::Outbound"]
+        SM --> PS2 --> MB2
+    end
+
+    subgraph Outbound["OUTBOUND PATH"]
+        OD["OutboundDispatcher<br/>subscribes to Topic::Outbound"]
+        IM["ImProviders<br/>Telegram, Discord, WebSocket"]
+
+        MB2 --> OD --> IM
+    end
+
+    subgraph Broadcast["BROADCAST PATH (Topic::SystemEvent)"]
+        BC["MemoryBroker::publish<br/>tokio::broadcast"]
+        SUB["All subscribers receive<br/>the same message fan-out"]
+        BC --> SUB
+    end
+
+    style Inbound fill:#E3F2FD
+    style Outbound fill:#FFF3E0
+    style Broadcast fill:#F3E5F5
 ```
 
 ---
