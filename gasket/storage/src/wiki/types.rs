@@ -9,7 +9,7 @@ use std::str::FromStr;
 /// Defines the maximum token budget for different phases of context loading,
 /// ensuring the AI doesn't exceed context window limits.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct TokenBudget {
+pub struct MemoryBudget {
     /// Budget for Phase 1 (bootstrap: profile + hot pages).
     #[serde(default = "default_bootstrap")]
     pub bootstrap: usize,
@@ -37,7 +37,7 @@ fn default_total_cap() -> usize {
     4000
 }
 
-impl Default for TokenBudget {
+impl Default for MemoryBudget {
     fn default() -> Self {
         Self {
             bootstrap: default_bootstrap(),
@@ -48,7 +48,7 @@ impl Default for TokenBudget {
     }
 }
 
-impl TokenBudget {
+impl MemoryBudget {
     pub fn new(bootstrap: usize, scenario: usize, on_demand: usize, total_cap: usize) -> Self {
         Self {
             bootstrap,

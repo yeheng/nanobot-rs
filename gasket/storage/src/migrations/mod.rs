@@ -29,8 +29,6 @@ pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
 async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
     migrate_add_watermark_to_summaries(pool).await?;
     migrate_add_sequence_to_events(pool).await?;
-    migrate_add_needs_embedding_to_metadata(pool).await?;
-    migrate_add_access_count_to_metadata(pool).await?;
     migrate_add_session_sequence_index(pool).await?;
     Ok(())
 }
@@ -66,30 +64,6 @@ async fn migrate_add_sequence_to_events(pool: &SqlitePool) -> anyhow::Result<()>
         sqlx::query("ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await?;
-    }
-    Ok(())
-}
-
-/// Add `needs_embedding` column to `memory_metadata` if it doesn't exist.
-async fn migrate_add_needs_embedding_to_metadata(pool: &SqlitePool) -> anyhow::Result<()> {
-    if !column_exists(pool, "memory_metadata", "needs_embedding").await {
-        sqlx::query(
-            "ALTER TABLE memory_metadata ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 1",
-        )
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-/// Add `access_count` column to `memory_metadata` if it doesn't exist.
-async fn migrate_add_access_count_to_metadata(pool: &SqlitePool) -> anyhow::Result<()> {
-    if !column_exists(pool, "memory_metadata", "access_count").await {
-        sqlx::query(
-            "ALTER TABLE memory_metadata ADD COLUMN access_count BIGINT NOT NULL DEFAULT 0",
-        )
-        .execute(pool)
-        .await?;
     }
     Ok(())
 }

@@ -3,11 +3,6 @@
 use chrono::{DateTime, Utc};
 use gasket_types::SessionEvent;
 
-/// 历史检索器
-pub struct HistoryRetriever {
-    // Will be connected to EventStore later
-}
-
 /// 检索查询条件
 #[derive(Debug, Clone, Default)]
 pub struct HistoryQuery {

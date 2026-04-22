@@ -54,7 +54,7 @@ pub use gasket_types::SubagentSpawner;
 // ── History (re-export from storage) ───────────────────────
 pub use gasket_storage::{
     count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
-    HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
+    ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
 
 // ── Indexing (from session/history) ────────────────────────
@@ -174,6 +174,8 @@ pub mod providers {
     pub use gasket_providers::GeminiProvider;
     #[cfg(feature = "provider-minimax")]
     pub use gasket_providers::MinimaxProvider;
+    #[cfg(feature = "provider-moonshot")]
+    pub use gasket_providers::MoonshotProvider;
     pub use gasket_providers::{
         build_http_client, parse_json_args, streaming, ChatMessage, ChatRequest, ChatResponse,
         ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall,

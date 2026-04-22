@@ -117,51 +117,26 @@ pub fn build_provider(
             }
         }
         "moonshot" | "kimi" => {
-            // Moonshot/Kimi has two API formats:
-            // - Standard API (api.moonshot.cn/v1) - OpenAI-compatible format
-            // - Coding API (api.kimi.com/coding) - Anthropic message format
-            let api_base = &provider_config.api_base;
-            let is_coding_api = api_base.contains("/coding") || api_base.contains("/anthropic");
-
-            if is_coding_api {
-                #[cfg(feature = "provider-anthropic")]
-                {
-                    let provider = gasket_engine::providers::AnthropicProvider::with_config(
-                        api_key.to_string(),
-                        Some(provider_config.api_base.clone()),
-                        Some(model.to_string()),
-                        None,
-                        proxy_url,
-                        proxy_username,
-                        proxy_password,
-                        provider_config.extra_headers.clone(),
-                    );
-                    Ok(Arc::new(provider))
-                }
-                #[cfg(not(feature = "provider-anthropic"))]
-                {
-                    anyhow::bail!(
-                        "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
-                    )
-                }
-            } else {
-                let config = gasket_engine::providers::ProviderConfig {
-                    provider_type: ProviderType::Openai,
-                    api_base: provider_config.api_base.clone(),
-                    api_key: Some(api_key.to_string()),
-                    default_model: model.to_string(),
-                    models: std::collections::HashMap::new(),
-                    extra_headers: provider_config.extra_headers.clone(),
+            #[cfg(feature = "provider-moonshot")]
+            {
+                let provider = gasket_engine::providers::MoonshotProvider::with_config(
+                    api_key.to_string(),
+                    Some(provider_config.api_base.clone()),
+                    Some(model.to_string()),
+                    None,
+                    None,
                     proxy_url,
                     proxy_username,
                     proxy_password,
-                    client_id: provider_config.client_id.clone(),
-                    default_currency: provider_config.default_currency.clone(),
-                    supports_thinking: true,
-                };
-                Ok(Arc::new(
-                    gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
-                ))
+                    provider_config.extra_headers.clone(),
+                );
+                Ok(Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-moonshot"))]
+            {
+                anyhow::bail!(
+                    "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+                )
             }
         }
         "anthropic" | "claude" => {
@@ -255,48 +230,26 @@ pub fn build_provider(
                 }
             }
             ProviderType::Moonshot => {
-                let api_base = &provider_config.api_base;
-                let is_coding_api = api_base.contains("/coding") || api_base.contains("/anthropic");
-
-                if is_coding_api {
-                    #[cfg(feature = "provider-anthropic")]
-                    {
-                        let provider = gasket_engine::providers::AnthropicProvider::with_config(
-                            api_key.to_string(),
-                            Some(provider_config.api_base.clone()),
-                            Some(model.to_string()),
-                            None,
-                            proxy_url,
-                            proxy_username,
-                            proxy_password,
-                            provider_config.extra_headers.clone(),
-                        );
-                        Ok(Arc::new(provider))
-                    }
-                    #[cfg(not(feature = "provider-anthropic"))]
-                    {
-                        anyhow::bail!(
-                            "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
-                        )
-                    }
-                } else {
-                    let config = gasket_engine::providers::ProviderConfig {
-                        provider_type: ProviderType::Openai,
-                        api_base: provider_config.api_base.clone(),
-                        api_key: Some(api_key.to_string()),
-                        default_model: model.to_string(),
-                        models: std::collections::HashMap::new(),
-                        extra_headers: provider_config.extra_headers.clone(),
+                #[cfg(feature = "provider-moonshot")]
+                {
+                    let provider = gasket_engine::providers::MoonshotProvider::with_config(
+                        api_key.to_string(),
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        None,
+                        None,
                         proxy_url,
                         proxy_username,
                         proxy_password,
-                        client_id: provider_config.client_id.clone(),
-                        default_currency: provider_config.default_currency.clone(),
-                        supports_thinking: true,
-                    };
-                    Ok(Arc::new(
-                        gasket_engine::providers::OpenAICompatibleProvider::new(name, config),
-                    ))
+                        provider_config.extra_headers.clone(),
+                    );
+                    Ok(Arc::new(provider))
+                }
+                #[cfg(not(feature = "provider-moonshot"))]
+                {
+                    anyhow::bail!(
+                        "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+                    )
                 }
             }
             ProviderType::Anthropic => {
@@ -344,6 +297,62 @@ pub fn build_provider(
             }
         },
     }
+}
+
+/// Infer `ProviderType` from a provider name (used when no config entry exists).
+fn infer_provider_type(name: &str) -> ProviderType {
+    match name {
+        "minimax" | "minimaxi" => ProviderType::Minimax,
+        "gemini" => ProviderType::Gemini,
+        "moonshot" | "kimi" => ProviderType::Moonshot,
+        "anthropic" | "claude" => ProviderType::Anthropic,
+        _ => ProviderType::Openai,
+    }
+}
+
+/// Default API base URL for known providers (used when no config entry exists).
+fn get_default_api_base_for_provider(name: &str) -> &'static str {
+    match name {
+        "minimax" | "minimaxi" => "https://api.minimaxi.com/v1",
+        "moonshot" | "kimi" => "https://api.moonshot.cn/v1",
+        "anthropic" | "claude" => "https://api.anthropic.com/v1",
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta",
+        "copilot" => "https://api.githubcopilot.com",
+        _ => "",
+    }
+}
+
+/// Find a provider config entry, trying aliases when the exact name is missing.
+///
+/// Returns the actual config key and the config. For example, if the user
+/// requests `minimax` but only `minimaxi` is configured, this returns
+/// `("minimaxi", &config)`.
+fn find_provider_config_entry<'a>(
+    config: &'a Config,
+    name: &'a str,
+) -> Option<(&'a str, &'a gasket_engine::config::ProviderConfig)> {
+    // Exact match first
+    if let Some(cfg) = config.providers.get(name) {
+        return Some((name, cfg));
+    }
+
+    // Alias fallback
+    let aliases: &[&str] = match name {
+        "minimax" => &["minimaxi"],
+        "kimi" => &["moonshot"],
+        "moonshot" => &["kimi"],
+        "claude" => &["anthropic"],
+        "anthropic" => &["claude"],
+        _ => &[],
+    };
+
+    for alias in aliases {
+        if let Some(cfg) = config.providers.get(*alias) {
+            return Some((alias, cfg));
+        }
+    }
+
+    None
 }
 
 /// Get the default model name for a provider.
@@ -423,37 +432,45 @@ pub fn find_provider(config: &Config, vault: Option<&VaultStore>) -> Result<Prov
         .expect("ModelSpec::from_str is infallible");
 
     // Determine provider name: explicit in spec, or find default
-    let provider_name = match spec.provider() {
+    let (provider_name, provider_config) = match spec.provider() {
         Some(name) => {
-            // Explicit provider in model spec — validate it exists and is available
-            let cfg = config.providers.get(name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Provider '{}' specified in model '{}' is not configured",
-                    name,
-                    spec
-                )
-            })?;
-
-            if !cfg.is_available(name) {
-                anyhow::bail!("Provider '{}' is configured but missing API key", name);
+            // Try exact match + aliases; if still missing, fall back to a default config
+            if let Some((found_name, cfg)) = find_provider_config_entry(config, name) {
+                if !cfg.is_available(found_name) {
+                    anyhow::bail!(
+                        "Provider '{}' is configured but missing API key",
+                        found_name
+                    );
+                }
+                (found_name.to_string(), cfg.clone())
+            } else {
+                // Provider not explicitly configured — build a minimal default config
+                // so that build_provider can still route to the correct native
+                // implementation.  api_base / api_key will be validated later.
+                let api_base = get_default_api_base_for_provider(name);
+                let default_config = gasket_engine::config::ProviderConfig {
+                    provider_type: infer_provider_type(name),
+                    api_base: api_base.to_string(),
+                    ..Default::default()
+                };
+                (name.to_string(), default_config)
             }
-            name.to_string()
         }
         None => {
             // No explicit provider — find an available default
-            find_default_provider(config).ok_or_else(|| {
+            let name = find_default_provider(config).ok_or_else(|| {
                 anyhow::anyhow!(
                     "No available provider configured. Run 'gasket onboard' and add your API key to ~/.gasket/config.yaml"
                 )
-            })?
+            })?;
+            let cfg = config
+                .providers
+                .get(&name)
+                .expect("provider should exist after validation")
+                .clone();
+            (name, cfg)
         }
     };
-
-    // Get provider config (guaranteed to exist at this point)
-    let provider_config = config
-        .providers
-        .get(&provider_name)
-        .expect("provider should exist after validation");
 
     // Resolve API key — JIT vault resolution if needed
     let raw_api_key = provider_config.api_key.as_deref().unwrap_or("");
@@ -467,10 +484,20 @@ pub fn find_provider(config: &Config, vault: Option<&VaultStore>) -> Result<Prov
         spec.model().to_string()
     };
 
-    let provider = build_provider(&provider_name, &api_key, provider_config, &model)?;
+    let provider = build_provider(&provider_name, &api_key, &provider_config, &model)?;
 
-    // Check thinking support for the specific model
-    let supports_thinking = provider_config.thinking_enabled_for_model(&model);
+    // Check thinking support.
+    // agents.defaults.thinking_enabled takes highest priority and overrides
+    // any per-model or per-provider configuration.
+    let supports_thinking = if config.agents.defaults.thinking_enabled {
+        true
+    } else {
+        provider_config.thinking_enabled_for_model(&model)
+            || matches!(
+                provider_name.as_str(),
+                "deepseek" | "kimi" | "moonshot" | "zhipu" | "anthropic" | "claude"
+            )
+    };
 
     // Get pricing configuration if available (model-level overrides provider-level)
     let pricing = provider_config.get_pricing_for_model(&model).map(|p| {

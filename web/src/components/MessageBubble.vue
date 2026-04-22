@@ -4,7 +4,7 @@ import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import { AlertCircle, Bot, Check, CheckCheck, User } from 'lucide-vue-next';
 import { marked } from 'marked';
-import { markedHighlight } from 'marked-highlight';
+// marked-highlight removed — customRenderer.code handles highlighting directly
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../types';
 import MessageThoughtsPanel from './MessageThoughtsPanel.vue';
@@ -21,17 +21,6 @@ customRenderer.code = (codeObj: any) => {
   const highlighted = hljs.highlightAuto(code).value;
   return `<div class="relative group my-2"><button class="copy-btn absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-secondary/60 hover:bg-secondary/80 text-secondary-foreground text-[10px] px-2 py-1 rounded backdrop-blur-sm">Copy</button><pre class="hljs rounded-lg p-3 overflow-x-auto text-xs"><code class="language-${lang}">${highlighted}</code></pre></div>`;
 };
-
-marked.use(
-  markedHighlight({
-    emptyLangClass: 'hljs',
-    langPrefix: 'hljs language-',
-    highlight(code, lang) {
-      const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-      return hljs.highlight(code, { language }).value;
-    },
-  })
-);
 
 marked.setOptions({
   breaks: true,
@@ -90,17 +79,6 @@ const renderMermaid = async () => {
   }
 };
 
-// Fast HTML entity decoder — no DOM creation to avoid perf hit on streaming.
-const decodeHtmlEntities = (str: string): string => {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/g, "'");
-};
-
 // Maximum characters to parse as markdown; beyond this render as plain text.
 const MAX_MARKDOWN_LENGTH = 50000;
 
@@ -123,29 +101,28 @@ const parsedContent = computed(() => {
   // marked.parse + DOMPurify are expensive; running them on every
   // chunk update causes the renderer to freeze.
   if (props.isReceiving) {
-    return escapeHtml(decodeHtmlEntities(props.message.content)).replace(/\n/g, '<br>');
+    return escapeHtml(props.message.content).replace(/\n/g, '<br>');
   }
 
-  // Once streaming ends: do a single markdown parse.
-  const decoded = decodeHtmlEntities(props.message.content);
+  const rawContent = props.message.content;
 
   // Fallback for oversized messages.
-  if (decoded.length > MAX_MARKDOWN_LENGTH) {
-    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(decoded)}</pre>`;
+  if (rawContent.length > MAX_MARKDOWN_LENGTH) {
+    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(rawContent)}</pre>`;
   }
 
   // Simple memoization for the final parse.
-  if (decoded === lastSource) return lastParsed;
+  if (rawContent === lastSource) return lastParsed;
 
   try {
-    const raw = marked.parse(decoded) as string;
+    const raw = marked.parse(rawContent) as string;
     const sanitized = DOMPurify.sanitize(raw);
-    lastSource = decoded;
+    lastSource = rawContent;
     lastParsed = sanitized;
     return sanitized;
   } catch (e) {
     console.error('Markdown parse failed, falling back to plain text:', e);
-    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(decoded)}</pre>`;
+    return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(rawContent)}</pre>`;
   }
 });
 

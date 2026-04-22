@@ -36,8 +36,8 @@ pub use event_store::{EventFilter, EventStore, EventStoreTrait, StoreError};
 // ── History re-exports ──
 pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
 pub use query::{
-    HistoryQuery, HistoryQueryBuilder, HistoryResult, HistoryRetriever, QueryOrder, ResultMeta,
-    SemanticQuery, TimeRange,
+    HistoryQuery, HistoryQueryBuilder, HistoryResult, QueryOrder, ResultMeta, SemanticQuery,
+    TimeRange,
 };
 
 // ── Semantic re-exports (always available) ──

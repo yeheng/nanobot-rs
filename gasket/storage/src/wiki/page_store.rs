@@ -60,7 +60,11 @@ impl WikiPageStore {
                 updated = excluded.updated,
                 source_count = excluded.source_count,
                 confidence = excluded.confidence,
-                checksum = excluded.checksum
+                checksum = excluded.checksum,
+                frequency = excluded.frequency,
+                access_count = excluded.access_count,
+                last_accessed = excluded.last_accessed,
+                file_mtime = excluded.file_mtime
             "#,
         )
         .bind(page.path)
@@ -131,16 +135,19 @@ impl WikiPageStore {
     /// Get decay candidates: pages whose last_accessed is older than `days` and
     /// are not already archived.
     pub async fn get_decay_candidates(&self, days: i64) -> Result<Vec<DecayCandidate>> {
-        let sql = format!(
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+        let cutoff_str = cutoff.to_rfc3339();
+        let rows = sqlx::query(
             "SELECT path, frequency, last_accessed
              FROM wiki_pages
              WHERE frequency != 'archived'
                AND last_accessed IS NOT NULL
                AND last_accessed != ''
-               AND datetime(last_accessed) < datetime('now', '-{} days')",
-            days
-        );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+               AND datetime(last_accessed) < ?",
+        )
+        .bind(&cutoff_str)
+        .fetch_all(&self.pool)
+        .await?;
         let candidates: Vec<_> = rows
             .into_iter()
             .map(|row| {
@@ -171,7 +178,7 @@ impl WikiPageStore {
     /// (title, tags, confidence, etc.) — NOT the heavy `content` column.
     /// This is the N+1 fix: one query for N paths instead of N separate
     /// `SELECT *` queries pulling megabytes of content into memory.
-    pub async fn get_summaries_by_paths(&self, paths: &[String]) -> Result<Vec<PageSummary>> {
+    pub async fn get_summaries_by_paths(&self, paths: &[String]) -> Result<Vec<PageSummaryRow>> {
         if paths.is_empty() {
             return Ok(vec![]);
         }
@@ -184,7 +191,7 @@ impl WikiPageStore {
             placeholders
         );
 
-        let mut query = sqlx::query_as::<_, PageSummary>(&sql);
+        let mut query = sqlx::query_as::<_, PageSummaryRow>(&sql);
         for p in paths {
             query = query.bind(p);
         }
@@ -194,9 +201,9 @@ impl WikiPageStore {
     }
 }
 
-/// Lightweight page summary — excludes the heavy `content` column.
+/// Lightweight page summary row — raw DB representation.
 #[derive(Debug, sqlx::FromRow)]
-pub struct PageSummary {
+pub struct PageSummaryRow {
     pub path: String,
     pub title: String,
     #[sqlx(rename = "type")]

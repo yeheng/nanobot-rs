@@ -68,42 +68,34 @@ pub fn process_history(mut history: Vec<SessionEvent>, config: &HistoryConfig) -
     // 1. Drop events beyond max_events (chronologically oldest).
     let total = n.min(config.max_events);
     let start_idx = n.saturating_sub(total);
-    let mut relevant = history.split_off(start_idx);
+    let relevant = history.split_off(start_idx);
 
-    // 2. Protected events: the last `recent_keep` of the relevant slice.
+    // 2. Walk backwards from the end, accumulating tokens.
+    // The last `recent_keep` events are always protected.
     let protected_start = total.saturating_sub(config.recent_keep);
+    let mut current_tokens = 0usize;
+    let mut split_offset = 0; // default: keep all
 
-    // Calculate tokens for protected events (always included).
-    // Use pre-computed token count from DB (content_token_len) when available,
-    // fall back to BPE encoding for events created in-memory.
-    let protected_tokens: usize = relevant[protected_start..]
-        .iter()
-        .map(token_len_or_count)
-        .sum();
-    let mut current_tokens = protected_tokens;
-
-    // 3. Walk backwards through older events to find the split point.
-    // split_offset is the first event to KEEP within `relevant`.
-    let mut split_offset = protected_start;
-    for i in (0..protected_start).rev() {
+    for i in (0..relevant.len()).rev() {
         let event_tokens = token_len_or_count(&relevant[i]);
-        if config.token_budget == 0 || current_tokens + event_tokens <= config.token_budget {
+        let is_protected = i >= protected_start;
+
+        if is_protected {
+            // Protected events are always included, even if they exceed budget.
             current_tokens += event_tokens;
-            split_offset = i;
+        } else if config.token_budget == 0 || current_tokens + event_tokens <= config.token_budget {
+            // Non-protected event fits within budget.
+            current_tokens += event_tokens;
         } else {
+            // Budget exhausted for non-protected events: evict everything before i+1.
+            split_offset = i + 1;
             break;
         }
     }
 
-    // 4. Single split: separate evicted ([0..split_offset]) from kept.
-    let mut kept = relevant.split_off(split_offset);
-    // relevant now holds evicted events in chronological order.
-
-    // 5. Within kept, split off protected events and append them.
-    let protected_offset = protected_start.saturating_sub(split_offset);
-    let protected = kept.split_off(protected_offset);
-    kept.extend(protected);
-
+    // 3. Single split: evicted = [0..split_offset], kept = [split_offset..].
+    let mut evicted = relevant;
+    let kept = evicted.split_off(split_offset);
     let filtered_count = n - kept.len();
 
     debug!(
@@ -118,7 +110,7 @@ pub fn process_history(mut history: Vec<SessionEvent>, config: &HistoryConfig) -
         events: kept,
         estimated_tokens: current_tokens,
         filtered_count,
-        evicted: relevant,
+        evicted,
     }
 }
 

@@ -161,9 +161,17 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Vec<ToolCallResult> {
         // Note: caller already checked `has_tool_calls()`, so `tool_calls` is non-empty.
+        for tc in &response.tool_calls {
+            tracing::info!(
+                "[Steppable] Tool call from LLM: id={} name={}",
+                tc.id,
+                tc.function.name
+            );
+        }
         messages.push(ChatMessage::assistant_with_tools(
             response.content.clone(),
             response.tool_calls.clone(),
+            response.reasoning_content.clone(),
         ));
 
         let mut ctx = ToolContext::default();
@@ -221,6 +229,12 @@ impl SteppableExecutor {
 
         let mut tool_results = Vec::new();
         for (_, tool_call_id, tool_name, output) in results {
+            tracing::info!(
+                "[Steppable] Pushing tool result: id={} name={} output_len={}",
+                tool_call_id,
+                tool_name,
+                output.len()
+            );
             messages.push(ChatMessage::tool_result(
                 tool_call_id.clone(),
                 tool_name.clone(),

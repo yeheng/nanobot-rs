@@ -227,25 +227,7 @@ impl TantivyIndex {
         let combined = BooleanQuery::new(sub_queries);
         let top_docs = searcher.search(&combined, &TopDocs::with_limit(limit))?;
 
-        let mut hits = Vec::new();
-        for (score, doc_address) in top_docs {
-            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
-                let path = doc
-                    .get_first(self.fields.path)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let title = doc
-                    .get_first(self.fields.title)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                hits.push(SearchHit { path, score, title });
-            }
-        }
-
-        Ok(hits)
+        Ok(self.collect_hits(&searcher, &top_docs))
     }
 
     /// Search with page type filter.
@@ -283,25 +265,7 @@ impl TantivyIndex {
 
         let top_docs = searcher.search(&combined, &TopDocs::with_limit(limit))?;
 
-        let mut hits = Vec::new();
-        for (score, doc_address) in top_docs {
-            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
-                let path = doc
-                    .get_first(self.fields.path)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let title = doc
-                    .get_first(self.fields.title)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                hits.push(SearchHit { path, score, title });
-            }
-        }
-
-        Ok(hits)
+        Ok(self.collect_hits(&searcher, &top_docs))
     }
 
     /// Search by tags only (exact match on tag values).
@@ -325,25 +289,7 @@ impl TantivyIndex {
         let combined = BooleanQuery::new(tag_queries);
         let top_docs = searcher.search(&combined, &TopDocs::with_limit(limit))?;
 
-        let mut hits = Vec::new();
-        for (score, doc_address) in top_docs {
-            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
-                let path = doc
-                    .get_first(self.fields.path)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let title = doc
-                    .get_first(self.fields.title)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                hits.push(SearchHit { path, score, title });
-            }
-        }
-
-        Ok(hits)
+        Ok(self.collect_hits(&searcher, &top_docs))
     }
 
     // ── Async wrappers (spawn_blocking) ──────────────────────────────
@@ -424,6 +370,35 @@ impl TantivyIndex {
     }
 
     // ── Helpers ────────────────────────────────────────────────────
+
+    /// Convert Tantivy search results into SearchHit structs.
+    fn collect_hits(
+        &self,
+        searcher: &tantivy::Searcher,
+        top_docs: &[(f32, tantivy::DocAddress)],
+    ) -> Vec<SearchHit> {
+        top_docs
+            .iter()
+            .filter_map(|&(score, doc_address)| {
+                searcher
+                    .doc::<TantivyDocument>(doc_address)
+                    .ok()
+                    .map(|doc| {
+                        let path = doc
+                            .get_first(self.fields.path)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let title = doc
+                            .get_first(self.fields.title)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        SearchHit { path, score, title }
+                    })
+            })
+            .collect()
+    }
 
     /// Add term-level fallback queries when QueryParser fails.
     fn add_term_fallback(

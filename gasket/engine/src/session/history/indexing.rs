@@ -260,32 +260,8 @@ impl IndexingService {
                     }
                 }
             }
-            AsyncIndexTask::Memory { path, content } => {
-                // Extract body without frontmatter
-                let body = extract_body(content);
-                if body.len() < 10 {
-                    return;
-                }
-
-                match embedder.embed(body) {
-                    Ok(embedding) => {
-                        let path_str = path.to_string_lossy();
-                        // Save to memory_embeddings table
-                        let _ = sqlx::query(
-                            "INSERT OR REPLACE INTO memory_embeddings
-                             (memory_path, scenario, embedding, token_count, updated_at)
-                             VALUES (?1, 'general', ?2, ?3, datetime('now'))",
-                        )
-                        .bind(path_str.as_ref())
-                        .bind(bytemuck::cast_slice(&embedding))
-                        .bind(body.len() as i64)
-                        .execute(&self.store.pool())
-                        .await;
-                    }
-                    Err(e) => {
-                        debug!("Failed to embed memory {}: {}", path.display(), e);
-                    }
-                }
+            AsyncIndexTask::Memory { .. } => {
+                // memory_embeddings table removed — no-op
             }
         }
     }
@@ -364,25 +340,8 @@ impl IndexingWorker {
                         .await;
                 }
             }
-            AsyncIndexTask::Memory { path, content } => {
-                let body = extract_body(content);
-                if body.len() < 10 {
-                    return;
-                }
-
-                if let Ok(embedding) = embedder.embed(body) {
-                    let path_str = path.to_string_lossy();
-                    let _ = sqlx::query(
-                        "INSERT OR REPLACE INTO memory_embeddings
-                         (memory_path, scenario, embedding, token_count, updated_at)
-                         VALUES (?1, 'general', ?2, ?3, datetime('now'))",
-                    )
-                    .bind(path_str.as_ref())
-                    .bind(bytemuck::cast_slice(&embedding))
-                    .bind(body.len() as i64)
-                    .execute(&self.store.pool())
-                    .await;
-                }
+            AsyncIndexTask::Memory { .. } => {
+                // memory_embeddings table removed — no-op
             }
         }
     }

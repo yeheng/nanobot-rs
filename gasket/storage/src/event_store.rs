@@ -4,7 +4,6 @@ use crate::processor::count_tokens;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey, TokenUsage};
-use serde::{Deserialize, Serialize};
 
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
@@ -24,123 +23,6 @@ pub enum StoreError {
 
     #[error("Invalid event type: {0}")]
     InvalidEventType(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum EventData {
-    ToolCall {
-        tool_name: String,
-        arguments: serde_json::Value,
-    },
-    ToolResult {
-        tool_call_id: String,
-        tool_name: String,
-        is_error: bool,
-    },
-    Summary {
-        summary_type: String,
-        summary_topic: Option<String>,
-        covered_event_ids: Vec<String>,
-    },
-}
-
-impl EventData {
-    fn from_event_type(et: &EventType) -> Option<Self> {
-        match et {
-            EventType::ToolCall {
-                tool_name,
-                arguments,
-            } => Some(EventData::ToolCall {
-                tool_name: tool_name.clone(),
-                arguments: arguments.clone(),
-            }),
-            EventType::ToolResult {
-                tool_call_id,
-                tool_name,
-                is_error,
-            } => Some(EventData::ToolResult {
-                tool_call_id: tool_call_id.clone(),
-                tool_name: tool_name.clone(),
-                is_error: *is_error,
-            }),
-            EventType::Summary {
-                summary_type,
-                covered_event_ids,
-            } => {
-                let (stype, topic) = match summary_type {
-                    gasket_types::SummaryType::TimeWindow { duration_hours } => {
-                        (format!("time_window:{}", duration_hours), None)
-                    }
-                    gasket_types::SummaryType::Topic { topic } => {
-                        ("topic".into(), Some(topic.clone()))
-                    }
-                    gasket_types::SummaryType::Compression { token_budget } => {
-                        (format!("compression:{}", token_budget), None)
-                    }
-                };
-                Some(EventData::Summary {
-                    summary_type: stype,
-                    summary_topic: topic,
-                    covered_event_ids: covered_event_ids.iter().map(|id| id.to_string()).collect(),
-                })
-            }
-            EventType::UserMessage | EventType::AssistantMessage => None,
-        }
-    }
-
-    fn to_event_type(&self) -> Result<EventType, StoreError> {
-        Ok(match self {
-            EventData::ToolCall {
-                tool_name,
-                arguments,
-            } => EventType::ToolCall {
-                tool_name: tool_name.clone(),
-                arguments: arguments.clone(),
-            },
-            EventData::ToolResult {
-                tool_call_id,
-                tool_name,
-                is_error,
-            } => EventType::ToolResult {
-                tool_call_id: tool_call_id.clone(),
-                tool_name: tool_name.clone(),
-                is_error: *is_error,
-            },
-            EventData::Summary {
-                summary_type,
-                summary_topic,
-                covered_event_ids,
-            } => {
-                let stype = match summary_type.as_str() {
-                    s if s.starts_with("time_window:") => {
-                        let hours: u32 = s.split(':').nth(1).unwrap_or("0").parse().unwrap_or(0);
-                        gasket_types::SummaryType::TimeWindow {
-                            duration_hours: hours,
-                        }
-                    }
-                    "topic" => gasket_types::SummaryType::Topic {
-                        topic: summary_topic.clone().unwrap_or_default(),
-                    },
-                    s if s.starts_with("compression:") => {
-                        let budget: usize = s.split(':').nth(1).unwrap_or("0").parse().unwrap_or(0);
-                        gasket_types::SummaryType::Compression {
-                            token_budget: budget,
-                        }
-                    }
-                    _ => gasket_types::SummaryType::Compression { token_budget: 0 },
-                };
-                let covered: Vec<Uuid> = covered_event_ids
-                    .iter()
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                EventType::Summary {
-                    summary_type: stype,
-                    covered_event_ids: covered,
-                }
-            }
-        })
-    }
 }
 
 fn event_type_tag(et: &EventType) -> &'static str {
@@ -208,27 +90,17 @@ impl EventStore {
         (key.channel.to_string(), key.chat_id)
     }
 
-    async fn generate_sequence(&self, session_key: &str) -> Result<i64, StoreError> {
-        let (channel, chat_id) = Self::parse_session_key_str(session_key);
-        let max_seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE channel = ? AND chat_id = ?",
-        )
-        .bind(&channel)
-        .bind(&chat_id)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0);
-        Ok(max_seq + 1)
-    }
-
-    async fn append_event_with_sequence(
-        &self,
-        event: &SessionEvent,
-        sequence: i64,
-    ) -> Result<(), StoreError> {
+    /// Append an event with atomic sequence generation.
+    ///
+    /// Sequence is derived from `sessions_v2.total_events` inside the same
+    /// transaction, eliminating the read-then-write race that existed when
+    /// `generate_sequence` ran outside the transaction.
+    async fn append_event_internal(&self, event: &SessionEvent) -> Result<i64, StoreError> {
         let event_type_tag = event_type_tag(&event.event_type);
-        let event_data = EventData::from_event_type(&event.event_type);
-        let event_data_json = event_data.as_ref().map(serde_json::to_string).transpose()?;
+        let event_data_json = match &event.event_type {
+            EventType::UserMessage | EventType::AssistantMessage => None,
+            _ => Some(serde_json::to_string(&event.event_type)?),
+        };
         let tools_used = serde_json::to_string(&event.metadata.tools_used)?;
         let token_usage = event
             .metadata
@@ -238,7 +110,6 @@ impl EventStore {
             .transpose()?;
         let extra = serde_json::to_string(&event.metadata.extra)?;
 
-        // Parse session_key into channel/chat_id
         let (channel, chat_id) = Self::parse_session_key_str(&event.session_key);
 
         let mut tx = self.pool.begin().await?;
@@ -255,9 +126,17 @@ impl EventStore {
         .execute(&mut *tx)
         .await?;
 
-        // Use pre-computed token count if caller already set it, otherwise compute now.
-        // This avoids redundant BPE encoding when the caller (e.g. ContextBuilder) has
-        // already counted tokens for in-memory events before persisting.
+        // Atomic sequence: read total_events inside the transaction, use as sequence.
+        // SQLite WAL serializes writes within a single transaction.
+        let sequence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(total_events, 0) FROM sessions_v2 WHERE channel = ? AND chat_id = ?",
+        )
+        .bind(&channel)
+        .bind(&chat_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
         let token_len = if event.metadata.content_token_len > 0 {
             event.metadata.content_token_len as i64
         } else {
@@ -267,9 +146,9 @@ impl EventStore {
         sqlx::query(
             r#"
             INSERT INTO session_events
-            (id, session_key, channel, chat_id, event_type, content, embedding,
+            (id, session_key, channel, chat_id, event_type, content,
              tools_used, token_usage, token_len, event_data, extra, created_at, sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event.id.to_string())
@@ -278,9 +157,6 @@ impl EventStore {
         .bind(&chat_id)
         .bind(event_type_tag)
         .bind(&event.content)
-        // Embedding is no longer stored in the event row. Semantic embeddings
-        // are written separately to `session_embeddings` by `AgentContext::save_event`.
-        .bind(None::<&[u8]>)
         .bind(&tools_used)
         .bind(token_usage.as_deref())
         .bind(token_len)
@@ -302,7 +178,6 @@ impl EventStore {
 
         tx.commit().await?;
 
-        // Notify subscribers (ignore send errors — no subscribers is normal)
         let _ = self.tx.send(event.clone());
 
         debug!(
@@ -310,12 +185,12 @@ impl EventStore {
             event_type_tag, event.session_key, sequence
         );
 
-        Ok(())
+        Ok(sequence)
     }
 
     pub async fn append_event(&self, event: &SessionEvent) -> Result<(), StoreError> {
-        let sequence = self.generate_sequence(&event.session_key).await?;
-        self.append_event_with_sequence(event, sequence).await
+        self.append_event_internal(event).await?;
+        Ok(())
     }
 
     pub async fn get_session_history(
@@ -507,16 +382,18 @@ impl EventStore {
         &self,
         session_key: &SessionKey,
     ) -> Result<Option<SessionEvent>, StoreError> {
-        let session_key_str = session_key.to_string();
+        let channel = session_key.channel.to_string();
+        let chat_id = &session_key.chat_id;
         let row = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT * FROM session_events
-            WHERE session_key = ? AND event_type = 'summary'
+            WHERE channel = ? AND chat_id = ? AND event_type = 'summary'
             ORDER BY created_at DESC
             LIMIT 1
             "#,
         )
-        .bind(&session_key_str)
+        .bind(&channel)
+        .bind(chat_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -556,9 +433,7 @@ impl EventStore {
 #[async_trait]
 impl EventStoreTrait for EventStore {
     async fn append(&self, event: &SessionEvent) -> Result<i64, StoreError> {
-        let sequence = self.generate_sequence(&event.session_key).await?;
-        self.append_event_with_sequence(event, sequence).await?;
-        Ok(sequence)
+        self.append_event_internal(event).await
     }
 
     async fn query_events(&self, filter: &EventFilter) -> Result<Vec<SessionEvent>, StoreError> {
@@ -566,39 +441,64 @@ impl EventStoreTrait for EventStore {
             Some(k) => k.clone(),
             None => return Ok(vec![]),
         };
-        let mut events = self.get_session_history(&session_key).await?;
+        let channel = session_key.channel.to_string();
+        let chat_id = session_key.chat_id.clone();
 
-        // Apply filters
-        if let Some(time_range) = &filter.time_range {
-            events.retain(|e| e.created_at >= time_range.0 && e.created_at <= time_range.1);
+        // Build dynamic SQL — all filters are pushed to the database.
+        let mut sql =
+            String::from("SELECT * FROM session_events WHERE channel = ? AND chat_id = ?");
+
+        if filter.time_range.is_some() {
+            sql.push_str(" AND created_at >= ? AND created_at <= ?");
         }
-        if let Some(event_types) = &filter.event_types {
-            events.retain(|e| {
-                event_types.iter().any(|et| {
-                    // Match event types by variant kind, ignoring data fields
-                    matches!(
-                        (&e.event_type, et),
-                        (EventType::UserMessage, EventType::UserMessage)
-                            | (EventType::AssistantMessage, EventType::AssistantMessage)
-                            | (EventType::ToolCall { .. }, EventType::ToolCall { .. })
-                            | (EventType::ToolResult { .. }, EventType::ToolResult { .. })
-                            | (EventType::Summary { .. }, EventType::Summary { .. })
-                    )
-                })
-            });
+        if filter.sequence_after.is_some() {
+            sql.push_str(" AND sequence > ?");
+        }
+        if let Some(types) = &filter.event_types {
+            if !types.is_empty() {
+                let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                sql.push_str(&format!(" AND event_type IN ({})", placeholders));
+            }
+        }
+        if let Some(ids) = &filter.event_ids {
+            if !ids.is_empty() {
+                let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                sql.push_str(&format!(" AND id IN ({})", placeholders));
+            }
+        }
+
+        sql.push_str(" ORDER BY created_at ASC");
+
+        if let Some(limit) = filter.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        // Bind parameters in the same order as the SQL fragments above.
+        let mut q = sqlx::query_as::<_, EventRow>(&sql)
+            .bind(&channel)
+            .bind(&chat_id);
+
+        if let Some((start, end)) = &filter.time_range {
+            q = q.bind(start.to_rfc3339()).bind(end.to_rfc3339());
         }
         if let Some(sequence_after) = filter.sequence_after {
-            events.retain(|e| e.sequence > sequence_after);
+            q = q.bind(sequence_after);
         }
-        if let Some(event_ids) = &filter.event_ids {
-            let id_set: std::collections::HashSet<Uuid> = event_ids.iter().copied().collect();
-            events.retain(|e| id_set.contains(&e.id));
+        if let Some(types) = &filter.event_types {
+            for et in types {
+                q = q.bind(event_type_tag(et));
+            }
         }
-        if let Some(limit) = filter.limit {
-            events.truncate(limit);
+        if let Some(ids) = &filter.event_ids {
+            for id in ids {
+                q = q.bind(id.to_string());
+            }
         }
-        debug!("Query returned {} events for {}", events.len(), session_key);
-        Ok(events)
+
+        let rows = q.fetch_all(&self.pool).await?;
+
+        debug!("Query returned {} events for {}", rows.len(), session_key);
+        rows.into_iter().map(|r| r.try_into()).collect()
     }
 
     fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
@@ -621,8 +521,6 @@ struct EventRow {
     chat_id: String,
     event_type: String,
     content: String,
-    #[allow(dead_code)]
-    embedding: Option<Vec<u8>>,
     tools_used: String,
     token_usage: Option<String>,
     token_len: i64,
@@ -640,9 +538,7 @@ impl TryFrom<EventRow> for SessionEvent {
             "user_message" => EventType::UserMessage,
             "assistant_message" => EventType::AssistantMessage,
             "tool_call" | "tool_result" | "summary" => {
-                let data: EventData =
-                    serde_json::from_str(row.event_data.as_deref().unwrap_or("{}"))?;
-                data.to_event_type()?
+                serde_json::from_str(row.event_data.as_deref().unwrap_or("\"\""))?
             }
             _ => return Err(StoreError::InvalidEventType(row.event_type)),
         };
@@ -722,7 +618,6 @@ mod tests {
                 chat_id TEXT NOT NULL DEFAULT '',
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
-                embedding BLOB,
                 tools_used TEXT DEFAULT '[]',
                 token_usage TEXT,
                 token_len INTEGER NOT NULL DEFAULT 0,
@@ -927,35 +822,6 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(total_events.0, 1);
-    }
-
-    #[tokio::test]
-    async fn test_append_event_embedding_column_is_null() {
-        let pool = setup_test_db().await;
-        let store = EventStore::new(pool);
-
-        let event = SessionEvent {
-            id: Uuid::now_v7(),
-            session_key: "test:session".into(),
-            event_type: EventType::UserMessage,
-            content: "Message without embedding field".into(),
-            metadata: EventMetadata::default(),
-            created_at: Utc::now(),
-            sequence: 0,
-        };
-
-        store.append_event(&event).await.unwrap();
-
-        let row: (Option<Vec<u8>>,) = sqlx::query_as(
-            "SELECT embedding FROM session_events WHERE session_key = 'test:session'",
-        )
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-
-        // Embedding is no longer stored in the event row; it is written
-        // separately to `session_embeddings` by `AgentContext::save_event`.
-        assert!(row.0.is_none(), "embedding column should be NULL");
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ impl<'a> RequestHandler<'a> {
     }
 
     pub fn build_chat_request(&self, messages: &[gasket_providers::ChatMessage]) -> ChatRequest {
-        ChatRequest {
+        let request = ChatRequest {
             model: self.config.model.clone(),
             messages: messages.to_vec(),
             tools: Some(self.tools.get_definitions()),
@@ -41,7 +41,11 @@ impl<'a> RequestHandler<'a> {
             } else {
                 None
             },
+        };
+        if let Ok(json) = serde_json::to_string(&request) {
+            tracing::info!("[RequestHandler] built request: {}", json);
         }
+        request
     }
 
     pub async fn send_with_retry(&self, request: ChatRequest) -> Result<ChatStream> {

@@ -7,7 +7,6 @@ pub async fn run_schema(pool: &SqlitePool) -> anyhow::Result<()> {
     create_sessions_table(pool).await?;
     create_events_table(pool).await?;
     create_summaries_table(pool).await?;
-    create_summary_index_table(pool).await?;
     create_checkpoints_table(pool).await?;
     create_session_embeddings_table(pool).await?;
     create_session_indexes(pool).await?;
@@ -44,7 +43,6 @@ async fn create_events_table(pool: &SqlitePool) -> anyhow::Result<()> {
             chat_id         TEXT NOT NULL DEFAULT '',
             event_type      TEXT NOT NULL,
             content         TEXT NOT NULL,
-            embedding       BLOB,
             tools_used      TEXT DEFAULT '[]',
             token_usage     TEXT,
             token_len       INTEGER NOT NULL DEFAULT 0,
@@ -69,25 +67,6 @@ async fn create_summaries_table(pool: &SqlitePool) -> anyhow::Result<()> {
             covered_upto_sequence  INTEGER NOT NULL DEFAULT 0,
             created_at             TEXT NOT NULL
         )",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn create_summary_index_table(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS summary_index (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_key     TEXT NOT NULL,
-            event_id        TEXT NOT NULL,
-            summary_type    TEXT NOT NULL,
-            topic           TEXT,
-            covered_events  TEXT NOT NULL,
-            created_at      TEXT NOT NULL
-        )
-        "#,
     )
     .execute(pool)
     .await?;
@@ -135,14 +114,18 @@ async fn create_session_indexes(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)")
         .execute(pool)
         .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_v2_channel_chat ON sessions_v2(channel, chat_id)",
+    )
+    .execute(pool)
+    .await?;
 
     // session_events indexes
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_channel ON session_events(channel)")
-        .execute(pool)
-        .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_chat_id ON session_events(chat_id)")
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_channel_chat ON session_events(channel, chat_id)",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
         .execute(pool)
         .await?;
@@ -155,14 +138,6 @@ async fn create_session_indexes(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
-
-    // summary_index indexes
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_session ON summary_index(session_key)")
-        .execute(pool)
-        .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_type ON summary_index(summary_type)")
-        .execute(pool)
-        .await?;
 
     // session_checkpoints indexes
     sqlx::query(

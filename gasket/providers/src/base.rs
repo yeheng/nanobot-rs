@@ -125,6 +125,10 @@ pub struct ChatMessage {
     /// Name (for tool response messages)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    /// Reasoning/thinking content (for assistant messages with thinking mode)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -136,6 +140,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -147,6 +152,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -158,17 +164,23 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
     /// Create an assistant message with tool calls
-    pub fn assistant_with_tools(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_with_tools(
+        content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+        reasoning_content: Option<String>,
+    ) -> Self {
         Self {
             role: MessageRole::Assistant,
             content,
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             name: None,
+            reasoning_content,
         }
     }
 
@@ -184,6 +196,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: Some(id.into()),
             name: Some(name.into()),
+            reasoning_content: None,
         }
     }
 }
