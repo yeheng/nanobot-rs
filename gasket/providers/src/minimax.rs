@@ -13,11 +13,11 @@ use crate::base::{ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, To
 use crate::common::build_http_client;
 use crate::streaming::sse_lines;
 use crate::{ChatRequest, ChatResponse, LlmProvider, ToolCall};
-use std::collections::HashMap;
 use async_trait::async_trait;
 use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tracing::{debug, instrument, warn};
 
 /// Default API base for MiniMax

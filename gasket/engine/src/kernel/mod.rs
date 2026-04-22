@@ -30,11 +30,7 @@ fn build_executor(ctx: &RuntimeContext) -> KernelExecutor {
         "Building executor: model={}, max_iter={}, thinking={}",
         ctx.config.model, ctx.config.max_iterations, ctx.config.thinking_enabled
     );
-    let mut exec = KernelExecutor::new(
-        ctx.provider.clone(),
-        ctx.tools.clone(),
-        ctx.config.clone(),
-    );
+    let mut exec = KernelExecutor::new(ctx.provider.clone(), ctx.tools.clone(), ctx.config.clone());
     if let Some(ref spawner) = ctx.spawner {
         exec = exec.with_spawner(spawner.clone());
     }

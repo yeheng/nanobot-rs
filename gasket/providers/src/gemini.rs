@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
-use tracing::{debug, instrument};
 use std::collections::HashMap;
+use tracing::{debug, instrument};
 
 /// Gemini provider using Google's Generative AI API
 pub struct GeminiProvider {
@@ -316,13 +316,9 @@ impl LlmProvider for GeminiProvider {
             req = req.header(key, value);
         }
 
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Gemini request failed: {}", e))
-            })?;
+        let response = req.json(&body).send().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Gemini request failed: {}", e))
+        })?;
 
         let status = response.status();
         debug!("[gemini] response status: {}", status);
@@ -377,13 +373,9 @@ impl LlmProvider for GeminiProvider {
             req = req.header(key, value);
         }
 
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Gemini stream request failed: {}", e))
-            })?;
+        let response = req.json(&body).send().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Gemini stream request failed: {}", e))
+        })?;
 
         let status = response.status();
         debug!("[gemini] stream response status: {}", status);

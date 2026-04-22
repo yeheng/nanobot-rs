@@ -105,6 +105,7 @@ impl AnthropicProvider {
     }
 
     /// Create with full configuration
+    #[allow(clippy::too_many_arguments)]
     pub fn with_config(
         api_key: String,
         api_base: Option<String>,

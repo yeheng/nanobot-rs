@@ -91,10 +91,7 @@ impl WikiQueryEngine {
     /// Phase 2: Batch-load lightweight summaries → budget-filter → load full pages
     pub async fn query(&self, query: &str, budget: TokenBudget) -> Result<QueryResult> {
         // Phase 1: Candidate retrieval (offloaded to blocking thread)
-        let candidates = self
-            .tantivy
-            .search_async(query.to_string(), 50)
-            .await?;
+        let candidates = self.tantivy.search_async(query.to_string(), 50).await?;
         let total_candidates = candidates.len();
 
         if candidates.is_empty() {

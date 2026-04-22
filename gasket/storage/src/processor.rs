@@ -69,7 +69,6 @@ pub fn process_history(mut history: Vec<SessionEvent>, config: &HistoryConfig) -
     let total = n.min(config.max_events);
     let start_idx = n.saturating_sub(total);
     let mut relevant = history.split_off(start_idx);
-    let filtered_count = start_idx; // Events [0..start_idx] are filtered out
 
     // 2. Protected events: the last `recent_keep` of the relevant slice.
     let protected_start = total.saturating_sub(config.recent_keep);

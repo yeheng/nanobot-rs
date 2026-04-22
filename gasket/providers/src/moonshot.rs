@@ -21,8 +21,8 @@ use async_trait::async_trait;
 use reqwest::Client;
 // serde::Deserialize is used via derive macros
 use serde_json::{json, Value};
-use tracing::{debug, instrument};
 use std::collections::HashMap;
+use tracing::{debug, instrument};
 
 /// Default API base for Moonshot
 const MOONSHOT_API_BASE: &str = "https://api.moonshot.cn/v1";
@@ -104,6 +104,7 @@ impl MoonshotProvider {
     }
 
     /// Create with full configuration
+    #[allow(clippy::too_many_arguments)]
     pub fn with_config(
         api_key: String,
         api_base: Option<String>,
@@ -347,13 +348,9 @@ impl LlmProvider for MoonshotProvider {
             req = req.header(key, value);
         }
 
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Moonshot request failed: {}", e))
-            })?;
+        let response = req.json(&body).send().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Moonshot request failed: {}", e))
+        })?;
 
         let status = response.status();
         debug!("[moonshot] response status: {}", status);
@@ -398,13 +395,9 @@ impl LlmProvider for MoonshotProvider {
             req = req.header(key, value);
         }
 
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Moonshot stream request failed: {}", e))
-            })?;
+        let response = req.json(&body).send().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!("Moonshot stream request failed: {}", e))
+        })?;
 
         let status = response.status();
         debug!("[moonshot] stream response status: {}", status);

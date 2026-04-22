@@ -323,8 +323,7 @@ pub fn build_provider(
             }
             ProviderType::Openai => {
                 let extra_headers = provider_config.extra_headers.clone();
-                let supports_thinking =
-                    matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
+                let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
                 let config = gasket_engine::providers::ProviderConfig {
                     provider_type: ProviderType::Openai,
                     api_base: provider_config.api_base.clone(),

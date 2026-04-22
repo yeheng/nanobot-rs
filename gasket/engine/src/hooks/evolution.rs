@@ -130,13 +130,7 @@ impl EvolutionHook {
         let trimmed = text.trim();
 
         // Progressive closing — try increasingly complete suffixes.
-        let suffixes = [
-            "]",
-            "\"}]",
-            "}\"]",
-            "}\"}]",
-            "}\"}]]",
-        ];
+        let suffixes = ["]", "\"}]", "}\"]", "}\"}]", "}\"}]]"];
         for suffix in &suffixes {
             let fixed = format!("{}{}", trimmed, suffix);
             if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(&fixed) {
@@ -533,7 +527,10 @@ Hope that helps!"#;
         // Simulates max_tokens cut-off — missing closing ]
         let truncated = r#"[{"title":"A","type":"note","scenario":"knowledge","content":"fact A","tags":[]},{"title":"B","type":"note","scenario":"knowledge","content":"fact B""#;
         let mems = EvolutionHook::extract_json(truncated).unwrap();
-        assert!(!mems.is_empty(), "Should salvage at least some items from truncated JSON");
+        assert!(
+            !mems.is_empty(),
+            "Should salvage at least some items from truncated JSON"
+        );
     }
 
     #[test]
@@ -542,7 +539,10 @@ Hope that helps!"#;
         let truncated = r#"[{"title":"A","type":"note","scenario":"knowledge","content":"fact A","tags":[]},{"title":"B","type":"note","scenario":"knowledge","content":"fact B","tags":[]},{"title":"C","type":"note","scenario":"knowledge","content":"fact C""#;
         let mems = EvolutionHook::extract_json(truncated).unwrap();
         // Should recover the first two complete objects
-        assert!(mems.len() >= 2, "Should recover at least 2 complete objects");
+        assert!(
+            mems.len() >= 2,
+            "Should recover at least 2 complete objects"
+        );
     }
 
     #[test]

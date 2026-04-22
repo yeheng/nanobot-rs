@@ -350,11 +350,7 @@ impl TantivyIndex {
 
     /// Async BM25 search — offloaded to a blocking thread to avoid
     /// stalling the Tokio runtime on mmap page faults.
-    pub async fn search_async(
-        &self,
-        query: String,
-        limit: usize,
-    ) -> Result<Vec<SearchHit>> {
+    pub async fn search_async(&self, query: String, limit: usize) -> Result<Vec<SearchHit>> {
         let index = self.clone();
         tokio::task::spawn_blocking(move || index.search(&query, limit))
             .await

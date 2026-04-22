@@ -598,7 +598,7 @@ impl ContextCompactor {
                 );
                 // Spawn a follow-up compaction.  We intentionally do NOT pass
                 // the guard forward; a new lock will be acquired inline.
-                let _ = tokio::spawn(async move {
+                let _handle = tokio::spawn(async move {
                     if let Err(e) = run_compaction(
                         &event_store,
                         &sqlite_store,
