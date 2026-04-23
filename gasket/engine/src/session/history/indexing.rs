@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-use gasket_storage::SqliteStore;
+use gasket_storage::SessionStore;
 use gasket_types::SessionEvent;
 
 #[cfg(feature = "local-embedding")]
@@ -46,7 +46,7 @@ pub enum AsyncIndexTask {
 #[allow(dead_code)]
 pub struct IndexingService {
     /// SQLite store for persisting embeddings.
-    store: Arc<SqliteStore>,
+    store: Arc<SessionStore>,
     /// Optional text embedder (gated by `local-embedding` feature).
     #[cfg(feature = "local-embedding")]
     embedder: Option<Arc<TextEmbedder>>,
@@ -62,7 +62,7 @@ impl IndexingService {
     /// Create a new indexing service without an embedder.
     ///
     /// Calls to `index_events` will be no-ops until an embedder is set.
-    pub fn new(store: Arc<SqliteStore>) -> Self {
+    pub fn new(store: Arc<SessionStore>) -> Self {
         Self {
             store,
             #[cfg(feature = "local-embedding")]
@@ -75,7 +75,7 @@ impl IndexingService {
 
     /// Create with an embedder for semantic indexing.
     #[cfg(feature = "local-embedding")]
-    pub fn with_embedder(store: Arc<SqliteStore>, embedder: Arc<TextEmbedder>) -> Self {
+    pub fn with_embedder(store: Arc<SessionStore>, embedder: Arc<TextEmbedder>) -> Self {
         Self {
             store,
             embedder: Some(embedder),
@@ -295,7 +295,7 @@ fn extract_body(content: &str) -> &str {
 struct IndexingWorker {
     queue: IndexingQueue<AsyncIndexTask>,
     #[allow(dead_code)]
-    store: Arc<SqliteStore>,
+    store: Arc<SessionStore>,
     #[cfg(feature = "local-embedding")]
     embedder: Option<Arc<TextEmbedder>>,
     shutdown: Arc<AtomicBool>,

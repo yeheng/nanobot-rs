@@ -11,12 +11,8 @@ use crate::config::Config;
 use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
-use super::{
-    CreatePlanTool, EditFileTool, EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool,
-    MemorizeTool, MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool,
-    Tool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool,
-    WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
-};
+use super::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
+use super::{Tool, ToolMetadata, ToolRegistry};
 
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
 ///
@@ -70,24 +66,6 @@ pub struct ToolRegistryConfig {
     pub model: Option<String>,
 }
 
-/// Register a tool with metadata — one line per tool.
-///
-/// Eliminates the 10-line `register_with_metadata(Box::new(...), ToolMetadata {...})` boilerplate.
-macro_rules! register_tool {
-    ($registry:expr, $tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
-        $registry.register_with_metadata(
-            Box::new($tool),
-            ToolMetadata {
-                display_name: $display.to_string(),
-                category: $cat.to_string(),
-                tags: vec![$($tag.to_string()),*],
-                requires_approval: $approval,
-                is_mutating: $mutating,
-            },
-        );
-    };
-}
-
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
 ///
 /// This function registers all common tools (filesystem, web, memory, etc.) and
@@ -105,238 +83,32 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         model,
     } = registry_config;
 
-    // Suppress unused warnings when tool-spawn feature is disabled
-    let _ = &subagent_spawner;
-
-    let restrict = config.tools.restrict_to_workspace;
-    let allowed_dir = if restrict {
-        Some(workspace.to_path_buf())
-    } else {
-        None
-    };
-
-    let exec_workspace = resolve_exec_workspace(&config, &workspace);
-
     let mut tools = ToolRegistry::new();
 
-    // ── Safe read-only tools (no approval required) ───────────
-    register_tool!(
-        tools,
-        ReadFileTool::new(allowed_dir.clone()),
-        "Read File",
-        "filesystem",
-        ["read", "file"],
-        false,
-        false
-    );
-    register_tool!(
-        tools,
-        ListDirTool::new(allowed_dir.clone()),
-        "List Directory",
-        "filesystem",
-        ["read", "directory"],
-        false,
-        false
-    );
-    register_tool!(
-        tools,
-        WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
-            tracing::warn!(
-                "Failed to create WebFetchTool with proxy config: {}. Using default.",
-                e
-            );
-            WebFetchTool::new()
-        }),
-        "Web Fetch",
-        "web",
-        ["http", "fetch"],
-        false,
-        false
-    );
-    register_tool!(
-        tools,
-        WebSearchTool::new(Some(config.tools.web.clone())),
-        "Web Search",
-        "web",
-        ["search", "web"],
-        false,
-        false
-    );
+    // ── Core tools (filesystem, web, exec, spawn) ─────────────
+    CoreToolProvider::new(&config, &workspace, subagent_spawner).register_tools(&mut tools);
 
-    // ── Dangerous mutating tools (require approval) ───────────
-    register_tool!(
-        tools,
-        WriteFileTool::new(allowed_dir.clone()),
-        "Write File",
-        "filesystem",
-        ["write", "file"],
-        true,
-        true
-    );
-    register_tool!(
-        tools,
-        EditFileTool::new(allowed_dir.clone()),
-        "Edit File",
-        "filesystem",
-        ["edit", "file"],
-        true,
-        true
-    );
-    register_tool!(
-        tools,
-        ExecTool::from_config(exec_workspace, &config.tools.exec, restrict),
-        "Execute Command",
-        "system",
-        ["shell", "exec"],
-        true,
-        true
-    );
+    // ── Wiki + memory tools (conditional on page_store) ───────
+    WikiToolProvider::new(
+        page_store.clone(),
+        page_index.clone(),
+        provider.clone(),
+        model.clone(),
+    )
+    .register_tools(&mut tools);
 
-    // ── Spawn tools ───────────────────────────────────────────
-    register_tool!(
-        tools,
-        SpawnTool::new(),
-        "Spawn Subagent",
-        "system",
-        ["spawn", "agent"],
-        false,
-        false
-    );
-    register_tool!(
-        tools,
-        SpawnParallelTool::new(),
-        "Spawn Parallel",
-        "system",
-        ["spawn", "parallel", "agent"],
-        false,
-        false
-    );
-
-    // ── Wiki-based memory tools (only if page_store is configured) ──
-    if let Some(ref store) = page_store {
-        register_tool!(
-            tools,
-            MemorizeTool::new(store.clone()),
-            "Memorize",
-            "memory",
-            ["write", "memory"],
-            false,
-            true
-        );
-
-        register_tool!(
-            tools,
-            MemorySearchTool::new(store.clone(), page_index.clone()),
-            "Memory Search",
-            "memory",
-            ["search", "memory"],
-            false,
-            false
-        );
-
-        // Unified wiki tools (require both page_store and page_index)
-        if let Some(ref index) = page_index {
-            register_tool!(
-                tools,
-                WikiSearchTool::new(store.clone(), index.clone()),
-                "Wiki Search",
-                "memory",
-                ["search", "wiki"],
-                false,
-                false
-            );
-            register_tool!(
-                tools,
-                WikiWriteTool::new(store.clone()),
-                "Wiki Write",
-                "memory",
-                ["write", "wiki"],
-                false,
-                true
-            );
-            register_tool!(
-                tools,
-                WikiRefreshTool::new(store.clone(), index.clone()),
-                "Wiki Refresh",
-                "memory",
-                ["refresh", "wiki"],
-                false,
-                false
-            );
-            register_tool!(
-                tools,
-                SearchSopsTool::new(index.clone()),
-                "Search SOPs",
-                "memory",
-                ["search", "sop", "wiki"],
-                false,
-                false
-            );
-        }
-
-        // Wiki read tool (only needs page_store)
-        register_tool!(
-            tools,
-            WikiReadTool::new(store.clone()),
-            "Wiki Read",
-            "memory",
-            ["read", "wiki"],
-            false,
-            false
-        );
-
-        // Wiki decay tool (downgrades stale pages)
-        register_tool!(
-            tools,
-            WikiDecayTool::new(store.clone()),
-            "Wiki Decay",
-            "memory",
-            ["decay", "wiki"],
-            false,
-            true
-        );
-
-        // Plan generation tool (requires provider + model)
-        if let (Some(ref prov), Some(ref mdl)) = (&provider, &model) {
-            register_tool!(
-                tools,
-                CreatePlanTool::new(prov.clone(), mdl.clone(), store.clone()),
-                "Create Plan",
-                "system",
-                ["plan", "markdown"],
-                false,
-                true
-            );
-        }
-    }
-
-    // Evolution maintenance tool — background learning from conversations
-    if let (Some(ref db), Some(ref prov), Some(ref mdl), Some(ref ps)) =
-        (&sqlite_store, &provider, &model, &page_store)
-    {
-        register_tool!(
-            tools,
-            EvolutionTool::new(db.clone(), prov.clone(), mdl.clone(), Some(ps.clone()), 20),
-            "Evolution",
-            "system",
-            ["maintenance", "learning"],
-            false,
-            true
-        );
-    }
-
-    // History query tool — direct SQL query over session_events
-    if let Some(ref db) = sqlite_store {
-        register_tool!(
-            tools,
-            HistoryQueryTool::new(db.pool().clone()),
-            "Query History",
-            "memory",
-            ["history", "search", "sqlite"],
-            false,
-            false
-        );
-    }
+    // ── System/maintenance tools (conditional on sqlite_store) ─
+    let (session_store, maintenance_store) = sqlite_store
+        .map(|s| (Some(s.session_store()), Some(s.maintenance_store())))
+        .unwrap_or((None, None));
+    SystemToolProvider::new(
+        session_store,
+        maintenance_store,
+        page_store,
+        provider,
+        model,
+    )
+    .register_tools(&mut tools);
 
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {

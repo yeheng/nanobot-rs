@@ -37,7 +37,8 @@ struct EvolutionMemory {
 
 /// Tool for performing background evolution (auto-learning) on conversation sessions.
 pub struct EvolutionTool {
-    sqlite_store: gasket_storage::SqliteStore,
+    session_store: gasket_storage::SessionStore,
+    maintenance_store: gasket_storage::MaintenanceStore,
     provider: Arc<dyn LlmProvider>,
     model: String,
     page_store: Option<Arc<PageStore>>,
@@ -47,14 +48,16 @@ pub struct EvolutionTool {
 impl EvolutionTool {
     /// Create a new `EvolutionTool` with all required dependencies.
     pub fn new(
-        sqlite_store: gasket_storage::SqliteStore,
+        session_store: gasket_storage::SessionStore,
+        maintenance_store: gasket_storage::MaintenanceStore,
         provider: Arc<dyn LlmProvider>,
         model: String,
         page_store: Option<Arc<PageStore>>,
         default_threshold: usize,
     ) -> Self {
         Self {
-            sqlite_store,
+            session_store,
+            maintenance_store,
             provider,
             model,
             page_store,
@@ -64,20 +67,17 @@ impl EvolutionTool {
 
     /// Scan all sessions and return those that need evolution.
     async fn scan_sessions(&self, threshold: usize) -> Result<Vec<(String, i64, i64)>, ToolError> {
-        // Query all sessions with total_events > 0
-        let rows: Vec<(String, i64)> =
-            sqlx::query_as("SELECT key, total_events FROM sessions_v2 WHERE total_events > 0")
-                .fetch_all(&self.sqlite_store.pool())
-                .await
-                .map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to scan sessions: {}", e))
-                })?;
+        let rows = self
+            .session_store
+            .scan_active_sessions()
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to scan sessions: {}", e)))?;
 
         let mut qualifying = Vec::new();
         for (session_key, total_events) in rows {
             let watermark = self
-                .sqlite_store
-                .read_maintenance_watermark("evolution", &session_key)
+                .maintenance_store
+                .read_watermark("evolution", &session_key)
                 .await
                 .map_err(|e| {
                     ToolError::ExecutionError(format!("Failed to read watermark: {}", e))
@@ -102,7 +102,7 @@ impl EvolutionTool {
         let session_key_parsed = SessionKey::parse(session_key)
             .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, session_key));
 
-        let event_store = EventStore::new(self.sqlite_store.pool());
+        let event_store = EventStore::new(self.session_store.pool());
 
         // Fetch events since the last watermark.
         let events = event_store
@@ -254,8 +254,8 @@ impl EvolutionTool {
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to get max sequence: {}", e)))?;
 
-        self.sqlite_store
-            .write_maintenance_watermark("evolution", session_key, max_sequence)
+        self.maintenance_store
+            .write_watermark("evolution", session_key, max_sequence)
             .await
             .map_err(|e| {
                 ToolError::ExecutionError(format!("Failed to write evolution watermark: {}", e))

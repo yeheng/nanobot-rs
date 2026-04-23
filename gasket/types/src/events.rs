@@ -362,6 +362,102 @@ pub struct MediaAttachment {
     pub caption: Option<String>,
 }
 
+// ── Internal Control Signals ────────────────────────────────
+
+/// System-internal control-plane signals that do not belong in the user-facing stream.
+///
+/// These events carry operational metadata (token accounting, subagent lifecycle)
+/// and are handled internally rather than forwarded to WebSocket clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InternalSignal {
+    /// Token usage statistics
+    TokenStats {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        agent_id: Option<Arc<str>>,
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        cost: f64,
+        currency: Arc<str>,
+    },
+
+    /// Subagent started execution
+    SubagentStarted {
+        agent_id: Arc<str>,
+        task: Arc<str>,
+        index: u32,
+    },
+
+    /// Subagent completed execution
+    SubagentCompleted {
+        agent_id: Arc<str>,
+        index: u32,
+        summary: Arc<str>,
+        tool_count: u32,
+    },
+
+    /// Subagent encountered an error
+    SubagentError {
+        agent_id: Arc<str>,
+        index: u32,
+        error: Arc<str>,
+    },
+}
+
+impl InternalSignal {
+    /// Create a token_stats signal for the main agent
+    pub fn token_stats(
+        input_tokens: usize,
+        output_tokens: usize,
+        total_tokens: usize,
+        cost: f64,
+        currency: impl Into<String>,
+    ) -> Self {
+        Self::TokenStats {
+            agent_id: None,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            currency: Arc::from(currency.into()),
+        }
+    }
+
+    /// Create a subagent_started signal
+    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
+        Self::SubagentStarted {
+            agent_id: Arc::from(id.into()),
+            task: Arc::from(task.into()),
+            index,
+        }
+    }
+
+    /// Create a subagent_completed signal
+    pub fn subagent_completed(
+        id: impl Into<String>,
+        index: u32,
+        summary: impl Into<String>,
+        tool_count: u32,
+    ) -> Self {
+        Self::SubagentCompleted {
+            agent_id: Arc::from(id.into()),
+            index,
+            summary: Arc::from(summary.into()),
+            tool_count,
+        }
+    }
+
+    /// Create a subagent_error signal
+    pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
+        Self::SubagentError {
+            agent_id: Arc::from(id.into()),
+            index,
+            error: Arc::from(error.into()),
+        }
+    }
+}
+
 // ── Unified Stream Event ────────────────────────────────────
 
 /// Unified stream event for real-time streaming across the entire pipeline.
@@ -442,40 +538,6 @@ pub enum StreamEvent {
     Done {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         agent_id: Option<Arc<str>>,
-    },
-
-    /// Token usage statistics
-    TokenStats {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        agent_id: Option<Arc<str>>,
-        input_tokens: usize,
-        output_tokens: usize,
-        total_tokens: usize,
-        cost: f64,
-        currency: Arc<str>,
-    },
-
-    // === Subagent Lifecycle Events ===
-    /// Subagent started execution
-    SubagentStarted {
-        agent_id: Arc<str>,
-        task: Arc<str>,
-        index: u32,
-    },
-
-    /// Subagent completed execution
-    SubagentCompleted {
-        agent_id: Arc<str>,
-        index: u32,
-        summary: Arc<str>,
-        tool_count: u32,
-    },
-
-    /// Subagent encountered an error
-    SubagentError {
-        agent_id: Arc<str>,
-        index: u32,
-        error: Arc<str>,
     },
 
     /// Plain text message (legacy support for non-streaming channels)
@@ -644,24 +706,6 @@ impl StreamEvent {
         Self::Done { agent_id: None }
     }
 
-    /// Create a token_stats message for the main agent
-    pub fn token_stats(
-        input_tokens: usize,
-        output_tokens: usize,
-        total_tokens: usize,
-        cost: f64,
-        currency: impl Into<String>,
-    ) -> Self {
-        Self::TokenStats {
-            agent_id: None,
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cost,
-            currency: Arc::from(currency.into()),
-        }
-    }
-
     /// Create a plain text message (legacy)
     pub fn text(content: impl Into<String>) -> Self {
         Self::Text {
@@ -714,39 +758,6 @@ impl StreamEvent {
         }
     }
 
-    /// Create a subagent_started message
-    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
-        Self::SubagentStarted {
-            agent_id: Arc::from(id.into()),
-            task: Arc::from(task.into()),
-            index,
-        }
-    }
-
-    /// Create a subagent_completed message
-    pub fn subagent_completed(
-        id: impl Into<String>,
-        index: u32,
-        summary: impl Into<String>,
-        tool_count: u32,
-    ) -> Self {
-        Self::SubagentCompleted {
-            agent_id: Arc::from(id.into()),
-            index,
-            summary: Arc::from(summary.into()),
-            tool_count,
-        }
-    }
-
-    /// Create a subagent_error message
-    pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
-        Self::SubagentError {
-            agent_id: Arc::from(id.into()),
-            index,
-            error: Arc::from(error.into()),
-        }
-    }
-
     // === Utility Methods ===
 
     /// Get the agent_id if this is a subagent event
@@ -757,12 +768,7 @@ impl StreamEvent {
             Self::ToolEnd { agent_id, .. } => agent_id.as_deref(),
             Self::Content { agent_id, .. } => agent_id.as_deref(),
             Self::Done { agent_id } => agent_id.as_deref(),
-            Self::TokenStats { agent_id, .. } => agent_id.as_deref(),
             Self::Text { agent_id, .. } => agent_id.as_deref(),
-            // Subagent lifecycle events always have an agent_id
-            Self::SubagentStarted { agent_id, .. } => Some(agent_id),
-            Self::SubagentCompleted { agent_id, .. } => Some(agent_id),
-            Self::SubagentError { agent_id, .. } => Some(agent_id),
         }
     }
 
@@ -778,9 +784,7 @@ impl StreamEvent {
 
     /// Inject a subagent ID into this event.
     ///
-    /// Sets `agent_id` to `Some(id)` for events that carry that field.
-    /// Lifecycle events (`SubagentStarted/Completed/Error`) and `TokenStats`
-    /// are returned unchanged — they already carry a fixed id.
+    /// Sets `agent_id` to `Some(id)` for all data-plane events.
     pub fn with_agent_id(self, id: Arc<str>) -> Self {
         match self {
             Self::Thinking { content, .. } => Self::Thinking {
@@ -808,44 +812,40 @@ impl StreamEvent {
                 agent_id: Some(id),
                 content,
             },
-            other => other,
         }
     }
 
     /// Convert to a user-facing `ChatEvent` if this is a main-agent data event.
     ///
-    /// Returns `None` for system events (`TokenStats`, subagent lifecycle)
-    /// and for subagent events (anything with `agent_id` set).
+    /// Returns `None` for subagent events (anything with `agent_id` set).
+    /// All remaining `StreamEvent` variants are data-plane events and map
+    /// directly to their `ChatEvent` counterparts.
     pub fn to_chat_event(&self) -> Option<ChatEvent> {
         if self.is_subagent_event() {
             return None;
         }
-        match self {
-            Self::Thinking { content, .. } => Some(ChatEvent::Thinking {
+        Some(match self {
+            Self::Thinking { content, .. } => ChatEvent::Thinking {
                 content: Arc::clone(content),
-            }),
+            },
             Self::ToolStart {
                 name, arguments, ..
-            } => Some(ChatEvent::ToolStart {
+            } => ChatEvent::ToolStart {
                 name: Arc::clone(name),
                 arguments: arguments.as_ref().map(Arc::clone),
-            }),
-            Self::ToolEnd { name, output, .. } => Some(ChatEvent::ToolEnd {
+            },
+            Self::ToolEnd { name, output, .. } => ChatEvent::ToolEnd {
                 name: Arc::clone(name),
                 output: output.as_ref().map(Arc::clone),
-            }),
-            Self::Content { content, .. } => Some(ChatEvent::Content {
+            },
+            Self::Content { content, .. } => ChatEvent::Content {
                 content: Arc::clone(content),
-            }),
-            Self::Done { .. } => Some(ChatEvent::Done),
-            Self::Text { content, .. } => Some(ChatEvent::Text {
+            },
+            Self::Done { .. } => ChatEvent::Done,
+            Self::Text { content, .. } => ChatEvent::Text {
                 content: Arc::clone(content),
-            }),
-            Self::TokenStats { .. }
-            | Self::SubagentStarted { .. }
-            | Self::SubagentCompleted { .. }
-            | Self::SubagentError { .. } => None,
-        }
+            },
+        })
     }
 
     /// Serialize to JSON string
@@ -944,8 +944,8 @@ mod tests {
 
     #[test]
     fn test_subagent_started_serialization() {
-        let msg = StreamEvent::subagent_started("id-123", "Search docs", 1);
-        let json = msg.to_json();
+        let msg = InternalSignal::subagent_started("id-123", "Search docs", 1);
+        let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"subagent_started"#));
         assert!(json.contains(r#""agent_id":"id-123"#));
         assert!(json.contains(r#""task":"Search docs"#));
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn test_subagent_thinking_serialization() {
         let msg = StreamEvent::subagent_thinking("id-123", "Analyzing...");
-        let json = msg.to_json();
+        let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"thinking"#));
         assert!(json.contains(r#""agent_id":"id-123"#));
         assert!(json.contains(r#""content":"Analyzing..."#));
@@ -963,8 +963,8 @@ mod tests {
 
     #[test]
     fn test_subagent_completed_serialization() {
-        let msg = StreamEvent::subagent_completed("id-123", 1, "Done", 5);
-        let json = msg.to_json();
+        let msg = InternalSignal::subagent_completed("id-123", 1, "Done", 5);
+        let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"subagent_completed"#));
         assert!(json.contains(r#""tool_count":5"#));
     }
@@ -973,9 +973,9 @@ mod tests {
     fn test_subagent_message_deserialization() {
         let json =
             r#"{"type":"subagent_started","agent_id":"id-123","task":"Test task","index":1}"#;
-        let msg: StreamEvent = serde_json::from_str(json).unwrap();
+        let msg: InternalSignal = serde_json::from_str(json).unwrap();
         match msg {
-            StreamEvent::SubagentStarted {
+            InternalSignal::SubagentStarted {
                 agent_id,
                 task,
                 index,
@@ -1012,9 +1012,9 @@ mod tests {
 
     #[test]
     fn test_token_stats_event() {
-        let stats = StreamEvent::token_stats(1000, 500, 1500, 0.01, "USD");
+        let stats = InternalSignal::token_stats(1000, 500, 1500, 0.01, "USD");
         match stats {
-            StreamEvent::TokenStats {
+            InternalSignal::TokenStats {
                 agent_id,
                 input_tokens,
                 output_tokens,

@@ -3,15 +3,15 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use gasket_storage::SqliteStore;
+use gasket_storage::CronStore;
 use tracing::{debug, warn};
 
 pub(super) struct CronPersistence {
-    db: Arc<SqliteStore>,
+    db: Arc<CronStore>,
 }
 
 impl CronPersistence {
-    pub fn new(db: Arc<SqliteStore>) -> Self {
+    pub fn new(db: Arc<CronStore>) -> Self {
         Self { db }
     }
 
@@ -19,7 +19,7 @@ impl CronPersistence {
         &self,
         job_id: &str,
     ) -> anyhow::Result<Option<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)>> {
-        match self.db.get_cron_state(job_id).await {
+        match self.db.get_state(job_id).await {
             Ok(Some((last_run_str, next_run_str))) => {
                 let last_run = last_run_str
                     .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
@@ -49,7 +49,7 @@ impl CronPersistence {
         next_run: Option<&DateTime<Utc>>,
     ) -> anyhow::Result<()> {
         self.db
-            .upsert_cron_state(
+            .upsert_state(
                 job_id,
                 last_run.map(|t| t.to_rfc3339()).as_deref(),
                 next_run.map(|t| t.to_rfc3339()).as_deref(),
@@ -59,7 +59,7 @@ impl CronPersistence {
     }
 
     pub async fn delete_state(&self, job_id: &str) -> anyhow::Result<()> {
-        self.db.delete_cron_state(job_id).await?;
+        self.db.delete_state(job_id).await?;
         Ok(())
     }
 }

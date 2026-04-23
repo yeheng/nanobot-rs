@@ -5,23 +5,21 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::memory::{FileMemoryStore, FrequencyManager, MetadataStore, SqliteStore};
+use crate::wiki::{FrequencyManager, PageStore};
 
-/// Tool for running memory frequency decay
+/// Tool for running memory frequency decay.
 pub struct MemoryDecayTool {
-    workspace: PathBuf,
-    db: Arc<SqliteStore>,
+    page_store: Arc<PageStore>,
 }
 
 impl MemoryDecayTool {
-    /// Create a new memory decay tool
-    pub fn new(workspace: PathBuf, db: Arc<SqliteStore>) -> Self {
-        Self { workspace, db }
+    /// Create a new memory decay tool.
+    pub fn new(page_store: Arc<PageStore>) -> Self {
+        Self { page_store }
     }
 }
 
@@ -50,15 +48,7 @@ impl Tool for MemoryDecayTool {
     }
 
     async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
-        let memory_dir = self.workspace.join("memory");
-        if !memory_dir.exists() {
-            return Ok("Memory directory does not exist. Nothing to decay.".to_string());
-        }
-
-        let store = FileMemoryStore::new(memory_dir);
-        let metadata_store = MetadataStore::new(self.db.pool().clone());
-
-        let report = FrequencyManager::run_decay_batch(&store, &metadata_store)
+        let report = FrequencyManager::run_decay_batch(self.page_store.db())
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Memory decay failed: {}", e)))?;
 

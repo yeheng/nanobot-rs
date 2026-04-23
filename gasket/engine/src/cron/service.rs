@@ -29,7 +29,7 @@ pub struct CronService {
 
 impl CronService {
     /// Create a new cron service.
-    pub async fn new(workspace: PathBuf, db: Arc<gasket_storage::SqliteStore>) -> Self {
+    pub async fn new(workspace: PathBuf, db: Arc<gasket_storage::CronStore>) -> Self {
         let registry = RwLock::new(CronRegistry::new());
         let persistence = CronPersistence::new(db);
         let service = Self {

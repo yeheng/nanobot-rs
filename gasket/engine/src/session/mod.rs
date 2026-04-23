@@ -7,15 +7,15 @@ pub mod builder;
 pub mod compactor;
 pub mod config;
 pub mod context;
+pub mod finalizer;
 pub mod history;
-pub mod plugins;
 pub mod prompt;
 pub mod store;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
-pub(crate) use plugins::SessionLifecyclePlugin;
+
 pub use store::MemoryStore;
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
@@ -26,15 +26,15 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
-use crate::hooks::{HookPoint, HookRegistry, MutableContext};
+use crate::hooks::HookRegistry;
 use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
+use crate::session::finalizer::{calculate_cost, log_token_stats, ResponseFinalizer};
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
-use crate::vault::redact_secrets;
 use async_trait::async_trait;
 use gasket_providers::ChatMessage;
 use gasket_types::events::ChatEvent;
-use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
+use gasket_types::SessionKey;
 
 use futures_util::StreamExt;
 use history::builder::BuildOutcome;
@@ -216,6 +216,7 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 }
 
 /// Wiki knowledge system components — always exist together or not at all.
+#[derive(Clone)]
 pub(crate) struct WikiComponents {
     page_store: Arc<PageStore>,
     page_index: Arc<PageIndex>,
@@ -237,8 +238,8 @@ pub enum WikiHealth {
 ///
 /// Owns session state (events, prompts, compaction) and delegates
 /// the core LLM loop to `kernel::execute()`.
-/// Optional subsystems (wiki, cost tracking) are mounted via `SessionLifecyclePlugin`
-/// so that AgentSession does not accumulate God-Class fields.
+/// Optional subsystems (wiki, cost tracking) are stored as direct Option fields
+/// to avoid the indirection and dynamic dispatch of a plugin trait.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
     context: AgentContext,
@@ -246,9 +247,12 @@ pub struct AgentSession {
     system_prompt: String,
     hooks: Arc<HookRegistry>,
     compactor: Option<Arc<ContextCompactor>>,
-    /// Lifecycle plugins (wiki, cost tracking, etc.). Empty when no optional
-    /// subsystems are configured.
-    plugins: Vec<Arc<dyn SessionLifecyclePlugin>>,
+    /// Wiki components (page store, index, log). None when wiki is disabled.
+    wiki_components: Option<WikiComponents>,
+    /// Pricing config for cost tracking. None when cost tracking is disabled.
+    pricing: Option<ModelPricing>,
+    /// Response finalizer — owns post-processing logic.
+    finalizer: ResponseFinalizer,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
     /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
     /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
@@ -260,12 +264,10 @@ struct PipelineContext {
     runtime_ctx: RuntimeContext,
     messages: Vec<ChatMessage>,
     fctx: FinalizeContext,
-    hooks: Arc<HookRegistry>,
     context: AgentContext,
     model: String,
-    compactor: Option<Arc<ContextCompactor>>,
     pricing: Option<ModelPricing>,
-    plugins: Vec<Arc<dyn SessionLifecyclePlugin>>,
+    finalizer: ResponseFinalizer,
 }
 
 impl AgentSession {
@@ -303,12 +305,9 @@ impl AgentSession {
         self
     }
 
-    /// Attach cost-tracking plugin with the given pricing config.
+    /// Attach cost-tracking with the given pricing config.
     pub fn with_pricing(mut self, pricing: Option<ModelPricing>) -> Self {
-        if let Some(p) = pricing {
-            self.plugins
-                .push(Arc::new(plugins::CostTrackingPlugin::new(p)));
-        }
+        self.pricing = pricing;
         self
     }
 
@@ -322,35 +321,25 @@ impl AgentSession {
         &self.hooks
     }
 
-    /// Get the wiki page store from the first wiki plugin.
+    /// Get the wiki page store.
     pub fn page_store(&self) -> Option<&Arc<PageStore>> {
-        self.plugins
-            .iter()
-            .find_map(|p| p.wiki_components())
-            .map(|w| &w.page_store)
+        self.wiki_components.as_ref().map(|w| &w.page_store)
     }
 
-    /// Get the wiki page index from the first wiki plugin.
+    /// Get the wiki page index.
     pub fn page_index(&self) -> Option<&Arc<PageIndex>> {
-        self.plugins
-            .iter()
-            .find_map(|p| p.wiki_components())
-            .map(|w| &w.page_index)
+        self.wiki_components.as_ref().map(|w| &w.page_index)
     }
 
-    /// Get the wiki log from the first wiki plugin.
+    /// Get the wiki log.
     pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
-        self.plugins
-            .iter()
-            .find_map(|p| p.wiki_components())
-            .map(|w| &w.wiki_log)
+        self.wiki_components.as_ref().map(|w| &w.wiki_log)
     }
 
     /// Get the wiki health status.
     pub fn wiki_health(&self) -> WikiHealth {
-        self.plugins
-            .iter()
-            .find_map(|p| p.wiki_components())
+        self.wiki_components
+            .as_ref()
             .map(|_| WikiHealth::Healthy)
             .unwrap_or(WikiHealth::Disabled)
     }
@@ -521,9 +510,10 @@ impl AgentSession {
 
             let response = Self::postprocess(result, &ctx).await;
 
-            // Notify lifecycle plugins of finalized response.
-            for plugin in &ctx.plugins {
-                plugin.on_response_finalized(&response, &ctx.fctx);
+            // Log token stats if pricing is configured.
+            if let Some(ref pricing) = ctx.pricing {
+                let cost = calculate_cost(&response.token_usage, Some(pricing));
+                log_token_stats(&response.token_usage, cost);
             }
 
             Ok(response)
@@ -543,7 +533,6 @@ impl AgentSession {
         let outcome = self.prepare_pipeline(content, session_key).await?;
         let request = match outcome {
             BuildOutcome::Aborted(msg) => {
-                let pricing = self.plugins.iter().find_map(|p| p.pricing()).cloned();
                 let ctx = PipelineContext {
                     runtime_ctx: self.runtime_ctx.clone(),
                     messages: vec![],
@@ -554,12 +543,10 @@ impl AgentSession {
                         local_vault_values: vec![],
                         estimated_tokens: 0,
                     },
-                    hooks: self.hooks.clone(),
                     context: self.context.clone(),
                     model: self.config.model.clone(),
-                    compactor: self.compactor.clone(),
-                    pricing,
-                    plugins: self.plugins.clone(),
+                    pricing: self.pricing.clone(),
+                    finalizer: self.finalizer.clone(),
                 };
                 return Ok((ctx, Some(msg)));
             }
@@ -581,17 +568,14 @@ impl AgentSession {
             });
         }
 
-        let pricing = self.plugins.iter().find_map(|p| p.pricing()).cloned();
         let ctx = PipelineContext {
             runtime_ctx,
             messages,
             fctx,
-            hooks: self.hooks.clone(),
             context,
             model: self.config.model.clone(),
-            compactor: self.compactor.clone(),
-            pricing,
-            plugins: self.plugins.clone(),
+            pricing: self.pricing.clone(),
+            finalizer: self.finalizer.clone(),
         };
         Ok((ctx, None))
     }
@@ -617,16 +601,9 @@ impl AgentSession {
 
     /// Stage 3: PostProcess — finalize response, persist events, trigger compaction.
     async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentResponse {
-        finalize_response(
-            result,
-            &ctx.fctx,
-            &ctx.context,
-            &ctx.hooks,
-            &ctx.model,
-            ctx.compactor.as_ref(),
-            ctx.pricing.as_ref(),
-        )
-        .await
+        ctx.finalizer
+            .finalize(result, &ctx.fctx, &ctx.context, &ctx.model)
+            .await
     }
 
     /// Common pre-processing pipeline.
@@ -650,8 +627,49 @@ impl AgentSession {
             history_config,
         );
 
-        // Wire wiki-based memory loader from the first plugin that provides one.
-        let loader = self.plugins.iter().find_map(|p| p.memory_loader());
+        // Wire wiki-based memory loader if wiki components are available.
+        let loader = self.wiki_components.as_ref().map(|wc| {
+            let page_index = wc.page_index.clone();
+            let page_store = wc.page_store.clone();
+            Arc::new(move |user_input: &str| {
+                let query = user_input.to_string();
+                let index = page_index.clone();
+                let store = page_store.clone();
+                let fut: history::builder::MemoryLoaderFuture = Box::pin(async move {
+                    let hits = index
+                        .search_with_store(&query, 3, Some(&store))
+                        .await
+                        .ok()?;
+                    if hits.is_empty() {
+                        return None;
+                    }
+                    let mut parts =
+                        vec!["[Relevant long-term memories loaded for this turn]".to_string()];
+                    for hit in hits {
+                        if let Ok(page) = store.read(&hit.path).await {
+                            let preview = if page.content.chars().count() > 800 {
+                                page.content.chars().take(800).collect::<String>() + "..."
+                            } else {
+                                page.content.clone()
+                            };
+                            parts.push(format!(
+                                "## {} (path: {} | tags: [{}])\n{}",
+                                page.title,
+                                page.path,
+                                page.tags.join(", "),
+                                preview
+                            ));
+                        }
+                    }
+                    if parts.len() > 1 {
+                        Some(parts.join("\n\n"))
+                    } else {
+                        None
+                    }
+                });
+                fut
+            }) as history::builder::MemoryLoader
+        });
         let builder = if let Some(loader) = loader {
             builder.with_memory_loader(move |input: &str| {
                 let loader = loader.clone();
@@ -666,131 +684,4 @@ impl AgentSession {
     }
 }
 
-// ── Post-processing (shared between direct and streaming) ──────────────────
-
-/// Save the assistant's response as a session event.
-async fn save_assistant_event(
-    context: &AgentContext,
-    result: &ExecutionResult,
-    ctx: &FinalizeContext,
-    vault_values: &[String],
-) {
-    let history_content = redact_secrets(&result.content, vault_values);
-    let assistant_event = SessionEvent {
-        id: uuid::Uuid::now_v7(),
-        session_key: ctx.session_key_str.to_string(),
-        event_type: EventType::AssistantMessage,
-        content: history_content,
-        metadata: EventMetadata {
-            tools_used: result.tools_used.clone(),
-            ..Default::default()
-        },
-        created_at: chrono::Utc::now(),
-        sequence: 0,
-    };
-    if let Err(e) = context.save_event(assistant_event).await {
-        warn!("Failed to persist assistant event: {}", e);
-    }
-}
-
-/// Trigger non-blocking context compaction if token budget is exceeded.
-fn trigger_compaction(
-    compactor: Option<&Arc<ContextCompactor>>,
-    ctx: &FinalizeContext,
-    vault_values: &[String],
-) {
-    if ctx.estimated_tokens > 0 {
-        if let Some(comp) = compactor {
-            comp.try_compact(&ctx.session_key, ctx.estimated_tokens, vault_values);
-        }
-    }
-}
-
-/// Execute AfterResponse hooks with the result context.
-async fn execute_after_response_hooks(
-    hooks: &HookRegistry,
-    result: &ExecutionResult,
-    ctx: &FinalizeContext,
-) {
-    let tools_used: Vec<crate::hooks::ToolCallInfo> = result
-        .tools_used
-        .iter()
-        .map(|name| crate::hooks::ToolCallInfo {
-            id: name.clone(),
-            name: name.clone(),
-            arguments: None,
-        })
-        .collect();
-
-    let token_usage_for_hooks =
-        result
-            .token_usage
-            .as_ref()
-            .map(|usage| crate::token_tracker::TokenUsage {
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                total_tokens: usage.total_tokens,
-            });
-
-    let mut hook_ctx = MutableContext {
-        session_key: &ctx.session_key_str,
-        messages: &mut vec![],
-        user_input: Some(&ctx.content),
-        response: Some(&result.content),
-        tool_calls: Some(&tools_used),
-        token_usage: token_usage_for_hooks.as_ref(),
-        vault_values: Vec::new(),
-    };
-    if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut hook_ctx).await {
-        warn!("AfterResponse hook failed (ignored): {}", e);
-    }
-}
-
-/// Calculate the cost of the response based on token usage.
-fn calculate_cost(
-    token_usage: &Option<gasket_types::TokenUsage>,
-    pricing: Option<&ModelPricing>,
-) -> f64 {
-    match (token_usage, pricing) {
-        (Some(usage), Some(p)) => p.calculate_cost(usage.input_tokens, usage.output_tokens),
-        _ => 0.0,
-    }
-}
-
-/// Log token usage statistics.
-fn log_token_stats(usage: &Option<gasket_types::TokenUsage>, cost: f64) {
-    if let Some(u) = usage {
-        info!(
-            "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-            u.input_tokens, u.output_tokens, u.total_tokens, cost
-        );
-    }
-}
-
-async fn finalize_response(
-    result: ExecutionResult,
-    ctx: &FinalizeContext,
-    context: &AgentContext,
-    hooks: &HookRegistry,
-    model: &str,
-    compactor: Option<&Arc<ContextCompactor>>,
-    pricing: Option<&ModelPricing>,
-) -> AgentResponse {
-    let vault_values = &ctx.local_vault_values;
-
-    save_assistant_event(context, &result, ctx, vault_values).await;
-    trigger_compaction(compactor, ctx, vault_values);
-    execute_after_response_hooks(hooks, &result, ctx).await;
-
-    let cost = calculate_cost(&result.token_usage, pricing);
-    log_token_stats(&result.token_usage, cost);
-
-    AgentResponse {
-        content: result.content,
-        reasoning_content: result.reasoning_content,
-        tools_used: result.tools_used,
-        model: Some(model.to_string()),
-        token_usage: result.token_usage,
-        cost,
-    }
-}
+// Post-processing logic lives in `session::finalizer::ResponseFinalizer`.

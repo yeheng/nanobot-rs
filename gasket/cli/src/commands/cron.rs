@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use gasket_engine::config::config_dir;
 use gasket_engine::cron::{CronJob, CronService};
-use gasket_engine::memory::SqliteStore;
 
 /// Helper to create a CronService with database persistence
 async fn create_cron_service() -> Result<CronService> {
     let workspace = config_dir();
-    let sqlite_store = Arc::new(SqliteStore::new().await?);
-    Ok(CronService::new(workspace, sqlite_store).await)
+    let sqlite_store = gasket_engine::memory::SqliteStore::new().await?;
+    let cron_store = Arc::new(sqlite_store.cron_store());
+    Ok(CronService::new(workspace, cron_store).await)
 }
 
 /// List all scheduled cron jobs

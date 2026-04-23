@@ -107,10 +107,12 @@ pub fn spawn_subagent(
             subagent_id, task_desc, model
         );
 
-        // Send started event
-        if let Some(ref tx) = event_tx {
-            let _ = tx.try_send(StreamEvent::subagent_started(&subagent_id, &task_desc, 1));
-        }
+        // Log subagent start (was StreamEvent, now InternalSignal for internal tracking)
+        tracing::info!(
+            subagent_id = %subagent_id,
+            task = %task_desc,
+            "[Subagent] Started"
+        );
 
         // Load system prompt
         let system_prompt = match task.system_prompt {
@@ -202,16 +204,13 @@ pub fn spawn_subagent(
             }
         }
 
-        // Send completion event
-        if let Some(ref tx) = event_tx {
-            let summary = response.content.chars().take(100).collect::<String>();
-            let _ = tx.try_send(StreamEvent::subagent_completed(
-                &subagent_id,
-                1,
-                summary,
-                response.tools_used.len() as u32,
-            ));
-        }
+        // Log subagent completion (was StreamEvent, now InternalSignal for internal tracking)
+        tracing::info!(
+            subagent_id = %subagent_id,
+            tool_count = response.tools_used.len(),
+            "[Subagent] Completed: {}",
+            response.content.chars().take(100).collect::<String>()
+        );
 
         // Send result
         let result = SubagentResult {

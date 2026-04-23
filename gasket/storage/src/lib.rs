@@ -10,9 +10,13 @@
 //! exclusively in `~/.gasket/memory/*.md` files. SQLite only stores
 //! machine-state.
 
+mod cron_store;
 mod event_store;
 pub mod fs;
+mod kv_store;
+mod maintenance_store;
 mod migrations;
+pub mod session_store;
 pub mod wiki;
 
 // ── Merged from gasket-history ──
@@ -27,11 +31,14 @@ mod vector_math;
 
 use std::path::PathBuf;
 
-use gasket_types::SessionKey;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
+pub use cron_store::CronStore;
 pub use event_store::{EventFilter, EventStore, EventStoreTrait, StoreError};
+pub use kv_store::KvStore;
+pub use maintenance_store::MaintenanceStore;
+pub use session_store::SessionStore;
 
 // ── History re-exports ──
 pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
@@ -60,11 +67,11 @@ pub fn config_dir() -> PathBuf {
         .join(".gasket")
 }
 
-/// SQLite-backed store for machine-state persistence.
+/// SQLite-backed store — thin connection-pool manager.
 ///
-/// Stores sessions, summaries, cron jobs, and key-value pairs in a
-/// single SQLite database file. Uses `sqlx::SqlitePool` for native async
-/// I/O without blocking the tokio runtime.
+/// Holds a single `sqlx::SqlitePool` and delegates all business logic to
+/// dedicated repositories: [`SessionStore`], [`CronStore`], [`KvStore`],
+/// [`MaintenanceStore`].
 ///
 /// **Not** used for explicit long-term memory — that lives in Markdown files.
 #[derive(Clone)]
@@ -92,11 +99,6 @@ impl SqliteStore {
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
 
-        // Pool size rationale: the gateway uses per-session Actor serialization
-        // (each session has a dedicated actor that processes messages one at a time),
-        // so typical concurrent SQLite access equals the number of *active sessions*
-        // (not total requests). 5 connections comfortably handles most workloads;
-        // WAL mode further reduces contention by allowing concurrent readers.
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)
@@ -110,8 +112,6 @@ impl SqliteStore {
     }
 
     /// Get a clone of the underlying SQLite pool.
-    ///
-    /// Useful for sharing the pool with other subsystems (e.g., pipeline).
     pub fn pool(&self) -> SqlitePool {
         self.pool.clone()
     }
@@ -125,197 +125,27 @@ impl SqliteStore {
         Self { pool }
     }
 
-    // ── Session Summary API ──
-
-    /// Save or replace a session summary with its sequence watermark (upsert).
-    ///
-    /// The `covered_upto_sequence` is the high-water mark: all events with
-    /// `sequence <= covered_upto_sequence` are covered by this summary and
-    /// can be safely garbage-collected.
-    pub async fn save_session_summary(
-        &self,
-        session_key: &SessionKey,
-        content: &str,
-        covered_upto_sequence: i64,
-    ) -> anyhow::Result<()> {
-        let key_str = session_key.to_string();
-        let created_at = chrono::Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT OR REPLACE INTO session_summaries (session_key, content, covered_upto_sequence, created_at) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(&key_str)
-        .bind(content)
-        .bind(covered_upto_sequence)
-        .bind(&created_at)
-        .execute(&self.pool)
-        .await?;
-        debug!(
-            "Saved session summary for {}: covering up to sequence {}",
-            session_key, covered_upto_sequence
-        );
-        Ok(())
+    /// Convenience accessor — builds a [`SessionStore`] backed by the same pool.
+    pub fn session_store(&self) -> SessionStore {
+        SessionStore::new(self.pool.clone())
     }
 
-    /// Load a session summary and its sequence watermark.
-    ///
-    /// Returns `Some((content, covered_upto_sequence))` if a summary exists,
-    /// or `None` if no summary has been generated for this session yet.
-    pub async fn load_session_summary(
-        &self,
-        session_key: &SessionKey,
-    ) -> anyhow::Result<Option<(String, i64)>> {
-        let key_str = session_key.to_string();
-        let row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT content, covered_upto_sequence FROM session_summaries WHERE session_key = $1",
-        )
-        .bind(&key_str)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
+    /// Convenience accessor — builds a [`CronStore`] backed by the same pool.
+    pub fn cron_store(&self) -> CronStore {
+        CronStore::new(self.pool.clone())
     }
 
-    /// Delete a session summary.
-    pub async fn delete_session_summary(&self, session_key: &SessionKey) -> anyhow::Result<bool> {
-        let key_str = session_key.to_string();
-        let result = sqlx::query("DELETE FROM session_summaries WHERE session_key = $1")
-            .bind(&key_str)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+    /// Convenience accessor — builds a [`KvStore`] backed by the same pool.
+    pub fn kv_store(&self) -> KvStore {
+        KvStore::new(self.pool.clone())
     }
 
-    // ── Session Embeddings API (Semantic History Recall) ──
-
-    /// Save an embedding for a message.
-    ///
-    /// The embedding is stored as a BLOB using bytemuck for zero-copy
-    /// conversion between `[f32]` and `[u8]`.
-    pub async fn save_embedding(
-        &self,
-        message_id: &str,
-        session_key: &str,
-        embedding: &[f32],
-    ) -> anyhow::Result<()> {
-        let embedding_bytes = bytemuck::cast_slice(embedding);
-        sqlx::query(
-            "INSERT OR REPLACE INTO session_embeddings (message_id, session_key, embedding) VALUES ($1, $2, $3)",
-        )
-        .bind(message_id)
-        .bind(session_key)
-        .bind(embedding_bytes)
-        .execute(&self.pool)
-        .await?;
-        debug!("Saved embedding for message: {}", message_id);
-        Ok(())
+    /// Convenience accessor — builds a [`MaintenanceStore`] backed by the same pool.
+    pub fn maintenance_store(&self) -> MaintenanceStore {
+        MaintenanceStore::new(self.pool.clone())
     }
 
-    /// Load all embeddings for a session.
-    ///
-    /// Returns a vector of `(message_id, content, embedding)` tuples.
-    /// The embedding is converted back from BLOB to `Vec<f32>` using bytemuck.
-    pub async fn load_session_embeddings(
-        &self,
-        session_key: &str,
-    ) -> anyhow::Result<Vec<(String, String, Vec<f32>)>> {
-        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
-            r#"
-            SELECT e.message_id, m.content, e.embedding
-            FROM session_embeddings e
-            LEFT JOIN session_events m ON e.message_id = m.id
-            WHERE e.session_key = $1
-            ORDER BY m.sequence ASC
-            "#,
-        )
-        .bind(session_key)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut result = Vec::with_capacity(rows.len());
-        for row in rows {
-            let message_id: String = row.get("message_id");
-            let content: String = row.get("content");
-            let embedding_blob: Vec<u8> = row.get("embedding");
-
-            // Convert BLOB back to Vec<f32>
-            let embedding = bytemuck::cast_slice(&embedding_blob).to_vec();
-            result.push((message_id, content, embedding));
-        }
-        Ok(result)
-    }
-
-    /// Check whether an embedding already exists for a given message.
-    ///
-    /// Used by the summarization layer to skip redundant embedding
-    /// computation when the same event is evicted more than once
-    /// (e.g. during repeated context compression).
-    pub async fn has_embedding(&self, message_id: &str) -> anyhow::Result<bool> {
-        let row: Option<(i64,)> =
-            sqlx::query_as("SELECT COUNT(*) FROM session_embeddings WHERE message_id = $1")
-                .bind(message_id)
-                .fetch_optional(&self.pool)
-                .await?;
-
-        Ok(row.map(|(count,)| count > 0).unwrap_or(false))
-    }
-
-    // ── Cron State API (Execution state for cron jobs) ──
-
-    /// Get cron state for a job.
-    ///
-    /// Returns `(last_run_at, next_run_at)` if state exists, or `None` if not found.
-    pub async fn get_cron_state(
-        &self,
-        job_id: &str,
-    ) -> anyhow::Result<Option<(Option<String>, Option<String>)>> {
-        let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT last_run_at, next_run_at FROM cron_state WHERE job_id = $1")
-                .bind(job_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row)
-    }
-
-    /// Upsert cron state for a job.
-    ///
-    /// Persists execution state (last_run/next_run) to survive restarts.
-    pub async fn upsert_cron_state(
-        &self,
-        job_id: &str,
-        last_run: Option<&str>,
-        next_run: Option<&str>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO cron_state (job_id, last_run_at, next_run_at) VALUES ($1, $2, $3)",
-        )
-        .bind(job_id)
-        .bind(last_run)
-        .bind(next_run)
-        .execute(&self.pool)
-        .await?;
-        debug!(
-            "Updated cron state for job {}: last_run={:?}, next_run={:?}",
-            job_id, last_run, next_run
-        );
-        Ok(())
-    }
-
-    /// Delete cron state for a job.
-    ///
-    /// Call when a job is removed to keep database clean.
-    pub async fn delete_cron_state(&self, job_id: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM cron_state WHERE job_id = $1")
-            .bind(job_id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() > 0 {
-            debug!("Deleted cron state for job {}", job_id);
-        }
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Verify that the database is usable (integrity + read/write).
     async fn health_check(&self) -> anyhow::Result<()> {
-        // Integrity check
         let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
             .fetch_one(&self.pool)
             .await?;
@@ -323,7 +153,6 @@ impl SqliteStore {
             anyhow::bail!("SQLite integrity check failed: {}", integrity);
         }
 
-        // Write check — try inserting and deleting a sentinel row in cron_state
         sqlx::query(
             "INSERT OR REPLACE INTO cron_state (job_id, last_run_at, next_run_at) VALUES ('__health_check__', NULL, NULL)",
         )
@@ -337,126 +166,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Create all tables, indexes, triggers, and virtual tables.
-    ///
-    /// Only machine-state tables are created here:
-    /// - `sessions_v2` / `session_events` / `session_summaries` — conversation history
-    /// - `cron_state` — scheduled tasks
-    /// - `session_embeddings` — semantic history recall
-    ///
-    /// Explicit long-term memory lives exclusively in `~/.gasket/memory/*.md` files
-    /// (Single Source of Truth — no SQLite `memories` table).
     async fn init_db(&self) -> anyhow::Result<()> {
         migrations::run_all(&self.pool).await
-    }
-
-    // ── Generic KV API ──
-
-    /// Read a raw string value by key.
-    pub async fn read_raw(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = $1")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|(v,)| v))
-    }
-
-    /// Write (or overwrite) a raw string value by key.
-    pub async fn write_raw(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        sqlx::query("INSERT OR REPLACE INTO kv_store (key, value) VALUES ($1, $2)")
-            .bind(key)
-            .bind(value)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Delete a raw key-value entry.
-    ///
-    /// Returns `true` if a row was actually deleted.
-    pub async fn delete_raw(&self, key: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM kv_store WHERE key = $1")
-            .bind(key)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    // ── Maintenance State API ──
-
-    /// Read the last watermark for a given maintenance task and target.
-    pub async fn read_maintenance_watermark(
-        &self,
-        task_name: &str,
-        target_id: &str,
-    ) -> anyhow::Result<i64> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT last_watermark FROM maintenance_state WHERE task_name = ?1 AND target_id = ?2",
-        )
-        .bind(task_name)
-        .bind(target_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|(v,)| v).unwrap_or(0))
-    }
-
-    /// Write (or overwrite) the watermark for a maintenance task and target.
-    pub async fn write_maintenance_watermark(
-        &self,
-        task_name: &str,
-        target_id: &str,
-        watermark: i64,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO maintenance_state (task_name, target_id, last_watermark, updated_at)
-             VALUES (?1, ?2, ?3, datetime('now'))",
-        )
-        .bind(task_name)
-        .bind(target_id)
-        .bind(watermark)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    // ── Session Checkpoints API ──
-
-    /// Save a checkpoint summary for a session at a specific target_sequence.
-    pub async fn save_checkpoint(
-        &self,
-        session_key: &str,
-        target_sequence: i64,
-        summary: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO session_checkpoints (session_key, target_sequence, summary, created_at)
-             VALUES (?1, ?2, ?3, datetime('now'))",
-        )
-        .bind(session_key)
-        .bind(target_sequence)
-        .bind(summary)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Load the most recent checkpoint for a session before or at a given target_sequence.
-    pub async fn load_checkpoint(
-        &self,
-        session_key: &str,
-        target_sequence: i64,
-    ) -> anyhow::Result<Option<(String, i64)>> {
-        let row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT summary, target_sequence FROM session_checkpoints
-             WHERE session_key = ?1 AND target_sequence <= ?2
-             ORDER BY target_sequence DESC
-             LIMIT 1",
-        )
-        .bind(session_key)
-        .bind(target_sequence)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
     }
 }
 
@@ -475,16 +186,17 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_session_summary_save_and_load() {
         let store = temp_store().await;
-        let key = SessionKey::new(gasket_types::ChannelType::Cli, "test:123");
+        let session = store.session_store();
+        let key = gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, "test:123");
 
-        assert!(store.load_session_summary(&key).await.unwrap().is_none());
+        assert!(session.load_summary(&key).await.unwrap().is_none());
 
-        store
-            .save_session_summary(&key, "This is a summary of the conversation.", 42)
+        session
+            .save_summary(&key, "This is a summary of the conversation.", 42)
             .await
             .unwrap();
 
-        let summary = store.load_session_summary(&key).await.unwrap();
+        let summary = session.load_summary(&key).await.unwrap();
         assert_eq!(
             summary,
             Some(("This is a summary of the conversation.".to_string(), 42))
@@ -494,33 +206,26 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_session_summary_upsert() {
         let store = temp_store().await;
-        let key = SessionKey::new(gasket_types::ChannelType::Cli, "key1");
+        let session = store.session_store();
+        let key = gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, "key1");
 
-        store
-            .save_session_summary(&key, "Summary v1", 10)
-            .await
-            .unwrap();
-        store
-            .save_session_summary(&key, "Summary v2", 20)
-            .await
-            .unwrap();
+        session.save_summary(&key, "Summary v1", 10).await.unwrap();
+        session.save_summary(&key, "Summary v2", 20).await.unwrap();
 
-        let summary = store.load_session_summary(&key).await.unwrap();
+        let summary = session.load_summary(&key).await.unwrap();
         assert_eq!(summary, Some(("Summary v2".to_string(), 20)));
     }
 
     #[tokio::test]
     async fn test_sqlite_session_summary_delete() {
         let store = temp_store().await;
-        let key = SessionKey::new(gasket_types::ChannelType::Cli, "key1");
+        let session = store.session_store();
+        let key = gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, "key1");
 
-        store
-            .save_session_summary(&key, "Summary", 5)
-            .await
-            .unwrap();
-        assert!(store.delete_session_summary(&key).await.unwrap());
-        assert!(!store.delete_session_summary(&key).await.unwrap());
-        assert!(store.load_session_summary(&key).await.unwrap().is_none());
+        session.save_summary(&key, "Summary", 5).await.unwrap();
+        assert!(session.delete_summary(&key).await.unwrap());
+        assert!(!session.delete_summary(&key).await.unwrap());
+        assert!(session.load_summary(&key).await.unwrap().is_none());
     }
 
     // ── Generic KV tests ──
@@ -528,11 +233,12 @@ mod tests {
     #[tokio::test]
     async fn test_kv_roundtrip() {
         let store = temp_store().await;
+        let kv = store.kv_store();
 
-        assert!(store.read_raw("test_key").await.unwrap().is_none());
-        store.write_raw("test_key", "test_value").await.unwrap();
+        assert!(kv.read("test_key").await.unwrap().is_none());
+        kv.write("test_key", "test_value").await.unwrap();
         assert_eq!(
-            store.read_raw("test_key").await.unwrap(),
+            kv.read("test_key").await.unwrap(),
             Some("test_value".to_string())
         );
     }
@@ -540,22 +246,21 @@ mod tests {
     #[tokio::test]
     async fn test_kv_overwrite() {
         let store = temp_store().await;
+        let kv = store.kv_store();
 
-        store.write_raw("key1", "v1").await.unwrap();
-        store.write_raw("key1", "v2").await.unwrap();
-        assert_eq!(
-            store.read_raw("key1").await.unwrap(),
-            Some("v2".to_string())
-        );
+        kv.write("key1", "v1").await.unwrap();
+        kv.write("key1", "v2").await.unwrap();
+        assert_eq!(kv.read("key1").await.unwrap(), Some("v2".to_string()));
     }
 
     #[tokio::test]
     async fn test_kv_delete() {
         let store = temp_store().await;
+        let kv = store.kv_store();
 
-        store.write_raw("del_key", "val").await.unwrap();
-        assert!(store.delete_raw("del_key").await.unwrap());
-        assert!(!store.delete_raw("del_key").await.unwrap());
-        assert!(store.read_raw("del_key").await.unwrap().is_none());
+        kv.write("del_key", "val").await.unwrap();
+        assert!(kv.delete("del_key").await.unwrap());
+        assert!(!kv.delete("del_key").await.unwrap());
+        assert!(kv.read("del_key").await.unwrap().is_none());
     }
 }

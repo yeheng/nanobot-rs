@@ -194,7 +194,9 @@ pub mod providers {
 // Core storage types (memory module name kept for backward compatibility)
 pub mod memory {
     pub use crate::session::MemoryStore;
-    pub use gasket_storage::{EventStore, SqliteStore, StoreError};
+    pub use gasket_storage::{
+        CronStore, EventStore, KvStore, MaintenanceStore, SessionStore, SqliteStore, StoreError,
+    };
 }
 
 // Wiki

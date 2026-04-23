@@ -61,53 +61,24 @@ impl PageStore {
         Ok(())
     }
 
-    /// Read a page with lazy mtime sync.
+    /// Read a page — pure query, no sync side effects.
     ///
-    /// 1. Check disk mtime.
-    /// 2. If SQLite cache is fresh (mtime matches), return cached data.
-    /// 3. If stale or missing, re-parse from disk and update SQLite.
-    /// 4. If disk file is gone but SQLite has a stale record, delete the record.
+    /// 1. Query SQLite cache. If present, return it directly.
+    /// 2. If not in cache, read from disk and parse (but do NOT write to SQLite).
+    ///
+    /// Sync responsibility is delegated to `WikiRefreshTool` or background tasks.
     pub async fn read(&self, path: &str) -> Result<WikiPage> {
-        let disk_path = self.wiki_root.join(format!("{}.md", path));
-        let disk_mtime = Self::file_mtime(&disk_path).await.ok();
-
-        let row = self.db.get(path).await?;
-
-        match (row, disk_mtime) {
-            // Cache hit and fresh — return immediately.
-            (Some(row), Some(mtime)) if row.file_mtime == mtime => Ok(self.row_to_page(row)),
-            // Disk exists but cache is stale or missing — re-parse and upsert.
-            (_, Some(mtime)) => {
-                let markdown = fs::read_to_string(&disk_path).await?;
-                let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
-                page.file_mtime = mtime;
-
-                // Preserve machine runtime state from old cache if available.
-                if let Some(old) = self.db.get(path).await? {
-                    page.frequency = Frequency::from_str_lossy(&old.frequency);
-                    page.access_count = old.access_count as u64;
-                    page.last_accessed = old
-                        .last_accessed
-                        .as_deref()
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&chrono::Utc));
-                    page.sync_sequence = old.sync_sequence as u64;
-                }
-
-                let seq = self.upsert_db(&page, mtime).await?;
-                page.sync_sequence = seq;
-                Ok(page)
-            }
-            // Disk gone, SQLite stale — purge and fail.
-            (Some(_), None) => {
-                self.db.delete(path).await?;
-                anyhow::bail!("page not found on disk: {}", path);
-            }
-            // Nothing anywhere.
-            (None, None) => {
-                anyhow::bail!("page not found: {}", path);
-            }
+        // 1. Try SQLite cache first.
+        if let Some(row) = self.db.get(path).await? {
+            return Ok(self.row_to_page(row));
         }
+
+        // 2. Fall back to disk (read-only, no SQLite update).
+        let disk_path = self.wiki_root.join(format!("{}.md", path));
+        let markdown = fs::read_to_string(&disk_path).await?;
+        let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
+        page.file_mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
+        Ok(page)
     }
 
     /// Batch-read full pages from SQLite (no lazy mtime sync — suitable for

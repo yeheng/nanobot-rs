@@ -47,7 +47,7 @@ use anyhow::{bail, Result};
 use tracing::{debug, info, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::{count_tokens, EventStore, SqliteStore};
+use gasket_storage::{count_tokens, EventStore, SessionStore};
 use gasket_types::{SessionEvent, SessionKey};
 
 use crate::vault::redact_secrets;
@@ -154,7 +154,7 @@ pub struct ContextCompactor {
     /// Event store for loading events and garbage collection.
     event_store: Arc<EventStore>,
     /// SQLite store for summary persistence (session_summaries table).
-    sqlite_store: Arc<SqliteStore>,
+    session_store: Arc<SessionStore>,
     /// Model to use for summarization.
     model: String,
     /// Token budget for context window.
@@ -182,14 +182,14 @@ impl ContextCompactor {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         event_store: Arc<EventStore>,
-        sqlite_store: Arc<SqliteStore>,
+        session_store: Arc<SessionStore>,
         model: String,
         token_budget: usize,
     ) -> Self {
         Self {
             provider,
             event_store,
-            sqlite_store,
+            session_store,
             model,
             token_budget,
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
@@ -229,7 +229,7 @@ impl ContextCompactor {
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// If no summary exists, returns `("", 0)`.
     pub async fn load_summary_with_watermark(&self, session_key: &SessionKey) -> (String, i64) {
-        match self.sqlite_store.load_session_summary(session_key).await {
+        match self.session_store.load_summary(session_key).await {
             Ok(Some((content, watermark))) => (content, watermark),
             Ok(None) => (String::new(), 0),
             Err(e) => {
@@ -357,7 +357,7 @@ impl ContextCompactor {
 
         run_compaction(
             &self.event_store,
-            &self.sqlite_store,
+            &self.session_store,
             &*self.provider,
             &self.model,
             &self.summarization_prompt,
@@ -430,7 +430,7 @@ impl ContextCompactor {
             return Ok(None);
         }
 
-        self.sqlite_store
+        self.session_store
             .save_checkpoint(&session_key.to_string(), current_max_sequence, &summary)
             .await?;
 
@@ -557,7 +557,7 @@ impl ContextCompactor {
         guard: CompactionGuard,
     ) {
         let event_store = self.event_store.clone();
-        let sqlite_store = self.sqlite_store.clone();
+        let session_store = self.session_store.clone();
         let provider = self.provider.clone();
         let model = self.model.clone();
         let summarization_prompt = self.summarization_prompt.clone();
@@ -572,7 +572,7 @@ impl ContextCompactor {
 
             if let Err(e) = run_compaction(
                 &event_store,
-                &sqlite_store,
+                &session_store,
                 &*provider,
                 &model,
                 &summarization_prompt,
@@ -600,7 +600,7 @@ impl ContextCompactor {
                 );
                 if let Err(e) = run_compaction(
                     &event_store,
-                    &sqlite_store,
+                    &session_store,
                     &*provider,
                     &model,
                     &summarization_prompt,
@@ -645,7 +645,7 @@ impl Drop for CompactionGuard {
 /// Execute the full compaction pipeline: load → build context → summarize → persist.
 async fn run_compaction(
     event_store: &EventStore,
-    sqlite_store: &SqliteStore,
+    session_store: &SessionStore,
     provider: &dyn LlmProvider,
     model: &str,
     summarization_prompt: &str,
@@ -659,7 +659,7 @@ async fn run_compaction(
         .map_err(|e| anyhow::anyhow!("Failed to get max sequence for {}: {}", session_key, e))?;
 
     // 2. Load existing summary
-    let existing_summary = match sqlite_store.load_session_summary(session_key).await {
+    let existing_summary = match session_store.load_summary(session_key).await {
         Ok(Some((content, _watermark))) => Some(content),
         Ok(None) => None,
         Err(e) => bail!("Failed to load summary for {}: {}", session_key, e),
@@ -696,7 +696,7 @@ async fn run_compaction(
     }
 
     persist_and_gc(
-        sqlite_store,
+        session_store,
         event_store,
         session_key,
         &summary_text,
@@ -756,7 +756,7 @@ async fn summarize_with_llm(
 
 /// Redact secrets, persist the summary, and garbage-collect old events.
 async fn persist_and_gc(
-    sqlite_store: &SqliteStore,
+    session_store: &SessionStore,
     event_store: &EventStore,
     session_key: &SessionKey,
     summary_text: &str,
@@ -771,8 +771,8 @@ async fn persist_and_gc(
     };
 
     // Persist summary with new watermark
-    sqlite_store
-        .save_session_summary(session_key, &summary_to_persist, target_sequence)
+    session_store
+        .save_summary(session_key, &summary_to_persist, target_sequence)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save summary for {}: {}", session_key, e))?;
 

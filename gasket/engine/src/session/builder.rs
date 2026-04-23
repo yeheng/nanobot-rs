@@ -15,11 +15,12 @@ use crate::kernel::RuntimeContext;
 use crate::session::compactor::ContextCompactor;
 use crate::session::config::AgentConfigExt;
 use crate::session::context::AgentContext;
-use crate::session::plugins::WikiLifecyclePlugin;
+
+use crate::session::finalizer::ResponseFinalizer;
 use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 use gasket_providers::LlmProvider;
-use gasket_storage::{EventStore, SqliteStore};
+use gasket_storage::{EventStore, SessionStore};
 
 /// Builder for constructing an `AgentSession`.
 ///
@@ -57,8 +58,9 @@ impl SessionBuilder {
     /// the compiler guarantees every value is initialized before use.
     pub async fn build(self) -> Result<AgentSession, AgentError> {
         // ── 1. Storage layer ─────────────────────────────────────────
-        let sqlite_store = Arc::new(self.memory_store.sqlite_store().clone());
-        let event_store = Arc::new(EventStore::new(self.memory_store.sqlite_store().pool()));
+        let pool = self.memory_store.sqlite_store().pool();
+        let session_store = Arc::new(SessionStore::new(pool.clone()));
+        let event_store = Arc::new(EventStore::new(pool));
 
         // ── 2. Kernel runtime context ────────────────────────────────
         let kernel_config = self.config.to_kernel_config();
@@ -72,7 +74,7 @@ impl SessionBuilder {
         };
 
         // ── 3. Agent context ─────────────────────────────────────────
-        let context = AgentContext::persistent(event_store.clone(), sqlite_store.clone());
+        let context = AgentContext::persistent(event_store.clone(), session_store.clone());
 
         // ── 4. Context compactor ─────────────────────────────────────
         let history_config = gasket_storage::HistoryConfig {
@@ -82,7 +84,7 @@ impl SessionBuilder {
         let mut compactor = ContextCompactor::new(
             self.provider.clone(),
             event_store.clone(),
-            sqlite_store.clone(),
+            session_store.clone(),
             self.config.model.clone(),
             history_config.token_budget,
         );
@@ -107,22 +109,16 @@ impl SessionBuilder {
             system_prompt.push_str(&skills);
         }
 
-        // ── 6. Lifecycle plugins (wiki, cost tracking, etc.) ─────────
-        let mut plugins: Vec<Arc<dyn crate::session::SessionLifecyclePlugin>> = Vec::new();
-
-        // Wiki plugin
-        if let Some(wiki_components) = build_wiki_components(&sqlite_store, &self.config).await {
-            plugins.push(Arc::new(WikiLifecyclePlugin::new(
-                wiki_components.page_store.clone(),
-                wiki_components.page_index.clone(),
-                wiki_components.wiki_log.clone(),
-            )));
-        }
+        // ── 6. Wiki components (optional) ──────────────────────────
+        let wiki_components =
+            build_wiki_components(self.memory_store.sqlite_store(), &self.config).await;
 
         // ── 7. Hook registry ─────────────────────────────────────────
         let hooks = build_hooks_registry();
 
         let pending_done = tokio_util::task::TaskTracker::new();
+
+        let finalizer = ResponseFinalizer::new(hooks.clone(), compactor.clone(), None);
 
         Ok(AgentSession {
             runtime_ctx,
@@ -131,7 +127,9 @@ impl SessionBuilder {
             system_prompt,
             hooks,
             compactor,
-            plugins,
+            wiki_components,
+            pricing: None,
+            finalizer,
             pending_done,
         })
     }
@@ -145,7 +143,7 @@ impl SessionBuilder {
 ///
 /// Returns `None` when wiki is disabled by config or initialization failed.
 async fn build_wiki_components(
-    sqlite_store: &Arc<SqliteStore>,
+    sqlite_store: &gasket_storage::SqliteStore,
     config: &AgentConfig,
 ) -> Option<WikiComponents> {
     let wiki_config = match config.wiki.as_ref() {

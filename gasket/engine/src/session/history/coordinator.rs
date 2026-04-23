@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use gasket_storage::{EventFilter, EventStoreTrait, SqliteStore};
+use gasket_storage::{EventFilter, EventStoreTrait, SessionStore};
 use gasket_types::session_event::SessionEvent;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -64,19 +64,19 @@ pub struct ContextMessage {
 pub struct HistoryCoordinator {
     event_store: Arc<dyn EventStoreTrait>,
     _compactor: Arc<ContextCompactor>,
-    sqlite_store: Arc<SqliteStore>,
+    session_store: Arc<SessionStore>,
 }
 
 impl HistoryCoordinator {
     pub fn new(
         event_store: Arc<dyn EventStoreTrait>,
         compactor: Arc<ContextCompactor>,
-        sqlite_store: Arc<SqliteStore>,
+        session_store: Arc<SessionStore>,
     ) -> Self {
         Self {
             event_store,
             _compactor: compactor,
-            sqlite_store,
+            session_store,
         }
     }
 
@@ -131,14 +131,10 @@ impl HistoryCoordinator {
                 let key = gasket_types::SessionKey::parse(&session_key).unwrap_or_else(|| {
                     gasket_types::SessionKey::new(gasket_types::ChannelType::Cli, &session_key)
                 });
-                let summary = self
-                    .sqlite_store
-                    .load_session_summary(&key)
-                    .await
-                    .map_err(|e| {
-                        warn!("SQLite error in LatestSummary query: {}", e);
-                        anyhow::anyhow!("sqlite store error: {}", e)
-                    })?;
+                let summary = self.session_store.load_summary(&key).await.map_err(|e| {
+                    warn!("SQLite error in LatestSummary query: {}", e);
+                    anyhow::anyhow!("sqlite store error: {}", e)
+                })?;
                 debug!(
                     "LatestSummary for {}: found={}",
                     session_key,
