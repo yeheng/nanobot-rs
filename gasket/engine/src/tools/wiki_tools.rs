@@ -124,15 +124,11 @@ impl Tool for WikiSearchTool {
 /// Write or update a wiki page.
 pub struct WikiWriteTool {
     page_store: Arc<PageStore>,
-    page_index: Arc<PageIndex>,
 }
 
 impl WikiWriteTool {
-    pub fn new(page_store: Arc<PageStore>, page_index: Arc<PageIndex>) -> Self {
-        Self {
-            page_store,
-            page_index,
-        }
+    pub fn new(page_store: Arc<PageStore>) -> Self {
+        Self { page_store }
     }
 }
 
@@ -225,10 +221,6 @@ impl Tool for WikiWriteTool {
         self.page_store.write(&page).await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to write wiki page '{}': {}", path, e))
         })?;
-
-        if let Err(e) = self.page_index.upsert(&page).await {
-            tracing::warn!("wiki_write: failed to upsert {} to Tantivy: {}", path, e);
-        }
 
         Ok(format!(
             "Wiki page written: {} [{}] at {}",

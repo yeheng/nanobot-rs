@@ -126,6 +126,11 @@ pub async fn load_skills_context(workspace: &Path) -> Option<String> {
 /// Truncate content to fit within `max_tokens`, keeping the **tail** (most recent
 /// entries) and dropping lines from the head. Prepends a system warning so the
 /// agent knows it must clean up.
+///
+/// Uses a two-stage strategy:
+/// 1. Line-level tail-keep (fast, preserves semantic boundaries).
+/// 2. Character-level binary-search fallback (handles single lines longer than
+///    the budget, e.g. a 50 000-character MEMORY.md with no newlines).
 pub fn truncate_keep_tail(content: &str, max_tokens: usize) -> String {
     let warning = "[SYSTEM WARNING: This file was truncated because it exceeded the token limit. \
         Oldest entries were removed. Use 'read_file' to view the full file on disk, \
@@ -149,14 +154,44 @@ pub fn truncate_keep_tail(content: &str, max_tokens: usize) -> String {
         split_byte_index = idx;
     }
 
-    if split_byte_index == content.len() && current_tokens <= budget {
-        content.to_string()
+    let tail = if split_byte_index == content.len() {
+        // No newlines at all — treat the entire content as one block.
+        if count_tokens(content) <= budget {
+            return content.to_string();
+        }
+        truncate_tail_by_chars(content, budget)
     } else {
-        let mut result =
-            String::with_capacity(warning.len() + content.len() - split_byte_index + 2);
-        result.push_str(warning);
-        result.push_str("\n\n");
-        result.push_str(&content[split_byte_index..]);
-        result
+        let tail = &content[split_byte_index..];
+        // Fallback: if a single line exceeds the budget, truncate character-by-character.
+        truncate_tail_by_chars(tail, budget)
+    };
+
+    let mut result = String::with_capacity(warning.len() + tail.len() + 2);
+    result.push_str(warning);
+    result.push_str("\n\n");
+    result.push_str(tail);
+    result
+}
+
+/// Binary-search the smallest byte index such that `tail[split..]` fits within
+/// `budget` tokens. Guarantees UTF-8 safety via `floor_char_boundary`.
+fn truncate_tail_by_chars(tail: &str, budget: usize) -> &str {
+    let tail_tokens = count_tokens(tail);
+    if tail_tokens <= budget {
+        return tail;
     }
+
+    let mut lo = 0usize;
+    let mut hi = tail.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let mid = tail.floor_char_boundary(mid);
+        let candidate = &tail[mid..];
+        if count_tokens(candidate) > budget {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    &tail[tail.floor_char_boundary(lo)..]
 }

@@ -137,21 +137,13 @@ impl WikiRefreshTool {
             page.file_mtime = disk_mtime;
 
             // Update SQLite index only (disk is already SSOT).
+            // Tantivy upsert is handled asynchronously by WikiIndexingService.
             match self.page_store.index_page(&page).await {
                 Ok(seq) => max_seq = max_seq.max(seq),
                 Err(e) => {
                     warn!("WikiRefresh: failed to index {} in SQLite: {}", rel_path, e);
                     continue;
                 }
-            }
-
-            if let Err(e) = self.page_index.upsert(&page).await {
-                warn!(
-                    "WikiRefresh: failed to upsert {} to Tantivy: {}",
-                    rel_path, e
-                );
-            } else {
-                debug!("WikiRefresh: upserted {} to Tantivy", rel_path);
             }
 
             synced += 1;

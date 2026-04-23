@@ -479,7 +479,7 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let (ctx, aborted) = self.preprocess(content, session_key).await?;
+        let (mut ctx, aborted) = self.preprocess(content, session_key).await?;
 
         if let Some(msg) = aborted {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
@@ -500,6 +500,9 @@ impl AgentSession {
         let (kernel_tx, kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
 
+        // Extract messages so we can move them into the kernel without cloning.
+        let messages = std::mem::take(&mut ctx.messages);
+
         // Spawn via TaskTracker so graceful shutdown can await this task.
         // T3: Stream combinator replaces manual loop + extra spawn.
         let result_handle = self.pending_done.spawn(async move {
@@ -512,7 +515,7 @@ impl AgentSession {
                     }
                 });
 
-            let exec_future = Self::execute(&ctx, kernel_tx);
+            let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx);
             let (result, _) = tokio::join!(exec_future, stream_future);
             let result = result?;
 
@@ -595,10 +598,11 @@ impl AgentSession {
 
     /// Stage 2: Execute — run the kernel streaming loop.
     async fn execute(
-        ctx: &PipelineContext,
+        runtime_ctx: &RuntimeContext,
+        messages: Vec<ChatMessage>,
         kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<ExecutionResult, AgentError> {
-        match kernel::execute_streaming(&ctx.runtime_ctx, ctx.messages.clone(), kernel_tx).await {
+        match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
             Ok(r) => Ok(r),
             Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
                 content: format!("Maximum iterations ({}) reached.", n),

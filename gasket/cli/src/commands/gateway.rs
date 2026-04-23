@@ -80,10 +80,10 @@ pub async fn cmd_gateway() -> Result<()> {
     let pool = memory_store.sqlite_store().pool();
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) = if wiki_root.exists() {
-        let ps = Arc::new(gasket_engine::wiki::PageStore::new(
-            pool.clone(),
-            wiki_root.clone(),
-        ));
+        let ps = Arc::new(
+            gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone())
+                .with_broker(broker.clone()),
+        );
         if let Err(e) = ps.init_dirs().await {
             tracing::warn!("Failed to init wiki dirs: {}", e);
         }
@@ -294,6 +294,12 @@ pub async fn cmd_gateway() -> Result<()> {
     // Track running tasks
     #[allow(unused_mut)]
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Start background Tantivy indexing service.
+    if let (Some(ref ps), Some(ref idx)) = (&page_store, &page_index) {
+        let indexing_svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), idx.clone());
+        tasks.push(indexing_svc.spawn(broker.clone()));
+    }
 
     // Build InboundSender with broker mode (replaces bus.inbound_sender()).
     let inbound_sender = gasket_engine::channels::InboundSender::new_with_broker(broker.clone());

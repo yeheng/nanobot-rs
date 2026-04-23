@@ -64,4 +64,4 @@ serde_yaml.workspace = true
 # macOS-specific dependencies
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Windows-specific dependencies (none - HostExecutor uses std::process::Command)
+winapi = { version = "0.3", features = ["jobapi2", "processthreadsapi", "handleapi", "winnt", "minwindef", "ntdef"] }

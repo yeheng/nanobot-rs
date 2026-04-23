@@ -247,7 +247,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             );
             register_tool!(
                 tools,
-                WikiWriteTool::new(store.clone(), index.clone()),
+                WikiWriteTool::new(store.clone()),
                 "Wiki Write",
                 "memory",
                 ["write", "wiki"],

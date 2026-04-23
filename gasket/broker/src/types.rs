@@ -17,6 +17,8 @@ pub enum Topic {
     Stream(String),
     CronTrigger,
     Heartbeat,
+    /// Wiki page changed (created, updated, or deleted).
+    WikiChanged,
     Custom(String),
 }
 
@@ -63,6 +65,12 @@ pub enum DeliveryMode {
 pub enum BrokerPayload {
     Inbound(InboundMessage),
     Outbound(OutboundMessage),
+    /// Wiki page was written or deleted.
+    /// `path` is the wiki page path; `sync_sequence` is the monotonic SQLite sequence.
+    WikiChanged {
+        path: String,
+        sync_sequence: u64,
+    },
 }
 
 /// Pure data envelope — no callbacks, no channels, fully Clone-safe.

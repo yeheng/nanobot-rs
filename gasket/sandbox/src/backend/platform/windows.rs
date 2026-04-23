@@ -1,46 +1,66 @@
-//! Windows host execution backend (NOT a sandbox)
+//! Windows host execution backend (limited isolation via Job Objects)
 //!
-//! **CRITICAL WARNING**: This backend provides ZERO isolation. Commands run
-//! with the same privileges as the parent process — no sandboxing, no resource
-//! limits, no filesystem restrictions. For proper sandboxing on Windows, use
-//! WSL2 with bwrap.
+//! **WARNING**: This backend provides **basic** resource constraints via Windows
+//! Job Objects — memory limits, CPU time limits, and lowered priority. It does
+//! NOT provide filesystem isolation or true sandboxing. For proper sandboxing on
+//! Windows, use WSL2 with bwrap.
 //!
-//! This is intentionally named `HostExecutor` to make the lack of sandboxing
-//! obvious at every call site. It is NOT a `SandboxBackend` in any meaningful
-//! sense — it simply delegates to `cmd.exe` with no restrictions.
+//! This is intentionally named `HostExecutor` to make the lack of true
+//! sandboxing obvious at every call site.
 
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
 use tokio::process::Command as AsyncCommand;
 use tracing::{debug, warn};
+use winapi::shared::minwindef::FALSE;
+use winapi::um::handleapi::CloseHandle;
+use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+use winapi::um::winnt::{
+    JobObjectExtendedLimitInformation, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    JOB_OBJECT_LIMIT_PROCESS_TIME,
+};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
-/// Host execution backend — runs commands via cmd.exe with NO isolation.
+/// RAII wrapper for a Windows Job Object handle.
+struct JobObject(HANDLE);
+
+impl Drop for JobObject {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Host execution backend — runs commands via cmd.exe with **basic** Job Object
+/// resource limits.
 ///
-/// This backend does **not** sandbox commands. It exists only so that Windows
-/// users can still execute tools, but every command runs with full user
-/// privileges. The name `HostExecutor` deliberately communicates that this
-/// executes directly on the host, NOT inside any sandbox.
-///
-/// For proper sandboxing on Windows, consider using WSL2 with bwrap.
+/// Applies:
+/// - Per-process memory limit (from `SandboxConfig.limits.max_memory_bytes`)
+/// - Per-process CPU time limit (from `SandboxConfig.limits.max_cpu_secs`)
+/// - Active process limit (from `SandboxConfig.limits.max_processes`)
+/// - Lowered priority class (`BELOW_NORMAL_PRIORITY_CLASS`)
+/// - `KILL_ON_JOB_CLOSE` so the child dies if the job handle is dropped
 pub struct HostExecutor {
-    // No isolation mechanism — this is intentional
+    // No persistent state — Job Objects are created per execution
 }
 
 impl HostExecutor {
     /// Create a new host executor backend.
-    ///
-    /// Logs a **warning** on every construction to remind operators that
-    /// commands will run without any isolation.
     pub fn new() -> Self {
         warn!(
-            "HostExecutor: Commands will run WITHOUT isolation or \
-             resource limits. For proper sandboxing, use WSL2 with bwrap."
+            "HostExecutor: Commands will run with BASIC resource limits only. \
+             For proper sandboxing, use WSL2 with bwrap."
         );
         Self {}
     }
@@ -93,15 +113,68 @@ impl HostExecutor {
     ) -> Result<Command> {
         let validated = self.validate_working_dir(working_dir, config)?;
 
-        // On Windows, we use cmd.exe for command execution
-        // NOTE: This provides NO sandboxing - commands run with full privileges
-        // Full Job Objects integration would require unsafe Win32 API calls
-
         let mut command = Command::new("cmd");
         command.arg("/C").arg(cmd).current_dir(&validated);
 
-        debug!("Windows command (unsandboxed): {:?}", command);
+        debug!("Windows command: {:?}", command);
         Ok(command)
+    }
+
+    /// Create a Windows Job Object with the resource limits from `config`.
+    fn create_job_object(&self, config: &SandboxConfig) -> Option<JobObject> {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if job.is_null() {
+                warn!("HostExecutor: CreateJobObjectW failed");
+                return None;
+            }
+
+            let limits = &config.limits;
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            let mut limit_flags = 0u32;
+
+            if limits.max_memory_bytes > 0 {
+                info.ProcessMemoryLimit = limits.max_memory_bytes as usize;
+                limit_flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            }
+
+            if limits.max_cpu_secs > 0 {
+                // PerProcessUserTimeLimit is in 100-nanosecond intervals.
+                info.BasicLimitInformation.PerProcessUserTimeLimit =
+                    (limits.max_cpu_secs as u64) * 10_000_000;
+                limit_flags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
+            }
+
+            if limits.max_processes > 0 {
+                info.BasicLimitInformation.ActiveProcessLimit = limits.max_processes;
+                limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            }
+
+            // Lower priority so a runaway loop doesn't starve the host.
+            info.BasicLimitInformation.PriorityClass =
+                winapi::um::winbase::BELOW_NORMAL_PRIORITY_CLASS as _;
+            limit_flags |= JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+
+            // Ensure child processes are terminated when the job handle is closed.
+            limit_flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+            info.BasicLimitInformation.LimitFlags = limit_flags;
+
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+
+            if ok == FALSE {
+                warn!("HostExecutor: SetInformationJobObject failed");
+                CloseHandle(job);
+                return None;
+            }
+
+            Some(JobObject(job))
+        }
     }
 }
 
@@ -114,11 +187,10 @@ impl Default for HostExecutor {
 #[async_trait]
 impl SandboxBackend for HostExecutor {
     fn name(&self) -> &str {
-        "host-executor" // Name reflects reality: no sandboxing, just host execution
+        "host-executor"
     }
 
     async fn is_available(&self) -> bool {
-        // Always available on Windows (it's just cmd.exe)
         true
     }
 
@@ -143,7 +215,6 @@ impl SandboxBackend for HostExecutor {
     ) -> Result<ExecutionResult> {
         let validated = self.validate_working_dir(working_dir, config)?;
 
-        // Build async command with kill_on_drop to ensure process termination on timeout
         let mut command = AsyncCommand::new("cmd");
         command
             .arg("/C")
@@ -151,18 +222,31 @@ impl SandboxBackend for HostExecutor {
             .current_dir(&validated)
             .kill_on_drop(true);
 
-        debug!("Windows async command (unsandboxed): {:?}", command);
+        debug!("Windows async command: {:?}", command);
 
-        let output = command
-            .output()
+        // Spawn the child so we can attach it to a Job Object before waiting.
+        let mut child = command
+            .spawn()
+            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
+
+        // Apply resource constraints.
+        let job = self.create_job_object(config);
+        if let Some(ref job) = job {
+            let raw_handle = child.as_raw_handle();
+            let ok = unsafe { AssignProcessToJobObject(job.0, raw_handle as HANDLE) };
+            if ok == FALSE {
+                warn!("HostExecutor: AssignProcessToJobObject failed");
+            }
+        }
+
+        let output = child
+            .wait_with_output()
             .await
             .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        // Note: Full Job Objects resource limiting would require Win32 API
-        // For now, we just truncate output
         let max_output = config.limits.max_output_bytes;
         let stdout = if stdout.len() > max_output {
             let original_len = stdout.len();
@@ -183,7 +267,7 @@ impl SandboxBackend for HostExecutor {
             stderr,
             timed_out: false,
             resource_exceeded: false,
-            duration_ms: 0, // Duration is tracked by ProcessManager
+            duration_ms: 0,
         })
     }
 }

@@ -1,8 +1,9 @@
 use anyhow::Result;
+use gasket_broker::{BrokerPayload, Envelope, MemoryBroker, Topic};
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 
@@ -15,6 +16,8 @@ pub struct PageStore {
     wiki_root: PathBuf,
     /// Lazy-initialized monotonic sequence for SQLite → Tantivy sync tracking.
     next_sequence: Mutex<Option<u64>>,
+    /// Optional broker for publishing wiki change events.
+    broker: Option<Arc<MemoryBroker>>,
 }
 
 impl PageStore {
@@ -23,7 +26,14 @@ impl PageStore {
             db: WikiPageStore::new(pool),
             wiki_root,
             next_sequence: Mutex::new(None),
+            broker: None,
         }
+    }
+
+    /// Attach a broker so that `write`/`delete` publish async indexing events.
+    pub fn with_broker(mut self, broker: Arc<MemoryBroker>) -> Self {
+        self.broker = Some(broker);
+        self
     }
 
     /// Get the wiki root directory.
@@ -115,7 +125,9 @@ impl PageStore {
 
         let disk_path = self.wiki_root.join(format!("{}.md", page.path));
         let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
-        self.upsert_db(page, mtime).await
+        let seq = self.upsert_db(page, mtime).await?;
+        self.notify_wiki_changed(&page.path, seq).await;
+        Ok(seq)
     }
 
     /// Update SQLite index for a page that is already on disk.
@@ -131,6 +143,7 @@ impl PageStore {
         let disk_path = self.wiki_root.join(format!("{}.md", path));
         let _ = fs::remove_file(&disk_path).await;
         self.db.delete(path).await?;
+        self.notify_wiki_changed(path, 0).await;
         Ok(())
     }
 
@@ -375,6 +388,26 @@ impl PageStore {
         self.db
             .update_sync_state("tantivy_last_sequence", sequence)
             .await
+    }
+
+    /// Publish a non-blocking `WikiChanged` event to the broker if one is attached.
+    async fn notify_wiki_changed(&self, path: &str, sync_sequence: u64) {
+        if let Some(ref broker) = self.broker {
+            let envelope = Envelope::new(
+                Topic::WikiChanged,
+                BrokerPayload::WikiChanged {
+                    path: path.to_string(),
+                    sync_sequence,
+                },
+            );
+            if let Err(e) = broker.try_publish(envelope) {
+                tracing::debug!(
+                    "PageStore: failed to publish WikiChanged for {}: {}",
+                    path,
+                    e
+                );
+            }
+        }
     }
 
     async fn file_mtime(path: &PathBuf) -> Result<i64> {

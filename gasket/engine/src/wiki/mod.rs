@@ -1,4 +1,5 @@
 pub mod index;
+pub mod indexing_service;
 pub mod ingest;
 pub mod lifecycle;
 pub mod lint;
@@ -9,6 +10,7 @@ pub mod store;
 
 // Re-exports
 pub use index::PageIndex;
+pub use indexing_service::WikiIndexingService;
 pub use ingest::{
     ConversationParser, DedupResult, ExtractedItem, ExtractedItemType, ExtractionResult,
     HtmlParser, KnowledgeExtractor, MarkdownParser, ParsedSource, PlainTextParser,
