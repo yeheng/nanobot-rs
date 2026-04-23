@@ -329,6 +329,13 @@ impl CronService {
                 Some("cron".to_string()),
                 Some(serde_json::json!({"action": "refresh"})),
             ),
+            (
+                "system-evolution",
+                "Evolution",
+                "0 0 * * * * *",
+                Some("evolution".to_string()),
+                Some(serde_json::json!({"threshold": 20})),
+            ),
         ];
         for (id, name, cron_expr, tool, tool_args) in &system_jobs {
             if self.registry.read().contains(id) {

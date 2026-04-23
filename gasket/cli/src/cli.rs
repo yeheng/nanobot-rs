@@ -64,6 +64,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: WikiCommands,
     },
+
+    /// Execute a tool directly
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -230,6 +236,17 @@ pub enum MemoryCommands {
 
     /// Run memory frequency decay (demote stale hot/warm/cold memories)
     Decay,
+}
+
+#[derive(Subcommand)]
+pub enum ToolCommands {
+    /// Execute a tool with JSON arguments
+    Execute {
+        /// Tool name (e.g., 'evolution')
+        name: String,
+        /// JSON arguments (e.g., '{"threshold": 20}')
+        args: String,
+    },
 }
 
 #[derive(Subcommand)]

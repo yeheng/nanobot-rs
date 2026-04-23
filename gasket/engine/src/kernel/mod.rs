@@ -12,7 +12,7 @@ pub(crate) mod steppable_executor;
 pub mod stream;
 pub(crate) mod tool_executor;
 
-pub use context::{KernelConfig, RuntimeContext};
+pub use context::{CheckpointCallback, KernelConfig, NoopCheckpoint, RuntimeContext};
 pub use error::KernelError;
 pub use executor::{
     ExecutionResult, ExecutorOptions, KernelExecutor, StepResult, SteppableExecutor, TokenLedger,
@@ -36,9 +36,6 @@ fn build_executor(ctx: &RuntimeContext) -> KernelExecutor {
     }
     if let Some(ref tracker) = ctx.token_tracker {
         exec = exec.with_token_tracker(tracker.clone());
-    }
-    if let Some(ref cb) = ctx.checkpoint_callback {
-        exec = exec.with_checkpoint(cb.clone());
     }
     exec
 }

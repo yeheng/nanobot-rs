@@ -234,9 +234,9 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
         println!("  {} errors", errors);
     }
 
-    // Rebuild disk cache
-    let cached = ps.rebuild_disk_cache().await?;
-    println!("  {} disk cache files written", cached);
+    // Ensure SQLite index is fully synced with disk (SSOT).
+    let cached = ps.sync_db_from_disk().await?;
+    println!("  {} disk cache files synced to index", cached);
 
     // Rebuild Tantivy index from SQLite
     let tantivy_dir = wiki_root.join(".tantivy");

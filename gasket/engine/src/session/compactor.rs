@@ -588,6 +588,8 @@ impl ContextCompactor {
             }
 
             // If pending was set while we were running, clear it and re-trigger.
+            // We run the follow-up inline while still holding the CompactionGuard
+            // to prevent concurrent compaction for the same session.
             if pending
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
@@ -596,23 +598,22 @@ impl ContextCompactor {
                     "Pending compaction detected for {} — re-triggering immediately",
                     sk
                 );
-                // Spawn a follow-up compaction.  We intentionally do NOT pass
-                // the guard forward; a new lock will be acquired inline.
-                let _handle = tokio::spawn(async move {
-                    if let Err(e) = run_compaction(
-                        &event_store,
-                        &sqlite_store,
-                        &*provider,
-                        &model,
-                        &summarization_prompt,
-                        &sk,
-                        &vault,
-                    )
-                    .await
-                    {
-                        warn!("Follow-up compaction failed for {}: {}", sk, e);
-                    }
-                });
+                if let Err(e) = run_compaction(
+                    &event_store,
+                    &sqlite_store,
+                    &*provider,
+                    &model,
+                    &summarization_prompt,
+                    &sk,
+                    &vault,
+                )
+                .await
+                {
+                    warn!("Follow-up compaction failed for {}: {}", sk, e);
+                    *last_failed.lock() = Some(Instant::now());
+                } else {
+                    *last_failed.lock() = None;
+                }
             }
         });
     }

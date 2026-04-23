@@ -29,6 +29,7 @@ use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
+use async_trait::async_trait;
 use gasket_types::events::ChatEvent;
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
 
@@ -65,6 +66,50 @@ impl FinalizeContext {
             content: req.user_content.clone(),
             local_vault_values: req.vault_values.clone(),
             estimated_tokens: req.estimated_tokens,
+        }
+    }
+}
+
+/// Async checkpoint callback implementation for AgentSession.
+///
+/// Bridges the kernel's checkpoint hook to the session's compactor,
+/// eliminating the need for `block_in_place` + `block_on` hacks.
+struct SessionCheckpointCallback {
+    session_key: SessionKey,
+    compactor: Arc<ContextCompactor>,
+    event_store: Arc<gasket_storage::EventStore>,
+}
+
+#[async_trait]
+impl crate::kernel::CheckpointCallback for SessionCheckpointCallback {
+    async fn get_checkpoint(&self, msg_len: usize) -> Option<String> {
+        // Only check after a minimum number of messages to avoid
+        // checkpoint noise at the start of a conversation.
+        if msg_len < 3 {
+            return None;
+        }
+        let max_seq = match self.event_store.get_max_sequence(&self.session_key).await {
+            Ok(seq) => seq,
+            Err(e) => {
+                tracing::debug!("Checkpoint: get_max_sequence failed: {}", e);
+                return None;
+            }
+        };
+        match self.compactor.checkpoint(&self.session_key, max_seq).await {
+            Ok(Some(summary)) => {
+                tracing::info!(
+                    "Checkpoint injected for {} at seq {} ({} chars)",
+                    self.session_key,
+                    max_seq,
+                    summary.len()
+                );
+                Some(summary)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("Checkpoint generation failed: {}", e);
+                None
+            }
         }
     }
 }
@@ -173,6 +218,17 @@ struct WikiComponents {
     wiki_log: Arc<WikiLog>,
 }
 
+/// Health status of the wiki knowledge system.
+#[derive(Debug, Clone)]
+pub enum WikiHealth {
+    /// Wiki not configured (config.wiki is None or disabled)
+    Disabled,
+    /// Wiki fully operational
+    Healthy,
+    /// Wiki was configured but initialization failed
+    Degraded { reason: String },
+}
+
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
 /// Owns session state (events, prompts, wiki knowledge, compaction) and delegates
@@ -190,6 +246,8 @@ pub struct AgentSession {
     indexing_service: Option<Arc<IndexingService>>,
     /// Wiki knowledge system. None when wiki is disabled.
     wiki: Option<WikiComponents>,
+    /// Wiki initialization health status — distinguishes "disabled" from "broken".
+    wiki_health: WikiHealth,
     /// Optional pricing configuration for cost calculation.
     pricing: Option<ModelPricing>,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
@@ -279,6 +337,14 @@ impl AgentSession {
     /// Get the wiki log.
     pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
         self.wiki.as_ref().map(|w| &w.wiki_log)
+    }
+
+    /// Get the wiki health status.
+    ///
+    /// Distinguishes between wiki being disabled by configuration vs
+    /// configured but failing to initialize (e.g. disk errors, corrupt index).
+    pub fn wiki_health(&self) -> &WikiHealth {
+        &self.wiki_health
     }
 
     /// Clear session for the given key.
@@ -379,11 +445,6 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
-        if self.is_compacting() {
-            return Err(AgentError::SessionError(
-                "Context compaction in progress, please wait.".to_string(),
-            ));
-        }
         let (_event_rx, handle) = self
             .process_direct_streaming_with_channel(content, session_key)
             .await?;
@@ -410,11 +471,6 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        if self.is_compacting() {
-            return Err(AgentError::SessionError(
-                "Context compaction in progress, please wait.".to_string(),
-            ));
-        }
         let outcome = self.prepare_pipeline(content, session_key).await?;
 
         let request = match outcome {
@@ -451,44 +507,11 @@ impl AgentSession {
         if let (Some(ref compactor), AgentContext::Persistent(ref persistent_ctx)) =
             (&compactor, &context)
         {
-            let session_key_ck = fctx.session_key.clone();
-            let compactor_ck = compactor.clone();
-            let event_store_ck = persistent_ctx.event_store.clone();
-            runtime_ctx.checkpoint_callback = Some(Arc::new(move |msg_len: usize| {
-                // Only check after a minimum number of messages to avoid
-                // checkpoint noise at the start of a conversation.
-                if msg_len < 3 {
-                    return None;
-                }
-                tokio::task::block_in_place(|| {
-                    let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async {
-                        let max_seq = match event_store_ck.get_max_sequence(&session_key_ck).await {
-                            Ok(seq) => seq,
-                            Err(e) => {
-                                tracing::debug!("Checkpoint: get_max_sequence failed: {}", e);
-                                return None;
-                            }
-                        };
-                        match compactor_ck.checkpoint(&session_key_ck, max_seq).await {
-                            Ok(Some(summary)) => {
-                                tracing::info!(
-                                    "Checkpoint injected for {} at seq {} ({} chars)",
-                                    session_key_ck,
-                                    max_seq,
-                                    summary.len()
-                                );
-                                Some(summary)
-                            }
-                            Ok(None) => None,
-                            Err(e) => {
-                                tracing::warn!("Checkpoint generation failed: {}", e);
-                                None
-                            }
-                        }
-                    })
-                })
-            }));
+            runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
+                session_key: fctx.session_key.clone(),
+                compactor: compactor.clone(),
+                event_store: persistent_ctx.event_store.clone(),
+            });
         }
 
         let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
@@ -549,8 +572,6 @@ impl AgentSession {
     ) -> Result<history::builder::BuildOutcome, AgentError> {
         use history::builder::ContextBuilder;
 
-        // TODO: Phase 3 - Add wiki-based memory loader
-        // For now, don't set any memory loader
         let builder = ContextBuilder::new(
             self.context.clone(),
             self.system_prompt.clone(),
@@ -558,6 +579,52 @@ impl AgentSession {
             self.hooks.clone(),
             self.history_config.clone(),
         );
+
+        // Wire wiki-based memory loader so long-term knowledge automatically
+        // flows into the conversation context.
+        let builder = if let Some(ref wiki) = self.wiki {
+            let page_index = wiki.page_index.clone();
+            let page_store = wiki.page_store.clone();
+            builder.with_memory_loader(move |user_input: &str| {
+                let query = user_input.to_string();
+                let index = page_index.clone();
+                let store = page_store.clone();
+                Box::pin(async move {
+                    let hits = index
+                        .search_with_store(&query, 3, Some(&store))
+                        .await
+                        .ok()?;
+                    if hits.is_empty() {
+                        return None;
+                    }
+                    let mut parts =
+                        vec!["[Relevant long-term memories loaded for this turn]".to_string()];
+                    for hit in hits {
+                        if let Ok(page) = store.read(&hit.path).await {
+                            let preview = if page.content.chars().count() > 800 {
+                                page.content.chars().take(800).collect::<String>() + "..."
+                            } else {
+                                page.content.clone()
+                            };
+                            parts.push(format!(
+                                "## {} (path: {} | tags: [{}])\n{}",
+                                page.title,
+                                page.path,
+                                page.tags.join(", "),
+                                preview
+                            ));
+                        }
+                    }
+                    if parts.len() > 1 {
+                        Some(parts.join("\n\n"))
+                    } else {
+                        None
+                    }
+                })
+            })
+        } else {
+            builder
+        };
 
         builder.build(content, session_key).await
     }

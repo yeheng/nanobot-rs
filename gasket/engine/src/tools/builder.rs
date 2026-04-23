@@ -12,9 +12,9 @@ use crate::memory::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{
-    CreatePlanTool, EditFileTool, ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool,
-    MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, Tool,
-    ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool,
+    CreatePlanTool, EditFileTool, EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool,
+    MemorizeTool, MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool,
+    Tool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool,
     WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
 };
 
@@ -70,6 +70,24 @@ pub struct ToolRegistryConfig {
     pub model: Option<String>,
 }
 
+/// Register a tool with metadata — one line per tool.
+///
+/// Eliminates the 10-line `register_with_metadata(Box::new(...), ToolMetadata {...})` boilerplate.
+macro_rules! register_tool {
+    ($registry:expr, $tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
+        $registry.register_with_metadata(
+            Box::new($tool),
+            ToolMetadata {
+                display_name: $display.to_string(),
+                category: $cat.to_string(),
+                tags: vec![$($tag.to_string()),*],
+                requires_approval: $approval,
+                is_mutating: $mutating,
+            },
+        );
+    };
+}
+
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
 ///
 /// This function registers all common tools (filesystem, web, memory, etc.) and
@@ -101,253 +119,81 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     let mut tools = ToolRegistry::new();
 
-    // Safe read-only tools (no approval required)
-    tools.register_with_metadata(
-        Box::new(ReadFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Read File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["read".to_string(), "file".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(ListDirTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "List Directory".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["read".to_string(), "directory".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(
-            WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
-                tracing::warn!(
-                    "Failed to create WebFetchTool with proxy config: {}. Using default.",
-                    e
-                );
-                WebFetchTool::new()
-            }),
-        ),
-        ToolMetadata {
-            display_name: "Web Fetch".to_string(),
-            category: "web".to_string(),
-            tags: vec!["http".to_string(), "fetch".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
-        ToolMetadata {
-            display_name: "Web Search".to_string(),
-            category: "web".to_string(),
-            tags: vec!["search".to_string(), "web".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
+    // ── Safe read-only tools (no approval required) ───────────
+    register_tool!(tools, ReadFileTool::new(allowed_dir.clone()),
+        "Read File", "filesystem", ["read", "file"], false, false);
+    register_tool!(tools, ListDirTool::new(allowed_dir.clone()),
+        "List Directory", "filesystem", ["read", "directory"], false, false);
+    register_tool!(tools,
+        WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
+            tracing::warn!("Failed to create WebFetchTool with proxy config: {}. Using default.", e);
+            WebFetchTool::new()
+        }),
+        "Web Fetch", "web", ["http", "fetch"], false, false);
+    register_tool!(tools, WebSearchTool::new(Some(config.tools.web.clone())),
+        "Web Search", "web", ["search", "web"], false, false);
 
-    // Dangerous mutating tools (require approval)
-    tools.register_with_metadata(
-        Box::new(WriteFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Write File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["write".to_string(), "file".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(EditFileTool::new(allowed_dir.clone())),
-        ToolMetadata {
-            display_name: "Edit File".to_string(),
-            category: "filesystem".to_string(),
-            tags: vec!["edit".to_string(), "file".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(ExecTool::from_config(
-            exec_workspace,
-            &config.tools.exec,
-            restrict,
-        )),
-        ToolMetadata {
-            display_name: "Execute Command".to_string(),
-            category: "system".to_string(),
-            tags: vec!["shell".to_string(), "exec".to_string()],
-            requires_approval: true,
-            is_mutating: true,
-        },
-    );
+    // ── Dangerous mutating tools (require approval) ───────────
+    register_tool!(tools, WriteFileTool::new(allowed_dir.clone()),
+        "Write File", "filesystem", ["write", "file"], true, true);
+    register_tool!(tools, EditFileTool::new(allowed_dir.clone()),
+        "Edit File", "filesystem", ["edit", "file"], true, true);
+    register_tool!(tools, ExecTool::from_config(exec_workspace, &config.tools.exec, restrict),
+        "Execute Command", "system", ["shell", "exec"], true, true);
 
-    // Spawn tools
-    tools.register_with_metadata(
-        Box::new(SpawnTool::new()),
-        ToolMetadata {
-            display_name: "Spawn Subagent".to_string(),
-            category: "system".to_string(),
-            tags: vec!["spawn".to_string(), "agent".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
-    tools.register_with_metadata(
-        Box::new(SpawnParallelTool::new()),
-        ToolMetadata {
-            display_name: "Spawn Parallel".to_string(),
-            category: "system".to_string(),
-            tags: vec![
-                "spawn".to_string(),
-                "parallel".to_string(),
-                "agent".to_string(),
-            ],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
+    // ── Spawn tools ───────────────────────────────────────────
+    register_tool!(tools, SpawnTool::new(),
+        "Spawn Subagent", "system", ["spawn", "agent"], false, false);
+    register_tool!(tools, SpawnParallelTool::new(),
+        "Spawn Parallel", "system", ["spawn", "parallel", "agent"], false, false);
 
-    // Wiki-based memory tools (only if page_store is configured)
+    // ── Wiki-based memory tools (only if page_store is configured) ──
     if let Some(ref store) = page_store {
-        // Memorize tool
-        tools.register_with_metadata(
-            Box::new(MemorizeTool::new(store.clone())),
-            ToolMetadata {
-                display_name: "Memorize".to_string(),
-                category: "memory".to_string(),
-                tags: vec!["write".to_string(), "memory".to_string()],
-                requires_approval: false,
-                is_mutating: true,
-            },
-        );
+        register_tool!(tools, MemorizeTool::new(store.clone()),
+            "Memorize", "memory", ["write", "memory"], false, true);
 
-        // Memory search tool
-        let search_tool = MemorySearchTool::new(store.clone(), page_index.clone());
-        tools.register_with_metadata(
-            Box::new(search_tool),
-            ToolMetadata {
-                display_name: "Memory Search".to_string(),
-                category: "memory".to_string(),
-                tags: vec!["search".to_string(), "memory".to_string()],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
+        register_tool!(tools, MemorySearchTool::new(store.clone(), page_index.clone()),
+            "Memory Search", "memory", ["search", "memory"], false, false);
 
         // Unified wiki tools (require both page_store and page_index)
         if let Some(ref index) = page_index {
-            tools.register_with_metadata(
-                Box::new(WikiSearchTool::new(store.clone(), index.clone())),
-                ToolMetadata {
-                    display_name: "Wiki Search".to_string(),
-                    category: "memory".to_string(),
-                    tags: vec!["search".to_string(), "wiki".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            );
-
-            tools.register_with_metadata(
-                Box::new(WikiWriteTool::new(store.clone(), index.clone())),
-                ToolMetadata {
-                    display_name: "Wiki Write".to_string(),
-                    category: "memory".to_string(),
-                    tags: vec!["write".to_string(), "wiki".to_string()],
-                    requires_approval: false,
-                    is_mutating: true,
-                },
-            );
-
-            tools.register_with_metadata(
-                Box::new(WikiRefreshTool::new(store.clone(), index.clone())),
-                ToolMetadata {
-                    display_name: "Wiki Refresh".to_string(),
-                    category: "memory".to_string(),
-                    tags: vec!["refresh".to_string(), "wiki".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            );
-
-            // SOP search tool (filters wiki search to SOP pages only)
-            tools.register_with_metadata(
-                Box::new(SearchSopsTool::new(index.clone())),
-                ToolMetadata {
-                    display_name: "Search SOPs".to_string(),
-                    category: "memory".to_string(),
-                    tags: vec!["search".to_string(), "sop".to_string(), "wiki".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            );
+            register_tool!(tools, WikiSearchTool::new(store.clone(), index.clone()),
+                "Wiki Search", "memory", ["search", "wiki"], false, false);
+            register_tool!(tools, WikiWriteTool::new(store.clone(), index.clone()),
+                "Wiki Write", "memory", ["write", "wiki"], false, true);
+            register_tool!(tools, WikiRefreshTool::new(store.clone(), index.clone()),
+                "Wiki Refresh", "memory", ["refresh", "wiki"], false, false);
+            register_tool!(tools, SearchSopsTool::new(index.clone()),
+                "Search SOPs", "memory", ["search", "sop", "wiki"], false, false);
         }
 
         // Wiki read tool (only needs page_store)
-        tools.register_with_metadata(
-            Box::new(WikiReadTool::new(store.clone())),
-            ToolMetadata {
-                display_name: "Wiki Read".to_string(),
-                category: "memory".to_string(),
-                tags: vec!["read".to_string(), "wiki".to_string()],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
+        register_tool!(tools, WikiReadTool::new(store.clone()),
+            "Wiki Read", "memory", ["read", "wiki"], false, false);
 
         // Wiki decay tool (downgrades stale pages)
-        tools.register_with_metadata(
-            Box::new(WikiDecayTool::new(store.clone())),
-            ToolMetadata {
-                display_name: "Wiki Decay".to_string(),
-                category: "memory".to_string(),
-                tags: vec!["decay".to_string(), "wiki".to_string()],
-                requires_approval: false,
-                is_mutating: true,
-            },
-        );
+        register_tool!(tools, WikiDecayTool::new(store.clone()),
+            "Wiki Decay", "memory", ["decay", "wiki"], false, true);
 
         // Plan generation tool (requires provider + model)
         if let (Some(ref prov), Some(ref mdl)) = (&provider, &model) {
-            tools.register_with_metadata(
-                Box::new(CreatePlanTool::new(
-                    prov.clone(),
-                    mdl.clone(),
-                    store.clone(),
-                )),
-                ToolMetadata {
-                    display_name: "Create Plan".to_string(),
-                    category: "system".to_string(),
-                    tags: vec!["plan".to_string(), "markdown".to_string()],
-                    requires_approval: false,
-                    is_mutating: true,
-                },
-            );
+            register_tool!(tools, CreatePlanTool::new(prov.clone(), mdl.clone(), store.clone()),
+                "Create Plan", "system", ["plan", "markdown"], false, true);
         }
     }
 
-    // History query tool — direct SQL query over session_events
+    // Evolution maintenance tool — background learning from conversations
+    if let (Some(ref db), Some(ref prov), Some(ref mdl), Some(ref ps)) =
+        (&sqlite_store, &provider, &model, &page_store)
+    {
+        register_tool!(tools, EvolutionTool::new(db.clone(), prov.clone(), mdl.clone(), Some(ps.clone()), 20),
+            "Evolution", "system", ["maintenance", "learning"], false, true);
+    }
+
     // History query tool — direct SQL query over session_events
     if let Some(ref db) = sqlite_store {
-        tools.register_with_metadata(
-            Box::new(HistoryQueryTool::new(db.pool().clone())),
-            ToolMetadata {
-                display_name: "Query History".to_string(),
-                category: "memory".to_string(),
-                tags: vec![
-                    "history".to_string(),
-                    "search".to_string(),
-                    "sqlite".to_string(),
-                ],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
+        register_tool!(tools, HistoryQueryTool::new(db.pool().clone()),
+            "Query History", "memory", ["history", "search", "sqlite"], false, false);
     }
 
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)

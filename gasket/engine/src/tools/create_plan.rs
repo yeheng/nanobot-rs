@@ -39,7 +39,7 @@ impl CreatePlanTool {
         &self,
         goal: &str,
         context: &[ChatMessage],
-    ) -> Result<(String, String), anyhow::Error> {
+    ) -> Result<(String, String, String), anyhow::Error> {
         let prompt = self.build_plan_prompt(goal, context);
 
         let request = ChatRequest {
@@ -68,13 +68,13 @@ impl CreatePlanTool {
 
         // Persist as WikiPage — no JSON AST, just Markdown
         let slug = slugify(goal);
-        let path = format!("plans/{}", slug);
+        let path = format!("topics/plans/{}", slug);
 
         let page = WikiPage::new(
             path.clone(),
             format!("Plan: {}", goal),
             PageType::Topic,
-            plan_markdown,
+            plan_markdown.clone(),
         );
 
         self.page_store.write(&page).await?;
@@ -84,7 +84,7 @@ impl CreatePlanTool {
             "Plan created and saved to {}. The agent will now execute each step.",
             path
         );
-        Ok((confirmation, path))
+        Ok((confirmation, path, plan_markdown))
     }
 
     fn build_plan_prompt(&self, goal: &str, context: &[ChatMessage]) -> String {
@@ -182,12 +182,15 @@ impl Tool for CreatePlanTool {
             ChatMessage::user(parsed.context)
         };
 
-        let (confirmation, path) = self
+        let (confirmation, path, plan) = self
             .invoke(goal, &[context_msg])
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
 
-        Ok(format!("{}\nPath: {}", confirmation, path))
+        Ok(format!(
+            "{}\nPath: {}\n\n--- Plan ---\n{}",
+            confirmation, path, plan
+        ))
     }
 }
 

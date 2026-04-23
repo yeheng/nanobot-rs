@@ -42,7 +42,7 @@ pub struct ExecutionResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
-    pub token_usage: Option<gasket_types::TokenUsage>,
+    pub token_usage: Option<TokenUsage>,
     pub cost: Option<f64>,
 }
 
@@ -137,9 +137,9 @@ impl KernelExecutor {
 
     pub fn with_checkpoint(
         mut self,
-        callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
+        callback: Arc<dyn crate::kernel::context::CheckpointCallback>,
     ) -> Self {
-        self.ctx.checkpoint_callback = Some(callback);
+        self.ctx.checkpoint_callback = callback;
         self
     }
 
@@ -266,12 +266,12 @@ mod tests {
         let mut ledger = TokenLedger::new();
         assert!(ledger.total_usage.is_none());
 
-        let usage1 = gasket_types::TokenUsage::new(100, 50);
+        let usage1 = TokenUsage::new(100, 50);
         ledger.accumulate(&usage1);
         assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 100);
         assert_eq!(ledger.total_usage.as_ref().unwrap().output_tokens, 50);
 
-        let usage2 = gasket_types::TokenUsage::new(200, 100);
+        let usage2 = TokenUsage::new(200, 100);
         ledger.accumulate(&usage2);
         assert_eq!(ledger.total_usage.as_ref().unwrap().input_tokens, 300);
         assert_eq!(ledger.total_usage.as_ref().unwrap().output_tokens, 150);

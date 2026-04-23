@@ -132,20 +132,44 @@ impl AgentContext {
     ///
     /// Returns `(summary_text, covered_upto_sequence)`.
     /// For `Stateless` context or if no summary exists, returns `("", 0)`.
+    ///
+    /// Also loads the latest checkpoint (if any) and merges it into the
+    /// summary text so that working-memory snapshots survive restarts.
+    /// The watermark is kept at the compaction level because checkpoints
+    /// do not delete events.
     pub async fn load_summary_with_watermark(
         &self,
         session_key: &SessionKey,
     ) -> Result<(String, i64), AgentError> {
         match self {
             Self::Persistent(ctx) => {
-                match ctx.sqlite_store.load_session_summary(session_key).await {
-                    Ok(Some((content, watermark))) => Ok((content, watermark)),
-                    Ok(None) => Ok((String::new(), 0)),
-                    Err(e) => Err(AgentError::SessionError(format!(
-                        "Failed to load summary for {}: {}",
-                        session_key, e
-                    ))),
+                let (mut summary, watermark) =
+                    match ctx.sqlite_store.load_session_summary(session_key).await {
+                        Ok(Some((content, watermark))) => (content, watermark),
+                        Ok(None) => (String::new(), 0),
+                        Err(e) => {
+                            return Err(AgentError::SessionError(format!(
+                                "Failed to load summary for {}: {}",
+                                session_key, e
+                            )))
+                        }
+                    };
+
+                // Merge latest checkpoint into summary so working memory
+                // survives session restarts.
+                let key_str = session_key.to_string();
+                if let Ok(Some((ck_summary, _ck_seq))) =
+                    ctx.sqlite_store.load_checkpoint(&key_str, i64::MAX).await
+                {
+                    if !ck_summary.is_empty() {
+                        if !summary.is_empty() {
+                            summary.push_str("\n\n[Working Memory]\n");
+                        }
+                        summary.push_str(&ck_summary);
+                    }
                 }
+
+                Ok((summary, watermark))
             }
             Self::Stateless => Ok((String::new(), 0)),
         }

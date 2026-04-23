@@ -63,24 +63,24 @@ impl Tool for MemoryRefreshTool {
 
         match args.action.as_str() {
             "sync" => {
-                // Sync SQLite → disk cache
-                let count = self.page_store.rebuild_disk_cache().await.map_err(|e| {
+                // Sync SQLite index from disk (disk is SSOT).
+                let count = self.page_store.sync_db_from_disk().await.map_err(|e| {
                     ToolError::ExecutionError(format!("Failed to sync wiki: {}", e))
                 })?;
 
                 Ok(format!(
-                    "✓ Wiki sync complete\n\nSynced {} pages to disk cache.",
+                    "✓ Wiki sync complete\n\nSynced {} pages from disk to index.",
                     count
                 ))
             }
             "reindex" => {
-                // Same as sync for now (Phase 3 will add real index rebuild)
-                let count = self.page_store.rebuild_disk_cache().await.map_err(|e| {
+                // Full re-index from disk.
+                let count = self.page_store.sync_db_from_disk().await.map_err(|e| {
                     ToolError::ExecutionError(format!("Failed to reindex wiki: {}", e))
                 })?;
 
                 Ok(format!(
-                    "✓ Wiki reindex complete\n\nReindexed {} pages.",
+                    "✓ Wiki reindex complete\n\nReindexed {} pages from disk.",
                     count
                 ))
             }

@@ -138,6 +138,12 @@ async fn create_session_indexes(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_channel_chat_sequence \
+         ON session_events(channel, chat_id, sequence)",
+    )
+    .execute(pool)
+    .await?;
 
     // session_checkpoints indexes
     sqlx::query(

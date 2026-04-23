@@ -76,7 +76,7 @@ impl SessionBuilder {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
-            checkpoint_callback: None,
+            checkpoint_callback: std::sync::Arc::new(crate::kernel::NoopCheckpoint),
         };
 
         // ── 3. Agent context ─────────────────────────────────────────
@@ -118,16 +118,10 @@ impl SessionBuilder {
         let skills_context = prompt::load_skills_context(&self.workspace).await;
 
         // ── 8. Wiki knowledge system ─────────────────────────────────
-        let wiki = build_wiki_components(&sqlite_store, &self.config).await;
+        let (wiki, wiki_health) = build_wiki_components(&sqlite_store, &self.config).await;
 
         // ── 9. Hook registry ─────────────────────────────────────────
-        let hooks = build_hooks_registry(
-            wiki.as_ref().map(|w| &w.page_store),
-            &self.config,
-            sqlite_store.clone(),
-            event_store.clone(),
-            self.provider.clone(),
-        );
+        let hooks = build_hooks_registry();
 
         let pending_done = tokio_util::task::TaskTracker::new();
 
@@ -143,6 +137,7 @@ impl SessionBuilder {
             compactor,
             indexing_service: Some(indexing_service),
             wiki,
+            wiki_health,
             pricing: self.pricing,
             pending_done,
         })
@@ -196,13 +191,18 @@ async fn build_indexing_service(
 }
 
 /// Build wiki components (optional).
+///
+/// Returns `(Option<WikiComponents>, WikiHealth)` so callers can distinguish
+/// "wiki disabled by config" from "wiki configured but initialization failed".
 async fn build_wiki_components(
     sqlite_store: &Arc<SqliteStore>,
     config: &AgentConfig,
-) -> Option<WikiComponents> {
+) -> (Option<WikiComponents>, crate::session::WikiHealth) {
+    use crate::session::WikiHealth;
+
     let wiki_config = match config.wiki.as_ref() {
         Some(cfg) if cfg.enabled => cfg.clone(),
-        _ => return None,
+        _ => return (None, WikiHealth::Disabled),
     };
 
     let pool = sqlite_store.pool().clone();
@@ -211,7 +211,7 @@ async fn build_wiki_components(
     let store = PageStore::new(pool.clone(), wiki_base.clone());
     if let Err(e) = store.init_dirs().await {
         warn!("Failed to init wiki PageStore: {}", e);
-        return None;
+        return (None, WikiHealth::Degraded { reason: format!("PageStore init: {}", e) });
     }
     let store = Arc::new(store);
 
@@ -220,7 +220,7 @@ async fn build_wiki_components(
         Ok(idx) => Arc::new(idx),
         Err(e) => {
             warn!("Failed to open Tantivy index: {}", e);
-            return None;
+            return (None, WikiHealth::Degraded { reason: format!("Tantivy index: {}", e) });
         }
     };
 
@@ -228,7 +228,7 @@ async fn build_wiki_components(
 
     if let Err(e) = gasket_storage::wiki::tables::create_wiki_tables(&sqlite_store.pool()).await {
         warn!("Failed to create wiki tables: {}", e);
-        return None;
+        return (None, WikiHealth::Degraded { reason: format!("DB tables: {}", e) });
     }
 
     info!(
@@ -236,44 +236,16 @@ async fn build_wiki_components(
         wiki_config.base_path
     );
 
-    Some(WikiComponents {
+    (Some(WikiComponents {
         page_store: store,
         page_index: index,
         wiki_log: log,
-    })
+    }), WikiHealth::Healthy)
 }
 
 /// Build the hook registry.
-fn build_hooks_registry(
-    page_store: Option<&Arc<PageStore>>,
-    config: &AgentConfig,
-    sqlite_store: Arc<SqliteStore>,
-    event_store: Arc<EventStore>,
-    provider: Arc<dyn LlmProvider>,
-) -> Arc<HookRegistry> {
-    use crate::hooks::EvolutionHook;
-
-    let mut builder = crate::session::history::builder::build_default_hooks_builder();
-
-    if let (Some(ps), Some(evo_config)) = (page_store, config.evolution.as_ref()) {
-        if evo_config.enabled {
-            let mut evo_hook = EvolutionHook::new(
-                sqlite_store,
-                event_store,
-                provider,
-                config.model.clone(),
-                evo_config.clone(),
-            );
-            evo_hook = evo_hook.with_page_store(ps.clone());
-            builder = builder.with_hook(Arc::new(evo_hook));
-            tracing::info!(
-                "EvolutionHook registered (batch_messages={})",
-                evo_config.batch_messages
-            );
-        }
-    }
-
-    builder.build_shared()
+fn build_hooks_registry() -> Arc<HookRegistry> {
+    crate::session::history::builder::build_default_hooks_builder().build_shared()
 }
 
 /// Build an AgentSession with all services initialized.

@@ -2,12 +2,13 @@ use anyhow::Result;
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 use tokio::fs;
 
 use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 
 /// PageStore: CRUD operations on wiki pages.
-/// SQLite is single truth. Disk files are optional cache.
+/// Markdown files on disk are the SSOT. SQLite is a derived index (cache + query projection).
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,
@@ -31,7 +32,7 @@ impl PageStore {
         &self.db
     }
 
-    /// Ensure wiki directory structure exists
+    /// Ensure wiki directory structure exists.
     pub async fn init_dirs(&self) -> Result<()> {
         for dir in &[
             "entities/people",
@@ -46,77 +47,75 @@ impl PageStore {
         Ok(())
     }
 
-    /// Read a page from SQLite (single truth)
+    /// Read a page with lazy mtime sync.
+    ///
+    /// 1. Check disk mtime.
+    /// 2. If SQLite cache is fresh (mtime matches), return cached data.
+    /// 3. If stale or missing, re-parse from disk and update SQLite.
+    /// 4. If disk file is gone but SQLite has a stale record, delete the record.
     pub async fn read(&self, path: &str) -> Result<WikiPage> {
-        let row = self
-            .db
-            .get(path)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("page not found: {}", path))?;
-        Ok(WikiPage {
-            path: row.path,
-            title: row.title,
-            page_type: row.page_type.parse().unwrap_or(PageType::Topic),
-            category: row.category,
-            tags: row
-                .tags
-                .as_ref()
-                .and_then(|t| serde_json::from_str(t).ok())
-                .unwrap_or_default(),
-            content: row.content,
-            created: chrono::DateTime::parse_from_rfc3339(&row.created)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_default(),
-            updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_default(),
-            source_count: row.source_count as u32,
-            confidence: row.confidence,
-            frequency: Frequency::from_str_lossy(&row.frequency),
-            access_count: row.access_count as u64,
-            last_accessed: row
-                .last_accessed
-                .as_deref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
-            file_mtime: row.file_mtime,
-        })
+        let disk_path = self.wiki_root.join(format!("{}.md", path));
+        let disk_mtime = Self::file_mtime(&disk_path).await.ok();
+
+        let row = self.db.get(path).await?;
+
+        match (row, disk_mtime) {
+            // Cache hit and fresh — return immediately.
+            (Some(row), Some(mtime)) if row.file_mtime == mtime => Ok(self.row_to_page(row)),
+            // Disk exists but cache is stale or missing — re-parse and upsert.
+            (_, Some(mtime)) => {
+                let markdown = fs::read_to_string(&disk_path).await?;
+                let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
+                page.file_mtime = mtime;
+
+                // Preserve machine runtime state from old cache if available.
+                if let Some(old) = self.db.get(path).await? {
+                    page.frequency = Frequency::from_str_lossy(&old.frequency);
+                    page.access_count = old.access_count as u64;
+                    page.last_accessed = old
+                        .last_accessed
+                        .as_deref()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                }
+
+                self.upsert_db(&page, mtime).await?;
+                Ok(page)
+            }
+            // Disk gone, SQLite stale — purge and fail.
+            (Some(_), None) => {
+                self.db.delete(path).await?;
+                anyhow::bail!("page not found on disk: {}", path);
+            }
+            // Nothing anywhere.
+            (None, None) => {
+                anyhow::bail!("page not found: {}", path);
+            }
+        }
     }
 
-    /// Write a page: Markdown is SSOT. Write to disk atomically first,
-    /// then update SQLite. If disk write fails, the operation fails entirely.
+    /// Write page: disk is SSOT. Atomic write to disk first, then update SQLite.
+    /// If disk write fails, SQLite is untouched and the error propagates immediately.
     pub async fn write(&self, page: &WikiPage) -> Result<()> {
-        // SSOT write: atomic Markdown write first. If this fails, fail the operation.
         self.sync_to_disk(page).await?;
 
-        let tags_str = serde_json::to_string(&page.tags)?;
-        let checksum = Some(format!("{}", page.content.len()));
-        self.db
-            .upsert(&gasket_storage::wiki::WikiPageInput {
-                path: &page.path,
-                title: &page.title,
-                page_type: page.page_type.as_str(),
-                category: page.category.as_deref(),
-                tags: &tags_str,
-                content: &page.content,
-                source_count: page.source_count,
-                confidence: page.confidence,
-                checksum: checksum.as_deref(),
-                frequency: page.frequency,
-                access_count: page.access_count,
-                last_accessed: page.last_accessed.map(|dt| dt.to_rfc3339()),
-                file_mtime: page.file_mtime,
-            })
-            .await?;
+        let disk_path = self.wiki_root.join(format!("{}.md", page.path));
+        let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
+        self.upsert_db(page, mtime).await
+    }
 
-        Ok(())
+    /// Update SQLite index for a page that is already on disk.
+    /// Used by bulk reindexing tools to avoid redundant disk writes.
+    pub async fn index_page(&self, page: &WikiPage) -> Result<()> {
+        let disk_path = self.wiki_root.join(format!("{}.md", page.path));
+        let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
+        self.upsert_db(page, mtime).await
     }
 
     pub async fn delete(&self, path: &str) -> Result<()> {
-        self.db.delete(path).await?;
-        // Best-effort disk cleanup
         let disk_path = self.wiki_root.join(format!("{}.md", path));
         let _ = fs::remove_file(&disk_path).await;
+        self.db.delete(path).await?;
         Ok(())
     }
 
@@ -158,10 +157,6 @@ impl PageStore {
     }
 
     /// Batch-load lightweight page summaries for a set of paths.
-    ///
-    /// Returns only metadata (title, tags, confidence, content_length, etc.) —
-    /// NOT the heavy `content` column. This is the N+1 fix: one query for N
-    /// paths instead of N separate `SELECT *` queries.
     pub async fn read_summaries(&self, paths: &[String]) -> Result<Vec<PageSummary>> {
         let rows = self.db.get_summaries_by_paths(paths).await?;
         Ok(rows
@@ -202,13 +197,134 @@ impl PageStore {
         Ok(())
     }
 
-    /// Rebuild disk cache from SQLite (for migration or recovery)
-    pub async fn rebuild_disk_cache(&self) -> Result<usize> {
-        let rows = self.db.list_all().await?;
-        for row in &rows {
-            let page = self.read(&row.path).await?;
-            self.sync_to_disk(&page).await?;
+    /// Sync SQLite index from disk. Upserts every `.md` file and removes DB
+    /// records for files that no longer exist on disk.
+    pub async fn sync_db_from_disk(&self) -> Result<usize> {
+        let wiki_root = self.wiki_root.clone();
+        let disk_paths = tokio::task::spawn_blocking(move || {
+            let mut paths = std::collections::HashSet::new();
+            Self::walk_disk_sync(&wiki_root, &wiki_root, &mut paths)?;
+            Ok::<_, anyhow::Error>(paths)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("disk walk panicked: {}", e))??;
+
+        // Remove stale DB records (file deleted on disk).
+        let db_rows = self.db.list_all().await?;
+        for row in &db_rows {
+            if !disk_paths.contains(&row.path) {
+                self.db.delete(&row.path).await?;
+            }
         }
-        Ok(rows.len())
+
+        // Re-index all files present on disk.
+        let mut synced = 0usize;
+        for path in &disk_paths {
+            let full_path = self.wiki_root.join(format!("{}.md", path));
+            let mtime = Self::file_mtime(&full_path).await.unwrap_or(0);
+            let markdown = fs::read_to_string(&full_path).await?;
+            let mut page = WikiPage::from_markdown(path.clone(), &markdown)?;
+            page.file_mtime = mtime;
+
+            // Preserve machine runtime state from existing DB record if any.
+            if let Some(old) = self.db.get(path).await? {
+                page.frequency = Frequency::from_str_lossy(&old.frequency);
+                page.access_count = old.access_count as u64;
+                page.last_accessed = old
+                    .last_accessed
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+            }
+
+            self.upsert_db(&page, mtime).await?;
+            synced += 1;
+        }
+
+        Ok(synced)
+    }
+
+    // -- private helpers --
+
+    fn row_to_page(&self, row: gasket_storage::wiki::PageRow) -> WikiPage {
+        WikiPage {
+            path: row.path,
+            title: row.title,
+            page_type: row.page_type.parse().unwrap_or(PageType::Topic),
+            category: row.category,
+            tags: row
+                .tags
+                .as_ref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+            content: row.content,
+            created: chrono::DateTime::parse_from_rfc3339(&row.created)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            source_count: row.source_count as u32,
+            confidence: row.confidence,
+            frequency: Frequency::from_str_lossy(&row.frequency),
+            access_count: row.access_count as u64,
+            last_accessed: row
+                .last_accessed
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc)),
+            file_mtime: row.file_mtime,
+        }
+    }
+
+    async fn upsert_db(&self, page: &WikiPage, file_mtime: i64) -> Result<()> {
+        let tags_str = serde_json::to_string(&page.tags)?;
+        let checksum = Some(format!("{}", page.content.len()));
+        self.db
+            .upsert(&gasket_storage::wiki::WikiPageInput {
+                path: &page.path,
+                title: &page.title,
+                page_type: page.page_type.as_str(),
+                category: page.category.as_deref(),
+                tags: &tags_str,
+                content: &page.content,
+                source_count: page.source_count,
+                confidence: page.confidence,
+                checksum: checksum.as_deref(),
+                frequency: page.frequency,
+                access_count: page.access_count,
+                last_accessed: page.last_accessed.map(|dt| dt.to_rfc3339()),
+                file_mtime,
+            })
+            .await
+    }
+
+    async fn file_mtime(path: &PathBuf) -> Result<i64> {
+        let meta = fs::metadata(path).await?;
+        let modified = meta.modified()?;
+        let secs = modified.duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        Ok(secs)
+    }
+
+    fn walk_disk_sync(
+        root: &PathBuf,
+        dir: &PathBuf,
+        out: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                Self::walk_disk_sync(root, &path, out)?;
+            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+                let rel = path.strip_prefix(root)?;
+                let rel_str = {
+                    let s = rel.to_string_lossy();
+                    s.strip_suffix(".md").unwrap_or(&s).to_string()
+                };
+                out.insert(rel_str);
+            }
+        }
+        Ok(())
     }
 }

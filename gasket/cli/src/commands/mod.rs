@@ -11,6 +11,7 @@ mod memory;
 mod onboard;
 pub mod registry;
 mod status;
+mod tool;
 pub mod vault;
 
 pub use agent::cmd_agent;
@@ -27,6 +28,7 @@ pub use memory::{
 };
 pub use onboard::cmd_onboard;
 pub use status::{cmd_auth_status, cmd_status};
+pub use tool::cmd_tool_execute;
 pub use vault::{
     cmd_vault_delete, cmd_vault_export, cmd_vault_get, cmd_vault_import, cmd_vault_list,
     cmd_vault_set, cmd_vault_show,

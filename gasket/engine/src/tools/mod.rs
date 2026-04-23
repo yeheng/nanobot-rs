@@ -17,6 +17,7 @@ mod builder;
 mod context;
 mod create_plan;
 mod cron;
+mod evolution;
 mod filesystem;
 mod format;
 mod history_query;
@@ -46,6 +47,7 @@ pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfi
 pub use context::ContextTool;
 pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
+pub use evolution::EvolutionTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use format::format_subagent_response;
 pub use history_query::HistoryQueryTool;

@@ -513,4 +513,42 @@ mod tests {
             tracker.total_cost()
         );
     }
+
+    /// Stress test: 1000 threads accumulate 1e-9 cost each.
+    ///
+    /// Fixed-point nano-cent accumulation must be exact. No tolerance.
+    #[test]
+    fn test_token_tracker_atomic_precision_stress() {
+        let tracker = Arc::new(TokenTracker::unlimited("USD"));
+        let num_threads = 1000;
+        let cost_per_op: f64 = 0.000000001;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let t = tracker.clone();
+                thread::spawn(move || {
+                    t.accumulate(&TokenUsage::new(1, 0), cost_per_op);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(tracker.request_count(), num_threads);
+        // Each op contributes 1 nano-cent; 1000 ops = 1000 nano-cents.
+        let expected_nanos = num_threads as u64;
+        let expected = expected_nanos as f64 / COST_SCALE;
+        assert_eq!(
+            tracker.total_cost(),
+            expected,
+            "Atomic fixed-point accumulation must be exact under high concurrency. \
+             Expected {} nano-cents, got {} nano-cents.",
+            expected_nanos,
+            tracker
+                .total_cost
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
 }

@@ -151,7 +151,7 @@ pub fn spawn_subagent(
             config: config.to_kernel_config(),
             spawner: None,
             token_tracker: token_tracker.clone(),
-            checkpoint_callback: None,
+            checkpoint_callback: std::sync::Arc::new(crate::kernel::NoopCheckpoint),
         };
 
         // Execute with timeout, cancellable via token

@@ -47,7 +47,8 @@ impl std::str::FromStr for PageType {
 }
 
 /// A wiki page. One struct. One constructor. No special cases.
-/// SQLite is the single truth source. Disk files are derived cache.
+/// Markdown files on disk are the SSOT. SQLite and Tantivy are derived
+/// projections (cache + index) that must mirror the filesystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiPage {
     /// Relative path under wiki root: "entities/projects/gasket"
@@ -114,17 +115,52 @@ impl WikiPage {
         parts.join("/")
     }
 
-    /// Convert to markdown for disk export (optional cache)
+    /// Convert to markdown for disk export.
+    ///
+    /// Frontmatter contains only human-authoritative metadata:
+    /// title, type, category, tags. Runtime machine state
+    /// (frequency, access_count, last_accessed, file_mtime, etc.)
+    /// is deliberately excluded to keep user's Markdown clean.
     pub fn to_markdown(&self) -> String {
+        #[derive(Serialize)]
+        struct Frontmatter<'a> {
+            title: &'a str,
+            #[serde(rename = "type")]
+            page_type: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            category: Option<&'a str>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            tags: &'a Vec<String>,
+        }
+
+        let front = Frontmatter {
+            title: &self.title,
+            page_type: self.page_type.as_str(),
+            category: self.category.as_deref(),
+            tags: &self.tags,
+        };
+
         let mut out = String::from("---\n");
-        out.push_str(&serde_yaml::to_string(&self).unwrap_or_default());
+        out.push_str(&serde_yaml::to_string(&front).unwrap_or_default());
         out.push_str("---\n\n");
         out.push_str(&self.content);
         out
     }
 
-    /// Parse from markdown (used only for migration / disk cache rebuild)
+    /// Parse from markdown. Only frontmatter fields (title, type, category, tags)
+    /// are deserialized; everything else uses defaults or is derived from the
+    /// filesystem / database index.
     pub fn from_markdown(path: String, markdown: &str) -> anyhow::Result<Self> {
+        #[derive(Deserialize)]
+        struct Frontmatter {
+            title: String,
+            #[serde(rename = "type")]
+            page_type: String,
+            category: Option<String>,
+            #[serde(default)]
+            tags: Vec<String>,
+        }
+
         let content = markdown.trim_start();
         if !content.starts_with("---") {
             anyhow::bail!("missing frontmatter delimiter");
@@ -135,10 +171,25 @@ impl WikiPage {
             .ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
         let yaml = &rest[..end];
         let body = rest[end + 4..].trim_start_matches('\n').trim_start();
-        let mut page: WikiPage = serde_yaml::from_str(yaml)?;
-        page.path = path;
-        page.content = body.to_string();
-        Ok(page)
+        let front: Frontmatter = serde_yaml::from_str(yaml)?;
+
+        let now = Utc::now();
+        Ok(WikiPage {
+            path,
+            title: front.title,
+            page_type: front.page_type.parse().unwrap_or(PageType::Topic),
+            category: front.category,
+            tags: front.tags,
+            content: body.to_string(),
+            created: now,
+            updated: now,
+            source_count: 0,
+            confidence: 1.0,
+            frequency: Frequency::Warm,
+            access_count: 0,
+            last_accessed: None,
+            file_mtime: 0,
+        })
     }
 }
 

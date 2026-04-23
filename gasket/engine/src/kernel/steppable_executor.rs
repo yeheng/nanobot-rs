@@ -17,6 +17,7 @@ use crate::kernel::{
     tool_executor::{ToolCallResult, ToolExecutor},
 };
 use crate::tools::ToolContext;
+use crate::token_tracker::TokenUsage;
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
 
@@ -53,9 +54,9 @@ impl SteppableExecutor {
     /// Enable proactive checkpointing via interceptor.
     pub fn with_checkpoint(
         mut self,
-        callback: Arc<dyn Fn(usize) -> Option<String> + Send + Sync>,
+        callback: Arc<dyn crate::kernel::context::CheckpointCallback>,
     ) -> Self {
-        self.ctx.checkpoint_callback = Some(callback);
+        self.ctx.checkpoint_callback = callback;
         self
     }
 
@@ -70,11 +71,9 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Result<StepResult, KernelError> {
         // Proactive checkpoint injection (before LLM call)
-        if let Some(ref cb) = self.ctx.checkpoint_callback {
-            if let Some(summary) = cb(messages.len()) {
-                debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
-                messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
-            }
+        if let Some(summary) = self.ctx.checkpoint_callback.get_checkpoint(messages.len()).await {
+            debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
+            messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
         }
 
         let request_handler =
@@ -143,7 +142,7 @@ impl SteppableExecutor {
             .map_err(|e| KernelError::Provider(e.to_string()))?;
 
         if let Some(ref api_usage) = response.usage {
-            let usage = gasket_types::TokenUsage::from_api_fields(
+            let usage = TokenUsage::from_api_fields(
                 api_usage.input_tokens,
                 api_usage.output_tokens,
             );

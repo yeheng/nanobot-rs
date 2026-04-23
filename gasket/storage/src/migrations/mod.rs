@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 
 pub mod cron;
 pub mod kv;
+pub mod maintenance;
 pub mod memory;
 pub mod session;
 
@@ -17,6 +18,7 @@ pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
     session::run_schema(pool).await?;
     memory::run_schema(pool).await?;
     cron::run_schema(pool).await?;
+    maintenance::run_schema(pool).await?;
     kv::run_schema(pool).await?;
 
     // Run incremental migrations (column additions) with defensive checks

@@ -3,7 +3,30 @@
 use std::sync::Arc;
 
 use crate::tools::{SubagentSpawner, ToolRegistry};
+use async_trait::async_trait;
 use gasket_providers::LlmProvider;
+
+/// Async callback for proactive working-memory checkpoint injection.
+///
+/// Called before each `step()` with the current message count; returns
+/// a summary to inject, or `None` to skip.
+#[async_trait]
+pub trait CheckpointCallback: Send + Sync {
+    async fn get_checkpoint(&self, msg_len: usize) -> Option<String>;
+}
+
+/// No-op checkpoint callback — always returns `None`.
+///
+/// Used as the default in `RuntimeContext` so the kernel never needs
+/// to check for `Option<Arc<dyn CheckpointCallback>>`.
+pub struct NoopCheckpoint;
+
+#[async_trait]
+impl CheckpointCallback for NoopCheckpoint {
+    async fn get_checkpoint(&self, _msg_len: usize) -> Option<String> {
+        None
+    }
+}
 
 /// Everything the kernel needs to execute one LLM request.
 /// Passed by reference to `kernel::execute()` — no ownership.
@@ -13,10 +36,9 @@ pub struct RuntimeContext {
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
-    /// Optional checkpoint callback for proactive working-memory injection.
-    /// Called before each `step()` with the current message count; returns
-    /// a summary to inject, or `None` to skip.
-    pub checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+    /// Checkpoint callback for proactive working-memory injection.
+    /// Defaults to `NoopCheckpoint` (always returns `None`) — never `None` itself.
+    pub checkpoint_callback: Arc<dyn CheckpointCallback>,
 }
 
 impl RuntimeContext {
@@ -31,7 +53,7 @@ impl RuntimeContext {
             config,
             spawner: None,
             token_tracker: None,
-            checkpoint_callback: None,
+            checkpoint_callback: Arc::new(NoopCheckpoint),
         }
     }
 }

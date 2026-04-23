@@ -640,6 +640,13 @@ mod tests {
         .unwrap();
 
         sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_channel_chat_sequence ON session_events(channel, chat_id, sequence)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_sessions_v2_channel_chat ON sessions_v2(channel, chat_id)",
         )
         .execute(&pool)

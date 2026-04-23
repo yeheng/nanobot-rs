@@ -10,7 +10,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageFilter, PageIndex, PageStore};
+use crate::wiki::{PageFilter, PageIndex, PageStore, PageSummary};
 
 // ── Memory Search Tool ─────────────────────────────────────────
 
@@ -151,7 +151,7 @@ impl Tool for MemorySearchTool {
 }
 
 impl MemorySearchTool {
-    /// Wiki-backed search via PageIndex (semantic) + PageStore (fallback).
+    /// Wiki-backed search via PageIndex (Tantivy BM25) + PageStore fallback.
     async fn search_with_wiki(
         &self,
         index: &PageIndex,
@@ -160,21 +160,36 @@ impl MemorySearchTool {
         parsed: &SearchArgs,
         is_wildcard: bool,
     ) -> ToolResult {
-        // Try PageIndex search first (currently stub, returns empty)
         let query = if is_wildcard {
             ""
         } else {
             &search_tags.join(" ")
         };
-        let index_results = index.search(query, parsed.limit).await.unwrap_or_default();
 
-        if !index_results.is_empty() {
-            // TODO: Phase 3 - use semantic search results
+        // Use Tantivy BM25 search with store-backed page loading.
+        let hits = index
+            .search_with_store(query, parsed.limit, Some(store))
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Search failed: {}", e)))?;
+
+        let results: Vec<_> = if is_wildcard {
+            hits.into_iter().take(parsed.limit).collect()
+        } else {
+            hits
+        };
+
+        if results.is_empty() && !is_wildcard {
+            // Tantivy returned nothing — fallback to tag-based filtering.
+            return self
+                .search_with_page_store(store, search_tags, parsed, is_wildcard)
+                .await;
         }
 
-        // Fallback to PageStore list + in-memory tag filtering
-        self.search_with_page_store(store, search_tags, parsed, is_wildcard)
-            .await
+        if results.is_empty() {
+            return Ok(format!("No memories found matching '{}.'", query));
+        }
+
+        Ok(Self::format_results(&results, query))
     }
 
     /// PageStore-backed search via list + in-memory filtering.
@@ -232,14 +247,18 @@ impl MemorySearchTool {
             ));
         }
 
+        Ok(Self::format_results(&results, &search_tags.join(", ")))
+    }
+
+    fn format_results(results: &[PageSummary], query_label: &str) -> String {
         let mut output = format!(
-            "Found {} memor{} matching tags [{}]:\n\n",
+            "Found {} memor{} matching '{}':\n\n",
             results.len(),
             if results.len() == 1 { "y" } else { "ies" },
-            search_tags.join(", ")
+            query_label
         );
 
-        for summary in &results {
+        for summary in results {
             let tags_display = if summary.tags.is_empty() {
                 String::new()
             } else {
@@ -263,7 +282,7 @@ impl MemorySearchTool {
             ));
         }
 
-        Ok(output)
+        output
     }
 }
 

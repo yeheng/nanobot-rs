@@ -13,7 +13,7 @@ use crate::kernel::{StepResult, SteppableExecutor, TokenLedger};
 use crate::session::config::AgentConfigExt;
 use crate::session::AgentResponse;
 use crate::tools::ToolRegistry;
-use gasket_providers::{ChatMessage, LlmProvider};
+use gasket_providers::{ChatMessage, LlmProvider, MessageRole};
 
 use super::manager::TaskSpec;
 use super::tracker::SubagentResult;
@@ -65,7 +65,7 @@ impl MonitoredSpawner {
         provider: Arc<dyn LlmProvider>,
         tools: Arc<ToolRegistry>,
         spec: TaskSpec,
-        checkpoint_callback: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
+        checkpoint_callback: Option<Arc<dyn crate::kernel::CheckpointCallback>>,
     ) -> Result<MonitoredHandle, anyhow::Error> {
         let (progress_tx, progress_rx) = mpsc::channel(64);
         let (interventor_tx, interventor_rx) = mpsc::channel(16);
@@ -81,10 +81,10 @@ impl MonitoredSpawner {
         let kernel_config = config.to_kernel_config();
 
         let ctx = crate::kernel::RuntimeContext::new(provider, tools, kernel_config);
-        let mut steppable = SteppableExecutor::new(ctx);
-        if let Some(cb) = checkpoint_callback {
-            steppable = steppable.with_checkpoint(cb);
-        }
+        let steppable = match checkpoint_callback {
+            Some(cb) => SteppableExecutor::new(ctx).with_checkpoint(cb),
+            None => SteppableExecutor::new(ctx),
+        };
 
         let handle = tokio::spawn(async move {
             let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
@@ -248,9 +248,14 @@ impl MonitoredRunner {
     }
 
     fn final_result(&self) -> SubagentResult {
+        // Find the last assistant message, not just the last message.
+        // When max_turns is reached after a tool call, messages.last()
+        // would be a Tool message, which is wrong.
         let content = self
             .messages
-            .last()
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Assistant)
             .and_then(|m| m.content.clone())
             .unwrap_or_default();
 

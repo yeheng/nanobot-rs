@@ -79,16 +79,50 @@ impl WikiRefreshTool {
         Ok(())
     }
 
-    /// Sync: upsert all disk files to SQLite + Tantivy.
-    /// Since upsert now preserves machine state (frequency, access_count),
-    /// we can safely upsert everything without mtime comparison.
+    /// Sync changed files and delete stale DB records.
+    ///
+    /// Uses mtime comparison to skip unmodified files. Deletes SQLite rows
+    /// whose corresponding Markdown file has been removed on disk.
     async fn sync_changed(&self) -> Result<usize, ToolError> {
         let disk_files = self.scan_disk_files().await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to scan wiki directory: {}", e))
         })?;
 
+        let disk_paths: std::collections::HashSet<String> =
+            disk_files.iter().map(|(p, _, _)| p.clone()).collect();
+
+        // Remove stale DB records (files deleted on disk).
+        let db_pages = self
+            .page_store
+            .list(PageFilter::default())
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to list DB pages: {}", e)))?;
+        for page in db_pages {
+            if !disk_paths.contains(&page.path) {
+                if let Err(e) = self.page_store.delete(&page.path).await {
+                    warn!(
+                        "WikiRefresh: failed to delete stale DB record {}: {}",
+                        page.path, e
+                    );
+                } else {
+                    debug!("WikiRefresh: removed stale DB record {}", page.path);
+                }
+            }
+        }
+
         let mut synced = 0usize;
         for (rel_path, disk_mtime, full_path) in disk_files {
+            // Lazy mtime check: skip if DB already has the same mtime.
+            let needs_sync = match self.page_store.db().get(&rel_path).await {
+                Ok(Some(row)) => row.file_mtime != disk_mtime,
+                _ => true,
+            };
+
+            if !needs_sync {
+                debug!("WikiRefresh: {} is up to date, skipping", rel_path);
+                continue;
+            }
+
             let markdown = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
                 ToolError::ExecutionError(format!("Failed to read {}: {}", full_path.display(), e))
             })?;
@@ -101,8 +135,9 @@ impl WikiRefreshTool {
             })?;
             page.file_mtime = disk_mtime;
 
-            self.page_store.write(&page).await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to write {} to SQLite: {}", rel_path, e))
+            // Update SQLite index only (disk is already SSOT).
+            self.page_store.index_page(&page).await.map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to index {} in SQLite: {}", rel_path, e))
             })?;
 
             if let Err(e) = self.page_index.upsert(&page).await {
@@ -117,49 +152,23 @@ impl WikiRefreshTool {
             synced += 1;
         }
 
-        info!("WikiRefresh: synced {} pages", synced);
+        info!("WikiRefresh: synced {} changed pages", synced);
         Ok(synced)
     }
 
-    /// Full rebuild: delete Tantivy index, re-import all files from disk.
+    /// Full rebuild: sync SQLite from disk (removes stale records), then rebuild Tantivy.
     async fn full_rebuild(&self) -> Result<usize, ToolError> {
-        let disk_files = self.scan_disk_files().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to scan wiki directory: {}", e))
+        let synced = self.page_store.sync_db_from_disk().await.map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to sync DB from disk: {}", e))
         })?;
 
-        // First pass: write all pages to SQLite
-        let mut pages = Vec::with_capacity(disk_files.len());
-        for (rel_path, disk_mtime, full_path) in disk_files {
-            let markdown = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to read {}: {}", full_path.display(), e))
-            })?;
-
-            let mut page = WikiPage::from_markdown(rel_path.clone(), &markdown).map_err(|e| {
-                ToolError::ExecutionError(format!(
-                    "Failed to parse markdown for {}: {}",
-                    rel_path, e
-                ))
-            })?;
-            page.file_mtime = disk_mtime;
-
-            self.page_store.write(&page).await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to write {} to SQLite: {}", rel_path, e))
-            })?;
-
-            pages.push(page);
-        }
-
-        // Second pass: rebuild Tantivy from all pages in SQLite
         self.page_index
             .rebuild(&self.page_store)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Tantivy rebuild failed: {}", e)))?;
 
-        info!(
-            "WikiRefresh: full rebuild complete with {} pages",
-            pages.len()
-        );
-        Ok(pages.len())
+        info!("WikiRefresh: full rebuild complete with {} pages", synced);
+        Ok(synced)
     }
 
     /// Gather statistics.

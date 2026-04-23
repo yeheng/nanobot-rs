@@ -146,7 +146,7 @@ pub async fn cmd_gateway() -> Result<()> {
         workspace: workspace.clone(),
         subagent_spawner: None,
         extra_tools: vec![],
-        sqlite_store: None,
+        sqlite_store: Some(memory_store.sqlite_store().clone()),
         page_store: page_store.clone(),
         page_index: page_index.clone(),
         provider: Some(provider_info.provider.clone()),

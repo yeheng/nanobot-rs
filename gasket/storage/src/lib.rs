@@ -382,6 +382,43 @@ impl SqliteStore {
         Ok(result.rows_affected() > 0)
     }
 
+    // ── Maintenance State API ──
+
+    /// Read the last watermark for a given maintenance task and target.
+    pub async fn read_maintenance_watermark(
+        &self,
+        task_name: &str,
+        target_id: &str,
+    ) -> anyhow::Result<i64> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT last_watermark FROM maintenance_state WHERE task_name = ?1 AND target_id = ?2",
+        )
+        .bind(task_name)
+        .bind(target_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(v,)| v).unwrap_or(0))
+    }
+
+    /// Write (or overwrite) the watermark for a maintenance task and target.
+    pub async fn write_maintenance_watermark(
+        &self,
+        task_name: &str,
+        target_id: &str,
+        watermark: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO maintenance_state (task_name, target_id, last_watermark, updated_at)
+             VALUES (?1, ?2, ?3, datetime('now'))",
+        )
+        .bind(task_name)
+        .bind(target_id)
+        .bind(watermark)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ── Session Checkpoints API ──
 
     /// Save a checkpoint summary for a session at a specific target_sequence.
