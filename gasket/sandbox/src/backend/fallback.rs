@@ -55,6 +55,10 @@ impl SandboxBackend for FallbackBackend {
         &[Platform::Linux, Platform::MacOS, Platform::Windows]
     }
 
+    fn provides_filesystem_isolation(&self) -> bool {
+        false
+    }
+
     fn build_command(
         &self,
         cmd: &str,

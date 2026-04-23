@@ -395,6 +395,60 @@ impl VaultStore {
         self.entries.is_empty()
     }
 
+    /// Re-encrypt all entries with a new master password.
+    ///
+    /// 1. Verifies the old password by unlocking the vault.
+    /// 2. Decrypts all entries to plaintext.
+    /// 3. Generates fresh KDF parameters (new salt).
+    /// 4. Re-encrypts everything with the new password-derived key.
+    /// 5. Atomically persists the new vault file.
+    pub fn rekey(&mut self, old_password: &str, new_password: &str) -> Result<(), VaultError> {
+        // 1. Verify old password
+        self.unlock(old_password)?;
+
+        // 2. Decrypt all entries
+        let mut plaintext: Vec<(String, String, Option<String>, DateTime<Utc>)> = Vec::new();
+        for (key, entry) in &self.entries {
+            let crypto = self.crypto.as_ref().ok_or(VaultError::Locked)?;
+            let value = crypto.decrypt_from_base64(&entry.encrypted_value, &entry.nonce)?;
+            plaintext.push((
+                key.clone(),
+                value,
+                entry.description.clone(),
+                entry.created_at,
+            ));
+        }
+
+        // 3. Generate new KDF params (fresh salt)
+        let new_kdf = KdfParams::default();
+        let new_crypto = VaultCrypto::derive_key(new_password, &new_kdf)?;
+
+        // 4. Re-encrypt all entries with the new key
+        let mut new_entries = HashMap::new();
+        for (key, value, desc, created_at) in plaintext {
+            let (encrypted_value, nonce) = new_crypto.encrypt_to_base64(&value)?;
+            new_entries.insert(
+                key.clone(),
+                VaultEntryV2 {
+                    key,
+                    encrypted_value,
+                    nonce,
+                    description: desc,
+                    created_at,
+                    last_used: AtomicTimestamp::none(),
+                },
+            );
+        }
+
+        // 5. Atomically swap and persist
+        self.entries = new_entries;
+        self.kdf_params = Some(new_kdf);
+        self.crypto = Some(new_crypto);
+        self.persist()?;
+
+        Ok(())
+    }
+
     /// Get the vault format version
     pub fn version(&self) -> u32 {
         if self.kdf_params.is_some() {

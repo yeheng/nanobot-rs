@@ -297,14 +297,7 @@ async fn process_message<H: MessageHandler + 'static>(
         let _response = result_handle.await??;
     } else {
         let content = handler.handle_message(session_key, &msg.content).await?;
-        let outbound = OutboundMessage {
-            channel: msg.channel,
-            chat_id: msg.chat_id,
-            content,
-            metadata: None,
-            trace_id: msg.trace_id,
-            ws_message: None,
-        };
+        let outbound = OutboundMessage::new(msg.channel, msg.chat_id.clone(), content);
         output.send(outbound).await?;
     }
     Ok(())

@@ -144,6 +144,10 @@ impl SandboxBackend for MacOsSandboxBackend {
         &[Platform::MacOS]
     }
 
+    fn provides_filesystem_isolation(&self) -> bool {
+        true
+    }
+
     fn build_command(
         &self,
         cmd: &str,

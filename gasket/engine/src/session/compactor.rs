@@ -355,7 +355,15 @@ impl ContextCompactor {
             pending_compaction: Some(self.pending_compaction.clone()),
         };
 
-        run_compaction(
+        if let Err(e) = self
+            .session_store
+            .mark_compaction_started(session_key)
+            .await
+        {
+            warn!("Failed to mark compaction started for {}: {}", sk, e);
+        }
+
+        let result = run_compaction(
             &self.event_store,
             &self.session_store,
             &*self.provider,
@@ -365,7 +373,17 @@ impl ContextCompactor {
             vault_values,
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Compaction failed for {}: {}", sk, e))
+        .map_err(|e| anyhow::anyhow!("Compaction failed for {}: {}", sk, e));
+
+        if let Err(e) = self
+            .session_store
+            .mark_compaction_finished(session_key)
+            .await
+        {
+            warn!("Failed to mark compaction finished for {}: {}", sk, e);
+        }
+
+        result
     }
 
     /// Generate a proactive checkpoint for the current session state.
@@ -570,34 +588,11 @@ impl ContextCompactor {
             let _guard = guard;
             debug!("Background compaction started for {}", sk);
 
-            if let Err(e) = run_compaction(
-                &event_store,
-                &session_store,
-                &*provider,
-                &model,
-                &summarization_prompt,
-                &sk,
-                &vault,
-            )
-            .await
-            {
-                warn!("Compaction failed for {}: {}", sk, e);
-                *last_failed.lock() = Some(Instant::now());
-            } else {
-                *last_failed.lock() = None;
+            if let Err(e) = session_store.mark_compaction_started(&sk).await {
+                warn!("Failed to mark compaction started for {}: {}", sk, e);
             }
 
-            // If pending was set while we were running, clear it and re-trigger.
-            // We run the follow-up inline while still holding the CompactionGuard
-            // to prevent concurrent compaction for the same session.
-            if pending
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                info!(
-                    "Pending compaction detected for {} — re-triggering immediately",
-                    sk
-                );
+            let run = async {
                 if let Err(e) = run_compaction(
                     &event_store,
                     &session_store,
@@ -609,11 +604,46 @@ impl ContextCompactor {
                 )
                 .await
                 {
-                    warn!("Follow-up compaction failed for {}: {}", sk, e);
+                    warn!("Compaction failed for {}: {}", sk, e);
                     *last_failed.lock() = Some(Instant::now());
                 } else {
                     *last_failed.lock() = None;
                 }
+
+                // If pending was set while we were running, clear it and re-trigger.
+                // We run the follow-up inline while still holding the CompactionGuard
+                // to prevent concurrent compaction for the same session.
+                if pending
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    info!(
+                        "Pending compaction detected for {} — re-triggering immediately",
+                        sk
+                    );
+                    if let Err(e) = run_compaction(
+                        &event_store,
+                        &session_store,
+                        &*provider,
+                        &model,
+                        &summarization_prompt,
+                        &sk,
+                        &vault,
+                    )
+                    .await
+                    {
+                        warn!("Follow-up compaction failed for {}: {}", sk, e);
+                        *last_failed.lock() = Some(Instant::now());
+                    } else {
+                        *last_failed.lock() = None;
+                    }
+                }
+            };
+
+            run.await;
+
+            if let Err(e) = session_store.mark_compaction_finished(&sk).await {
+                warn!("Failed to mark compaction finished for {}: {}", sk, e);
             }
         });
     }

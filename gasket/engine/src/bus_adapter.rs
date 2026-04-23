@@ -73,14 +73,11 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         tokio::spawn(async move {
             match result_handle.await {
                 Ok(Ok(response)) => {
-                    let outbound_msg = gasket_types::events::OutboundMessage {
-                        channel: gasket_types::events::ChannelType::Cli,
-                        chat_id: session_key_owned.to_string(),
-                        content: response.content,
-                        metadata: None,
-                        trace_id: None,
-                        ws_message: None,
-                    };
+                    let outbound_msg = gasket_types::events::OutboundMessage::new(
+                        gasket_types::events::ChannelType::Cli,
+                        session_key_owned.to_string(),
+                        response.content,
+                    );
                     let _ = result_tx.send(Ok(outbound_msg));
                 }
                 Ok(Err(e)) => {

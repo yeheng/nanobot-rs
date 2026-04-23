@@ -207,8 +207,8 @@ impl ImAdapter for SlackAdapter {
         let url = "https://slack.com/api/chat.postMessage";
 
         let mut body = serde_json::json!({
-            "channel": msg.chat_id,
-            "text": msg.content,
+            "channel": msg.chat_id(),
+            "text": msg.content(),
         });
 
         if let Some(ref meta) = msg.metadata {

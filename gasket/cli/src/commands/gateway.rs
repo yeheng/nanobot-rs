@@ -72,7 +72,7 @@ pub async fn cmd_gateway() -> Result<()> {
     )
     .await?;
 
-    let inbound_sender = gasket_engine::channels::InboundSender::new_with_broker(broker.clone());
+    let inbound_sender = gasket_engine::channels::InboundSender::new(broker.clone());
     let providers = Arc::new(gasket_engine::channels::ImProviders::from_config(
         &config.channels,
         inbound_sender.clone(),

@@ -99,6 +99,7 @@ async fn main() -> Result<()> {
             }
             VaultCommands::Import { file, merge } => commands::cmd_vault_import(file, merge).await,
             VaultCommands::Export { file } => commands::cmd_vault_export(file).await,
+            VaultCommands::Rekey => commands::cmd_vault_rekey().await,
         },
         Some(Commands::Memory { command }) => match command {
             MemoryCommands::Refresh => commands::cmd_memory_refresh().await,

@@ -68,9 +68,9 @@ impl ImAdapter for DiscordAdapter {
         use serenity::model::id::ChannelId;
 
         let http = Http::new(&self.config.token);
-        let channel_id: u64 = msg.chat_id.parse()?;
+        let channel_id: u64 = msg.chat_id().parse()?;
         let channel = ChannelId::new(channel_id);
-        channel.say(&http, &msg.content).await?;
+        channel.say(&http, msg.content()).await?;
         Ok(())
     }
 }

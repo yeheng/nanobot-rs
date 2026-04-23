@@ -227,6 +227,9 @@ pub enum VaultCommands {
         /// Path to output file
         file: String,
     },
+
+    /// Change the vault master password and re-encrypt all entries
+    Rekey,
 }
 
 #[derive(Subcommand)]

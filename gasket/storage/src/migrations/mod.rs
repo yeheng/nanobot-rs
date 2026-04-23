@@ -32,6 +32,7 @@ async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
     migrate_add_watermark_to_summaries(pool).await?;
     migrate_add_sequence_to_events(pool).await?;
     migrate_add_session_sequence_index(pool).await?;
+    migrate_add_compaction_state(pool).await?;
     Ok(())
 }
 
@@ -77,5 +78,22 @@ async fn migrate_add_session_sequence_index(pool: &SqlitePool) -> anyhow::Result
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Add compaction-state columns to `session_summaries` if they don't exist.
+async fn migrate_add_compaction_state(pool: &SqlitePool) -> anyhow::Result<()> {
+    if !column_exists(pool, "session_summaries", "compaction_in_progress").await {
+        sqlx::query(
+            "ALTER TABLE session_summaries ADD COLUMN compaction_in_progress INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
+    }
+    if !column_exists(pool, "session_summaries", "compaction_started_at").await {
+        sqlx::query("ALTER TABLE session_summaries ADD COLUMN compaction_started_at TEXT")
+            .execute(pool)
+            .await?;
+    }
     Ok(())
 }

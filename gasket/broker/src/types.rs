@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(env.id, cloned.id);
         assert!(matches!(
             cloned.payload.as_ref(),
-            BrokerPayload::Outbound(OutboundMessage { content, .. }) if content == "hello"
+            BrokerPayload::Outbound(msg) if msg.content() == "hello"
         ));
     }
 }

@@ -188,4 +188,48 @@ impl SessionStore {
     pub fn pool(&self) -> sqlx::SqlitePool {
         self.pool.clone()
     }
+
+    // ── Compaction State API ──
+
+    /// Mark that compaction has started for a session.
+    pub async fn mark_compaction_started(&self, session_key: &SessionKey) -> anyhow::Result<()> {
+        let key_str = session_key.to_string();
+        let started_at = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR REPLACE INTO session_summaries (session_key, content, covered_upto_sequence, created_at, compaction_in_progress, compaction_started_at)
+             VALUES ($1, COALESCE((SELECT content FROM session_summaries WHERE session_key = $1), ''), COALESCE((SELECT covered_upto_sequence FROM session_summaries WHERE session_key = $1), 0), COALESCE((SELECT created_at FROM session_summaries WHERE session_key = $1), datetime('now')), 1, $2)",
+        )
+        .bind(&key_str)
+        .bind(&started_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark that compaction has finished for a session.
+    pub async fn mark_compaction_finished(&self, session_key: &SessionKey) -> anyhow::Result<()> {
+        let key_str = session_key.to_string();
+        sqlx::query(
+            "UPDATE session_summaries SET compaction_in_progress = 0, compaction_started_at = NULL WHERE session_key = $1",
+        )
+        .bind(&key_str)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Check whether compaction is marked as in-progress for a session.
+    pub async fn is_compaction_in_progress(
+        &self,
+        session_key: &SessionKey,
+    ) -> anyhow::Result<bool> {
+        let key_str = session_key.to_string();
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT compaction_in_progress FROM session_summaries WHERE session_key = $1",
+        )
+        .bind(&key_str)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(v,)| v != 0).unwrap_or(false))
+    }
 }

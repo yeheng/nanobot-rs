@@ -612,7 +612,7 @@ impl ImAdapter for WeComChannel {
     }
 
     async fn send(&self, msg: &OutboundMessage) -> anyhow::Result<()> {
-        self.send_text(&msg.chat_id, &msg.content).await
+        self.send_text(msg.chat_id(), msg.content()).await
     }
 }
 
@@ -622,13 +622,9 @@ pub type WeComAdapter = WeComChannel;
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-    use tokio::sync::mpsc;
 
     fn create_test_sender() -> InboundSender {
-        let (tx, rx) = mpsc::channel(100);
-        // Leak the receiver to keep the channel open for tests
-        std::mem::forget(rx);
-        InboundSender::new(tx)
+        InboundSender::new(std::sync::Arc::new(gasket_broker::MemoryBroker::default()))
     }
 
     #[test]

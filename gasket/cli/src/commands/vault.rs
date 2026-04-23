@@ -376,6 +376,29 @@ pub async fn cmd_vault_import(file_path: String, merge: bool) -> Result<()> {
     Ok(())
 }
 
+/// Change the vault master password and re-encrypt all entries
+pub async fn cmd_vault_rekey() -> Result<()> {
+    let mut store = VaultStore::new().context("Failed to open vault store")?;
+
+    let old_password = Password::new()
+        .with_prompt("Enter current vault password")
+        .interact()
+        .context("Failed to read current password")?;
+
+    let new_password = Password::new()
+        .with_prompt("Enter new vault password")
+        .with_confirmation("Confirm new vault password", "Passwords do not match")
+        .interact()
+        .context("Failed to read new password")?;
+
+    store
+        .rekey(&old_password, &new_password)
+        .context("Failed to rekey vault")?;
+
+    println!("{} Vault rekeyed successfully.", "✓".green());
+    Ok(())
+}
+
 /// Export vault entries to a JSON file
 pub async fn cmd_vault_export(file_path: String) -> Result<()> {
     let mut store = VaultStore::new().context("Failed to open vault store")?;

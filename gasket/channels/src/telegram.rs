@@ -102,8 +102,8 @@ impl ImAdapter for TelegramAdapter {
 
     async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
         let bot = Bot::new(&self.config.token);
-        let chat_id: i64 = msg.chat_id.parse()?;
-        bot.send_message(ChatId(chat_id), &msg.content).await?;
+        let chat_id: i64 = msg.chat_id().parse()?;
+        bot.send_message(ChatId(chat_id), msg.content()).await?;
         Ok(())
     }
 }

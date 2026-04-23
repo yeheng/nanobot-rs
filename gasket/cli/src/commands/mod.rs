@@ -31,7 +31,7 @@ pub use status::{cmd_auth_status, cmd_status};
 pub use tool::cmd_tool_execute;
 pub use vault::{
     cmd_vault_delete, cmd_vault_export, cmd_vault_get, cmd_vault_import, cmd_vault_list,
-    cmd_vault_set, cmd_vault_show,
+    cmd_vault_rekey, cmd_vault_set, cmd_vault_show,
 };
 
 /// Show session token usage and cost statistics

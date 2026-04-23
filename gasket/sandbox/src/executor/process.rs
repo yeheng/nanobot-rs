@@ -121,6 +121,11 @@ impl ProcessManager {
         self.config.enabled
     }
 
+    /// Check if the backend provides true filesystem isolation.
+    pub fn provides_filesystem_isolation(&self) -> bool {
+        self.backend.provides_filesystem_isolation()
+    }
+
     /// Get the command policy
     pub fn policy(&self) -> &CommandPolicy {
         &self.policy

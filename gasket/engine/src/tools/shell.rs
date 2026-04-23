@@ -146,7 +146,7 @@ impl ExecTool {
 
     /// Validate command for potential injection attempts.
     fn validate_command(&self, command: &str) -> Result<(), ToolError> {
-        let patterns = if self.process_manager.is_sandboxed() {
+        let patterns = if self.process_manager.provides_filesystem_isolation() {
             SANDBOX_DANGEROUS_PATTERNS
         } else {
             FALLBACK_DANGEROUS_PATTERNS

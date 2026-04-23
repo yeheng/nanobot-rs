@@ -352,7 +352,7 @@ impl ImAdapter for FeishuChannel {
     }
 
     async fn send(&self, msg: &OutboundMessage) -> anyhow::Result<()> {
-        self.send_text(&msg.chat_id, &msg.content).await
+        self.send_text(msg.chat_id(), msg.content()).await
     }
 }
 
@@ -545,11 +545,9 @@ pub async fn send_text_stateless(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
 
     fn create_test_sender() -> InboundSender {
-        let (tx, _rx) = mpsc::channel(100);
-        InboundSender::new(tx)
+        InboundSender::new(std::sync::Arc::new(gasket_broker::MemoryBroker::default()))
     }
 
     #[test]

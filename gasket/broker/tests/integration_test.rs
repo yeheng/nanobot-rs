@@ -70,7 +70,7 @@ async fn test_full_pipeline() {
         .unwrap()
         .unwrap();
     match env.payload.as_ref() {
-        BrokerPayload::Outbound(msg) => assert_eq!(msg.content, "Echo: Hello"),
+        BrokerPayload::Outbound(msg) => assert_eq!(msg.content(), "Echo: Hello"),
         _ => panic!("expected Outbound payload"),
     }
 }
@@ -105,7 +105,7 @@ async fn test_idle_timeout_gc() {
     let env = tokio::time::timeout(Duration::from_secs(2), out_sub.recv()).await;
     assert!(env.is_ok());
     match env.unwrap().unwrap().payload.as_ref() {
-        BrokerPayload::Outbound(msg) => assert_eq!(msg.content, "Echo: after_gc"),
+        BrokerPayload::Outbound(msg) => assert_eq!(msg.content(), "Echo: after_gc"),
         _ => panic!("expected Outbound payload"),
     }
 }

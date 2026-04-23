@@ -106,14 +106,11 @@ impl Tool for MessageTool {
         let message = if params.chat_id == "*" {
             OutboundMessage::broadcast(params.channel, params.content.clone())
         } else {
-            OutboundMessage {
-                channel: params.channel,
-                chat_id: params.chat_id.clone(),
-                content: params.content.clone(),
-                metadata: Default::default(),
-                trace_id: None,
-                ws_message: None,
-            }
+            OutboundMessage::new(
+                params.channel,
+                params.chat_id.clone(),
+                params.content.clone(),
+            )
         };
 
         // Route through Outbound Actor or broker — enqueue instantly, no network wait.
@@ -192,7 +189,7 @@ mod tests {
         let msg = rx
             .try_recv()
             .expect("should have received outbound message");
-        assert_eq!(msg.chat_id, "12345");
-        assert_eq!(msg.content, "Hello!");
+        assert_eq!(msg.chat_id(), "12345");
+        assert_eq!(msg.content(), "Hello!");
     }
 }

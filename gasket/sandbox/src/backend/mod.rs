@@ -80,6 +80,12 @@ pub trait SandboxBackend: Send + Sync {
     /// Get supported platforms
     fn supported_platforms(&self) -> &[Platform];
 
+    /// Whether this backend provides true filesystem isolation.
+    ///
+    /// Used by callers to decide whether redirection patterns (`>`, `<`)
+    /// need to be blocked at the command-policy level.
+    fn provides_filesystem_isolation(&self) -> bool;
+
     /// Build a Command for execution
     fn build_command(
         &self,

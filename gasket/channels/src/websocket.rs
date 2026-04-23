@@ -145,16 +145,17 @@ impl WebSocketManager {
     /// Send an outbound message to a specific user/connection
     pub async fn send(&self, msg: OutboundMessage) {
         // Try to find the connection by chat_id (which could be user_id or connection_id)
-        let connection_id = if let Some(conn_id) = self.user_connections.get(&msg.chat_id) {
+        let chat_id = msg.chat_id();
+        let connection_id = if let Some(conn_id) = self.user_connections.get(chat_id) {
             // chat_id is a user_id, look up the connection
             conn_id.value().clone()
-        } else if self.connections.contains_key(&msg.chat_id) {
+        } else if self.connections.contains_key(chat_id) {
             // chat_id is already a connection_id
-            msg.chat_id.clone()
+            chat_id.to_string()
         } else {
             warn!(
                 "No connection found for chat_id: {} (user_connections: {:?})",
-                msg.chat_id,
+                chat_id,
                 self.user_connections
                     .iter()
                     .map(|e| e.key().clone())
@@ -219,10 +220,10 @@ impl WebSocketManager {
     }
 
     fn message_text(msg: &OutboundMessage) -> String {
-        if let Some(ref ws_msg) = msg.ws_message {
+        if let Some(ws_msg) = msg.ws_message() {
             ws_msg.to_json()
-        } else if !msg.content.is_empty() {
-            msg.content.clone()
+        } else if !msg.content().is_empty() {
+            msg.content().to_string()
         } else {
             String::new()
         }
@@ -491,16 +492,16 @@ mod tests {
 
     #[test]
     fn test_websocket_manager_creation() {
-        let (inbound_tx, _) = mpsc::channel(100);
-        let manager = WebSocketManager::new(crate::middleware::InboundSender::new(inbound_tx));
+        let broker = std::sync::Arc::new(gasket_broker::MemoryBroker::default());
+        let manager = WebSocketManager::new(crate::middleware::InboundSender::new(broker));
 
         assert_eq!(manager.connection_count(), 0);
     }
 
     #[test]
     fn test_auth_validator() {
-        let (inbound_tx, _) = mpsc::channel(100);
-        let manager = WebSocketManager::new(crate::middleware::InboundSender::new(inbound_tx));
+        let broker = std::sync::Arc::new(gasket_broker::MemoryBroker::default());
+        let manager = WebSocketManager::new(crate::middleware::InboundSender::new(broker));
 
         // Set a simple validator
         manager.set_auth_validator(|token| token == "valid-token");

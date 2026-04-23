@@ -16,8 +16,8 @@ pub mod token_tracker;
 pub mod tool;
 
 pub use events::{
-    ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
-    SessionKeyParseError, StreamEvent, WebSocketMessage,
+    ChannelType, InboundMessage, MediaAttachment, OutboundMessage, OutboundPayload, SessionKey,
+    SessionKeyParseError, StreamEvent, StreamEventKind, Target, WebSocketMessage,
 };
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,

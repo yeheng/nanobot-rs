@@ -150,6 +150,10 @@ impl SandboxBackend for LinuxBwrapBackend {
         &[Platform::Linux]
     }
 
+    fn provides_filesystem_isolation(&self) -> bool {
+        true
+    }
+
     fn build_command(
         &self,
         cmd: &str,
