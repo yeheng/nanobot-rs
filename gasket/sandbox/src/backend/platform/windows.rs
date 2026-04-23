@@ -9,7 +9,7 @@
 //! obvious at every call site. It is NOT a `SandboxBackend` in any meaningful
 //! sense — it simply delegates to `cmd.exe` with no restrictions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
@@ -45,21 +45,63 @@ impl HostExecutor {
         Self {}
     }
 
+    /// Validate that `working_dir` is within the configured workspace.
+    /// Returns the canonicalized path on success.
+    fn validate_working_dir(&self, working_dir: &Path, config: &SandboxConfig) -> Result<PathBuf> {
+        if !working_dir.exists() {
+            return Err(SandboxError::PathNotAllowed {
+                path: working_dir.to_path_buf(),
+            });
+        }
+        if !working_dir.is_dir() {
+            return Err(SandboxError::PathNotAllowed {
+                path: working_dir.to_path_buf(),
+            });
+        }
+
+        let canonical = working_dir
+            .canonicalize()
+            .map_err(|_| SandboxError::PathNotAllowed {
+                path: working_dir.to_path_buf(),
+            })?;
+
+        // If a workspace is configured, enforce that working_dir stays inside it.
+        if let Some(ref workspace) = config.workspace {
+            let ws_canonical =
+                workspace
+                    .canonicalize()
+                    .map_err(|_| SandboxError::PathNotAllowed {
+                        path: workspace.clone(),
+                    })?;
+            if !canonical.starts_with(&ws_canonical) {
+                warn!(
+                    "HostExecutor: working_dir {:?} is outside workspace {:?}. Blocking execution.",
+                    canonical, ws_canonical
+                );
+                return Err(SandboxError::PathNotAllowed { path: canonical });
+            }
+        }
+
+        Ok(canonical)
+    }
+
     fn build_command_internal(
         &self,
         cmd: &str,
         working_dir: &Path,
-        _config: &SandboxConfig,
-    ) -> Command {
+        config: &SandboxConfig,
+    ) -> Result<Command> {
+        let validated = self.validate_working_dir(working_dir, config)?;
+
         // On Windows, we use cmd.exe for command execution
         // NOTE: This provides NO sandboxing - commands run with full privileges
         // Full Job Objects integration would require unsafe Win32 API calls
 
         let mut command = Command::new("cmd");
-        command.arg("/C").arg(cmd).current_dir(working_dir);
+        command.arg("/C").arg(cmd).current_dir(&validated);
 
         debug!("Windows command (unsandboxed): {:?}", command);
-        command
+        Ok(command)
     }
 }
 
@@ -90,7 +132,7 @@ impl SandboxBackend for HostExecutor {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<Command> {
-        Ok(self.build_command_internal(cmd, working_dir, config))
+        self.build_command_internal(cmd, working_dir, config)
     }
 
     async fn execute(
@@ -99,12 +141,14 @@ impl SandboxBackend for HostExecutor {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
+        let validated = self.validate_working_dir(working_dir, config)?;
+
         // Build async command with kill_on_drop to ensure process termination on timeout
         let mut command = AsyncCommand::new("cmd");
         command
             .arg("/C")
             .arg(cmd)
-            .current_dir(working_dir)
+            .current_dir(&validated)
             .kill_on_drop(true);
 
         debug!("Windows async command (unsandboxed): {:?}", command);

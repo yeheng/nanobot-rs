@@ -21,7 +21,8 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
             frequency    TEXT DEFAULT 'warm',
             access_count INTEGER DEFAULT 0,
             last_accessed TEXT,
-            file_mtime   INTEGER
+            file_mtime   INTEGER,
+            sync_sequence INTEGER DEFAULT 0
         )
         "#,
     )
@@ -98,6 +99,17 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_wiki_log_action ON wiki_log(action)")
         .execute(pool)
         .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS wiki_sync_state (
+            key   TEXT PRIMARY KEY,
+            value INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

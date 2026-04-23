@@ -31,6 +31,8 @@ pub struct WikiPageInput<'a> {
     pub last_accessed: Option<String>,
     /// Machine runtime state: disk file mtime (Unix epoch seconds).
     pub file_mtime: i64,
+    /// Monotonic sequence for tracking SQLite → Tantivy sync consistency.
+    pub sync_sequence: u64,
 }
 
 /// SQLite-backed wiki page store. Single source of truth.
@@ -49,8 +51,8 @@ impl WikiPageStore {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 type = excluded.type,
@@ -64,7 +66,8 @@ impl WikiPageStore {
                 frequency = excluded.frequency,
                 access_count = excluded.access_count,
                 last_accessed = excluded.last_accessed,
-                file_mtime = excluded.file_mtime
+                file_mtime = excluded.file_mtime,
+                sync_sequence = excluded.sync_sequence
             "#,
         )
         .bind(page.path)
@@ -82,6 +85,7 @@ impl WikiPageStore {
         .bind(page.access_count as i64)
         .bind(page.last_accessed.as_deref())
         .bind(page.file_mtime)
+        .bind(page.sync_sequence as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -89,7 +93,7 @@ impl WikiPageStore {
 
     pub async fn get(&self, path: &str) -> Result<Option<PageRow>> {
         let row = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE path = $1"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence FROM wiki_pages WHERE path = $1"
         )
         .bind(path)
         .fetch_optional(&self.pool)
@@ -115,7 +119,7 @@ impl WikiPageStore {
 
     pub async fn list_by_type(&self, page_type: &str) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
         )
         .bind(page_type)
         .fetch_all(&self.pool)
@@ -125,7 +129,7 @@ impl WikiPageStore {
 
     pub async fn list_all(&self) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence FROM wiki_pages ORDER BY updated DESC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -170,6 +174,31 @@ impl WikiPageStore {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Batch-load full pages for a set of paths.
+    ///
+    /// Uses a single `SELECT * ... WHERE path IN (...)` query.
+    pub async fn get_many(&self, paths: &[String]) -> Result<Vec<PageRow>> {
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence \
+             FROM wiki_pages \
+             WHERE path IN ({})",
+            placeholders
+        );
+
+        let mut query = sqlx::query_as::<_, PageRow>(&sql);
+        for p in paths {
+            query = query.bind(p);
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows)
     }
 
     /// Batch-load lightweight page summaries for a set of paths.
@@ -238,4 +267,49 @@ pub struct PageRow {
     pub access_count: i64,
     pub last_accessed: Option<String>,
     pub file_mtime: i64,
+    pub sync_sequence: i64,
+}
+
+impl WikiPageStore {
+    /// Get the maximum sync_sequence across all pages.
+    pub async fn max_sync_sequence(&self) -> Result<u64> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT COALESCE(MAX(sync_sequence), 0) FROM wiki_pages")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| r.0 as u64).unwrap_or(0))
+    }
+
+    /// Get pages whose sync_sequence is greater than the given watermark.
+    pub async fn get_unindexed_pages(&self, last_indexed_sequence: u64) -> Result<Vec<PageRow>> {
+        let rows = sqlx::query_as::<_, PageRow>(
+            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime, sync_sequence FROM wiki_pages WHERE sync_sequence > $1 ORDER BY sync_sequence"
+        )
+        .bind(last_indexed_sequence as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Update a sync state key (e.g. 'tantivy_last_sequence').
+    pub async fn update_sync_state(&self, key: &str, value: u64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO wiki_sync_state (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        .bind(key)
+        .bind(value as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get a sync state value.
+    pub async fn get_sync_state(&self, key: &str) -> Result<u64> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT value FROM wiki_sync_state WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| r.0 as u64).unwrap_or(0))
+    }
 }

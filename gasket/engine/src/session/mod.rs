@@ -8,12 +8,14 @@ pub mod compactor;
 pub mod config;
 pub mod context;
 pub mod history;
+pub mod plugins;
 pub mod prompt;
 pub mod store;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
+pub(crate) use plugins::SessionLifecyclePlugin;
 pub use store::MemoryStore;
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
@@ -30,11 +32,13 @@ use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
 use async_trait::async_trait;
+use gasket_providers::ChatMessage;
 use gasket_types::events::ChatEvent;
 use gasket_types::{EventMetadata, EventType, SessionEvent, SessionKey};
 
+use futures_util::StreamExt;
 use history::builder::BuildOutcome;
-use history::indexing::IndexingService;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Response from agent processing
 #[derive(Debug, Clone)]
@@ -48,7 +52,7 @@ pub struct AgentResponse {
 }
 
 /// Owned snapshot for post-response finalization.
-struct FinalizeContext {
+pub(crate) struct FinalizeContext {
     session_key: SessionKey,
     session_key_str: String,
     content: String,
@@ -212,7 +216,7 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 }
 
 /// Wiki knowledge system components — always exist together or not at all.
-struct WikiComponents {
+pub(crate) struct WikiComponents {
     page_store: Arc<PageStore>,
     page_index: Arc<PageIndex>,
     wiki_log: Arc<WikiLog>,
@@ -231,29 +235,37 @@ pub enum WikiHealth {
 
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
-/// Owns session state (events, prompts, wiki knowledge, compaction) and delegates
+/// Owns session state (events, prompts, compaction) and delegates
 /// the core LLM loop to `kernel::execute()`.
+/// Optional subsystems (wiki, cost tracking) are mounted via `SessionLifecyclePlugin`
+/// so that AgentSession does not accumulate God-Class fields.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
     context: AgentContext,
     config: AgentConfig,
-    workspace: PathBuf,
     system_prompt: String,
-    skills_context: Option<String>,
     hooks: Arc<HookRegistry>,
-    history_config: gasket_storage::HistoryConfig,
     compactor: Option<Arc<ContextCompactor>>,
-    indexing_service: Option<Arc<IndexingService>>,
-    /// Wiki knowledge system. None when wiki is disabled.
-    wiki: Option<WikiComponents>,
-    /// Wiki initialization health status — distinguishes "disabled" from "broken".
-    wiki_health: WikiHealth,
-    /// Optional pricing configuration for cost calculation.
-    pricing: Option<ModelPricing>,
+    /// Lifecycle plugins (wiki, cost tracking, etc.). Empty when no optional
+    /// subsystems are configured.
+    plugins: Vec<Arc<dyn SessionLifecyclePlugin>>,
     /// Task tracker for graceful shutdown of spawned finalization tasks.
     /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
     /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
     pending_done: tokio_util::task::TaskTracker,
+}
+
+/// Context carried through the PreProcess → Execute → PostProcess pipeline.
+struct PipelineContext {
+    runtime_ctx: RuntimeContext,
+    messages: Vec<ChatMessage>,
+    fctx: FinalizeContext,
+    hooks: Arc<HookRegistry>,
+    context: AgentContext,
+    model: String,
+    compactor: Option<Arc<ContextCompactor>>,
+    pricing: Option<ModelPricing>,
+    plugins: Vec<Arc<dyn SessionLifecyclePlugin>>,
 }
 
 impl AgentSession {
@@ -265,31 +277,18 @@ impl AgentSession {
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let memory_store = Arc::new(MemoryStore::new().await);
-        Self::with_services(provider, workspace, config, tools, memory_store, None).await
+        Self::with_memory_store(provider, workspace, config, tools, memory_store).await
     }
 
     /// Create a session with custom services.
-    async fn with_services(
+    pub async fn with_memory_store(
         provider: Arc<dyn gasket_providers::LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
         memory_store: Arc<MemoryStore>,
-        pricing: Option<ModelPricing>,
     ) -> Result<Self, AgentError> {
-        builder::build_session(provider, workspace, config, tools, memory_store, pricing).await
-    }
-
-    /// Create with pricing configuration.
-    pub async fn with_pricing(
-        provider: Arc<dyn gasket_providers::LlmProvider>,
-        workspace: PathBuf,
-        config: AgentConfig,
-        tools: Arc<ToolRegistry>,
-        memory_store: Arc<MemoryStore>,
-        pricing: Option<ModelPricing>,
-    ) -> Result<Self, AgentError> {
-        Self::with_services(provider, workspace, config, tools, memory_store, pricing).await
+        builder::build_session(provider, workspace, config, tools, memory_store).await
     }
 
     /// Set the subagent spawner.
@@ -304,14 +303,18 @@ impl AgentSession {
         self
     }
 
+    /// Attach cost-tracking plugin with the given pricing config.
+    pub fn with_pricing(mut self, pricing: Option<ModelPricing>) -> Self {
+        if let Some(p) = pricing {
+            self.plugins
+                .push(Arc::new(plugins::CostTrackingPlugin::new(p)));
+        }
+        self
+    }
+
     /// Get the model name.
     pub fn model(&self) -> &str {
         &self.config.model
-    }
-
-    /// Get the workspace path.
-    pub fn workspace(&self) -> &PathBuf {
-        &self.workspace
     }
 
     /// Get the hook registry.
@@ -319,32 +322,37 @@ impl AgentSession {
         &self.hooks
     }
 
-    /// Get the indexing service.
-    pub fn indexing_service(&self) -> Option<&Arc<IndexingService>> {
-        self.indexing_service.as_ref()
-    }
-
-    /// Get the wiki page store.
+    /// Get the wiki page store from the first wiki plugin.
     pub fn page_store(&self) -> Option<&Arc<PageStore>> {
-        self.wiki.as_ref().map(|w| &w.page_store)
+        self.plugins
+            .iter()
+            .find_map(|p| p.wiki_components())
+            .map(|w| &w.page_store)
     }
 
-    /// Get the wiki page index.
+    /// Get the wiki page index from the first wiki plugin.
     pub fn page_index(&self) -> Option<&Arc<PageIndex>> {
-        self.wiki.as_ref().map(|w| &w.page_index)
+        self.plugins
+            .iter()
+            .find_map(|p| p.wiki_components())
+            .map(|w| &w.page_index)
     }
 
-    /// Get the wiki log.
+    /// Get the wiki log from the first wiki plugin.
     pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
-        self.wiki.as_ref().map(|w| &w.wiki_log)
+        self.plugins
+            .iter()
+            .find_map(|p| p.wiki_components())
+            .map(|w| &w.wiki_log)
     }
 
     /// Get the wiki health status.
-    ///
-    /// Distinguishes between wiki being disabled by configuration vs
-    /// configured but failing to initialize (e.g. disk errors, corrupt index).
-    pub fn wiki_health(&self) -> &WikiHealth {
-        &self.wiki_health
+    pub fn wiki_health(&self) -> WikiHealth {
+        self.plugins
+            .iter()
+            .find_map(|p| p.wiki_components())
+            .map(|_| WikiHealth::Healthy)
+            .unwrap_or(WikiHealth::Disabled)
     }
 
     /// Clear session for the given key.
@@ -471,41 +479,97 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let outcome = self.prepare_pipeline(content, session_key).await?;
+        let (ctx, aborted) = self.preprocess(content, session_key).await?;
 
+        if let Some(msg) = aborted {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            let model = ctx.model;
+            let handle = tokio::spawn(async move {
+                Ok(AgentResponse {
+                    content: msg,
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    model: Some(model),
+                    token_usage: None,
+                    cost: 0.0,
+                })
+            });
+            return Ok((rx, handle));
+        }
+
+        let (kernel_tx, kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
+        let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
+
+        // Spawn via TaskTracker so graceful shutdown can await this task.
+        // T3: Stream combinator replaces manual loop + extra spawn.
+        let result_handle = self.pending_done.spawn(async move {
+            let stream_future = ReceiverStream::new(kernel_rx)
+                .filter_map(|event| futures_util::future::ready(event.to_chat_event()))
+                .for_each(|chat| {
+                    let chat_tx = chat_tx.clone();
+                    async move {
+                        let _ = chat_tx.send(chat).await;
+                    }
+                });
+
+            let exec_future = Self::execute(&ctx, kernel_tx);
+            let (result, _) = tokio::join!(exec_future, stream_future);
+            let result = result?;
+
+            let response = Self::postprocess(result, &ctx).await;
+
+            // Notify lifecycle plugins of finalized response.
+            for plugin in &ctx.plugins {
+                plugin.on_response_finalized(&response, &ctx.fctx);
+            }
+
+            Ok(response)
+        });
+
+        Ok((chat_rx, result_handle))
+    }
+
+    // ── Pipeline stages ──────────────────────────────────────────────────────
+
+    /// Stage 1: PreProcess — build request, wire checkpoint callback.
+    async fn preprocess(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+    ) -> Result<(PipelineContext, Option<String>), AgentError> {
+        let outcome = self.prepare_pipeline(content, session_key).await?;
         let request = match outcome {
             BuildOutcome::Aborted(msg) => {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                let model = self.config.model.clone();
-                let handle = tokio::spawn(async move {
-                    Ok(AgentResponse {
-                        content: msg,
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        model: Some(model),
-                        token_usage: None,
-                        cost: 0.0,
-                    })
-                });
-                return Ok((rx, handle));
+                let pricing = self.plugins.iter().find_map(|p| p.pricing()).cloned();
+                let ctx = PipelineContext {
+                    runtime_ctx: self.runtime_ctx.clone(),
+                    messages: vec![],
+                    fctx: FinalizeContext {
+                        session_key: session_key.clone(),
+                        session_key_str: session_key.to_string(),
+                        content: content.to_string(),
+                        local_vault_values: vec![],
+                        estimated_tokens: 0,
+                    },
+                    hooks: self.hooks.clone(),
+                    context: self.context.clone(),
+                    model: self.config.model.clone(),
+                    compactor: self.compactor.clone(),
+                    pricing,
+                    plugins: self.plugins.clone(),
+                };
+                return Ok((ctx, Some(msg)));
             }
             BuildOutcome::Ready(req) => req,
         };
 
         let fctx = FinalizeContext::from_request(&request);
         let messages = request.messages;
-
-        // Clone Arc fields for spawned task
         let mut runtime_ctx = self.runtime_ctx.clone();
-        let hooks = self.hooks.clone();
         let context = self.context.clone();
-        let model = self.config.model.clone();
-        let compactor = self.compactor.clone();
-        let pricing = self.pricing.clone();
 
-        // Wire checkpoint callback into the kernel if compactor is available.
         if let (Some(ref compactor), AgentContext::Persistent(ref persistent_ctx)) =
-            (&compactor, &context)
+            (&self.compactor, &context)
         {
             runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
                 session_key: fctx.session_key.clone(),
@@ -514,54 +578,51 @@ impl AgentSession {
             });
         }
 
-        let (kernel_tx, mut kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
-        let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
+        let pricing = self.plugins.iter().find_map(|p| p.pricing()).cloned();
+        let ctx = PipelineContext {
+            runtime_ctx,
+            messages,
+            fctx,
+            hooks: self.hooks.clone(),
+            context,
+            model: self.config.model.clone(),
+            compactor: self.compactor.clone(),
+            pricing,
+            plugins: self.plugins.clone(),
+        };
+        Ok((ctx, None))
+    }
 
-        // Translate kernel StreamEvents into clean ChatEvents for consumers.
-        // System events (TokenStats, subagent lifecycle) are dropped here;
-        // TokenStats are already handled by the kernel's TokenTracker.
-        // Tracked by pending_done for graceful shutdown.
-        self.pending_done.spawn(async move {
-            while let Some(event) = kernel_rx.recv().await {
-                if let Some(chat) = event.to_chat_event() {
-                    if chat_tx.send(chat).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+    /// Stage 2: Execute — run the kernel streaming loop.
+    async fn execute(
+        ctx: &PipelineContext,
+        kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<ExecutionResult, AgentError> {
+        match kernel::execute_streaming(&ctx.runtime_ctx, ctx.messages.clone(), kernel_tx).await {
+            Ok(r) => Ok(r),
+            Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
+                content: format!("Maximum iterations ({}) reached.", n),
+                reasoning_content: None,
+                tools_used: vec![],
+                token_usage: None,
+                cost: None,
+            }),
+            Err(e) => Err(e.into()),
+        }
+    }
 
-        // Spawn via TaskTracker so graceful shutdown can await this task.
-        let result_handle = self.pending_done.spawn(async move {
-            let result = match kernel::execute_streaming(&runtime_ctx, messages, kernel_tx).await {
-                Ok(r) => r,
-                Err(crate::kernel::KernelError::MaxIterations(n)) => {
-                    crate::kernel::ExecutionResult {
-                        content: format!("Maximum iterations ({}) reached.", n),
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        token_usage: None,
-                        cost: None,
-                    }
-                }
-                Err(e) => return Err(e.into()),
-            };
-
-            let response = finalize_response(
-                result,
-                &fctx,
-                &context,
-                &hooks,
-                &model,
-                compactor.as_ref(),
-                pricing.as_ref(),
-            )
-            .await;
-
-            Ok(response)
-        });
-
-        Ok((chat_rx, result_handle))
+    /// Stage 3: PostProcess — finalize response, persist events, trigger compaction.
+    async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentResponse {
+        finalize_response(
+            result,
+            &ctx.fctx,
+            &ctx.context,
+            &ctx.hooks,
+            &ctx.model,
+            ctx.compactor.as_ref(),
+            ctx.pricing.as_ref(),
+        )
+        .await
     }
 
     /// Common pre-processing pipeline.
@@ -572,55 +633,26 @@ impl AgentSession {
     ) -> Result<history::builder::BuildOutcome, AgentError> {
         use history::builder::ContextBuilder;
 
+        let history_config = gasket_storage::HistoryConfig {
+            max_events: self.config.memory_window,
+            ..Default::default()
+        };
+
         let builder = ContextBuilder::new(
             self.context.clone(),
             self.system_prompt.clone(),
-            self.skills_context.clone(),
+            None,
             self.hooks.clone(),
-            self.history_config.clone(),
+            history_config,
         );
 
-        // Wire wiki-based memory loader so long-term knowledge automatically
-        // flows into the conversation context.
-        let builder = if let Some(ref wiki) = self.wiki {
-            let page_index = wiki.page_index.clone();
-            let page_store = wiki.page_store.clone();
-            builder.with_memory_loader(move |user_input: &str| {
-                let query = user_input.to_string();
-                let index = page_index.clone();
-                let store = page_store.clone();
-                Box::pin(async move {
-                    let hits = index
-                        .search_with_store(&query, 3, Some(&store))
-                        .await
-                        .ok()?;
-                    if hits.is_empty() {
-                        return None;
-                    }
-                    let mut parts =
-                        vec!["[Relevant long-term memories loaded for this turn]".to_string()];
-                    for hit in hits {
-                        if let Ok(page) = store.read(&hit.path).await {
-                            let preview = if page.content.chars().count() > 800 {
-                                page.content.chars().take(800).collect::<String>() + "..."
-                            } else {
-                                page.content.clone()
-                            };
-                            parts.push(format!(
-                                "## {} (path: {} | tags: [{}])\n{}",
-                                page.title,
-                                page.path,
-                                page.tags.join(", "),
-                                preview
-                            ));
-                        }
-                    }
-                    if parts.len() > 1 {
-                        Some(parts.join("\n\n"))
-                    } else {
-                        None
-                    }
-                })
+        // Wire wiki-based memory loader from the first plugin that provides one.
+        let loader = self.plugins.iter().find_map(|p| p.memory_loader());
+        let builder = if let Some(loader) = loader {
+            builder.with_memory_loader(move |input: &str| {
+                let loader = loader.clone();
+                let input = input.to_string();
+                Box::pin(async move { loader(&input).await })
             })
         } else {
             builder

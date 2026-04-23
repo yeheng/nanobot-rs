@@ -356,6 +356,10 @@ impl LlmProvider for AnthropicProvider {
         &self.default_model
     }
 
+    fn supports_thinking(&self) -> bool {
+        true
+    }
+
     #[instrument(skip(self, request), fields(provider = "anthropic", model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let url = format!("{}/messages", self.api_base);

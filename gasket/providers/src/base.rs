@@ -19,6 +19,23 @@ pub trait LlmProvider: Send + Sync {
     /// Get the default model for this provider
     fn default_model(&self) -> &str;
 
+    /// Normalize messages before sending to the provider.
+    ///
+    /// Default implementation is identity (no transformation).
+    /// Providers with non-standard role requirements (e.g. MiniMax)
+    /// should override this to convert or merge messages.
+    fn normalize_messages(&self, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+        messages
+    }
+
+    /// Whether this provider supports thinking/reasoning mode.
+    ///
+    /// Default is `false`. Providers that support structured reasoning
+    /// (e.g. DeepSeek, Kimi, Anthropic) should override this.
+    fn supports_thinking(&self) -> bool {
+        false
+    }
+
     /// Send a chat completion request
     ///
     /// Observability is handled automatically via the `tracing` crate's

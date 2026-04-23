@@ -18,6 +18,42 @@ use gasket_types::events::{ChatEvent, InboundMessage, OutboundMessage, SessionKe
 use crate::memory::MemoryBroker;
 use crate::types::{BrokerPayload, Envelope, Topic};
 
+/// Abstraction over outbound message delivery.
+///
+/// Unifies `process_regular` and `process_streaming` so the broker
+/// does not duplicate envelope-construction / publish logic.
+#[async_trait]
+pub trait MessageOutput: Send + Sync {
+    async fn send(
+        &self,
+        msg: OutboundMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// [`MessageOutput`] implementation backed by the in-memory broker.
+pub struct BrokerOutput {
+    broker: Arc<MemoryBroker>,
+}
+
+impl BrokerOutput {
+    pub fn new(broker: Arc<MemoryBroker>) -> Self {
+        Self { broker }
+    }
+}
+
+#[async_trait]
+impl MessageOutput for BrokerOutput {
+    async fn send(
+        &self,
+        msg: OutboundMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.broker
+            .publish(Envelope::new(Topic::Outbound, BrokerPayload::Outbound(msg)))
+            .await?;
+        Ok(())
+    }
+}
+
 /// Message handler trait — decoupled from AgentLoop.
 #[async_trait]
 pub trait MessageHandler: Send + Sync {
@@ -226,64 +262,50 @@ async fn run_session_task<H: MessageHandler + 'static>(
             }
         }
 
-        if msg.channel.supports_streaming() {
-            if let Err(e) = process_streaming(&session_key, msg, &handler, &broker).await {
+        let output = BrokerOutput::new(broker.clone());
+        let is_streaming = msg.channel.supports_streaming();
+        if let Err(e) = process_message(&session_key, msg, &handler, &output).await {
+            if is_streaming {
                 tracing::error!("Session [{}] streaming error: {}", key_str, e);
+            } else {
+                tracing::error!("Session [{}] error: {}", key_str, e);
             }
-        } else if let Err(e) = process_regular(&session_key, msg, &handler, &broker).await {
-            tracing::error!("Session [{}] error: {}", key_str, e);
         }
     }
 }
 
-async fn process_regular<H: MessageHandler + 'static>(
+async fn process_message<H: MessageHandler + 'static>(
     session_key: &SessionKey,
     msg: InboundMessage,
     handler: &Arc<H>,
-    broker: &Arc<MemoryBroker>,
+    output: &dyn MessageOutput,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let content = handler.handle_message(session_key, &msg.content).await?;
-    let outbound = OutboundMessage {
-        channel: msg.channel,
-        chat_id: msg.chat_id,
-        content,
-        metadata: None,
-        trace_id: msg.trace_id,
-        ws_message: None,
-    };
-    broker
-        .publish(Envelope::new(
-            Topic::Outbound,
-            BrokerPayload::Outbound(outbound),
-        ))
-        .await?;
-    Ok(())
-}
-
-async fn process_streaming<H: MessageHandler + 'static>(
-    session_key: &SessionKey,
-    msg: InboundMessage,
-    handler: &Arc<H>,
-    broker: &Arc<MemoryBroker>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let channel = msg.channel.clone();
-    let chat_id = msg.chat_id.clone();
-    let (mut event_rx, result_handle) = handler
-        .handle_streaming_message(&msg.content, session_key)
-        .await?;
-
-    // ChatEvent is already a clean WebSocketMessage — no translation needed.
-    while let Some(event) = event_rx.recv().await {
-        let outbound = OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
-        broker
-            .publish(Envelope::new(
-                Topic::Outbound,
-                BrokerPayload::Outbound(outbound),
-            ))
+    if msg.channel.supports_streaming() {
+        let channel = msg.channel.clone();
+        let chat_id = msg.chat_id.clone();
+        let (mut event_rx, result_handle) = handler
+            .handle_streaming_message(&msg.content, session_key)
             .await?;
+
+        // ChatEvent is already a clean WebSocketMessage — no translation needed.
+        while let Some(event) = event_rx.recv().await {
+            let outbound =
+                OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
+            output.send(outbound).await?;
+        }
+
+        let _response = result_handle.await??;
+    } else {
+        let content = handler.handle_message(session_key, &msg.content).await?;
+        let outbound = OutboundMessage {
+            channel: msg.channel,
+            chat_id: msg.chat_id,
+            content,
+            metadata: None,
+            trace_id: msg.trace_id,
+            ws_message: None,
+        };
+        output.send(outbound).await?;
     }
-
-    let _response = result_handle.await??;
-
     Ok(())
 }

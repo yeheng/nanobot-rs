@@ -130,16 +130,17 @@ impl WikiQueryEngine {
             selected_paths.push(hit.path.as_str());
         }
 
-        // Phase 2c: Load full pages only for selected candidates
-        let mut pages = Vec::new();
-        for path in selected_paths {
-            match self.store.read(path).await {
-                Ok(page) => pages.push(page),
-                Err(e) => {
-                    tracing::debug!("WikiQuery: skip loading '{}': {}", path, e);
-                }
-            }
-        }
+        // Phase 2c: Load full pages only for selected candidates (batch read)
+        let selected_paths_owned: Vec<String> =
+            selected_paths.into_iter().map(|s| s.to_string()).collect();
+        let pages = self
+            .store
+            .read_many(&selected_paths_owned)
+            .await
+            .map_err(|e| {
+                tracing::debug!("WikiQuery: batch load failed: {}", e);
+                e
+            })?;
 
         Ok(QueryResult {
             pages,

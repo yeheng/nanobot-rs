@@ -78,6 +78,9 @@ pub struct WikiPage {
     /// Machine runtime state: disk file mtime in Unix epoch seconds (never written to Markdown).
     #[serde(skip, default)]
     pub file_mtime: i64,
+    /// Machine runtime state: SQLite sync sequence (never written to Markdown).
+    #[serde(skip, default)]
+    pub sync_sequence: u64,
 }
 
 fn default_confidence() -> f64 {
@@ -107,6 +110,7 @@ impl WikiPage {
             access_count: 0,
             last_accessed: None,
             file_mtime: 0,
+            sync_sequence: 0,
         }
     }
 
@@ -189,6 +193,7 @@ impl WikiPage {
             access_count: 0,
             last_accessed: None,
             file_mtime: 0,
+            sync_sequence: 0,
         })
     }
 }

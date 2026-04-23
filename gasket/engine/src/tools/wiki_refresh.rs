@@ -111,6 +111,7 @@ impl WikiRefreshTool {
         }
 
         let mut synced = 0usize;
+        let mut max_seq = 0u64;
         for (rel_path, disk_mtime, full_path) in disk_files {
             // Lazy mtime check: skip if DB already has the same mtime.
             let needs_sync = match self.page_store.db().get(&rel_path).await {
@@ -136,9 +137,13 @@ impl WikiRefreshTool {
             page.file_mtime = disk_mtime;
 
             // Update SQLite index only (disk is already SSOT).
-            self.page_store.index_page(&page).await.map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to index {} in SQLite: {}", rel_path, e))
-            })?;
+            match self.page_store.index_page(&page).await {
+                Ok(seq) => max_seq = max_seq.max(seq),
+                Err(e) => {
+                    warn!("WikiRefresh: failed to index {} in SQLite: {}", rel_path, e);
+                    continue;
+                }
+            }
 
             if let Err(e) = self.page_index.upsert(&page).await {
                 warn!(
@@ -150,6 +155,13 @@ impl WikiRefreshTool {
             }
 
             synced += 1;
+        }
+
+        // Update index watermark after successful batch.
+        if max_seq > 0 {
+            if let Err(e) = self.page_store.update_indexed_sequence(max_seq).await {
+                warn!("WikiRefresh: failed to update index watermark: {}", e);
+            }
         }
 
         info!("WikiRefresh: synced {} changed pages", synced);
@@ -166,6 +178,16 @@ impl WikiRefreshTool {
             .rebuild(&self.page_store)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Tantivy rebuild failed: {}", e)))?;
+
+        let max_seq = self.page_store.db().max_sync_sequence().await.unwrap_or(0);
+        if max_seq > 0 {
+            if let Err(e) = self.page_store.update_indexed_sequence(max_seq).await {
+                warn!(
+                    "WikiRefresh: failed to update index watermark after rebuild: {}",
+                    e
+                );
+            }
+        }
 
         info!("WikiRefresh: full rebuild complete with {} pages", synced);
         Ok(synced)

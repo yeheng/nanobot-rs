@@ -370,6 +370,10 @@ impl LlmProvider for OpenAICompatibleProvider {
         &self.config.default_model
     }
 
+    fn supports_thinking(&self) -> bool {
+        self.config.supports_thinking
+    }
+
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let url = format!("{}/chat/completions", self.config.api_base);

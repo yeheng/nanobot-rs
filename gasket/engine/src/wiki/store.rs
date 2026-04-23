@@ -2,6 +2,7 @@ use anyhow::Result;
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 
@@ -12,6 +13,8 @@ use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,
+    /// Lazy-initialized monotonic sequence for SQLite → Tantivy sync tracking.
+    next_sequence: Mutex<Option<u64>>,
 }
 
 impl PageStore {
@@ -19,6 +22,7 @@ impl PageStore {
         Self {
             db: WikiPageStore::new(pool),
             wiki_root,
+            next_sequence: Mutex::new(None),
         }
     }
 
@@ -77,9 +81,11 @@ impl PageStore {
                         .as_deref()
                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc));
+                    page.sync_sequence = old.sync_sequence as u64;
                 }
 
-                self.upsert_db(&page, mtime).await?;
+                let seq = self.upsert_db(&page, mtime).await?;
+                page.sync_sequence = seq;
                 Ok(page)
             }
             // Disk gone, SQLite stale — purge and fail.
@@ -94,9 +100,17 @@ impl PageStore {
         }
     }
 
+    /// Batch-read full pages from SQLite (no lazy mtime sync — suitable for
+    /// query engines where consistency is handled at a higher level).
+    pub async fn read_many(&self, paths: &[String]) -> Result<Vec<WikiPage>> {
+        let rows = self.db.get_many(paths).await?;
+        Ok(rows.into_iter().map(|row| self.row_to_page(row)).collect())
+    }
+
     /// Write page: disk is SSOT. Atomic write to disk first, then update SQLite.
     /// If disk write fails, SQLite is untouched and the error propagates immediately.
-    pub async fn write(&self, page: &WikiPage) -> Result<()> {
+    /// Returns the assigned sync_sequence.
+    pub async fn write(&self, page: &WikiPage) -> Result<u64> {
         self.sync_to_disk(page).await?;
 
         let disk_path = self.wiki_root.join(format!("{}.md", page.path));
@@ -106,7 +120,8 @@ impl PageStore {
 
     /// Update SQLite index for a page that is already on disk.
     /// Used by bulk reindexing tools to avoid redundant disk writes.
-    pub async fn index_page(&self, page: &WikiPage) -> Result<()> {
+    /// Returns the assigned sync_sequence.
+    pub async fn index_page(&self, page: &WikiPage) -> Result<u64> {
         let disk_path = self.wiki_root.join(format!("{}.md", page.path));
         let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
         self.upsert_db(page, mtime).await
@@ -235,9 +250,11 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
+                page.sync_sequence = old.sync_sequence as u64;
             }
 
-            self.upsert_db(&page, mtime).await?;
+            let seq = self.upsert_db(&page, mtime).await?;
+            page.sync_sequence = seq;
             synced += 1;
         }
 
@@ -274,12 +291,14 @@ impl PageStore {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&chrono::Utc)),
             file_mtime: row.file_mtime,
+            sync_sequence: row.sync_sequence as u64,
         }
     }
 
-    async fn upsert_db(&self, page: &WikiPage, file_mtime: i64) -> Result<()> {
+    async fn upsert_db(&self, page: &WikiPage, file_mtime: i64) -> Result<u64> {
         let tags_str = serde_json::to_string(&page.tags)?;
         let checksum = Some(format!("{}", page.content.len()));
+        let seq = self.alloc_sequence().await?;
         self.db
             .upsert(&gasket_storage::wiki::WikiPageInput {
                 path: &page.path,
@@ -295,7 +314,66 @@ impl PageStore {
                 access_count: page.access_count,
                 last_accessed: page.last_accessed.map(|dt| dt.to_rfc3339()),
                 file_mtime,
+                sync_sequence: seq,
             })
+            .await?;
+        Ok(seq)
+    }
+
+    /// Allocate the next monotonic sync sequence.
+    async fn alloc_sequence(&self) -> Result<u64> {
+        let needs_init = { self.next_sequence.lock().unwrap().is_none() };
+        if needs_init {
+            let max = self.db.max_sync_sequence().await.unwrap_or(0);
+            let mut guard = self.next_sequence.lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(max + 1);
+            }
+        }
+        let mut guard = self.next_sequence.lock().unwrap();
+        let seq = guard.unwrap();
+        *guard = Some(seq + 1);
+        Ok(seq)
+    }
+
+    /// Repair Tantivy index by re-indexing pages whose sync_sequence is ahead
+    /// of the recorded last indexed sequence. Returns count of repaired pages.
+    pub async fn repair_index(&self, page_index: &super::PageIndex) -> Result<usize> {
+        let last_seq = self
+            .db
+            .get_sync_state("tantivy_last_sequence")
+            .await
+            .unwrap_or(0);
+        let max_seq = self.db.max_sync_sequence().await.unwrap_or(0);
+        if last_seq >= max_seq {
+            return Ok(0);
+        }
+        tracing::info!(
+            "Repairing Tantivy index: last_indexed={}, current_max={}",
+            last_seq,
+            max_seq
+        );
+        let rows = self.db.get_unindexed_pages(last_seq).await?;
+        let mut repaired = 0usize;
+        for row in rows {
+            let page = self.row_to_page(row);
+            if let Err(e) = page_index.upsert(&page).await {
+                tracing::warn!("Repair index: failed to upsert {}: {}", page.path, e);
+            } else {
+                repaired += 1;
+            }
+        }
+        // Update watermark to max_seq regardless of partial failures;
+        // failed pages will be retried on next repair.
+        self.update_indexed_sequence(max_seq).await?;
+        tracing::info!("Repaired {} pages in Tantivy index", repaired);
+        Ok(repaired)
+    }
+
+    /// Update the Tantivy index watermark to the given sequence.
+    pub async fn update_indexed_sequence(&self, sequence: u64) -> Result<()> {
+        self.db
+            .update_sync_state("tantivy_last_sequence", sequence)
             .await
     }
 

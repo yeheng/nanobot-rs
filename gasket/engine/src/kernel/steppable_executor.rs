@@ -16,8 +16,8 @@ use crate::kernel::{
     stream,
     tool_executor::{ToolCallResult, ToolExecutor},
 };
-use crate::tools::ToolContext;
 use crate::token_tracker::TokenUsage;
+use crate::tools::ToolContext;
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
 
@@ -71,7 +71,12 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Result<StepResult, KernelError> {
         // Proactive checkpoint injection (before LLM call)
-        if let Some(summary) = self.ctx.checkpoint_callback.get_checkpoint(messages.len()).await {
+        if let Some(summary) = self
+            .ctx
+            .checkpoint_callback
+            .get_checkpoint(messages.len())
+            .await
+        {
             debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
             messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
         }
@@ -142,10 +147,8 @@ impl SteppableExecutor {
             .map_err(|e| KernelError::Provider(e.to_string()))?;
 
         if let Some(ref api_usage) = response.usage {
-            let usage = TokenUsage::from_api_fields(
-                api_usage.input_tokens,
-                api_usage.output_tokens,
-            );
+            let usage =
+                TokenUsage::from_api_fields(api_usage.input_tokens, api_usage.output_tokens);
             ledger.accumulate(&usage);
         }
 

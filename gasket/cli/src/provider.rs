@@ -492,11 +492,7 @@ pub fn find_provider(config: &Config, vault: Option<&VaultStore>) -> Result<Prov
     let supports_thinking = if config.agents.defaults.thinking_enabled {
         true
     } else {
-        provider_config.thinking_enabled_for_model(&model)
-            || matches!(
-                provider_name.as_str(),
-                "deepseek" | "kimi" | "moonshot" | "zhipu" | "anthropic" | "claude"
-            )
+        provider_config.thinking_enabled_for_model(&model) || provider.supports_thinking()
     };
 
     // Get pricing configuration if available (model-level overrides provider-level)

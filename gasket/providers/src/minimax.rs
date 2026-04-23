@@ -214,8 +214,7 @@ impl MinimaxProvider {
 
         // MiniMax API does not support the `system` role and rejects multiple
         // consecutive messages with the same role (error 2013).
-        let messages = convert_system_messages(request.messages);
-        let messages = merge_consecutive_messages(messages);
+        let messages = self.normalize_messages(request.messages);
 
         let mut body = json!({
             "model": model,
@@ -348,6 +347,11 @@ impl LlmProvider for MinimaxProvider {
 
     fn default_model(&self) -> &str {
         &self.default_model
+    }
+
+    fn normalize_messages(&self, messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
+        let messages = convert_system_messages(messages);
+        merge_consecutive_messages(messages)
     }
 
     #[instrument(skip(self, request), fields(provider = "minimax", model = %request.model))]

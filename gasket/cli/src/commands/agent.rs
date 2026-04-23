@@ -163,16 +163,16 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
-    let agent = AgentSession::with_pricing(
+    let agent = AgentSession::with_memory_store(
         provider_info.provider,
         workspace,
         agent_config,
         tools,
         memory_store,
-        pricing,
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?
+    .with_pricing(pricing)
     .with_spawner(subagent_spawner);
 
     let render_md = !opts.no_markdown;

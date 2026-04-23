@@ -278,16 +278,16 @@ pub async fn cmd_gateway() -> Result<()> {
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
     let agent = Arc::new(
-        AgentSession::with_pricing(
+        AgentSession::with_memory_store(
             provider_info.provider,
             workspace.clone(),
             agent_config,
             tools.clone(),
             memory_store,
-            pricing,
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
+        .with_pricing(pricing)
         .with_spawner(subagent_spawner.clone()),
     );
 
