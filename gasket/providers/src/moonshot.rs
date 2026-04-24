@@ -211,6 +211,13 @@ impl MoonshotProvider {
             request.model
         };
 
+        // When thinking is enabled, Moonshot requires reasoning_content in all
+        // assistant tool call messages — even if the model didn't produce reasoning.
+        let thinking_enabled = request
+            .thinking
+            .as_ref()
+            .is_some_and(|t| t.thinking_type == "enabled");
+
         let messages: Vec<Value> = request
             .messages
             .into_iter()
@@ -224,10 +231,23 @@ impl MoonshotProvider {
                 }
 
                 // Reasoning content (for thinking-enabled models like K2.5/K2.6)
-                if let Some(reasoning) = msg.reasoning_content {
-                    if !reasoning.is_empty() {
-                        obj.insert("reasoning_content".to_string(), json!(reasoning));
-                    }
+                let has_nonempty_reasoning = msg
+                    .reasoning_content
+                    .as_ref()
+                    .is_some_and(|r| !r.is_empty());
+                if has_nonempty_reasoning {
+                    obj.insert(
+                        "reasoning_content".to_string(),
+                        json!(msg.reasoning_content.unwrap()),
+                    );
+                } else if thinking_enabled
+                    && matches!(msg.role, crate::MessageRole::Assistant)
+                    && msg.tool_calls.is_some()
+                {
+                    // Moonshot requires reasoning_content in assistant tool call
+                    // messages when thinking is enabled. Inject empty string if
+                    // the model didn't produce reasoning before the tool call.
+                    obj.insert("reasoning_content".to_string(), json!(""));
                 }
 
                 // Name (for role-play consistency)
@@ -392,6 +412,11 @@ impl MoonshotProvider {
         let mut messages = Vec::new();
         let mut system_instruction = None;
 
+        let thinking_enabled = request
+            .thinking
+            .as_ref()
+            .is_some_and(|t| t.thinking_type == "enabled");
+
         for msg in request.messages {
             match msg.role {
                 crate::MessageRole::System => {
@@ -420,13 +445,22 @@ impl MoonshotProvider {
                     let mut content_blocks = Vec::new();
 
                     // Add thinking/reasoning content if present (required for thinking-enabled models)
-                    if let Some(ref reasoning) = msg.reasoning_content {
-                        if !reasoning.is_empty() {
-                            content_blocks.push(json!({
-                                "type": "thinking",
-                                "thinking": reasoning,
-                            }));
-                        }
+                    let has_nonempty_reasoning = msg
+                        .reasoning_content
+                        .as_ref()
+                        .is_some_and(|r| !r.is_empty());
+                    if has_nonempty_reasoning {
+                        content_blocks.push(json!({
+                            "type": "thinking",
+                            "thinking": msg.reasoning_content.as_ref().unwrap(),
+                        }));
+                    } else if thinking_enabled && msg.tool_calls.is_some() {
+                        // Moonshot requires thinking content in assistant tool call
+                        // messages when thinking is enabled.
+                        content_blocks.push(json!({
+                            "type": "thinking",
+                            "thinking": "",
+                        }));
                     }
 
                     // Add text content if present
@@ -1095,6 +1129,77 @@ mod tests {
         let tool_result = &messages[2];
         assert_eq!(tool_result["role"], "tool");
         assert_eq!(tool_result["tool_call_id"], "call_123");
+    }
+
+    #[test]
+    fn test_build_openai_request_with_tools_thinking_enabled_no_reasoning() {
+        let provider = MoonshotProvider::new("test-key".to_string());
+
+        // Simulate a multi-step execution where the model produced a tool call
+        // without reasoning_content (None).
+        let request = ChatRequest {
+            model: "kimi-k2.6".to_string(),
+            messages: vec![
+                ChatMessage::user("Search for X"),
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![ToolCall::new(
+                        "call_fn_abc_1",
+                        "web_search",
+                        json!({"query": "X"}),
+                    )],
+                    None, // No reasoning_content
+                ),
+                ChatMessage::tool_result("call_fn_abc_1", "web_search", "Result"),
+            ],
+            tools: Some(vec![crate::ToolDefinition::function(
+                "web_search",
+                "Search",
+                json!({"type": "object", "properties": {}}),
+            )]),
+            temperature: None,
+            max_tokens: None,
+            thinking: Some(crate::ThinkingConfig::enabled()),
+        };
+
+        let body = provider.build_openai_request(request);
+        let messages = body["messages"].as_array().unwrap();
+
+        // Assistant tool call message must have reasoning_content injected
+        let assistant = &messages[1];
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["reasoning_content"], "");
+        assert!(assistant["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn test_build_openai_request_with_tools_thinking_enabled_empty_reasoning() {
+        let provider = MoonshotProvider::new("test-key".to_string());
+
+        // Edge case: reasoning_content is Some("") (empty string)
+        let request = ChatRequest {
+            model: "kimi-k2.6".to_string(),
+            messages: vec![
+                ChatMessage::user("Search for X"),
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![ToolCall::new("call_1", "search", json!({}))],
+                    Some(String::new()), // Empty reasoning
+                ),
+                ChatMessage::tool_result("call_1", "search", "Result"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: Some(crate::ThinkingConfig::enabled()),
+        };
+
+        let body = provider.build_openai_request(request);
+        let messages = body["messages"].as_array().unwrap();
+
+        // Even with Some(""), reasoning_content must be injected as ""
+        let assistant = &messages[1];
+        assert_eq!(assistant["reasoning_content"], "");
     }
 
     #[test]

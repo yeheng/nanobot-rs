@@ -94,8 +94,18 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         streaming: config.agents.defaults.streaming,
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
-        summarization_prompt: None,
+        prompts: {
+            let p = &config.agents.defaults.prompts;
+            gasket_engine::session::config::PromptsConfig {
+                identity_prefix: p.identity_prefix.clone(),
+                summarization: p.summarization.clone(),
+                checkpoint: p.checkpoint.clone(),
+                evolution: p.evolution.clone(),
+                planning: p.planning.clone(),
+            }
+        },
         embedding_config: Some(config.embedding.clone()),
+        history_recall_k: config.agents.defaults.history_recall_k,
         memory_budget: config.agents.defaults.memory_budget,
         evolution: defaults.evolution,
         wiki: {

@@ -72,7 +72,17 @@ export interface ToolCall {
   status: 'running' | 'complete' | 'error';
   result?: string | null;
   duration?: string;
+  startTime?: number;
 }
+
+export interface ThinkingChunk {
+  content: string;
+  timestamp: number;
+}
+
+export type TimelineItem =
+  | { type: 'thinking'; content: string; timestamp: number }
+  | { type: 'tool_call'; tool: ToolCall; timestamp: number };
 
 export type MessageStatus = 'sending' | 'sent' | 'error';
 
@@ -81,6 +91,7 @@ export interface Message {
   role: 'user' | 'bot' | 'system';
   content: string;
   thinking?: string;
+  thinkingChunks?: ThinkingChunk[];
   toolCalls?: ToolCall[];
   timestamp: number;
   status?: MessageStatus;

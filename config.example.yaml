@@ -77,7 +77,16 @@ agents:
     max_tokens: 4096
     memory_window: 10
     thinking_enabled: false
+    historyRecallK: 5
     streaming: true
+    # Optional: override internal AI behavior prompts
+    # prompts:
+    #   identity_prefix: "You are a cat. Meow.\nYour working directory: {workspace}."
+    #   summarization: "Summarize the following conversation in bullet points."
+    #   checkpoint: "Summarize current task state for working memory."
+    #   evolution: "Extract memories from this conversation.\n\n{{conversation}}"
+    #   planning: "Create a plan for: {{goal}}\n\nContext:\n{{context}}"
+
     # Optional: three-phase memory token budgets (defaults shown)
     # memory_budget:
     #   bootstrap: 1500    # Phase 1: profile + active hot/warm

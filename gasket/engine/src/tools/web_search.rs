@@ -41,8 +41,11 @@ fn format_hits(hits: &[SearchHit]) -> String {
     }
     let mut out = String::new();
     for (i, h) in hits.iter().enumerate() {
-        let snippet = if h.snippet.len() > MAX_SNIPPET_LEN {
-            format!("{}...", &h.snippet[..MAX_SNIPPET_LEN])
+        let snippet = if h.snippet.chars().count() > MAX_SNIPPET_LEN {
+            format!(
+                "{}...",
+                h.snippet.chars().take(MAX_SNIPPET_LEN).collect::<String>()
+            )
         } else {
             h.snippet.clone()
         };

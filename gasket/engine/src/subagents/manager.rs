@@ -117,26 +117,28 @@ pub fn spawn_subagent(
         // Load system prompt
         let system_prompt = match task.system_prompt {
             Some(p) => p,
-            None => match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
-                .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(
-                        "[Subagent {}] Failed to load system prompt: {}",
-                        subagent_id, e
-                    );
-                    send_error_result(
-                        &subagent_id,
-                        &task_desc,
-                        &model,
-                        &format!("Prompt load failed: {}", e),
-                        &result_tx,
-                    )
-                    .await;
-                    return;
+            None => {
+                match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL, None)
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(
+                            "[Subagent {}] Failed to load system prompt: {}",
+                            subagent_id, e
+                        );
+                        send_error_result(
+                            &subagent_id,
+                            &task_desc,
+                            &model,
+                            &format!("Prompt load failed: {}", e),
+                            &result_tx,
+                        )
+                        .await;
+                        return;
+                    }
                 }
-            },
+            }
         };
 
         // Build kernel context

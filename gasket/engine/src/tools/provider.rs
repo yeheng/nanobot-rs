@@ -12,8 +12,8 @@ use crate::wiki::{PageIndex, PageStore};
 use crate::SubagentSpawner;
 
 use super::{
-    registry::ToolRegistry, CreatePlanTool, EditFileTool, EvolutionTool, ExecTool,
-    HistoryQueryTool, ListDirTool, MemorizeTool, MemoryDecayTool, MemoryRefreshTool,
+    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionTool,
+    ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemoryDecayTool, MemoryRefreshTool,
     MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata,
     WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool, WikiRefreshTool, WikiSearchTool,
     WikiWriteTool, WriteFileTool,
@@ -180,6 +180,7 @@ pub struct WikiToolProvider {
     page_index: Option<Arc<PageIndex>>,
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
+    planning_prompt: Option<String>,
 }
 
 impl WikiToolProvider {
@@ -188,12 +189,14 @@ impl WikiToolProvider {
         page_index: Option<Arc<PageIndex>>,
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
+        planning_prompt: Option<String>,
     ) -> Self {
         Self {
             page_store,
             page_index,
             provider,
             model,
+            planning_prompt,
         }
     }
 }
@@ -290,7 +293,12 @@ impl ToolProvider for WikiToolProvider {
 
         if let (Some(ref prov), Some(ref mdl)) = (&self.provider, &self.model) {
             reg!(
-                CreatePlanTool::new(prov.clone(), mdl.clone(), store.clone()),
+                CreatePlanTool::new(
+                    prov.clone(),
+                    mdl.clone(),
+                    store.clone(),
+                    self.planning_prompt.clone(),
+                ),
                 "Create Plan",
                 "system",
                 ["plan", "markdown"],
@@ -312,6 +320,7 @@ pub struct SystemToolProvider {
     page_store: Option<Arc<PageStore>>,
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
+    evolution_prompt: Option<String>,
 }
 
 impl SystemToolProvider {
@@ -321,6 +330,7 @@ impl SystemToolProvider {
         page_store: Option<Arc<PageStore>>,
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
+        evolution_prompt: Option<String>,
     ) -> Self {
         Self {
             session_store,
@@ -328,6 +338,7 @@ impl SystemToolProvider {
             page_store,
             provider,
             model,
+            evolution_prompt,
         }
     }
 }
@@ -349,12 +360,11 @@ impl ToolProvider for SystemToolProvider {
             };
         }
 
-        if let (Some(ref ss), Some(ref ms), Some(ref prov), Some(ref mdl), Some(ref ps)) = (
+        if let (Some(ref ss), Some(ref ms), Some(ref prov), Some(ref mdl)) = (
             &self.session_store,
             &self.maintenance_store,
             &self.provider,
             &self.model,
-            &self.page_store,
         ) {
             reg!(
                 EvolutionTool::new(
@@ -362,8 +372,9 @@ impl ToolProvider for SystemToolProvider {
                     ms.clone(),
                     prov.clone(),
                     mdl.clone(),
-                    Some(ps.clone()),
-                    20
+                    self.page_store.clone(),
+                    20,
+                    self.evolution_prompt.clone(),
                 ),
                 "Evolution",
                 "system",
@@ -381,6 +392,14 @@ impl ToolProvider for SystemToolProvider {
                 ["history", "search", "sqlite"],
                 false,
                 false
+            );
+            reg!(
+                ClearSessionTool::new(db.clone()),
+                "Clear Session History",
+                "system",
+                ["session", "cleanup", "history"],
+                true,
+                true
             );
         }
 

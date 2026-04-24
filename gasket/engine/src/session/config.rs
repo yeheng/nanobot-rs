@@ -168,6 +168,28 @@ impl Default for WikiLintConfig {
     }
 }
 
+/// Prompt templates and overrides for internal AI behaviors.
+#[derive(Clone, Debug, Default)]
+pub struct PromptsConfig {
+    /// Identity prefix injected before bootstrap files in the system prompt.
+    /// Falls back to a generic assistant header if not set.
+    pub identity_prefix: Option<String>,
+    /// System prompt used by ContextCompactor for summarization.
+    /// Falls back to a built-in default if not set.
+    pub summarization: Option<String>,
+    /// User prompt template used by ContextCompactor for checkpoint generation.
+    /// Falls back to a built-in default if not set.
+    pub checkpoint: Option<String>,
+    /// User prompt template used by EvolutionTool for memory extraction.
+    /// Must contain `{{conversation}}` which will be replaced with the transcript.
+    /// Falls back to a built-in default if not set.
+    pub evolution: Option<String>,
+    /// User prompt template used by CreatePlanTool for plan generation.
+    /// Must contain `{{goal}}` and `{{context}}` which will be replaced at runtime.
+    /// Falls back to a built-in default if not set.
+    pub planning: Option<String>,
+}
+
 /// Agent loop configuration
 #[derive(Clone)]
 pub struct AgentConfig {
@@ -188,11 +210,13 @@ pub struct AgentConfig {
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
-    /// Custom summarization prompt (overrides built-in default).
-    /// When set, this prompt is used by ContextCompactor to generate summaries.
-    pub summarization_prompt: Option<String>,
+    /// Prompt configuration for internal AI behaviors.
+    pub prompts: PromptsConfig,
     /// Embedding configuration for semantic search and memory indexing.
     pub embedding_config: Option<crate::config::EmbeddingConfig>,
+    /// Number of top-K similar messages to recall via semantic search.
+    /// 0 = disabled.
+    pub history_recall_k: usize,
     /// Memory token budget for three-phase context loading.
     pub memory_budget: Option<gasket_storage::wiki::MemoryBudget>,
     /// Self-evolution configuration (auto-learning from conversations).
@@ -215,8 +239,9 @@ impl Default for AgentConfig {
             streaming: true,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
-            summarization_prompt: None,
+            prompts: PromptsConfig::default(),
             embedding_config: None,
+            history_recall_k: 0,
             memory_budget: None,
             evolution: Some(EvolutionConfig::default()),
             wiki: None,

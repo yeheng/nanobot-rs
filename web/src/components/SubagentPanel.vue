@@ -43,28 +43,10 @@ const formatDuration = (start: number, end?: number) => {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
 };
 
-const statusIcon = (status: SubagentState['status']) => {
-  switch (status) {
-    case 'running': return Loader2;
-    case 'completed': return CheckCircle;
-    case 'error': return XCircle;
-  }
-};
-
-const statusColor = (status: SubagentState['status']) => {
-  switch (status) {
-    case 'running': return 'text-primary';
-    case 'completed': return 'text-primary';
-    case 'error': return 'text-destructive';
-  }
-};
-
-const statusBg = (status: SubagentState['status']) => {
-  switch (status) {
-    case 'running': return 'border-primary/30 bg-primary/5';
-    case 'completed': return 'border-primary/30 bg-primary/5';
-    case 'error': return 'border-destructive/30 bg-destructive/5';
-  }
+const STATUS_META: Record<SubagentState['status'], { icon: typeof Loader2; color: string; bg: string }> = {
+  running:   { icon: Loader2,    color: 'text-primary',     bg: 'border-primary/30 bg-primary/5' },
+  completed: { icon: CheckCircle, color: 'text-primary',     bg: 'border-primary/30 bg-primary/5' },
+  error:     { icon: XCircle,     color: 'text-destructive', bg: 'border-destructive/30 bg-destructive/5' },
 };
 </script>
 
@@ -81,16 +63,16 @@ const statusBg = (status: SubagentState['status']) => {
         v-for="subagent in runningSubagents"
         :key="subagent.id"
         class="subagent-card border rounded-lg overflow-hidden transition-all"
-        :class="statusBg(subagent.status)"
+        :class="STATUS_META[subagent.status].bg"
       >
         <div
           class="subagent-header flex items-center gap-2 p-3 cursor-pointer th-hover transition-colors"
           @click="toggleExpand(subagent.id)"
         >
           <component
-            :is="statusIcon(subagent.status)"
+            :is="STATUS_META[subagent.status].icon"
             class="w-4 h-4 shrink-0"
-            :class="[statusColor(subagent.status), { 'animate-spin': subagent.status === 'running' }]"
+            :class="[STATUS_META[subagent.status].color, { 'animate-spin': subagent.status === 'running' }]"
           />
           <span class="font-medium th-text-secondary text-sm">Task {{ subagent.index }}</span>
           <span class="th-text-muted text-sm truncate flex-1">{{ subagent.task }}</span>
@@ -166,9 +148,9 @@ const statusBg = (status: SubagentState['status']) => {
           class="flex items-center gap-2 text-sm py-1.5 px-2 rounded bg-muted"
         >
           <component
-            :is="statusIcon(s.status)"
+            :is="STATUS_META[s.status].icon"
             class="w-3.5 h-3.5 shrink-0"
-            :class="statusColor(s.status)"
+            :class="STATUS_META[s.status].color"
           />
           <span class="th-text-muted w-14 shrink-0">Task {{ s.index }}:</span>
           <span class="th-text-secondary truncate flex-1">{{ s.summary || s.task }}</span>

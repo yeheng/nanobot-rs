@@ -295,7 +295,7 @@ fn build_extra_tools(
         provider_info.model.clone(),
         8000,
     );
-    if let Some(ref prompt) = agent_config.summarization_prompt {
+    if let Some(ref prompt) = agent_config.prompts.summarization {
         ctx_compactor = ctx_compactor.with_summarization_prompt(prompt.clone());
     }
     ext.push((

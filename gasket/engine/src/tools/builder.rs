@@ -89,11 +89,13 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     CoreToolProvider::new(&config, &workspace, subagent_spawner).register_tools(&mut tools);
 
     // ── Wiki + memory tools (conditional on page_store) ───────
+    let prompts = &config.agents.defaults.prompts;
     WikiToolProvider::new(
         page_store.clone(),
         page_index.clone(),
         provider.clone(),
         model.clone(),
+        prompts.planning.clone(),
     )
     .register_tools(&mut tools);
 
@@ -107,6 +109,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         page_store,
         provider,
         model,
+        prompts.evolution.clone(),
     )
     .register_tools(&mut tools);
 

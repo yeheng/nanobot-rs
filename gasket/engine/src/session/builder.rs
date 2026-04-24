@@ -10,7 +10,6 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::error::AgentError;
-use crate::hooks::HookRegistry;
 use crate::kernel::RuntimeContext;
 use crate::session::compactor::ContextCompactor;
 use crate::session::config::AgentConfigExt;
@@ -21,6 +20,9 @@ use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 use gasket_providers::LlmProvider;
 use gasket_storage::{EventStore, SessionStore};
+
+#[cfg(feature = "local-embedding")]
+use gasket_storage::TextEmbedder;
 
 /// Builder for constructing an `AgentSession`.
 ///
@@ -74,9 +76,42 @@ impl SessionBuilder {
         };
 
         // ── 3. Agent context ─────────────────────────────────────────
+        #[cfg(feature = "local-embedding")]
+        let (context, embedder) = {
+            let emb = if let Some(ref emb_cfg) = self.config.embedding_config {
+                match TextEmbedder::with_config(emb_cfg.clone().into()) {
+                    Ok(e) => {
+                        info!("Local embedding enabled (model: {})", e.config().model_name);
+                        Some(Arc::new(e))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to initialize TextEmbedder: {}. Running without embeddings.",
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let ctx = if let Some(ref e) = emb {
+                AgentContext::persistent_with_embedder(
+                    event_store.clone(),
+                    session_store.clone(),
+                    e.clone(),
+                )
+            } else {
+                AgentContext::persistent(event_store.clone(), session_store.clone())
+            };
+            (ctx, emb)
+        };
+
+        #[cfg(not(feature = "local-embedding"))]
         let context = AgentContext::persistent(event_store.clone(), session_store.clone());
 
-        // ── 4. Context compactor ─────────────────────────────────────
+        // ── 5. Context compactor ─────────────────────────────────────
         let history_config = gasket_storage::HistoryConfig {
             max_events: self.config.memory_window,
             ..Default::default()
@@ -88,33 +123,63 @@ impl SessionBuilder {
             self.config.model.clone(),
             history_config.token_budget,
         );
-        if let Some(ref prompt_text) = self.config.summarization_prompt {
+        if let Some(ref prompt_text) = self.config.prompts.summarization {
             compactor = compactor.with_summarization_prompt(prompt_text.clone());
         }
-        compactor = compactor
-            .with_checkpoint_config(crate::session::compactor::CheckpointConfig::default());
+        let mut checkpoint_config = crate::session::compactor::CheckpointConfig::default();
+        if let Some(ref prompt_text) = self.config.prompts.checkpoint {
+            checkpoint_config.prompt = prompt_text.clone();
+        }
+        compactor = compactor.with_checkpoint_config(checkpoint_config);
         let compactor = Some(Arc::new(compactor));
 
-        // ── 5. System prompt and skills (merged) ─────────────────────
-        let mut system_prompt =
-            match prompt::load_system_prompt(&self.workspace, prompt::BOOTSTRAP_FILES_FULL).await {
-                Ok(sp) => sp,
-                Err(e) => {
-                    warn!("Failed to load system prompt: {}", e);
-                    String::new()
-                }
-            };
+        // ── 6. System prompt and skills (merged) ─────────────────────
+        let mut system_prompt = match prompt::load_system_prompt(
+            &self.workspace,
+            prompt::BOOTSTRAP_FILES_FULL,
+            self.config.prompts.identity_prefix.as_deref(),
+        )
+        .await
+        {
+            Ok(sp) => sp,
+            Err(e) => {
+                warn!("Failed to load system prompt: {}", e);
+                String::new()
+            }
+        };
         if let Some(skills) = prompt::load_skills_context(&self.workspace).await {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&skills);
         }
 
-        // ── 6. Wiki components (optional) ──────────────────────────
+        // ── 7. Wiki components (optional) ──────────────────────────
         let wiki_components =
             build_wiki_components(self.memory_store.sqlite_store(), &self.config).await;
 
-        // ── 7. Hook registry ─────────────────────────────────────────
-        let hooks = build_hooks_registry();
+        // ── 8. Hook registry ─────────────────────────────────────────
+        #[cfg(feature = "local-embedding")]
+        let mut hooks_builder = crate::session::history::builder::build_default_hooks_builder();
+
+        #[cfg(not(feature = "local-embedding"))]
+        let hooks_builder = crate::session::history::builder::build_default_hooks_builder();
+
+        #[cfg(feature = "local-embedding")]
+        if let Some(ref emb) = embedder {
+            if self.config.history_recall_k > 0 {
+                info!(
+                    "HistoryRecallHook enabled (k={})",
+                    self.config.history_recall_k
+                );
+                hooks_builder =
+                    hooks_builder.with_hook(Arc::new(crate::hooks::HistoryRecallHook::new(
+                        emb.clone(),
+                        self.config.history_recall_k,
+                        context.clone(),
+                    )));
+            }
+        }
+
+        let hooks = hooks_builder.build_shared();
 
         let pending_done = tokio_util::task::TaskTracker::new();
 
@@ -194,11 +259,6 @@ async fn build_wiki_components(
         page_index: index,
         wiki_log: log,
     })
-}
-
-/// Build the hook registry.
-fn build_hooks_registry() -> Arc<HookRegistry> {
-    crate::session::history::builder::build_default_hooks_builder().build_shared()
 }
 
 /// Build an AgentSession with all services initialized.

@@ -16,6 +16,17 @@ use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
+/// Default planning user prompt template (fallback when not configured).
+/// Must contain `{{goal}}` and `{{context}}` which will be replaced at runtime.
+const DEFAULT_PLANNING_TEMPLATE: &str = "Goal: {{goal}}\n\n\
+     Recent context:\n{{context}}\n\n\
+     Generate a structured execution plan in Markdown. Use:\n\
+     - ## headers for phases\n\
+     - - [ ] checklists for steps\n\
+     - Mark step type inline: [D]irect, [P]arallel/delegated, [?]conditional\n\
+     - Include a ## Verification section at the end\n\
+     Do NOT output JSON.";
+
 /// Simplified create_plan tool — Markdown-based, no JSON AST.
 ///
 /// Prompts the LLM for a structured Markdown plan, persists as WikiPage,
@@ -24,14 +35,21 @@ pub struct CreatePlanTool {
     provider: Arc<dyn LlmProvider>,
     model: String,
     page_store: Arc<PageStore>,
+    planning_prompt: Option<String>,
 }
 
 impl CreatePlanTool {
-    pub fn new(provider: Arc<dyn LlmProvider>, model: String, page_store: Arc<PageStore>) -> Self {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        model: String,
+        page_store: Arc<PageStore>,
+        planning_prompt: Option<String>,
+    ) -> Self {
         Self {
             provider,
             model,
             page_store,
+            planning_prompt,
         }
     }
 
@@ -63,10 +81,28 @@ impl CreatePlanTool {
         let plan_markdown = response.content.unwrap_or_default();
 
         if plan_markdown.is_empty() {
+            // Some reasoning models return thinking content but leave content empty.
+            // Use reasoning_content as a fallback so planning doesn't hard-fail.
+            if let Some(ref reasoning) = response.reasoning_content {
+                if !reasoning.is_empty() {
+                    tracing::warn!(
+                        "create_plan: LLM returned empty content, falling back to reasoning_content ({} chars)",
+                        reasoning.chars().count()
+                    );
+                    return self.persist_plan(goal, reasoning).await;
+                }
+            }
             return Err(anyhow::anyhow!("LLM returned empty plan"));
         }
 
-        // Persist as WikiPage — no JSON AST, just Markdown
+        self.persist_plan(goal, &plan_markdown).await
+    }
+
+    async fn persist_plan(
+        &self,
+        goal: &str,
+        plan_markdown: &str,
+    ) -> Result<(String, String, String), anyhow::Error> {
         let slug = slugify(goal);
         let path = format!("topics/plans/{}", slug);
 
@@ -74,7 +110,7 @@ impl CreatePlanTool {
             path.clone(),
             format!("Plan: {}", goal),
             PageType::Topic,
-            plan_markdown.clone(),
+            plan_markdown.to_string(),
         );
 
         self.page_store.write(&page).await?;
@@ -84,7 +120,7 @@ impl CreatePlanTool {
             "Plan created and saved to {}. The agent will now execute each step.",
             path
         );
-        Ok((confirmation, path, plan_markdown))
+        Ok((confirmation, path, plan_markdown.to_string()))
     }
 
     fn build_plan_prompt(&self, goal: &str, context: &[ChatMessage]) -> String {
@@ -94,17 +130,13 @@ impl CreatePlanTool {
             .collect::<Vec<_>>()
             .join("\n");
 
-        format!(
-            "Goal: {}\n\n\
-             Recent context:\n{}\n\n\
-             Generate a structured execution plan in Markdown. Use:\n\
-             - ## headers for phases\n\
-             - - [ ] checklists for steps\n\
-             - Mark step type inline: [D]irect, [P]arallel/delegated, [?]conditional\n\
-             - Include a ## Verification section at the end\n\
-             Do NOT output JSON.",
-            goal, context_text
-        )
+        let template = self
+            .planning_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_PLANNING_TEMPLATE);
+        template
+            .replace("{{goal}}", goal)
+            .replace("{{context}}", &context_text)
     }
 }
 
@@ -162,6 +194,7 @@ impl Tool for CreatePlanTool {
             provider: self.provider.clone(),
             model: self.model.clone(),
             page_store: self.page_store.clone(),
+            planning_prompt: self.planning_prompt.clone(),
         }))
     }
 

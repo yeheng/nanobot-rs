@@ -90,10 +90,6 @@ const escapeHtml = (str: string): string => {
     .replace(/"/g, '&quot;');
 };
 
-// Cache parsed content to avoid re-parsing on every micro-update during streaming.
-let lastParsed = '';
-let lastSource = '';
-
 const parsedContent = computed(() => {
   if (!props.message.content) return '';
 
@@ -111,15 +107,9 @@ const parsedContent = computed(() => {
     return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(rawContent)}</pre>`;
   }
 
-  // Simple memoization for the final parse.
-  if (rawContent === lastSource) return lastParsed;
-
   try {
     const raw = marked.parse(rawContent) as string;
-    const sanitized = DOMPurify.sanitize(raw);
-    lastSource = rawContent;
-    lastParsed = sanitized;
-    return sanitized;
+    return DOMPurify.sanitize(raw);
   } catch (e) {
     console.error('Markdown parse failed, falling back to plain text:', e);
     return `<pre class="whitespace-pre-wrap break-words text-sm">${escapeHtml(rawContent)}</pre>`;

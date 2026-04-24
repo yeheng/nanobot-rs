@@ -109,6 +109,10 @@ fn trigger_compaction(
     }
 }
 
+/// Timeout for AfterResponse hooks — prevents a slow/stuck external script
+/// from blocking the response pipeline indefinitely.
+const AFTER_RESPONSE_HOOK_TIMEOUT_SECS: u64 = 30;
+
 /// Execute AfterResponse hooks with the result context.
 async fn execute_after_response_hooks(
     hooks: &HookRegistry,
@@ -144,8 +148,23 @@ async fn execute_after_response_hooks(
         token_usage: token_usage_for_hooks.as_ref(),
         vault_values: Vec::new(),
     };
-    if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut hook_ctx).await {
-        warn!("AfterResponse hook failed (ignored): {}", e);
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(AFTER_RESPONSE_HOOK_TIMEOUT_SECS),
+        hooks.execute(HookPoint::AfterResponse, &mut hook_ctx),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            warn!("AfterResponse hook failed (ignored): {}", e);
+        }
+        Err(_) => {
+            warn!(
+                "AfterResponse hook timed out after {}s — skipping",
+                AFTER_RESPONSE_HOOK_TIMEOUT_SECS
+            );
+        }
     }
 }
 

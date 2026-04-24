@@ -14,6 +14,7 @@
 //! - `script`: External script tools with YAML manifests
 
 mod builder;
+mod clear_session;
 mod context;
 mod create_plan;
 mod cron;
@@ -47,6 +48,7 @@ pub use gasket_types::{
 
 // Re-export tool implementations
 pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
+pub use clear_session::ClearSessionTool;
 pub use context::ContextTool;
 pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;

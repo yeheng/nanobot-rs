@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Menu as HeadlessMenu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue';
-import { AlertCircle, ArrowDown, Bot, Check, Cpu, Loader2, Moon, MoreVertical, Palette, RotateCcw, Send, Sparkles, Square, Sun, Trash2, X as XIcon } from 'lucide-vue-next';
+import { AlertCircle, ArrowDown, Bot, Loader2, Sparkles, X as XIcon } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useTheme, type ThemeHue } from '../composables/useTheme';
 import { useChatSession } from '../composables/useChatSession';
 import { useChatStore } from '../stores/chatStore';
+import ChatHeader from './ChatHeader.vue';
+import ChatInput from './ChatInput.vue';
 import ChatTimeDivider from './ChatTimeDivider.vue';
 import MessageBubble from './MessageBubble.vue';
 import SubagentPanel from './SubagentPanel.vue';
@@ -15,17 +14,6 @@ const props = defineProps<{ chatId: string }>();
 const emit = defineEmits<{ (e: 'connection-status', status: boolean): void }>();
 
 const chatStore = useChatStore();
-const { mode, hue, setMode, setHue, hues } = useTheme();
-
-const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
-  zinc:    { label: 'Zinc',    dot: 'bg-zinc-500' },
-  blue:    { label: 'Blue',    dot: 'bg-blue-500' },
-  rose:    { label: 'Rose',    dot: 'bg-rose-500' },
-  emerald: { label: 'Emerald', dot: 'bg-emerald-500' },
-  amber:   { label: 'Amber',   dot: 'bg-amber-500' },
-  violet:  { label: 'Violet',  dot: 'bg-violet-500' },
-};
-
 const session = useChatSession(computed(() => props.chatId));
 
 watch(() => session.isConnected, (val) => {
@@ -85,7 +73,6 @@ const hasUserMessages = computed(() => messages.value.some(m => m.role === 'user
 
 watch(() => messages.value.length, () => scrollToBottom());
 watch(() => props.chatId, () => {
-  session.connect();
   session.fetchContext();
   userScrolledUp.value = false;
   nextTick(() => scrollToBottom(true));
@@ -98,10 +85,6 @@ onMounted(() => {
   setupScrollObserver();
 });
 
-// Input
-const inputRef = ref<HTMLTextAreaElement | null>(null);
-const inputValue = ref('');
-
 const suggestedPrompts = [
   { icon: '💡', text: 'Explain how this project is structured' },
   { icon: '🔍', text: 'Help me find and fix bugs in my code' },
@@ -109,34 +92,8 @@ const suggestedPrompts = [
   { icon: '🚀', text: 'Suggest performance improvements' },
 ];
 
-const handleKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault();
-    submit();
-  }
-};
-
-const autoResize = () => {
-  const el = inputRef.value;
-  if (!el) return;
-  el.style.height = 'auto';
-  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-};
-
-const submit = () => {
-  const ok = session.sendMessage(inputValue.value);
-  if (ok) {
-    inputValue.value = '';
-    nextTick(() => {
-      inputRef.value?.focus();
-      if (inputRef.value) inputRef.value.style.height = 'auto';
-    });
-  }
-};
-
 const sendPrompt = (prompt: string) => {
-  inputValue.value = prompt;
-  submit();
+  session.sendMessage(prompt);
 };
 
 const retryMessage = (msgId: string, content: string) => {
@@ -151,138 +108,18 @@ const clearHistory = () => {
 <template>
   <div class="flex h-full w-full relative">
     <div class="flex flex-col flex-1 min-w-0">
-      <!-- Header -->
-      <header class="py-3 px-5 th-header-bg border-b th-border flex justify-between items-center shrink-0">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
-            <Bot class="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <div class="text-sm font-semibold th-text">Model</div>
-            <div class="text-[10px] th-text-muted flex items-center gap-1.5">
-              <span class="w-1.5 h-1.5 rounded-full" :class="session.isConnected ? 'bg-primary' : 'bg-destructive'" />
-              {{ session.isConnected ? 'Online' : 'Offline' }}
-              <span class="th-text-dim">|</span>
-              <span
-                class="flex items-center gap-1"
-                :class="{
-                  'text-destructive': session.sessionStatus === 'disconnected',
-                  'text-primary': session.sessionStatus === 'sending' || session.sessionStatus === 'receiving',
-                  'th-text-dim': session.sessionStatus === 'idle'
-                }"
-              >
-                <Loader2 v-if="session.sessionStatus === 'sending' || session.sessionStatus === 'receiving'" class="w-3 h-3 animate-spin" />
-                <span v-if="session.sessionStatus === 'disconnected'">Disconnected</span>
-                <span v-else-if="session.sessionStatus === 'sending'">Sending...</span>
-                <span v-else-if="session.sessionStatus === 'receiving'">Thinking...</span>
-                <span v-else>Ready</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <!-- Context stats inline -->
-          <div v-if="session.contextStats" class="hidden md:flex items-center gap-2 mr-1">
-            <div class="text-[10px] th-text-secondary font-medium whitespace-nowrap">
-              Context: {{ session.contextStats.usage_percent.toFixed(1) }}%
-            </div>
-            <div class="w-20 lg:w-28 h-1.5 bg-muted rounded-full overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500" :class="session.usageColor" :style="{ width: Math.min(session.contextStats.usage_percent, 100) + '%' }" />
-            </div>
-            <div v-if="session.watermarkInfo" class="hidden lg:block text-[10px] th-text-muted whitespace-nowrap">
-              {{ session.watermarkInfo.watermark }}/{{ session.watermarkInfo.max_sequence }}
-            </div>
-            <Button variant="outline" size="sm" class="h-6 text-[10px] px-2 th-surface th-border th-hover th-text-secondary"
-              :disabled="session.isCompacting" @click="session.forceCompact">
-              <Cpu v-if="!session.isCompacting" class="w-3 h-3 mr-1" />
-              <Loader2 v-else class="w-3 h-3 mr-1 animate-spin" />
-              {{ session.isCompacting ? '...' : 'Compress' }}
-            </Button>
-          </div>
-
-          <Button v-if="session.showReconnectButton" variant="outline" size="sm" @click="session.manualReconnect"
-            class="text-primary border-primary/30 hover:bg-primary/10 text-xs h-8">
-            <RotateCcw class="w-3.5 h-3.5 mr-1.5" />
-            Reconnect
-          </Button>
-
-          <HeadlessMenu as="div" class="relative">
-            <MenuButton as="button" class="p-2 rounded-md th-hover th-text-muted hover:th-text transition-colors">
-              <MoreVertical class="w-4 h-4" />
-            </MenuButton>
-            <transition
-              enter-active-class="transition duration-100 ease-out"
-              enter-from-class="transform scale-95 opacity-0"
-              enter-to-class="transform scale-100 opacity-100"
-              leave-active-class="transition duration-75 ease-in"
-              leave-from-class="transform scale-100 opacity-100"
-              leave-to-class="transform scale-95 opacity-0"
-            >
-              <MenuItems class="absolute right-0 top-10 z-30 w-40 origin-top-right rounded-lg bg-popover border border-border shadow-lg focus:outline-none py-1">
-                <MenuItem v-slot="{ active }">
-                  <button @click="clearHistory" :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']">
-                    <Trash2 class="w-3.5 h-3.5 mr-2 th-text-dim" />
-                    Clear History
-                  </button>
-                </MenuItem>
-              </MenuItems>
-            </transition>
-          </HeadlessMenu>
-
-          <HeadlessMenu as="div" class="relative">
-            <MenuButton as="button" class="p-2 rounded-md th-hover th-text-muted hover:th-text transition-colors">
-              <Palette class="w-4 h-4" />
-            </MenuButton>
-            <transition
-              enter-active-class="transition duration-100 ease-out"
-              enter-from-class="transform scale-95 opacity-0"
-              enter-to-class="transform scale-100 opacity-100"
-              leave-active-class="transition duration-75 ease-in"
-              leave-from-class="transform scale-100 opacity-100"
-              leave-to-class="transform scale-95 opacity-0"
-            >
-              <MenuItems class="absolute right-0 top-10 z-30 w-44 origin-top-right rounded-lg bg-popover border border-border shadow-lg focus:outline-none py-1">
-                <!-- Mode -->
-                <div class="px-3 py-1.5 text-[10px] font-semibold th-text-muted uppercase tracking-wider">Mode</div>
-                <MenuItem v-slot="{ active }">
-                  <button
-                    @click="setMode('light')"
-                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
-                  >
-                    <Sun class="w-3.5 h-3.5 mr-2 th-text-dim" />
-                    <span class="flex-1 text-left">Light</span>
-                    <Check v-if="mode === 'light'" class="w-3 h-3 th-text-muted shrink-0" />
-                  </button>
-                </MenuItem>
-                <MenuItem v-slot="{ active }">
-                  <button
-                    @click="setMode('dark')"
-                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
-                  >
-                    <Moon class="w-3.5 h-3.5 mr-2 th-text-dim" />
-                    <span class="flex-1 text-left">Dark</span>
-                    <Check v-if="mode === 'dark'" class="w-3 h-3 th-text-muted shrink-0" />
-                  </button>
-                </MenuItem>
-                <div class="my-1 border-t border-border" />
-                <!-- Hue -->
-                <div class="px-3 py-1.5 text-[10px] font-semibold th-text-muted uppercase tracking-wider">Hue</div>
-                <MenuItem v-for="h in hues" :key="h" v-slot="{ active }">
-                  <button
-                    @click="setHue(h)"
-                    :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
-                  >
-                    <span class="w-3 h-3 rounded-full mr-2 shrink-0" :class="hueMeta[h].dot" />
-                    <span class="flex-1 text-left">{{ hueMeta[h].label }}</span>
-                    <Check v-if="hue === h" class="w-3 h-3 th-text-muted shrink-0" />
-                  </button>
-                </MenuItem>
-              </MenuItems>
-            </transition>
-          </HeadlessMenu>
-        </div>
-      </header>
+      <ChatHeader
+        :is-connected="session.isConnected"
+        :session-status="session.sessionStatus"
+        :show-reconnect-button="session.showReconnectButton"
+        :context-stats="session.contextStats"
+        :watermark-info="session.watermarkInfo"
+        :usage-color="session.usageColor"
+        :is-compacting="session.isCompacting"
+        @reconnect="session.manualReconnect"
+        @compact="session.forceCompact"
+        @clear-history="clearHistory"
+      />
 
       <!-- Error Banner -->
       <div v-if="session.errorBanner"
@@ -360,36 +197,14 @@ const clearHistory = () => {
         </button>
       </Transition>
 
-      <!-- Input Area -->
-      <div class="p-4 bg-transparent shrink-0">
-        <div class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full relative">
-          <div class="flex items-end th-input-bg border th-border rounded-2xl p-2 shadow-xl backdrop-blur-xl transition-all"
-            :class="{
-              'focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/20': session.sessionStatus === 'idle' || session.sessionStatus === 'disconnected',
-              'border-primary/30 ring-2 ring-primary/20': session.sessionStatus === 'receiving' || session.sessionStatus === 'sending'
-            }">
-            <textarea ref="inputRef" v-model="inputValue" @keydown="handleKeydown" @input="autoResize"
-              :placeholder="session.sessionStatus === 'receiving' ? 'AI is processing...' : 'Type a message...'"
-              :disabled="!session.isConnected || session.sessionStatus === 'receiving' || session.sessionStatus === 'sending'"
-              autofocus rows="1"
-              class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 th-text px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
-
-            <Button v-if="session.sessionStatus === 'receiving' || session.isThinking" @click="session.stopGenerating"
-              class="w-9 h-9 rounded-xl bg-destructive/80 hover:bg-destructive text-white shrink-0 ml-2 transition-all" size="icon" title="Stop generating">
-              <Square class="w-3.5 h-3.5 fill-current" />
-            </Button>
-            <Button v-else @click="submit" :disabled="!inputValue.trim() || !session.isConnected || session.sessionStatus === 'sending'"
-              class="w-9 h-9 rounded-xl text-white shrink-0 ml-2 transition-all"
-              :class="{ 'bg-primary hover:opacity-90': session.sessionStatus === 'idle', 'bg-muted cursor-not-allowed': session.sessionStatus !== 'idle' }"
-              size="icon">
-              <Send class="w-4 h-4" />
-            </Button>
-          </div>
-          <div class="flex items-center justify-center text-[10px] th-text-dim mt-2 px-1">
-            <span>Shift+Enter for new line</span>
-          </div>
-        </div>
-      </div>
+      <ChatInput
+        :is-connected="session.isConnected"
+        :session-status="session.sessionStatus"
+        :is-thinking="session.isThinking"
+        :is-receiving="session.isReceiving"
+        @send="session.sendMessage"
+        @stop="session.stopGenerating"
+      />
     </div>
   </div>
 </template>

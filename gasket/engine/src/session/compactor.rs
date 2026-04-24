@@ -393,6 +393,10 @@ impl ContextCompactor {
     ///
     /// `current_max_sequence` must be fetched from `EventStore` — never pass
     /// a transient turn counter.
+    /// Timeout for checkpoint LLM calls — prevents the agent loop from hanging
+    /// if the provider API is slow or unresponsive.
+    const CHECKPOINT_TIMEOUT_SECS: u64 = 30;
+
     pub async fn checkpoint(
         &self,
         session_key: &SessionKey,
@@ -440,7 +444,26 @@ impl ContextCompactor {
             thinking: None,
         };
 
-        let response = self.provider.chat(request).await?;
+        let response = match tokio::time::timeout(
+            std::time::Duration::from_secs(Self::CHECKPOINT_TIMEOUT_SECS),
+            self.provider.chat(request),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
+                warn!("Checkpoint LLM call failed for {}: {}", session_key, e);
+                return Ok(None);
+            }
+            Err(_) => {
+                warn!(
+                    "Checkpoint LLM call timed out after {}s for {}",
+                    Self::CHECKPOINT_TIMEOUT_SECS,
+                    session_key
+                );
+                return Ok(None);
+            }
+        };
         let summary = response.content.unwrap_or_default().trim().to_string();
 
         if summary.is_empty() {

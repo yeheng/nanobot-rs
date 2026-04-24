@@ -33,6 +33,10 @@ pub const MEMORY_TOKEN_HARD_LIMIT: usize = 2048;
 /// Files subject to hard token truncation (not just a warning).
 const TRUNCATABLE_FILES: &[&str] = &["MEMORY.md"];
 
+/// Default identity prefix when none is configured.
+const DEFAULT_IDENTITY_PREFIX: &str =
+    "你是乐子🐈, 我的personal AI assistant.\nYour working directory: {workspace}.\n YOU can ONLY READ and WRITE under working directory.";
+
 /// Load the system prompt from workspace bootstrap files.
 ///
 /// Reads the specified files from the workspace directory and concatenates them.
@@ -44,14 +48,13 @@ const TRUNCATABLE_FILES: &[&str] = &["MEMORY.md"];
 pub async fn load_system_prompt(
     workspace: &Path,
     files: &[&str],
+    identity_prefix: Option<&str>,
 ) -> Result<String, std::io::Error> {
     let mut parts = Vec::new();
 
     // Identity header
-    parts.push(format!(
-        "你是乐子🐈, 我的personal AI assistant.\nYour working directory: {}.\n YOU can ONLY READ and WRITE under working directory.",
-        workspace.display()
-    ));
+    let prefix = identity_prefix.unwrap_or(DEFAULT_IDENTITY_PREFIX);
+    parts.push(prefix.replace("{workspace}", &workspace.display().to_string()));
 
     // Load bootstrap files
     let mut loaded_any = false;

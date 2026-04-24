@@ -71,8 +71,6 @@ export function useChatSession(chatId: { value: string }) {
       const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
       subagent.toolCalls.push({ id: toolId, name: msg.name, arguments: msg.arguments, status: 'running', output: null });
       subagent.toolCount++;
-      (subagent as any)._toolIdMap = (subagent as any)._toolIdMap || {};
-      (subagent as any)._toolIdMap[msg.name + '_' + Date.now()] = toolId;
     }
   };
 
@@ -158,7 +156,8 @@ export function useChatSession(chatId: { value: string }) {
           name: msg.name,
           arguments: msg.arguments || '',
           status: 'running',
-          result: null
+          result: null,
+          startTime: Date.now()
         });
         toolStartTimes.value[toolId] = Date.now();
         break;

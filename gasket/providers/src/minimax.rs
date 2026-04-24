@@ -96,6 +96,22 @@ fn merge_consecutive_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::C
     merged
 }
 
+/// Strip output-only fields that MiniMax doesn't accept in input messages.
+///
+/// MiniMax returns `reasoning_details` in its responses (which we capture as
+/// `reasoning_content`). Sending this field back in subsequent requests causes
+/// MiniMax to fail parsing the assistant message, leading to "tool id not found"
+/// errors (2013). This function strips such output-only fields.
+fn strip_output_fields(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
+    messages
+        .into_iter()
+        .map(|mut msg| {
+            msg.reasoning_content = None;
+            msg
+        })
+        .collect()
+}
+
 /// Default model for MiniMax
 const DEFAULT_MODEL: &str = "MiniMax-M2.7";
 
@@ -351,7 +367,8 @@ impl LlmProvider for MinimaxProvider {
 
     fn normalize_messages(&self, messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
         let messages = convert_system_messages(messages);
-        merge_consecutive_messages(messages)
+        let messages = merge_consecutive_messages(messages);
+        strip_output_fields(messages)
     }
 
     #[instrument(skip(self, request), fields(provider = "minimax", model = %request.model))]
@@ -733,6 +750,54 @@ mod tests {
             result.reasoning_content,
             Some("Let me think...".to_string())
         );
+    }
+
+    #[test]
+    fn test_reasoning_content_stripped_from_tool_call_messages() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        // Simulate a multi-turn conversation where the assistant responded with
+        // both reasoning_content and tool_calls (as captured from MiniMax's response).
+        let request = ChatRequest {
+            model: "MiniMax-M2.7-highspeed".to_string(),
+            messages: vec![
+                ChatMessage::user("Search for X"),
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![ToolCall::new(
+                        "call_function_phjm2hasbcyb_1",
+                        "web_search",
+                        json!({"query": "X"}),
+                    )],
+                    Some("Let me think about what to search...".to_string()),
+                ),
+                ChatMessage::tool_result(
+                    "call_function_phjm2hasbcyb_1",
+                    "web_search",
+                    "Result for X",
+                ),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // The assistant message must NOT contain reasoning_content.
+        // MiniMax doesn't accept this field in input messages and fails to
+        // parse tool_calls when it's present (error 2013: "tool id not found").
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert!(msgs[1].get("reasoning_content").is_none());
+        assert_eq!(
+            msgs[1]["tool_calls"][0]["id"],
+            "call_function_phjm2hasbcyb_1"
+        );
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_function_phjm2hasbcyb_1");
     }
 
     #[test]

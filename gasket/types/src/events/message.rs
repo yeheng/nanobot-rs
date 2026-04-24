@@ -1,10 +1,9 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::fmt;
-
 use super::channel::ChannelType;
 use super::session::SessionKey;
 use super::stream::WebSocketMessage;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ── InboundMessage ───────────────────────────────────────────
 

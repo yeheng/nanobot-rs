@@ -1,7 +1,7 @@
 //! Pure-Rust vector math: cosine similarity and top-K retrieval.
 //!
 //! No C extensions, no SIMD intrinsics — just plain iterators that the
-//! compiler auto-vectorises under `-C opt-level=2`.  384-dim dot products
+//! compiler auto-vectorises under `-C opt-level=2`.  Typical dot products
 //! run in single-digit nanoseconds on modern CPUs.
 
 /// Cosine similarity between two vectors.
@@ -9,9 +9,20 @@
 /// Returns a value in `[-1.0, 1.0]` where `1.0` means identical direction.
 /// A small epsilon (`1e-8`) prevents division by zero when either vector
 /// is the zero vector.
+///
+/// If the two vectors have different lengths, returns `-1.0` (minimum similarity)
+/// and logs a warning so the caller can filter or handle mismatched dimensions
+/// gracefully.
 #[inline]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "vector dimensions must match");
+    if a.len() != b.len() {
+        tracing::warn!(
+            "cosine_similarity: dimension mismatch ({} vs {}), returning -1.0",
+            a.len(),
+            b.len()
+        );
+        return -1.0;
+    }
 
     let (mut dot, mut norm_a, mut norm_b) = (0.0f32, 0.0f32, 0.0f32);
     for (x, y) in a.iter().zip(b.iter()) {
@@ -25,6 +36,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Find the top-K most similar items from a set of candidates.
 ///
 /// Returns `(identifier, score)` pairs sorted by **descending** similarity.
+/// Candidates whose dimension does not match the query are silently skipped.
 /// Ties are broken arbitrarily (unstable sort for speed).
 pub fn top_k_similar<'a>(
     query: &[f32],
@@ -33,6 +45,7 @@ pub fn top_k_similar<'a>(
 ) -> Vec<(&'a str, f32)> {
     let mut scores: Vec<(&str, f32)> = candidates
         .iter()
+        .filter(|(_, vec)| vec.len() == query.len())
         .map(|(name, vec)| (name.as_str(), cosine_similarity(query, vec)))
         .collect();
 

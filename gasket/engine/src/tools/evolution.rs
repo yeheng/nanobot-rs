@@ -35,6 +35,33 @@ struct EvolutionMemory {
     confidence: f32,
 }
 
+/// Default evolution user prompt template (fallback when not configured).
+/// Must contain `{{conversation}}` which will be replaced with the transcript.
+const DEFAULT_EVOLUTION_TEMPLATE: &str =
+    "You are a memory extraction sub-system.\n\
+     Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.\n\n\
+     CRITICAL RULES:\n\
+     1. DO NOT extract transient context (e.g., 'User said hello', 'thanks', 'bye').\n\
+     2. DO NOT extract generic world knowledge unless the user explicitly adopted it as their own preference or decision.\n\
+     3. Focus on concrete, personal signals: server names, product preferences, budget habits, explicit choices, recurring topics.\n\
+     4. 'User said it, it counts' — facts and preferences explicitly stated by the user are valuable even if no tool was executed. Tool results add confidence but are NOT required.\n\
+     5. Classify each item:\n\
+        - type: 'note' (factual) or 'skill' (procedural)\n\
+        - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)\n\
+        - verified: true ONLY if backed by a successful tool result; false for user-stated facts\n\
+        - confidence: 0.0-1.0 — 0.9+ for tool-confirmed, 0.6-0.8 for user explicitly stated, 0.3-0.5 for inferred\n\n\
+     EXAMPLES OF GOOD EXTRACTIONS:\n\
+     - User asked about 'tx-cloud-3' server and uses tmux → note, knowledge, content: 'User manages a server named tx-cloud-3 and prefers tmux for persistent sessions', verified: false, confidence: 0.75\n\
+     - User compared Dyson V15 vs 追觅Z20 and preferred the latter for auto-dust-collection → note, profile, content: 'User values automatic dust-collection feature in vacuum cleaners; prefers 追觅Z20 over Dyson V15 for this reason', verified: false, confidence: 0.8\n\
+     - User repeatedly asks about budget-friendly options before considering premium → note, profile, content: 'User typically evaluates budget/性价比 options before premium alternatives', verified: false, confidence: 0.65\n\n\
+     EXAMPLES OF BAD EXTRACTIONS (do NOT include):\n\
+     - 'User greeted the assistant'\n\
+     - 'User asked about vacuum cleaners' (too vague; extract specific models or preferences instead)\n\
+     - 'Dyson is a well-known brand' (generic knowledge, not user-specific)\n\n\
+     If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
+     Output strict JSON array: [{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}].\n\n\
+     {{conversation}}";
+
 /// Tool for performing background evolution (auto-learning) on conversation sessions.
 pub struct EvolutionTool {
     session_store: gasket_storage::SessionStore,
@@ -43,6 +70,7 @@ pub struct EvolutionTool {
     model: String,
     page_store: Option<Arc<PageStore>>,
     default_threshold: usize,
+    evolution_prompt: Option<String>,
 }
 
 impl EvolutionTool {
@@ -54,6 +82,7 @@ impl EvolutionTool {
         model: String,
         page_store: Option<Arc<PageStore>>,
         default_threshold: usize,
+        evolution_prompt: Option<String>,
     ) -> Self {
         Self {
             session_store,
@@ -62,6 +91,7 @@ impl EvolutionTool {
             model,
             page_store,
             default_threshold,
+            evolution_prompt,
         }
     }
 
@@ -120,36 +150,28 @@ impl EvolutionTool {
         // Build the extraction prompt.
         let conversation = Self::format_events(&events);
         let system_prompt = "You are a structured data extraction engine. Your ONLY output must be a valid JSON array. Do not include markdown code blocks, explanations, or any text outside the JSON.";
-        let user_prompt = format!(
-            "You are a memory extraction sub-system.\n\
-             Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.\n\n\
-             CRITICAL RULES:\n\
-             1. DO NOT extract transient context (e.g., 'User said hello').\n\
-             2. DO NOT extract information that is likely already known.\n\
-             3. Focus on concrete nouns: names, explicit architectural choices, strict preferences.\n\
-             4. 'No Execution, No Memory' — only include facts/skills confirmed by successful tool calls.\n\
-             5. Classify each item:\n\
-                - type: 'note' (factual) or 'skill' (procedural)\n\
-                - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)\n\
-                - verified: true if backed by successful tool result\n\
-                - confidence: 0.0-1.0 based on verification strength\n\
-             If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
-             Output strict JSON array: [{{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}}].\n\n{}",
-            conversation
-        );
+        let template = self
+            .evolution_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_EVOLUTION_TEMPLATE);
+        let user_prompt = template.replace("{{conversation}}", &conversation);
 
         // Call the LLM.
         let request = ChatRequest {
             model: self.model.clone(),
             messages: vec![
                 ChatMessage::system(system_prompt),
-                ChatMessage::user(user_prompt),
+                ChatMessage::user(user_prompt.clone()),
             ],
             tools: None,
             temperature: Some(0.0),
             max_tokens: Some(4096),
             thinking: None,
         };
+        info!(
+            "Evolution: calling LLM for session {} with {:?} new events since watermark {}",
+            session_key, request, watermark
+        );
 
         let response =
             self.provider.chat(request).await.map_err(|e| {
@@ -157,17 +179,62 @@ impl EvolutionTool {
             })?;
 
         let content = response.content.unwrap_or_default();
+        info!(
+            "Evolution: LLM response for session {}: {}",
+            session_key, content
+        );
 
-        // Parse JSON memories.
+        // Parse JSON memories — retry once with a stronger re-prompt if parsing fails.
         let memories: Vec<EvolutionMemory> = match Self::extract_json(&content) {
             Ok(m) => m,
-            Err(e) => {
-                warn!(
-                    "Evolution: failed to parse LLM response as JSON: {}. Raw response (first 500 chars): {}",
-                    e,
-                    &content[..content.len().min(500)]
+            Err(first_err) => {
+                debug!(
+                    "Evolution: first parse failed: {}. Retrying with stricter prompt.",
+                    first_err
                 );
-                return Ok(0);
+
+                let retry_prompt = format!(
+                    "Your previous response was NOT valid JSON. It started with: {:?}\n\n\
+                     You MUST output ONLY a JSON array — no markdown, no explanation, no greeting.\n\
+                     Output: []",
+                    &content[..content.len().min(200)]
+                );
+
+                let retry_request = ChatRequest {
+                    model: self.model.clone(),
+                    messages: vec![
+                        ChatMessage::system(system_prompt),
+                        ChatMessage::user(user_prompt.clone()),
+                        ChatMessage::assistant(&content),
+                        ChatMessage::user(retry_prompt),
+                    ],
+                    tools: None,
+                    temperature: Some(0.0),
+                    max_tokens: Some(4096),
+                    thinking: None,
+                };
+
+                match self.provider.chat(retry_request).await {
+                    Ok(retry_response) => {
+                        let retry_content = retry_response.content.unwrap_or_default();
+                        match Self::extract_json(&retry_content) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                warn!(
+                                    "Evolution: retry also failed to parse as JSON: {}. \
+                                     First response (500 chars): {}",
+                                    e,
+                                    &content[..content.len().min(500)]
+                                );
+                                return Ok(0);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Evolution: retry LLM call failed: {}", e);
+                        return Ok(0);
+                    }
+                }
             }
         };
 

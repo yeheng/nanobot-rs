@@ -29,10 +29,18 @@ export function useIMWebSocket(
 
   const maxReconnectAttempts = 5;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let isManualClose = false;
 
   const connect = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     if (ws.value) {
+      isManualClose = true;
       ws.value.close();
+      isManualClose = false;
     }
 
     const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:3000'}/ws?user_id=${encodeURIComponent(chatId.value)}`;
@@ -51,7 +59,9 @@ export function useIMWebSocket(
 
     ws.value.onclose = () => {
       isConnected.value = false;
-      attemptReconnect();
+      if (!isManualClose) {
+        attemptReconnect();
+      }
     };
 
     ws.value.onerror = () => {

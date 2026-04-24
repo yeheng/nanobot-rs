@@ -79,6 +79,13 @@ pub struct EmbeddingConfig {
     /// Optional path to a pre-downloaded model directory
     /// If set, loads model from this path instead of downloading
     pub local_model_path: Option<PathBuf>,
+
+    /// Optional explicit embedding dimension.
+    ///
+    /// When set, this value takes precedence over auto-detection from the model name.
+    /// Useful for custom models or API-based embeddings where the dimension is known
+    /// but not present in fastembed's built-in registry.
+    pub dimension: Option<usize>,
 }
 
 impl Default for EmbeddingConfig {
@@ -87,6 +94,7 @@ impl Default for EmbeddingConfig {
             model_name: DEFAULT_MODEL.to_string(),
             cache_dir: None,
             local_model_path: None,
+            dimension: None,
         }
     }
 }
@@ -109,6 +117,12 @@ impl EmbeddingConfig {
     /// Set the local model path for pre-downloaded models
     pub fn with_local_model_path(mut self, path: PathBuf) -> Self {
         self.local_model_path = Some(path);
+        self
+    }
+
+    /// Set an explicit embedding dimension.
+    pub fn with_dimension(mut self, dimension: usize) -> Self {
+        self.dimension = Some(dimension);
         self
     }
 
@@ -136,17 +150,25 @@ impl EmbeddingConfig {
     }
 
     /// Get the embedding dimension for the configured model.
-    /// Returns dimension from fastembed's EmbeddingModel based on model name.
-    /// Falls back to DEFAULT_DIMENSION (384) if model is not recognized.
+    ///
+    /// Priority:
+    /// 1. Explicitly configured `dimension` field
+    /// 2. Dimension from fastembed's `EmbeddingModel` registry
+    /// 3. `DEFAULT_DIMENSION` (384) as fallback
     pub fn get_model_dimension(&self) -> usize {
-        // Try to get dimension from fastembed's built-in model
+        // 1. User-specified dimension takes highest priority
+        if let Some(dim) = self.dimension {
+            return dim;
+        }
+
+        // 2. Try to get dimension from fastembed's built-in model
         if let Ok(embedding_model) = EmbeddingModel::try_from(self.model_name.clone()) {
             if let Ok(info) = TextEmbedding::get_model_info(&embedding_model) {
                 return info.dim;
             }
         }
 
-        // Fallback to default dimension for unknown models
+        // 3. Fallback to default dimension for unknown models
         DEFAULT_DIMENSION
     }
 }
@@ -401,5 +423,23 @@ mod tests {
         // Default 384 for unknown model
         let config = EmbeddingConfig::with_model("unknown-model");
         assert_eq!(config.get_model_dimension(), 384);
+    }
+
+    #[test]
+    fn test_explicit_dimension_overrides_model() {
+        // Even for a known 384-dim model, explicit dimension wins
+        let config = EmbeddingConfig::with_model("AllMiniLML6V2").with_dimension(1024);
+        assert_eq!(config.get_model_dimension(), 1024);
+
+        // Explicit dimension for unknown model
+        let config = EmbeddingConfig::with_model("custom-model").with_dimension(512);
+        assert_eq!(config.get_model_dimension(), 512);
+    }
+
+    #[test]
+    fn test_dimension_builder() {
+        let config = EmbeddingConfig::default().with_dimension(768);
+        assert_eq!(config.dimension, Some(768));
+        assert_eq!(config.get_model_dimension(), 768);
     }
 }
