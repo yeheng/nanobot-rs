@@ -115,7 +115,7 @@ pub use token_tracker::{
 
 // ── Tools ──────────────────────────────────────────────────
 pub use tools::{
-    CronTool, EditFileTool, ExecTool, ListDirTool, MemorySearchTool, MessageTool, ReadFileTool,
+    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool,
     SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 

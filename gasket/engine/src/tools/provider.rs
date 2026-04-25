@@ -13,10 +13,9 @@ use crate::SubagentSpawner;
 
 use super::{
     registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionTool,
-    ExecTool, HistoryQueryTool, ListDirTool, MemorizeTool, MemoryDecayTool, MemoryRefreshTool,
-    MemorySearchTool, ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata,
-    WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool, WikiRefreshTool, WikiSearchTool,
-    WikiWriteTool, WriteFileTool,
+    ExecTool, HistoryQueryTool, ListDirTool, ReadFileTool, SearchSopsTool, SpawnParallelTool,
+    SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool, WikiReadTool,
+    WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.
@@ -222,23 +221,6 @@ impl ToolProvider for WikiToolProvider {
             return;
         };
 
-        reg!(
-            MemorizeTool::new(store.clone()),
-            "Memorize",
-            "memory",
-            ["write", "memory"],
-            false,
-            true
-        );
-        reg!(
-            MemorySearchTool::new(store.clone(), self.page_index.clone()),
-            "Memory Search",
-            "memory",
-            ["search", "memory"],
-            false,
-            false
-        );
-
         if let Some(ref index) = self.page_index {
             reg!(
                 WikiSearchTool::new(store.clone(), index.clone()),
@@ -403,23 +385,5 @@ impl ToolProvider for SystemToolProvider {
             );
         }
 
-        if let Some(ref store) = self.page_store {
-            reg!(
-                MemoryDecayTool::new(store.clone()),
-                "Memory Decay",
-                "system",
-                ["maintenance", "memory", "decay"],
-                false,
-                true
-            );
-            reg!(
-                MemoryRefreshTool::new(store.clone()),
-                "Memory Refresh",
-                "system",
-                ["maintenance", "memory", "refresh"],
-                false,
-                true
-            );
-        }
     }
 }
