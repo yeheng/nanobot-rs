@@ -21,7 +21,7 @@ pub async fn cmd_memory_refresh() -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root.clone());
 
     // Collect all .md files first (sync scan)
@@ -104,7 +104,7 @@ pub async fn cmd_memory_decay() -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let report = gasket_engine::wiki::FrequencyManager::run_decay_batch(ps.db()).await?;
@@ -125,7 +125,7 @@ pub async fn cmd_memory_decay() -> Result<()> {
 /// Initialize wiki directory structure and SQLite tables.
 pub async fn cmd_wiki_init() -> Result<()> {
     let wiki_root = wiki_base_dir();
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root.clone());
     ps.init_dirs().await?;
 
@@ -154,7 +154,7 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
     }
 
     let wiki_root = wiki_base_dir();
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
 
     // Ensure wiki tables exist
     gasket_engine::create_wiki_tables(&store.pool()).await?;
@@ -283,7 +283,7 @@ pub async fn cmd_wiki_stats() -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let all = ps.list(PageFilter::default()).await?;
@@ -317,7 +317,7 @@ pub async fn cmd_wiki_ingest(path: &str, tier: &str) -> Result<()> {
     }
 
     let wiki_root = wiki_base_dir();
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     gasket_engine::create_wiki_tables(&store.pool()).await?;
 
     let ps = PageStore::new(store.pool().clone(), wiki_root);
@@ -361,7 +361,7 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     // Try Tantivy search first
@@ -426,7 +426,7 @@ pub async fn cmd_wiki_list(page_type: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let filter = match page_type {
@@ -477,7 +477,7 @@ pub async fn cmd_wiki_lint(auto_fix: bool) -> Result<()> {
         return Ok(());
     }
 
-    let store = gasket_engine::memory::SqliteStore::new().await?;
+    let store = gasket_engine::SqliteStore::new().await?;
     let ps = std::sync::Arc::new(PageStore::new(store.pool(), wiki_root));
 
     let linter = WikiLinter::new(ps);

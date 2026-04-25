@@ -11,8 +11,8 @@ use gasket_engine::bus_adapter::EngineHandler;
 
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::cron::CronService;
-use gasket_engine::memory::EventStore;
-use gasket_engine::memory::MemoryStore;
+use gasket_engine::EventStore;
+use gasket_engine::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentSession, ContextCompactor};
 use gasket_engine::subagents::SimpleSpawner;
@@ -50,21 +50,21 @@ pub async fn cmd_gateway() -> Result<()> {
 
     let workspace = resolve_workspace()?;
     let broker = Arc::new(MemoryBroker::new(1024, 256));
-    let memory_store = Arc::new(MemoryStore::new().await);
-    let (page_store, page_index) = setup_wiki(&memory_store, &workspace, &broker).await;
-    let sqlite_store = Arc::new(
-        gasket_engine::memory::SqliteStore::new()
+    let sqlite_store = Arc::new(SqliteStore::new().await.expect("Failed to open SqliteStore"));
+    let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace, &broker).await;
+    let cron_sqlite_store = Arc::new(
+        SqliteStore::new()
             .await
             .expect("Failed to open SQLite store for cron persistence"),
     );
     let cron_service =
-        Arc::new(CronService::new(workspace.clone(), Arc::new(sqlite_store.cron_store())).await);
+        Arc::new(CronService::new(workspace.clone(), Arc::new(cron_sqlite_store.cron_store())).await);
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
         &config,
         vault,
         &workspace,
-        &memory_store,
+        &sqlite_store,
         page_store.clone(),
         page_index.clone(),
         &broker,
@@ -119,14 +119,14 @@ fn print_no_channels_hint() {
 }
 
 async fn setup_wiki(
-    memory_store: &Arc<MemoryStore>,
+    sqlite_store: &Arc<SqliteStore>,
     workspace: &std::path::PathBuf,
     broker: &Arc<MemoryBroker>,
 ) -> (
     Option<Arc<gasket_engine::wiki::PageStore>>,
     Option<Arc<gasket_engine::wiki::PageIndex>>,
 ) {
-    let pool = memory_store.sqlite_store().pool();
+    let pool = sqlite_store.pool();
     let wiki_root = workspace.join("wiki");
     if !wiki_root.exists() {
         return (None, None);
@@ -156,7 +156,7 @@ async fn setup_agent_pipeline(
     config: &gasket_engine::config::Config,
     vault: Option<Arc<gasket_engine::vault::VaultStore>>,
     workspace: &std::path::PathBuf,
-    memory_store: &Arc<MemoryStore>,
+    sqlite_store: &Arc<SqliteStore>,
     page_store: Option<Arc<gasket_engine::wiki::PageStore>>,
     page_index: Option<Arc<gasket_engine::wiki::PageIndex>>,
     broker: &Arc<MemoryBroker>,
@@ -192,7 +192,7 @@ async fn setup_agent_pipeline(
         workspace: workspace.clone(),
         subagent_spawner: None,
         extra_tools: vec![],
-        sqlite_store: Some(memory_store.sqlite_store().clone()),
+        sqlite_store: Some(sqlite_store.as_ref().clone()),
         page_store: page_store.clone(),
         page_index: page_index.clone(),
         provider: Some(provider_info.provider.clone()),
@@ -227,7 +227,7 @@ async fn setup_agent_pipeline(
         cron_service,
         &provider_info,
         &agent_config,
-        memory_store,
+        sqlite_store,
     );
 
     let mut tools = common_tools.clone();
@@ -243,12 +243,12 @@ async fn setup_agent_pipeline(
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
     let agent = Arc::new(
-        AgentSession::with_memory_store(
+        AgentSession::with_sqlite_store(
             provider_info.provider,
             workspace.clone(),
             agent_config,
             tools.clone(),
-            memory_store.clone(),
+            sqlite_store.clone(),
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
@@ -264,7 +264,7 @@ fn build_extra_tools(
     cron_service: &Arc<CronService>,
     provider_info: &crate::provider::ProviderInfo,
     agent_config: &gasket_engine::session::AgentConfig,
-    memory_store: &Arc<MemoryStore>,
+    sqlite_store: &Arc<SqliteStore>,
 ) -> Vec<(Box<dyn Tool>, ToolMetadata)> {
     let mut ext = vec![(
         Box::new(MessageTool::new_broker(broker.clone())) as Box<dyn Tool>,
@@ -288,9 +288,9 @@ fn build_extra_tools(
         },
     ));
 
-    let ctx_pool = memory_store.sqlite_store().pool();
+    let ctx_pool = sqlite_store.pool();
     let ctx_event_store = Arc::new(EventStore::new(ctx_pool.clone()));
-    let ctx_session_store = Arc::new(gasket_engine::memory::SessionStore::new(ctx_pool));
+    let ctx_session_store = Arc::new(gasket_engine::SessionStore::new(ctx_pool));
     let mut ctx_compactor = ContextCompactor::new(
         provider_info.provider.clone(),
         ctx_event_store,

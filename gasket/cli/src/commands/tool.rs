@@ -20,8 +20,9 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         .context("Could not find home directory")?
         .join(".gasket");
 
-    let memory_store = gasket_engine::session::MemoryStore::new().await;
-    let sqlite_store = memory_store.sqlite_store().clone();
+    let sqlite_store = gasket_engine::SqliteStore::new()
+        .await
+        .expect("Failed to open SqliteStore");
 
     // Initialize wiki stores if wiki directory exists
     let wiki_root = workspace.join("wiki");

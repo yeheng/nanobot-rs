@@ -11,7 +11,7 @@ use tracing::{info, Level};
 use gasket_engine::channels::ChatEvent;
 use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
-use gasket_engine::memory::MemoryStore;
+use gasket_engine::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::subagents::SimpleSpawner;
@@ -68,8 +68,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     // Build tool registry (CLI mode: no bus/cron)
-    let memory_store = Arc::new(MemoryStore::new().await);
-    let pool = memory_store.sqlite_store().pool();
+    let sqlite_store = Arc::new(SqliteStore::new().await.expect("Failed to open SqliteStore"));
+    let pool = sqlite_store.pool();
 
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
@@ -120,7 +120,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             workspace: workspace.clone(),
             subagent_spawner: None,
             extra_tools: vec![],
-            sqlite_store: Some(memory_store.sqlite_store().clone()),
+            sqlite_store: Some(sqlite_store.as_ref().clone()),
             page_store,
             page_index,
             provider: Some(provider_info.provider.clone()),
@@ -166,12 +166,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
-    let agent = AgentSession::with_memory_store(
+    let agent = AgentSession::with_sqlite_store(
         provider_info.provider,
         workspace,
         agent_config,
         tools,
-        memory_store,
+        sqlite_store,
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?

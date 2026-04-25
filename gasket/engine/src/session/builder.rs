@@ -33,7 +33,7 @@ pub struct SessionBuilder {
     workspace: PathBuf,
     config: AgentConfig,
     tools: Arc<crate::tools::ToolRegistry>,
-    memory_store: Arc<crate::session::MemoryStore>,
+    sqlite_store: Arc<gasket_storage::SqliteStore>,
 }
 
 impl SessionBuilder {
@@ -43,14 +43,14 @@ impl SessionBuilder {
         workspace: PathBuf,
         config: AgentConfig,
         tools: Arc<crate::tools::ToolRegistry>,
-        memory_store: Arc<crate::session::MemoryStore>,
+        sqlite_store: Arc<gasket_storage::SqliteStore>,
     ) -> Self {
         Self {
             provider,
             workspace,
             config,
             tools,
-            memory_store,
+            sqlite_store,
         }
     }
 
@@ -60,7 +60,7 @@ impl SessionBuilder {
     /// the compiler guarantees every value is initialized before use.
     pub async fn build(self) -> Result<AgentSession, AgentError> {
         // ── 1. Storage layer ─────────────────────────────────────────
-        let pool = self.memory_store.sqlite_store().pool();
+        let pool = self.sqlite_store.pool();
         let session_store = Arc::new(SessionStore::new(pool.clone()));
         let event_store = Arc::new(EventStore::new(pool));
 
@@ -154,7 +154,7 @@ impl SessionBuilder {
 
         // ── 7. Wiki components (optional) ──────────────────────────
         let wiki_components =
-            build_wiki_components(self.memory_store.sqlite_store(), &self.config).await;
+            build_wiki_components(&self.sqlite_store, &self.config).await;
 
         // ── 8. Hook registry ─────────────────────────────────────────
         #[cfg(feature = "local-embedding")]
@@ -267,9 +267,9 @@ pub async fn build_session(
     workspace: PathBuf,
     config: AgentConfig,
     tools: Arc<crate::tools::ToolRegistry>,
-    memory_store: Arc<crate::session::MemoryStore>,
+    sqlite_store: Arc<gasket_storage::SqliteStore>,
 ) -> Result<AgentSession, AgentError> {
-    SessionBuilder::new(provider, workspace, config, tools, memory_store)
+    SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
         .build()
         .await
 }

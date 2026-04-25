@@ -10,13 +10,10 @@ pub mod context;
 pub mod finalizer;
 pub mod history;
 pub mod prompt;
-pub mod store;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use context::{AgentContext, PersistentContext};
-
-pub use store::MemoryStore;
 
 use crate::wiki::{PageIndex, PageStore, WikiLog};
 
@@ -33,6 +30,7 @@ use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;
 use gasket_providers::ChatMessage;
+use gasket_storage::SqliteStore;
 use gasket_types::events::ChatEvent;
 use gasket_types::SessionKey;
 
@@ -278,19 +276,21 @@ impl AgentSession {
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
-        let memory_store = Arc::new(MemoryStore::new().await);
-        Self::with_memory_store(provider, workspace, config, tools, memory_store).await
+        let sqlite_store = Arc::new(
+            SqliteStore::new().await.expect("Failed to open SqliteStore"),
+        );
+        Self::with_sqlite_store(provider, workspace, config, tools, sqlite_store).await
     }
 
     /// Create a session with custom services.
-    pub async fn with_memory_store(
+    pub async fn with_sqlite_store(
         provider: Arc<dyn gasket_providers::LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
-        memory_store: Arc<MemoryStore>,
+        sqlite_store: Arc<SqliteStore>,
     ) -> Result<Self, AgentError> {
-        builder::build_session(provider, workspace, config, tools, memory_store).await
+        builder::build_session(provider, workspace, config, tools, sqlite_store).await
     }
 
     /// Set the subagent spawner.

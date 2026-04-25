@@ -35,7 +35,7 @@ pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
-    AgentConfig, AgentContext, AgentResponse, ContextCompactor, MemoryStore, PersistentContext,
+    AgentConfig, AgentContext, AgentResponse, ContextCompactor, PersistentContext,
     WikiHealth,
 };
 // Backward-compatible alias
@@ -115,8 +115,8 @@ pub use token_tracker::{
 
 // ── Tools ──────────────────────────────────────────────────
 pub use tools::{
-    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool,
-    SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnParallelTool,
+    SpawnTool, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 // ── Vault ──────────────────────────────────────────────────
@@ -193,14 +193,6 @@ pub mod providers {
     pub use gasket_providers::{
         CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
         COPILOT_DEFAULT_CLIENT_ID,
-    };
-}
-
-// Core storage types (memory module name kept for backward compatibility)
-pub mod memory {
-    pub use crate::session::MemoryStore;
-    pub use gasket_storage::{
-        CronStore, EventStore, KvStore, MaintenanceStore, SessionStore, SqliteStore, StoreError,
     };
 }
 
