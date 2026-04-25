@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { AlertCircle, ArrowDown, Bot, Loader2, Sparkles, X as XIcon } from 'lucide-vue-next';
+import { AlertCircle, ArrowDown, Bot, Sparkles, X as XIcon } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useChatSession } from '../composables/useChatSession';
 import { useChatStore } from '../stores/chatStore';

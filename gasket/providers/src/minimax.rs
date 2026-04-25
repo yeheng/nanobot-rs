@@ -18,7 +18,7 @@ use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 /// Default API base for MiniMax
 const MINIMAX_API_BASE: &str = "https://api.minimaxi.com/v1";
@@ -67,8 +67,12 @@ fn convert_system_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::Chat
 /// MiniMax API rejects multiple consecutive messages with the same role (error 2013).
 /// This merges their content with a double newline separator.
 ///
-/// **Important:** Tool messages are never merged. Each tool result must retain its
-/// own `tool_call_id` to match the corresponding assistant `tool_call`.
+/// **Important:**
+/// - Tool messages are never merged. Each tool result must retain its
+///   own `tool_call_id` to match the corresponding assistant `tool_call`.
+/// - Assistant messages with `tool_calls` are never merged. Merging would
+///   silently drop the `tool_calls` field, breaking the tool-call / tool-result
+///   pairing and causing MiniMax error 2013 ("tool id not found").
 fn merge_consecutive_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
     let mut merged: Vec<crate::ChatMessage> = Vec::new();
     for msg in messages {
@@ -76,6 +80,16 @@ fn merge_consecutive_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::C
             // Never merge tool messages — each has a unique tool_call_id that
             // must match a specific assistant tool_call.
             if last.role == msg.role && !matches!(msg.role, crate::MessageRole::Tool) {
+                // Never merge an assistant message that carries tool_calls.
+                // The merge only combines `content`; `tool_calls` would be lost,
+                // breaking the pairing with subsequent tool results.
+                if matches!(msg.role, crate::MessageRole::Assistant)
+                    && (msg.tool_calls.is_some() || last.tool_calls.is_some())
+                {
+                    merged.push(msg);
+                    continue;
+                }
+
                 // Merge content
                 match (&mut last.content, &msg.content) {
                     (Some(ref mut a), Some(b)) => {
@@ -96,17 +110,33 @@ fn merge_consecutive_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::C
     merged
 }
 
-/// Strip output-only fields that MiniMax doesn't accept in input messages.
+/// Sanitize messages for MiniMax input — strip fields that cause error 2013.
 ///
-/// MiniMax returns `reasoning_details` in its responses (which we capture as
-/// `reasoning_content`). Sending this field back in subsequent requests causes
-/// MiniMax to fail parsing the assistant message, leading to "tool id not found"
-/// errors (2013). This function strips such output-only fields.
-fn strip_output_fields(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
+/// 1. `reasoning_content` — MiniMax returns this in responses but rejects it
+///    in input, which breaks tool_call parsing ("tool id not found").
+/// 2. `name` on tool messages — OpenAI's `role: "tool"` format does not
+///    include `name`; MiniMax may reject it as an unknown field.
+/// 3. Missing `content` on assistant tool-call messages — MiniMax requires
+///    `content` to be present (even if empty) when `tool_calls` is set.
+fn sanitize_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
     messages
         .into_iter()
         .map(|mut msg| {
             msg.reasoning_content = None;
+
+            // Strip `name` from tool messages — not valid in OpenAI tool format.
+            if matches!(msg.role, crate::MessageRole::Tool) {
+                msg.name = None;
+            }
+
+            // Ensure assistant messages with tool_calls have a content field.
+            if matches!(msg.role, crate::MessageRole::Assistant)
+                && msg.tool_calls.is_some()
+                && msg.content.is_none()
+            {
+                msg.content = Some(String::new());
+            }
+
             msg
         })
         .collect()
@@ -368,7 +398,7 @@ impl LlmProvider for MinimaxProvider {
     fn normalize_messages(&self, messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessage> {
         let messages = convert_system_messages(messages);
         let messages = merge_consecutive_messages(messages);
-        strip_output_fields(messages)
+        sanitize_messages(messages)
     }
 
     #[instrument(skip(self, request), fields(provider = "minimax", model = %request.model))]
@@ -391,13 +421,20 @@ impl LlmProvider for MinimaxProvider {
         debug!("[minimax] response status: {}", status);
 
         if !status.is_success() {
-            let body = response.text().await.map_err(|e| {
+            let err_body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
-            info!("[minimax] error response: {}", body);
+            if status.as_u16() == 400 {
+                warn!(
+                    "[minimax] 400 request body: {}",
+                    serde_json::to_string(&body)
+                        .unwrap_or_else(|_| "<serialize error>".to_string())
+                );
+            }
+            warn!("[minimax] error response: {}", err_body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
-                message: body,
+                message: err_body,
             });
         }
 
@@ -433,13 +470,20 @@ impl LlmProvider for MinimaxProvider {
         debug!("[minimax] stream response status: {}", status);
 
         if !status.is_success() {
-            let body = response.text().await.map_err(|e| {
+            let err_body = response.text().await.map_err(|e| {
                 crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
             })?;
-            info!("[minimax] error response: {}", body);
+            if status.as_u16() == 400 {
+                warn!(
+                    "[minimax] 400 request body: {}",
+                    serde_json::to_string(&body)
+                        .unwrap_or_else(|_| "<serialize error>".to_string())
+                );
+            }
+            warn!("[minimax] error response: {}", err_body);
             return Err(crate::ProviderError::ApiError {
                 status_code: status.as_u16(),
-                message: body,
+                message: err_body,
             });
         }
 
@@ -798,6 +842,230 @@ mod tests {
         );
         assert_eq!(msgs[2]["role"], "tool");
         assert_eq!(msgs[2]["tool_call_id"], "call_function_phjm2hasbcyb_1");
+    }
+
+    #[test]
+    fn test_assistant_with_tools_not_merged_with_prior_assistant() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        // Reproduce the exact bug: a prior assistant message (from DB history)
+        // followed by assistant_with_tools (from current turn's tool call),
+        // followed by tool_result. The assistant_with_tools must NOT be merged
+        // into the prior assistant message, or its tool_calls would be lost.
+        let request = ChatRequest {
+            model: "MiniMax-M2.7-highspeed".to_string(),
+            messages: vec![
+                ChatMessage::assistant("Prior assistant response from DB history."),
+                ChatMessage::assistant_with_tools(
+                    Some("".to_string()),
+                    vec![ToolCall::new(
+                        "call_function_wzxl6ak45z3v_1",
+                        "clear_session_history",
+                        json!({"session_key": null}),
+                    )],
+                    None,
+                ),
+                ChatMessage::tool_result(
+                    "call_function_wzxl6ak45z3v_1",
+                    "clear_session_history",
+                    "Cleared session.",
+                ),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // Both assistant messages must remain separate.
+        assert_eq!(
+            msgs.len(),
+            3,
+            "Expected 3 messages, got: {}",
+            serde_json::to_string_pretty(&msgs).unwrap()
+        );
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(
+            msgs[0]["content"],
+            "Prior assistant response from DB history."
+        );
+        assert!(
+            msgs[0].get("tool_calls").is_none(),
+            "First assistant should have no tool_calls"
+        );
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert!(
+            msgs[1].get("tool_calls").is_some(),
+            "Second assistant must retain tool_calls. Full message: {}",
+            serde_json::to_string_pretty(&msgs[1]).unwrap()
+        );
+        assert_eq!(
+            msgs[1]["tool_calls"][0]["id"],
+            "call_function_wzxl6ak45z3v_1"
+        );
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_function_wzxl6ak45z3v_1");
+    }
+
+    #[test]
+    fn test_assistant_with_tools_not_lost_on_merge() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        // Simulate a scenario where the DB-loaded history ends with an assistant
+        // message, followed by a user message, followed by assistant_with_tools
+        // (from the current turn's iter 1), followed by tool_result.
+        let request = ChatRequest {
+            model: "MiniMax-M2.7-highspeed".to_string(),
+            messages: vec![
+                ChatMessage::assistant("Previous assistant response."),
+                ChatMessage::user("Current user message."),
+                ChatMessage::assistant_with_tools(
+                    Some("明白，执行清理。".to_string()),
+                    vec![ToolCall::new(
+                        "call_function_grvtphns981i_1",
+                        "clear_session_history",
+                        json!({"session_key": null}),
+                    )],
+                    None,
+                ),
+                ChatMessage::tool_result(
+                    "call_function_grvtphns981i_1",
+                    "clear_session_history",
+                    "Cleared session.",
+                ),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // No merging should happen because roles alternate.
+        assert_eq!(
+            msgs.len(),
+            4,
+            "Expected 4 messages, got: {}",
+            serde_json::to_string_pretty(&msgs).unwrap()
+        );
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert!(
+            msgs[2].get("tool_calls").is_some(),
+            "Assistant message must have tool_calls. Full message: {}",
+            serde_json::to_string_pretty(&msgs[2]).unwrap()
+        );
+        assert_eq!(
+            msgs[2]["tool_calls"][0]["id"],
+            "call_function_grvtphns981i_1"
+        );
+    }
+
+    #[test]
+    fn test_assistant_with_tools_survives_normalization() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        // Reproduce the exact scenario from the user's log:
+        // A multi-turn conversation where the assistant called a tool,
+        // and the tool result is present. The assistant_with_tools message
+        // must retain its tool_calls after normalization.
+        let request = ChatRequest {
+            model: "MiniMax-M2.7-highspeed".to_string(),
+            messages: vec![
+                ChatMessage::user("清理上下文和聊天历史"),
+                ChatMessage::assistant_with_tools(
+                    Some("明白，执行清理。".to_string()),
+                    vec![ToolCall::new(
+                        "call_function_grvtphns981i_1",
+                        "clear_session_history",
+                        json!({"session_key": null}),
+                    )],
+                    None,
+                ),
+                ChatMessage::tool_result(
+                    "call_function_grvtphns981i_1",
+                    "clear_session_history",
+                    "Cleared session `cli:default`. All events and the session record have been removed. Summary deleted: false.",
+                ),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // The user message and assistant message should be merged (consecutive same role? No,
+        // they're different roles). Wait, system conversion might affect things.
+        // Let's just verify the assistant message HAS tool_calls.
+        assert_eq!(
+            msgs.len(),
+            3,
+            "Expected 3 messages, got: {}",
+            serde_json::to_string_pretty(&msgs).unwrap()
+        );
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert!(
+            msgs[1].get("tool_calls").is_some(),
+            "Assistant message must have tool_calls. Full message: {}",
+            serde_json::to_string_pretty(&msgs[1]).unwrap()
+        );
+        assert_eq!(
+            msgs[1]["tool_calls"][0]["id"],
+            "call_function_grvtphns981i_1"
+        );
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_function_grvtphns981i_1");
+    }
+
+    #[test]
+    fn test_tool_call_arguments_serialized_as_string() {
+        let provider = MinimaxProvider::new("test-key".to_string());
+
+        // FunctionCall has a custom serializer (serialize_args_as_string) that
+        // converts Value::Object into a JSON string automatically. This test
+        // verifies the end-to-end serialization works correctly.
+        let request = ChatRequest {
+            model: "MiniMax-M2.7".to_string(),
+            messages: vec![
+                ChatMessage::user("Do X"),
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![ToolCall::new(
+                        "call_abc",
+                        "do_x",
+                        // This is how arguments look after streaming accumulation
+                        json!({"param": "value"}),
+                    )],
+                    None,
+                ),
+                ChatMessage::tool_result("call_abc", "do_x", "Done"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // arguments must be a string, not an object
+        let args = &msgs[1]["tool_calls"][0]["function"]["arguments"];
+        assert!(
+            args.is_string(),
+            "arguments should be serialized as a string, got: {}",
+            args
+        );
+        // The string should contain valid JSON that round-trips to the original object
+        let parsed: serde_json::Value = serde_json::from_str(args.as_str().unwrap()).unwrap();
+        assert_eq!(parsed, json!({"param": "value"}));
     }
 
     #[test]

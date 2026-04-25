@@ -138,6 +138,9 @@ async fn setup_wiki(
     if let Err(e) = ps.init_dirs().await {
         tracing::warn!("Failed to init wiki dirs: {}", e);
     }
+    if let Err(e) = gasket_engine::create_wiki_tables(&pool).await {
+        tracing::warn!("Failed to create wiki tables: {}", e);
+    }
     let tantivy_dir = wiki_root.join(".tantivy");
     let pi = match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
         Ok(idx) => Some(Arc::new(idx)),

@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Sparkles, ChevronDown, Loader2, CheckCircle, XCircle, Wrench } from 'lucide-vue-next';
-import type { Message, TimelineItem } from '../types';
+import {
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  Wrench,
+  Terminal,
+  ArrowRight,
+} from 'lucide-vue-next';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
+import type { Message, TimelineItem, ToolCall } from '../types';
 
 const props = defineProps<{
   message: Message;
@@ -15,32 +26,26 @@ const hasThinking = computed(() => !!props.message.thinking);
 const hasTools = computed(() => (props.message.toolCalls?.length || 0) > 0);
 const runningToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'running').length || 0);
 const completedToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'complete').length || 0);
+const errorToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'error').length || 0);
 const totalToolCount = computed(() => props.message.toolCalls?.length || 0);
 const isActive = computed(() => props.isLastBotMessage && (props.isThinking || runningToolCount.value > 0));
 
-/** Build a chronological timeline of thinking chunks and tool calls.
- *  Adjacent thinking chunks are merged so that streaming tokens don't
- *  render as separate boxed fragments.
- */
+/** Build a chronological timeline of thinking chunks and tool calls. */
 const timeline = computed((): TimelineItem[] => {
   const rawItems: TimelineItem[] = [];
 
-  // Add thinking chunks
   const chunks = props.message.thinkingChunks || [];
   for (const chunk of chunks) {
     rawItems.push({ type: 'thinking', content: chunk.content, timestamp: chunk.timestamp });
   }
 
-  // Add tool calls (using their start time)
   const tools = props.message.toolCalls || [];
   for (const tool of tools) {
     rawItems.push({ type: 'tool_call', tool, timestamp: tool.startTime || 0 });
   }
 
-  // Sort by timestamp ascending
   rawItems.sort((a, b) => a.timestamp - b.timestamp);
 
-  // Merge adjacent thinking items to avoid fragmented UI
   const items: TimelineItem[] = [];
   for (const item of rawItems) {
     if (item.type === 'thinking') {
@@ -58,14 +63,53 @@ const timeline = computed((): TimelineItem[] => {
   return items;
 });
 
-/** Hard limit for tool result display to avoid UI clutter. */
-const TOOL_RESULT_MAX_CHARS = 200;
+/** Per-tool-call expanded state map. */
+const toolExpandedMap = ref<Record<string, boolean>>({});
 
-const truncateResult = (text: string): string => {
-  const chars = Array.from(text);
-  if (chars.length <= TOOL_RESULT_MAX_CHARS) return text;
-  return chars.slice(0, TOOL_RESULT_MAX_CHARS).join('') + '...';
-};
+function isToolExpanded(tool: ToolCall): boolean {
+  // Default to expanded for running tools, collapsed for completed/error
+  if (tool.id in toolExpandedMap.value) {
+    return toolExpandedMap.value[tool.id];
+  }
+  return tool.status === 'running';
+}
+
+function toggleTool(toolId: string) {
+  toolExpandedMap.value[toolId] = !toolExpandedMap.value[toolId];
+}
+
+function statusLabel(status: ToolCall['status']) {
+  switch (status) {
+    case 'running':
+      return 'Running';
+    case 'complete':
+      return 'Success';
+    case 'error':
+      return 'Error';
+  }
+}
+
+function statusClasses(status: ToolCall['status']) {
+  switch (status) {
+    case 'running':
+      return 'bg-primary/10 text-primary border-primary/20';
+    case 'complete':
+      return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20';
+    case 'error':
+      return 'bg-destructive/10 text-destructive border-destructive/20';
+  }
+}
+
+function iconForStatus(status: ToolCall['status']) {
+  switch (status) {
+    case 'running':
+      return Loader2;
+    case 'complete':
+      return CheckCircle;
+    case 'error':
+      return XCircle;
+  }
+}
 </script>
 
 <template>
@@ -100,7 +144,8 @@ const truncateResult = (text: string): string => {
           class="text-[10px] th-text-muted flex items-center gap-1"
         >
           <Wrench class="w-3 h-3" />
-          {{ completedToolCount }}/{{ totalToolCount }}
+          <span v-if="errorToolCount > 0" class="text-destructive">{{ errorToolCount }} failed</span>
+          <span v-else>{{ completedToolCount }}/{{ totalToolCount }}</span>
         </span>
       </div>
 
@@ -128,42 +173,81 @@ const truncateResult = (text: string): string => {
         </div>
 
         <!-- Tool call -->
-        <div v-else-if="item.type === 'tool_call'" class="flex gap-2 p-1.5 rounded-lg th-active-bg">
-          <component
-            :is="item.tool.status === 'running' ? Loader2 : (item.tool.status === 'error' ? XCircle : CheckCircle)"
-            class="w-3.5 h-3.5 shrink-0 mt-0.5"
-            :class="{
-              'text-primary animate-spin': item.tool.status === 'running',
-              'text-primary': item.tool.status === 'complete',
-              'text-destructive': item.tool.status === 'error'
-            }"
-          />
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center justify-between gap-2">
-              <span class="font-medium th-text-secondary truncate">{{ item.tool.name }}</span>
+        <Collapsible
+          v-else-if="item.type === 'tool_call'"
+          :open="isToolExpanded(item.tool)"
+          class="rounded-lg border overflow-hidden transition-colors"
+          :class="statusClasses(item.tool.status)"
+        >
+          <!-- Tool header (always visible, clickable) -->
+          <CollapsibleTrigger as-child @click="toggleTool(item.tool.id)">
+            <button class="w-full flex items-center gap-2 px-2.5 py-2 text-left">
+              <component
+                :is="iconForStatus(item.tool.status)"
+                class="w-3.5 h-3.5 shrink-0"
+                :class="{
+                  'animate-spin': item.tool.status === 'running'
+                }"
+              />
+              <span class="font-medium truncate flex-1">
+                {{ item.tool.name }}
+              </span>
+              <span
+                class="text-[10px] px-1.5 py-0.5 rounded-full border shrink-0"
+                :class="statusClasses(item.tool.status)"
+              >
+                {{ statusLabel(item.tool.status) }}
+              </span>
               <span
                 v-if="item.tool.duration"
-                class="text-[10px] th-text-dim shrink-0"
+                class="text-[10px] opacity-70 shrink-0"
               >
                 {{ item.tool.duration }}
               </span>
-            </div>
-            <div
-              v-if="item.tool.arguments"
-              class="text-[10px] th-text-muted font-mono truncate mt-0.5"
-            >
-              {{ item.tool.arguments }}
-            </div>
+              <ChevronRight
+                class="w-3.5 h-3.5 shrink-0 opacity-60 transition-transform"
+                :class="{ 'rotate-90': isToolExpanded(item.tool) }"
+              />
+            </button>
+          </CollapsibleTrigger>
 
-            <!-- Tool result — hard-truncated to 200 chars -->
-            <div
-              v-if="item.tool.result"
-              class="text-[10px] th-text-secondary mt-1 whitespace-pre-wrap break-words leading-relaxed bg-muted/30 rounded p-1.5"
-            >
-              {{ truncateResult(item.tool.result) }}
+          <!-- Tool details (expandable) -->
+          <CollapsibleContent>
+            <div class="px-2.5 pb-2.5 space-y-2">
+              <!-- Input -->
+              <div v-if="item.tool.arguments" class="space-y-1">
+                <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
+                  <Terminal class="w-3 h-3" />
+                  <span>Input</span>
+                </div>
+                <div
+                  class="font-mono text-[11px] bg-black/5 dark:bg-white/5 rounded-md p-2 whitespace-pre-wrap break-all max-h-40 overflow-auto leading-relaxed"
+                >
+                  {{ item.tool.arguments }}
+                </div>
+              </div>
+
+              <!-- Output / Error -->
+              <div v-if="item.tool.result" class="space-y-1">
+                <div class="flex items-center gap-1 text-[10px] uppercase tracking-wider"
+                  :class="item.tool.status === 'error' ? 'text-destructive opacity-90' : 'opacity-70'"
+                >
+                  <ArrowRight class="w-3 h-3" />
+                  <span>{{ item.tool.status === 'error' ? 'Error' : 'Output' }}</span>
+                </div>
+                <div
+                  class="font-mono text-[11px] rounded-md p-2 whitespace-pre-wrap break-words max-h-60 overflow-auto leading-relaxed"
+                  :class="item.tool.status === 'error'
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-black/5 dark:bg-white/5 th-text-secondary'
+                  "
+                >
+                  {{ item.tool.result }}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </CollapsibleContent>
+        </Collapsible>
       </template>
 
       <!-- Fallback: if no timeline but has old-format thinking -->

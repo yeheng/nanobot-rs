@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
-import { Loader2, Send, Square } from 'lucide-vue-next';
+import { Send, Square } from 'lucide-vue-next';
 import { nextTick, ref } from 'vue';
 
 const props = defineProps<{

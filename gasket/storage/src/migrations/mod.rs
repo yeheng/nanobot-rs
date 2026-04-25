@@ -33,10 +33,33 @@ async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
     migrate_add_sequence_to_events(pool).await?;
     migrate_add_session_sequence_index(pool).await?;
     migrate_add_compaction_state(pool).await?;
+    migrate_add_sync_sequence_to_wiki_pages(pool).await?;
+    Ok(())
+}
+
+/// Add `sync_sequence` column to `wiki_pages` if it doesn't exist.
+async fn migrate_add_sync_sequence_to_wiki_pages(pool: &SqlitePool) -> anyhow::Result<()> {
+    if table_exists(pool, "wiki_pages").await
+        && !column_exists(pool, "wiki_pages", "sync_sequence").await
+    {
+        sqlx::query("ALTER TABLE wiki_pages ADD COLUMN sync_sequence INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
     Ok(())
 }
 
 // ─── Migration helpers ───────────────────────────────────────────────────────
+
+async fn table_exists(pool: &SqlitePool, table: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+    )
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
+}
 
 async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
     sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2")

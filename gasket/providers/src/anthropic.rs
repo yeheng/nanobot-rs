@@ -147,7 +147,9 @@ impl AnthropicProvider {
         let mut messages = Vec::new();
         let mut system_instruction = None;
 
-        for msg in request.messages {
+        let mut msgs = request.messages.into_iter().peekable();
+
+        while let Some(msg) = msgs.next() {
             match msg.role {
                 crate::MessageRole::System => {
                     system_instruction = msg.content;
@@ -173,6 +175,17 @@ impl AnthropicProvider {
                 }
                 crate::MessageRole::Assistant => {
                     let mut content_blocks = Vec::new();
+
+                    // Add thinking block if present (Anthropic requires it
+                    // to be passed back verbatim when thinking mode is on)
+                    if let Some(thinking) = &msg.reasoning_content {
+                        if !thinking.is_empty() {
+                            content_blocks.push(json!({
+                                "type": "thinking",
+                                "thinking": thinking,
+                            }));
+                        }
+                    }
 
                     // Add text content if present
                     if let Some(text) = &msg.content {
@@ -204,16 +217,30 @@ impl AnthropicProvider {
                     }
                 }
                 crate::MessageRole::Tool => {
-                    // Tool messages in OpenAI format → tool_result blocks in Anthropic
-                    let tool_use_id = msg.tool_call_id.unwrap_or_default();
-                    let content = json!({
+                    // Anthropic requires ALL tool_result blocks for a set of
+                    // tool_use blocks to be in a SINGLE user message. Collect
+                    // consecutive Tool-role messages and merge them.
+                    let mut tool_results = vec![json!({
                         "type": "tool_result",
-                        "tool_use_id": tool_use_id,
+                        "tool_use_id": msg.tool_call_id.unwrap_or_default(),
                         "content": msg.content.unwrap_or_default(),
-                    });
+                    })];
+
+                    while let Some(next) = msgs.peek() {
+                        if next.role != crate::MessageRole::Tool {
+                            break;
+                        }
+                        let next = msgs.next().unwrap();
+                        tool_results.push(json!({
+                            "type": "tool_result",
+                            "tool_use_id": next.tool_call_id.unwrap_or_default(),
+                            "content": next.content.unwrap_or_default(),
+                        }));
+                    }
+
                     messages.push(json!({
                         "role": "user",
-                        "content": vec![content],
+                        "content": tool_results,
                     }));
                 }
             }
@@ -284,9 +311,15 @@ impl AnthropicProvider {
 
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut reasoning_parts = Vec::new();
 
         for block in &content_blocks {
             match block.get("type").and_then(|v| v.as_str()) {
+                Some("thinking") => {
+                    if let Some(thinking) = block.get("thinking").and_then(|v| v.as_str()) {
+                        reasoning_parts.push(thinking.to_string());
+                    }
+                }
                 Some("text") => {
                     if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                         text_parts.push(text.to_string());
@@ -308,6 +341,12 @@ impl AnthropicProvider {
             Some(text_parts.join(""))
         };
 
+        let reasoning_content = if reasoning_parts.is_empty() {
+            None
+        } else {
+            Some(reasoning_parts.join(""))
+        };
+
         let usage = response.get("usage").map(|u| crate::Usage {
             input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as usize,
             output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as usize,
@@ -318,7 +357,7 @@ impl AnthropicProvider {
         Ok(ChatResponse {
             content,
             tool_calls,
-            reasoning_content: None,
+            reasoning_content,
             usage,
         })
     }
@@ -537,6 +576,18 @@ fn convert_anthropic_chunk(value: Value, event_type: Option<&str>) -> Option<Cha
         Some("content_block_delta") => {
             let delta = &value["delta"];
             match delta.get("type").and_then(|v| v.as_str()) {
+                Some("thinking_delta") => {
+                    let thinking = delta["thinking"].as_str().unwrap_or("").to_string();
+                    Some(ChatStreamChunk {
+                        delta: ChatStreamDelta {
+                            content: None,
+                            reasoning_content: Some(thinking),
+                            tool_calls: Vec::new(),
+                        },
+                        finish_reason: None,
+                        usage: None,
+                    })
+                }
                 Some("text_delta") => {
                     let text = delta["text"].as_str().unwrap_or("").to_string();
                     Some(ChatStreamChunk {
@@ -762,6 +813,49 @@ mod tests {
     }
 
     #[test]
+    fn test_build_request_merges_multiple_tool_results() {
+        let provider = AnthropicProvider::new("test-key".to_string());
+
+        // Simulate assistant calling two tools, then two tool results
+        let request = ChatRequest {
+            model: "claude-sonnet-4".to_string(),
+            messages: vec![
+                ChatMessage::user("Check both NYC and LA"),
+                ChatMessage::assistant_with_tools(
+                    None,
+                    vec![
+                        ToolCall::new("call_A", "get_weather", json!({"city": "NYC"})),
+                        ToolCall::new("call_B", "get_weather", json!({"city": "LA"})),
+                    ],
+                    None,
+                ),
+                ChatMessage::tool_result("call_A", "get_weather", "NYC: Sunny"),
+                ChatMessage::tool_result("call_B", "get_weather", "LA: Cloudy"),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let messages = body["messages"].as_array().unwrap();
+
+        // user, assistant, merged tool_results = 3 messages (not 4)
+        assert_eq!(messages.len(), 3);
+
+        // The merged user message must contain BOTH tool_result blocks
+        let tool_msg = &messages[2];
+        assert_eq!(tool_msg["role"], "user");
+        let content = tool_msg["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "call_A");
+        assert_eq!(content[1]["type"], "tool_result");
+        assert_eq!(content[1]["tool_use_id"], "call_B");
+    }
+
+    #[test]
     fn test_parse_response() {
         let provider = AnthropicProvider::new("test-key".to_string());
 
@@ -802,5 +896,67 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].function.name, "read_file");
         assert_eq!(result.tool_calls[0].id, "toolu_123");
+    }
+
+    #[test]
+    fn test_parse_response_with_thinking() {
+        let provider = AnthropicProvider::new("test-key".to_string());
+
+        let response = json!({
+            "id": "msg_01",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Let me reason about this..."},
+                {"type": "text", "text": "Here is my answer."},
+                {"type": "tool_use", "id": "toolu_99", "name": "search", "input": {"q": "test"}}
+            ]
+        });
+
+        let result = provider.parse_response(response).unwrap();
+        assert_eq!(
+            result.reasoning_content,
+            Some("Let me reason about this...".to_string())
+        );
+        assert_eq!(result.content, Some("Here is my answer.".to_string()));
+        assert_eq!(result.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_build_request_includes_thinking_block() {
+        let provider = AnthropicProvider::new("test-key".to_string());
+
+        let request = ChatRequest {
+            model: "claude-sonnet-4".to_string(),
+            messages: vec![
+                ChatMessage::user("Explain quantum computing"),
+                ChatMessage::assistant_with_tools(
+                    Some("Let me search for that.".to_string()),
+                    vec![ToolCall::new("call_1", "search", json!({"q": "quantum"}))],
+                    Some("I need to think about quantum mechanics...".to_string()),
+                ),
+                ChatMessage::tool_result("call_1", "search", "Results: ..."),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            thinking: None,
+        };
+
+        let body = provider.build_request(request);
+        let messages = body["messages"].as_array().unwrap();
+        let assistant = &messages[1];
+        assert_eq!(assistant["role"], "assistant");
+        let content = assistant["content"].as_array().unwrap();
+
+        // thinking block must come first, then text, then tool_use
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(
+            content[0]["thinking"],
+            "I need to think about quantum mechanics..."
+        );
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[2]["type"], "tool_use");
     }
 }

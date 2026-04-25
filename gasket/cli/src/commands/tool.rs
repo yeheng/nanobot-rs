@@ -27,6 +27,9 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) = if wiki_root.exists() {
         let ps = Arc::new(PageStore::new(sqlite_store.pool(), wiki_root.clone()));
+        if let Err(e) = gasket_engine::create_wiki_tables(&sqlite_store.pool()).await {
+            tracing::warn!("Failed to create wiki tables: {}", e);
+        }
         let pi = match gasket_engine::wiki::PageIndex::open(wiki_root.join(".tantivy")) {
             Ok(idx) => Some(Arc::new(idx)),
             Err(e) => {
