@@ -21,9 +21,6 @@ use crate::wiki::{PageIndex, PageStore, WikiLog};
 use gasket_providers::LlmProvider;
 use gasket_storage::{EventStore, SessionStore};
 
-#[cfg(feature = "local-embedding")]
-use gasket_storage::TextEmbedder;
-
 /// Builder for constructing an `AgentSession`.
 ///
 /// Holds only the external inputs; all internal services are built locally
@@ -76,39 +73,6 @@ impl SessionBuilder {
         };
 
         // ── 3. Agent context ─────────────────────────────────────────
-        #[cfg(feature = "local-embedding")]
-        let (context, embedder) = {
-            let emb = if let Some(ref emb_cfg) = self.config.embedding_config {
-                match TextEmbedder::with_config(emb_cfg.clone().into()) {
-                    Ok(e) => {
-                        info!("Local embedding enabled (model: {})", e.config().model_name);
-                        Some(Arc::new(e))
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to initialize TextEmbedder: {}. Running without embeddings.",
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            let ctx = if let Some(ref e) = emb {
-                AgentContext::persistent_with_embedder(
-                    event_store.clone(),
-                    session_store.clone(),
-                    e.clone(),
-                )
-            } else {
-                AgentContext::persistent(event_store.clone(), session_store.clone())
-            };
-            (ctx, emb)
-        };
-
-        #[cfg(not(feature = "local-embedding"))]
         let context = AgentContext::persistent(event_store.clone(), session_store.clone());
 
         // ── 5. Context compactor ─────────────────────────────────────
@@ -156,27 +120,7 @@ impl SessionBuilder {
         let wiki_components = build_wiki_components(&self.sqlite_store, &self.config).await;
 
         // ── 8. Hook registry ─────────────────────────────────────────
-        #[cfg(feature = "local-embedding")]
-        let mut hooks_builder = crate::session::history::builder::build_default_hooks_builder();
-
-        #[cfg(not(feature = "local-embedding"))]
         let hooks_builder = crate::session::history::builder::build_default_hooks_builder();
-
-        #[cfg(feature = "local-embedding")]
-        if let Some(ref emb) = embedder {
-            if self.config.history_recall_k > 0 {
-                info!(
-                    "HistoryRecallHook enabled (k={})",
-                    self.config.history_recall_k
-                );
-                hooks_builder =
-                    hooks_builder.with_hook(Arc::new(crate::hooks::HistoryRecallHook::new(
-                        emb.clone(),
-                        self.config.history_recall_k,
-                        context.clone(),
-                    )));
-            }
-        }
 
         let hooks = hooks_builder.build_shared();
 

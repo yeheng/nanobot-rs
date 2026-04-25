@@ -1,27 +1,16 @@
-use crate::search::top_k_similar;
-#[cfg(feature = "local-embedding")]
-use crate::search::TextEmbedder;
 use crate::skills::{Skill, SkillsLoader};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 use tracing::{debug, info};
 
-/// Registry for managing loaded skills with semantic routing support.
-///
-/// The registry stores skill embeddings for fast Top-K retrieval based on
-/// cosine similarity to the user query. Embeddings are computed once at
-/// startup and cached in memory.
+/// Registry for managing loaded skills.
 pub struct SkillsRegistry {
     /// All loaded skills (name -> skill)
     skills: HashMap<String, Skill>,
 
     /// Skills loader
     loader: Option<SkillsLoader>,
-
-    /// Cached embeddings: (skill_name, embedding_vector)
-    embeddings: OnceLock<Vec<(String, Vec<f32>)>>,
 }
 
 impl Default for SkillsRegistry {
@@ -36,7 +25,6 @@ impl SkillsRegistry {
         Self {
             skills: HashMap::new(),
             loader: None,
-            embeddings: OnceLock::new(),
         }
     }
 
@@ -74,16 +62,12 @@ impl SkillsRegistry {
         }
 
         debug!("Registering skill: {}", name);
-        // Invalidate cached embeddings when skills change
-        self.embeddings = OnceLock::new();
         self.skills.insert(name, skill);
     }
 
     /// Unregister a skill by name
     pub fn unregister(&mut self, name: &str) -> Option<Skill> {
         debug!("Unregistering skill: {}", name);
-        // Invalidate cached embeddings when skills change
-        self.embeddings = OnceLock::new();
         self.skills.remove(name)
     }
 
@@ -117,64 +101,6 @@ impl SkillsRegistry {
         self.skills
             .values()
             .filter(|s| s.always_load() && s.is_available())
-            .collect()
-    }
-
-    /// Initialize embeddings for all available skills.
-    ///
-    /// This should be called once after all skills are loaded.
-    /// Uses the skill's description text to generate embeddings.
-    #[cfg(feature = "local-embedding")]
-    pub fn initialize_embeddings(&self, embedder: &TextEmbedder) {
-        if self.embeddings.get().is_some() {
-            debug!("Skill embeddings already initialized, skipping");
-            return;
-        }
-
-        let available_skills: Vec<_> = self.list_available();
-        let mut embeddings = Vec::with_capacity(available_skills.len());
-
-        for skill in available_skills {
-            match embedder.embed(skill.description()) {
-                Ok(vec) => {
-                    embeddings.push((skill.name().to_string(), vec));
-                    debug!("Generated embedding for skill: {}", skill.name());
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to embed skill '{}': {}", skill.name(), e);
-                }
-            }
-        }
-
-        if self.embeddings.set(embeddings).is_err() {
-            debug!("Skill embeddings were already set by another thread");
-        } else {
-            info!("Initialized embeddings for {} skills", self.skills.len());
-        }
-    }
-
-    /// Get the top-K most relevant skills for a query.
-    ///
-    /// Uses cosine similarity between the query embedding and cached skill embeddings.
-    /// Returns skill names and their similarity scores.
-    pub fn get_top_k(&self, query_vec: &[f32], k: usize) -> Vec<(&Skill, f32)> {
-        let embeddings = match self.embeddings.get() {
-            Some(e) => e,
-            None => {
-                // Fallback: return always-load skills if embeddings not initialized
-                debug!("Skill embeddings not initialized, returning always-load skills");
-                return self
-                    .get_always_load_skills()
-                    .into_iter()
-                    .map(|s| (s, 1.0))
-                    .collect();
-            }
-        };
-
-        let top_names = top_k_similar(query_vec, embeddings, k);
-        top_names
-            .into_iter()
-            .filter_map(|(name, score)| self.skills.get(name).map(|s| (s, score)))
             .collect()
     }
 

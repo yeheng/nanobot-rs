@@ -104,8 +104,6 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
                 planning: p.planning.clone(),
             }
         },
-        embedding_config: Some(config.embedding.clone()),
-        history_recall_k: config.agents.defaults.history_recall_k,
         memory_budget: config.agents.defaults.memory_budget,
         evolution: defaults.evolution,
         wiki: {

@@ -1,7 +1,6 @@
 //! Session storage repository — summaries, checkpoints, and embeddings.
 
 use gasket_types::SessionKey;
-use sqlx::Row;
 use tracing::debug;
 
 /// Repository for session-related SQLite operations.
@@ -109,67 +108,6 @@ impl SessionStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
-    }
-
-    // ── Session Embeddings API ──
-
-    /// Save an embedding for a message.
-    pub async fn save_embedding(
-        &self,
-        message_id: &str,
-        session_key: &str,
-        embedding: &[f32],
-    ) -> anyhow::Result<()> {
-        let embedding_bytes = bytemuck::cast_slice(embedding);
-        sqlx::query(
-            "INSERT OR REPLACE INTO session_embeddings (message_id, session_key, embedding) VALUES ($1, $2, $3)",
-        )
-        .bind(message_id)
-        .bind(session_key)
-        .bind(embedding_bytes)
-        .execute(&self.pool)
-        .await?;
-        debug!("Saved embedding for message: {}", message_id);
-        Ok(())
-    }
-
-    /// Load all embeddings for a session.
-    pub async fn load_embeddings(
-        &self,
-        session_key: &str,
-    ) -> anyhow::Result<Vec<(String, String, Vec<f32>)>> {
-        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
-            r#"
-            SELECT e.message_id, m.content, e.embedding
-            FROM session_embeddings e
-            LEFT JOIN session_events m ON e.message_id = m.id
-            WHERE e.session_key = $1
-            ORDER BY m.sequence ASC
-            "#,
-        )
-        .bind(session_key)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut result = Vec::with_capacity(rows.len());
-        for row in rows {
-            let message_id: String = row.get("message_id");
-            let content: String = row.get("content");
-            let embedding_blob: Vec<u8> = row.get("embedding");
-            let embedding = bytemuck::cast_slice(&embedding_blob).to_vec();
-            result.push((message_id, content, embedding));
-        }
-        Ok(result)
-    }
-
-    /// Check whether an embedding already exists for a given message.
-    pub async fn has_embedding(&self, message_id: &str) -> anyhow::Result<bool> {
-        let row: Option<(i64,)> =
-            sqlx::query_as("SELECT COUNT(*) FROM session_embeddings WHERE message_id = $1")
-                .bind(message_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|(count,)| count > 0).unwrap_or(false))
     }
 
     // ── Evolution / Maintenance helpers ──

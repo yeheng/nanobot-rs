@@ -76,9 +76,9 @@ pub use session::AgentSession;
 
 // ── Config ─────────────────────────────────────────────────
 pub use config::{
-    config_dir, load_config, CommandPolicyConfig, Config, ConfigLoader, EmbeddingConfig,
-    ExecToolConfig, ModelConfig, ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry,
-    ProviderType, ResourceLimitsConfig, SandboxConfig, ToolsConfig, WebToolsConfig,
+    config_dir, load_config, CommandPolicyConfig, Config, ConfigLoader, ExecToolConfig,
+    ModelConfig, ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,
+    ResourceLimitsConfig, SandboxConfig, ToolsConfig, WebToolsConfig,
 };
 
 // ── Cron ───────────────────────────────────────────────────
@@ -88,8 +88,6 @@ pub use cron::{CronJob, CronService};
 pub use error::{AgentError, ChannelError, ConfigValidationError, PipelineError, ProviderError};
 
 // ── Hooks ──────────────────────────────────────────────────
-#[cfg(feature = "local-embedding")]
-pub use hooks::HistoryRecallHook;
 pub use hooks::{
     ExecutionStrategy, ExternalHookInput, ExternalHookOutput, ExternalHookRunner,
     ExternalShellHook, HookAction, HookBuilder, HookContext, HookPoint, HookRegistry,
@@ -97,11 +95,6 @@ pub use hooks::{
 };
 
 // ── Search ─────────────────────────────────────────────────
-#[cfg(feature = "local-embedding")]
-pub use search::{bytes_to_embedding, embedding_to_bytes, TextEmbedder};
-pub use search::{cosine_similarity, top_k_similar};
-
-// ── Search / Embedding ─────────────────────────────────────
 
 // ── Skills ─────────────────────────────────────────────────
 pub use skills::{parse_skill_file, Skill, SkillMetadata, SkillsLoader, SkillsRegistry};

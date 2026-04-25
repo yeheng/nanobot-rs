@@ -21,35 +21,6 @@ use crate::config::ToolsConfig;
 // Re-export provider config types (unified in gasket-providers)
 pub use gasket_providers::{ModelConfig, ProviderConfig, ProviderType};
 
-/// Embedding configuration (simplified version for config file)
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EmbeddingConfig {
-    #[serde(default, alias = "model")]
-    pub model_name: String,
-    #[serde(default)]
-    pub cache_dir: Option<String>,
-    /// Explicit embedding dimension. Takes precedence over auto-detection.
-    #[serde(default)]
-    pub dimension: Option<usize>,
-}
-
-#[cfg(feature = "local-embedding")]
-impl From<EmbeddingConfig> for gasket_storage::EmbeddingConfig {
-    fn from(config: EmbeddingConfig) -> Self {
-        let mut result = gasket_storage::EmbeddingConfig::default();
-        if !config.model_name.is_empty() {
-            result.model_name = config.model_name;
-        }
-        if let Some(dir) = config.cache_dir {
-            result.cache_dir = Some(std::path::PathBuf::from(dir));
-        }
-        if let Some(dim) = config.dimension {
-            result.dimension = Some(dim);
-        }
-        result
-    }
-}
-
 /// Agent profile for model switching
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelProfile {
@@ -104,8 +75,6 @@ pub struct AgentDefaults {
     pub streaming: bool,
     #[serde(default, alias = "memoryBudget")]
     pub memory_budget: Option<gasket_storage::wiki::MemoryBudget>,
-    #[serde(default, alias = "historyRecallK")]
-    pub history_recall_k: usize,
     #[serde(default)]
     pub prompts: PromptsConfig,
 }
@@ -121,7 +90,6 @@ impl Default for AgentDefaults {
             thinking_enabled: false,
             streaming: true,
             memory_budget: None,
-            history_recall_k: 0,
             prompts: PromptsConfig::default(),
         }
     }
@@ -147,8 +115,6 @@ pub struct Config {
     pub channels: ChannelsConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
-    #[serde(default)]
-    pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub state_machine: Option<serde_json::Value>,
 }
@@ -432,46 +398,5 @@ mod tests {
         );
         let result = config.validate();
         assert!(result.is_err());
-    }
-
-    /// Embedding config accepts `model` alias in YAML.
-    #[test]
-    fn test_embedding_config_model_alias() {
-        let yaml = r#"
-model: "BGEM3"
-cache_dir: "~/.cache"
-"#;
-        let config: EmbeddingConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.model_name, "BGEM3");
-        assert_eq!(config.cache_dir, Some("~/.cache".to_string()));
-    }
-
-    /// Embedding config falls back to default when model is absent.
-    #[test]
-    fn test_embedding_config_default() {
-        let yaml = r#"{}"#;
-        let config: EmbeddingConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.model_name, "");
-        assert_eq!(config.cache_dir, None);
-        assert_eq!(config.dimension, None);
-    }
-
-    /// Embedding config accepts explicit dimension.
-    #[test]
-    fn test_embedding_config_dimension() {
-        let yaml = r#"
-model: "custom-model"
-dimension: 1024
-"#;
-        let config: EmbeddingConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.model_name, "custom-model");
-        assert_eq!(config.dimension, Some(1024));
-
-        #[cfg(feature = "local-embedding")]
-        {
-            let storage_config: gasket_storage::EmbeddingConfig = config.into();
-            assert_eq!(storage_config.dimension, Some(1024));
-            assert_eq!(storage_config.get_model_dimension(), 1024);
-        }
     }
 }

@@ -30,9 +30,6 @@ wecom = ["gasket-engine/wecom"]
 websocket = ["gasket-engine/websocket", "axum", "dep:tower-http"]
 all-channels = ["gasket-engine/all-channels", "axum", "teloxide", "dep:tower-http"]
 
-# Embedding
-local-embedding = ["gasket-engine/local-embedding"]
-
 # Providers
 provider-anthropic = ["gasket-engine/provider-anthropic"]
 provider-gemini = ["gasket-engine/provider-gemini"]

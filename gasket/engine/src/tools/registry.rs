@@ -1,7 +1,7 @@
 //! Tool registry for managing and executing tools
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tracing::{debug, instrument};
@@ -9,12 +9,6 @@ use tracing::{debug, instrument};
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
 use gasket_providers::LlmProvider;
 use gasket_providers::ToolDefinition;
-use gasket_storage::top_k_similar;
-
-/// Cached tool embeddings: mapping from tool name to embedding vector.
-type ToolEmbeddings = Vec<(String, Vec<f32>)>;
-#[cfg(feature = "local-embedding")]
-use gasket_storage::TextEmbedder;
 
 /// A tool bundled with its optional metadata.
 struct RegisteredTool {
@@ -36,27 +30,15 @@ impl Clone for RegisteredTool {
     }
 }
 
-/// Registry for managing tools with semantic routing support.
-///
-/// The registry stores tool embeddings for fast Top-K retrieval based on
-/// cosine similarity to the user query. Embeddings are computed once at
-/// startup and cached in memory.
+/// Registry for managing tools.
 pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
-    /// Cached embeddings: (tool_name, embedding_vector)
-    embeddings: Arc<OnceLock<ToolEmbeddings>>,
 }
 
 impl Clone for ToolRegistry {
-    /// Creates a shallow copy of the registry.
-    ///
-    /// The embeddings cache is shared via `Arc`. If the clone registers new tools,
-    /// it will create a new empty cache for itself (see `register()`), leaving the
-    /// original registry's cache intact.
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
-            embeddings: self.embeddings.clone(),
         }
     }
 }
@@ -66,7 +48,6 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             items: HashMap::new(),
-            embeddings: Arc::new(OnceLock::new()),
         }
     }
 
@@ -75,8 +56,6 @@ impl ToolRegistry {
         let name = tool.name().to_string();
         let tool = Arc::from(tool);
         debug!("Registering tool: {}", name);
-        // Invalidate cached embeddings when tools change
-        self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
             name,
             RegisteredTool {
@@ -94,8 +73,6 @@ impl ToolRegistry {
             "Registering tool with metadata: {} (category: {:?})",
             name, meta.category
         );
-        // Invalidate cached embeddings when tools change
-        self.embeddings = Arc::new(OnceLock::new());
         self.items.insert(
             name,
             RegisteredTool {
@@ -128,69 +105,6 @@ impl ToolRegistry {
                 entry.tool = Arc::new(updated);
             }
         }
-    }
-
-    /// Initialize embeddings for all registered tools.
-    ///
-    /// This should be called once after all tools are registered.
-    /// Uses the tool's description text to generate embeddings.
-    #[cfg(feature = "local-embedding")]
-    pub fn initialize_embeddings(&self, embedder: &TextEmbedder) {
-        if self.embeddings.get().is_some() {
-            debug!("Tool embeddings already initialized, skipping");
-            return;
-        }
-
-        let mut embeddings = Vec::with_capacity(self.items.len());
-        for (name, entry) in &self.items {
-            match embedder.embed(entry.tool.description()) {
-                Ok(vec) => {
-                    embeddings.push((name.clone(), vec));
-                    debug!("Generated embedding for tool: {}", name);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to embed tool '{}': {}", name, e);
-                }
-            }
-        }
-
-        if self.embeddings.set(embeddings).is_err() {
-            debug!("Tool embeddings were already set by another thread");
-        } else {
-            use tracing::info;
-
-            info!("Initialized embeddings for {} tools", self.items.len());
-        }
-    }
-
-    /// Get the top-K most relevant tools for a query.
-    ///
-    /// Uses cosine similarity between the query embedding and cached tool embeddings.
-    /// Returns tool definitions ready for LLM consumption.
-    pub fn get_top_k(&self, query_vec: &[f32], k: usize) -> Vec<ToolDefinition> {
-        let embeddings = match self.embeddings.get() {
-            Some(e) => e,
-            None => {
-                // Cannot determine relevance without embeddings.
-                // Return empty and let the caller decide on fallback.
-                debug!("Tool embeddings not initialized, returning empty");
-                return Vec::new();
-            }
-        };
-
-        let top_names = top_k_similar(query_vec, embeddings, k);
-        top_names
-            .into_iter()
-            .filter_map(|(name, _score)| {
-                self.items.get(name).map(|entry| {
-                    ToolDefinition::function(
-                        entry.tool.name(),
-                        entry.tool.description(),
-                        entry.tool.parameters(),
-                    )
-                })
-            })
-            .collect()
     }
 
     /// Get metadata for a tool

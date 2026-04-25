@@ -24,11 +24,6 @@ pub mod processor;
 pub mod query;
 pub mod search;
 
-// ── Merged from gasket-semantic ──
-#[cfg(feature = "local-embedding")]
-mod embedder;
-mod vector_math;
-
 use std::path::PathBuf;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -46,15 +41,6 @@ pub use query::{
     HistoryQuery, HistoryQueryBuilder, HistoryResult, QueryOrder, ResultMeta, SemanticQuery,
     TimeRange,
 };
-
-// ── Semantic re-exports (always available) ──
-pub use vector_math::{cosine_similarity, top_k_similar};
-
-// ── Semantic re-exports (feature-gated) ──
-#[cfg(feature = "local-embedding")]
-pub use embedder::{EmbeddingConfig, TextEmbedder, DEFAULT_CACHE_DIR, DEFAULT_MODEL};
-#[cfg(feature = "local-embedding")]
-pub use vector_math::{bytes_to_embedding, embedding_to_bytes};
 
 // Re-export sqlx types for consumers that need direct pool access
 pub use sqlx::sqlite::SqliteRow;

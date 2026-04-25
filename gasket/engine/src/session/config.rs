@@ -212,11 +212,6 @@ pub struct AgentConfig {
     pub session_idle_timeout_secs: u64,
     /// Prompt configuration for internal AI behaviors.
     pub prompts: PromptsConfig,
-    /// Embedding configuration for semantic search and memory indexing.
-    pub embedding_config: Option<crate::config::EmbeddingConfig>,
-    /// Number of top-K similar messages to recall via semantic search.
-    /// 0 = disabled.
-    pub history_recall_k: usize,
     /// Memory token budget for three-phase context loading.
     pub memory_budget: Option<gasket_storage::wiki::MemoryBudget>,
     /// Self-evolution configuration (auto-learning from conversations).
@@ -240,8 +235,6 @@ impl Default for AgentConfig {
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             prompts: PromptsConfig::default(),
-            embedding_config: None,
-            history_recall_k: 0,
             memory_budget: None,
             evolution: Some(EvolutionConfig::default()),
             wiki: None,

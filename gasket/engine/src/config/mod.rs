@@ -6,8 +6,8 @@ mod tools;
 use std::path::PathBuf;
 
 pub use app_config::{
-    config_path, load_config, AgentDefaults, AgentsConfig, Config, ConfigLoader, EmbeddingConfig,
-    ModelConfig, ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,
+    config_path, load_config, AgentDefaults, AgentsConfig, Config, ConfigLoader, ModelConfig,
+    ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,
 };
 pub use tools::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,

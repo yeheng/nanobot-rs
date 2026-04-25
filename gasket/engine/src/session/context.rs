@@ -29,15 +29,12 @@
 //! ```
 
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::AgentError;
 use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{Session, SessionEvent};
-
-#[cfg(feature = "local-embedding")]
-use gasket_storage::TextEmbedder;
 
 /// Agent context - using Enum instead of trait for zero runtime dispatch.
 ///
@@ -61,12 +58,8 @@ pub enum AgentContext {
 pub struct PersistentContext {
     /// Event store for persisting events
     pub event_store: Arc<EventStore>,
-    /// Session store for summaries, checkpoints, and embeddings
+    /// Session store for summaries and checkpoints
     pub session_store: Arc<gasket_storage::SessionStore>,
-    /// Optional text embedder for synchronous embedding on save.
-    /// When present, every saved event gets an embedding for semantic recall.
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
 }
 
 impl std::fmt::Debug for PersistentContext {
@@ -74,27 +67,12 @@ impl std::fmt::Debug for PersistentContext {
         f.debug_struct("PersistentContext")
             .field("event_store", &"EventStore { .. }")
             .field("session_store", &"SessionStore { .. }")
-            .field("embedder", &"Option<TextEmbedder> { .. }")
             .finish()
     }
 }
 
 impl AgentContext {
     /// Create a persistent context with event store.
-    ///
-    /// This is the main constructor for main agents that need persistence.
-    ///
-    /// # Arguments
-    ///
-    /// * `event_store` - Event store for persisting session events
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let event_store = Arc::new(EventStore::new(pool));
-    /// let context = AgentContext::persistent(event_store);
-    /// assert!(context.is_persistent());
-    /// ```
     pub fn persistent(
         event_store: Arc<EventStore>,
         session_store: Arc<gasket_storage::SessionStore>,
@@ -102,28 +80,10 @@ impl AgentContext {
         Self::Persistent(PersistentContext {
             event_store,
             session_store,
-            #[cfg(feature = "local-embedding")]
-            embedder: None,
-        })
-    }
-
-    /// Create a persistent context with embedder for semantic indexing.
-    #[cfg(feature = "local-embedding")]
-    pub fn persistent_with_embedder(
-        event_store: Arc<EventStore>,
-        session_store: Arc<gasket_storage::SessionStore>,
-        embedder: Arc<gasket_storage::TextEmbedder>,
-    ) -> Self {
-        Self::Persistent(PersistentContext {
-            event_store,
-            session_store,
-            embedder: Some(embedder),
         })
     }
 
     /// Check if this context has persistence enabled.
-    ///
-    /// Returns `true` for `Persistent` variant, `false` for `Stateless`.
     pub fn is_persistent(&self) -> bool {
         matches!(self, Self::Persistent(_))
     }
@@ -176,9 +136,6 @@ impl AgentContext {
     }
 
     /// Load events after a sequence watermark for a session.
-    ///
-    /// Returns only events with `sequence > watermark`, i.e., events not yet
-    /// covered by the summary. For `Stateless` context, returns empty vector.
     pub async fn get_events_after_watermark(
         &self,
         session_key: &SessionKey,
@@ -205,9 +162,6 @@ impl AgentContext {
     }
 
     /// Load a session for the given key.
-    ///
-    /// For `Persistent` context, loads events from EventStore and reconstructs session state.
-    /// For `Stateless` context, creates a new in-memory session.
     pub async fn load_session(&self, key: &SessionKey) -> Result<Session, AgentError> {
         match self {
             Self::Persistent(ctx) => {
@@ -232,14 +186,9 @@ impl AgentContext {
     }
 
     /// Save an event to the session.
-    ///
-    /// For `Persistent` context, persists the event to the EventStore and
-    ///同步生成 embedding for semantic recall (if embedder is configured).
-    /// For `Stateless` context, this is a no-op.
     pub async fn save_event(&self, event: SessionEvent) -> Result<(), AgentError> {
         match self {
             Self::Persistent(ctx) => {
-                // Save event to EventStore
                 ctx.event_store
                     .append_event(&event)
                     .await
@@ -251,121 +200,13 @@ impl AgentContext {
                     event.session_key
                 );
 
-                // Synchronously generate and save embedding (if embedder is configured)
-                #[cfg(feature = "local-embedding")]
-                if let Some(ref embedder) = ctx.embedder {
-                    let event_id = event.id.to_string();
-                    let session_key = event.session_key.clone();
-                    match embedder.embed(&event.content) {
-                        Ok(embedding) => {
-                            if let Err(e) = ctx
-                                .session_store
-                                .save_embedding(&event_id, &session_key, &embedding)
-                                .await
-                            {
-                                warn!("Failed to save embedding for event {}: {}", event_id, e);
-                            } else {
-                                debug!(
-                                    "Saved embedding for event {} in session {}",
-                                    event_id, session_key
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to embed event {}: {}", event_id, e);
-                        }
-                    }
-                }
-
                 Ok(())
             }
             Self::Stateless => Ok(()),
         }
     }
 
-    /// Recall relevant historical messages using semantic embedding similarity.
-    ///
-    /// Returns the top-K most relevant messages based on cosine similarity
-    /// between the query embedding and stored session embeddings.
-    /// Falls back to recency scoring if no embeddings are available.
-    /// For `Stateless` context, returns an empty vector.
-    pub async fn recall_history(
-        &self,
-        key: &SessionKey,
-        query_embedding: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<String>, AgentError> {
-        match self {
-            Self::Persistent(ctx) => {
-                // Fallback: if no embedder or empty query, return empty
-                if query_embedding.is_empty() {
-                    return Ok(Vec::new());
-                }
-
-                let key_str = key.to_string();
-
-                // Load pre-computed embeddings for this session
-                let embeddings = match ctx.session_store.load_embeddings(&key_str).await {
-                    Ok(embs) => embs,
-                    Err(e) => {
-                        warn!("Failed to load session embeddings for recall: {}", e);
-                        return Ok(Vec::new());
-                    }
-                };
-
-                if embeddings.is_empty() {
-                    debug!(
-                        "No embeddings found for session {}, returning empty recall",
-                        key
-                    );
-                    return Ok(Vec::new());
-                }
-
-                // Prepare candidates for top-k search
-                let candidates: Vec<(String, Vec<f32>)> = embeddings
-                    .iter()
-                    .map(|(_, content, emb)| (content.clone(), emb.clone()))
-                    .collect();
-
-                // Find top-K similar messages using cosine similarity
-                let top_results =
-                    gasket_storage::top_k_similar(query_embedding, &candidates, top_k);
-
-                if top_results.is_empty() {
-                    debug!("No similar messages found for session {}", key);
-                    return Ok(Vec::new());
-                }
-
-                let results: Vec<String> = top_results
-                    .into_iter()
-                    .map(|(content, _score)| content.to_string())
-                    .collect();
-                debug!(
-                    "Recalled {} history items for {} (top_k={}, candidates={})",
-                    results.len(),
-                    key,
-                    top_k,
-                    candidates.len()
-                );
-                Ok(results)
-            }
-            Self::Stateless => Ok(Vec::new()),
-        }
-    }
-
     /// Clear session data from the event store.
-    ///
-    /// For `Persistent` context, clears all events and session data from the EventStore,
-    /// and also removes the evolution watermark from SqliteStore to keep machine state consistent.
-    /// For `Stateless` context, this is a no-op.
-    ///
-    /// # Arguments
-    ///
-    /// * `session_key` - The session key to clear
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session cannot be cleared from the database.
     pub async fn clear_session(&self, session_key: &SessionKey) -> Result<(), AgentError> {
         match self {
             Self::Persistent(ctx) => {
@@ -470,10 +311,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ============================================================
-    // Integration tests with real EventStore
-    // ============================================================
-
     #[tokio::test]
     async fn test_persistent_context_creation() {
         let pool = setup_test_db().await;
@@ -511,7 +348,6 @@ mod tests {
     async fn test_stateless_context_clear_session() {
         let context = AgentContext::Stateless;
 
-        // Clear session should be a no-op for stateless context
         let result = context
             .clear_session(&SessionKey::parse("test:session").unwrap())
             .await;
