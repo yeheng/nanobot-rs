@@ -11,12 +11,12 @@ use tracing::{info, Level};
 use gasket_engine::channels::ChatEvent;
 use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
-use gasket_engine::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::ModelResolver;
+use gasket_engine::SqliteStore;
 
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
@@ -68,7 +68,11 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     // Build tool registry (CLI mode: no bus/cron)
-    let sqlite_store = Arc::new(SqliteStore::new().await.expect("Failed to open SqliteStore"));
+    let sqlite_store = Arc::new(
+        SqliteStore::new()
+            .await
+            .expect("Failed to open SqliteStore"),
+    );
     let pool = sqlite_store.pool();
 
     // Initialize wiki stores if wiki config is enabled or wiki directory exists

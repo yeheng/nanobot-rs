@@ -11,8 +11,6 @@ use gasket_engine::bus_adapter::EngineHandler;
 
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::cron::CronService;
-use gasket_engine::EventStore;
-use gasket_engine::SqliteStore;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentSession, ContextCompactor};
 use gasket_engine::subagents::SimpleSpawner;
@@ -20,6 +18,8 @@ use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::tools::ContextTool;
 use gasket_engine::tools::{build_tool_registry, CronTool, Tool, ToolContext, ToolRegistryConfig};
 use gasket_engine::tools::{MessageTool, ToolMetadata, ToolRegistry};
+use gasket_engine::EventStore;
+use gasket_engine::SqliteStore;
 use gasket_engine::SubagentSpawner;
 
 use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
@@ -50,15 +50,20 @@ pub async fn cmd_gateway() -> Result<()> {
 
     let workspace = resolve_workspace()?;
     let broker = Arc::new(MemoryBroker::new(1024, 256));
-    let sqlite_store = Arc::new(SqliteStore::new().await.expect("Failed to open SqliteStore"));
+    let sqlite_store = Arc::new(
+        SqliteStore::new()
+            .await
+            .expect("Failed to open SqliteStore"),
+    );
     let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace, &broker).await;
     let cron_sqlite_store = Arc::new(
         SqliteStore::new()
             .await
             .expect("Failed to open SQLite store for cron persistence"),
     );
-    let cron_service =
-        Arc::new(CronService::new(workspace.clone(), Arc::new(cron_sqlite_store.cron_store())).await);
+    let cron_service = Arc::new(
+        CronService::new(workspace.clone(), Arc::new(cron_sqlite_store.cron_store())).await,
+    );
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
         &config,

@@ -277,7 +277,9 @@ impl AgentSession {
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let sqlite_store = Arc::new(
-            SqliteStore::new().await.expect("Failed to open SqliteStore"),
+            SqliteStore::new()
+                .await
+                .expect("Failed to open SqliteStore"),
         );
         Self::with_sqlite_store(provider, workspace, config, tools, sqlite_store).await
     }

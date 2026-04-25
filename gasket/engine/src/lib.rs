@@ -35,8 +35,7 @@ pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{
-    AgentConfig, AgentContext, AgentResponse, ContextCompactor, PersistentContext,
-    WikiHealth,
+    AgentConfig, AgentContext, AgentResponse, ContextCompactor, PersistentContext, WikiHealth,
 };
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;

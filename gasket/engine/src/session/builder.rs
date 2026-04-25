@@ -153,8 +153,7 @@ impl SessionBuilder {
         }
 
         // ── 7. Wiki components (optional) ──────────────────────────
-        let wiki_components =
-            build_wiki_components(&self.sqlite_store, &self.config).await;
+        let wiki_components = build_wiki_components(&self.sqlite_store, &self.config).await;
 
         // ── 8. Hook registry ─────────────────────────────────────────
         #[cfg(feature = "local-embedding")]
