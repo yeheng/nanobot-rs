@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::memory::{MaintenanceStore, SessionStore};
+use crate::{MaintenanceStore, SessionStore};
 use crate::wiki::{PageIndex, PageStore};
 use crate::SubagentSpawner;
 
@@ -384,6 +384,5 @@ impl ToolProvider for SystemToolProvider {
                 true
             );
         }
-
     }
 }

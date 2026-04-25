@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::memory::SqliteStore;
+use crate::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
