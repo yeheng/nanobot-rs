@@ -58,6 +58,11 @@ pub use gasket_storage::{
     ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
 
+// ── Storage (top-level re-exports) ─────────────────────────
+pub use gasket_storage::{
+    CronStore, EventStore, KvStore, MaintenanceStore, SessionStore, SqliteStore, StoreError,
+};
+
 // ── Indexing (from session/history) ────────────────────────
 pub use session::history::indexing::{IndexingQueue, IndexingService, Priority, QueueError};
 
