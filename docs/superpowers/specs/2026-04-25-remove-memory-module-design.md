@@ -16,8 +16,9 @@ Remove the entire memory abstraction layer. Unify on wiki tools for knowledge ma
 
 ## Decisions
 
-1. **No migration of mapping logic** — `memorize` tool's `scenario → path prefix` mapping is not transferred to `wiki_write`. Agents will use wiki tools directly.
+1. **No migration of mapping logic** — `memorize` tool's `scenario → path prefix` mapping is not transferred to `wiki_write`. Agents will use wiki tools directly via the new wiki SKILL.md.
 2. **Storage types re-exported at engine top level** — `SqliteStore`, `SessionStore`, etc. become `gasket_engine::SqliteStore` instead of `gasket_engine::memory::SqliteStore`.
+3. **Replace memory SKILL.md with wiki SKILL.md** — the `workspace/skills/memory/` directory is renamed to `workspace/skills/wiki/` and the content is rewritten to reference wiki tools.
 
 ## Changes
 
@@ -29,9 +30,31 @@ Remove the entire memory abstraction layer. Unify on wiki tools for knowledge ma
 | `engine/src/tools/memory_search.rs` | Superseded by `wiki_search` |
 | `engine/src/tools/memory_refresh.rs` | Superseded by `wiki_refresh` |
 | `engine/src/tools/memory_decay.rs` | Superseded by `wiki_decay` |
-| `workspace/skills/memory/SKILL.md` | No longer applicable |
 
-### 2. Remove `MemoryStore`
+### 2. Replace memory SKILL.md with wiki SKILL.md
+
+Rename `workspace/skills/memory/` → `workspace/skills/wiki/`.
+
+Rewrite `workspace/skills/wiki/SKILL.md` to reference wiki tools instead of memory tools:
+
+```yaml
+---
+name: wiki
+description: Operational guide for gasket's wiki knowledge system
+always: false
+---
+```
+
+The new SKILL.md covers:
+- How to write pages (`wiki_write`)
+- How to search (`wiki_search`)
+- How to read pages (`wiki_read`)
+- How to refresh/reindex (`wiki_refresh`)
+- Path conventions: `topics/<slug>`, `entities/<slug>`, `sources/<slug>`, `sop/<slug>`
+- Page types: topic, entity, source, sop
+- Best practices: search before write, descriptive paths, use tags
+
+### 3. Remove `MemoryStore`
 
 Delete `engine/src/session/store.rs` entirely.
 
@@ -49,7 +72,7 @@ Update all call sites to use `SqliteStore` directly:
 - `.sqlite_store()` → removed (use the `SqliteStore` directly)
 - `.pool()` → `SqliteStore::pool()` (already exists)
 
-### 3. Remove `pub mod memory` facade
+### 4. Remove `pub mod memory` facade
 
 In `engine/src/lib.rs`:
 
@@ -79,7 +102,7 @@ Update import paths in downstream code:
 - `cli/src/commands/gateway.rs`: same
 - `cli/src/commands/tool.rs`: `use gasket_engine::session::MemoryStore` → `use gasket_engine::SqliteStore`
 
-### 4. Clean up tool registration
+### 5. Clean up tool registration
 
 In `engine/src/tools/mod.rs`:
 - Remove `mod memorize;`, `mod memory_decay;`, `mod memory_refresh;`, `mod memory_search;`
@@ -93,11 +116,11 @@ In `engine/src/tools/provider.rs`:
 In `engine/src/lib.rs` top-level tools re-export:
 - Remove `MemorySearchTool` from `pub use tools::{...}`
 
-### 5. Update `session/mod.rs` exports
+### 6. Update `session/mod.rs` exports
 
 Remove `pub use store::MemoryStore;` and the `mod store;` declaration (or remove the entire `store.rs` file).
 
-### 6. Remove wiki backward-compat comment in `lib.rs`
+### 7. Remove wiki backward-compat comment in `lib.rs`
 
 Remove the comment `// Core storage types (memory module name kept for backward compatibility)` — no longer applicable.
 
@@ -115,3 +138,5 @@ Remove the comment `// Core storage types (memory module name kept for backward 
 3. `grep -r "memory" engine/src/tools/` — only references to in-memory SQLite, not the memory module
 4. `grep -r "MemoryStore" gasket/` — zero hits
 5. `grep -r "crate::memory" gasket/` — zero hits
+6. `ls workspace/skills/wiki/SKILL.md` — exists with wiki tool references
+7. `ls workspace/skills/memory/` — does not exist
