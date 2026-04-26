@@ -46,7 +46,10 @@ impl WikiIndexingService {
                         break;
                     }
                     Err(BrokerError::Lagged(n)) => {
-                        warn!("WikiIndexingService: lagged {} messages, doing full rebuild", n);
+                        warn!(
+                            "WikiIndexingService: lagged {} messages, doing full rebuild",
+                            n
+                        );
                         if let Err(e) = self.page_index.rebuild(&self.page_store).await {
                             warn!("WikiIndexingService: rebuild failed: {}", e);
                         }

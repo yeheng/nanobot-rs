@@ -18,9 +18,25 @@ use crate::session::context::AgentContext;
 use crate::session::finalizer::ResponseFinalizer;
 use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
 use crate::wiki::{PageIndex, PageStore, WikiLog};
-use gasket_storage::wiki::TantivyPageIndex;
 use gasket_providers::LlmProvider;
+use gasket_storage::wiki::TantivyPageIndex;
 use gasket_storage::{EventStore, SessionStore};
+
+/// Wiki preparation prompt appended to system prompt when wiki is enabled.
+///
+/// Instructs the agent to proactively query wiki via tools before responding,
+/// replacing the old automatic context injection mechanism.
+const WIKI_PREPARATION_PROMPT: &str = "\
+## Wiki Knowledge System
+
+You have access to a personal wiki knowledge base via these tools:
+- `wiki_search(query)`: Search wiki pages by keyword
+- `wiki_read(path)`: Read a specific wiki page by path
+- `wiki_write(path, title, content)`: Create or update a wiki page
+
+**Preparation Protocol**: Before responding to any user query, always use `wiki_search` \
+to check if relevant knowledge already exists in the wiki. This ensures your responses \
+build upon accumulated knowledge rather than starting from scratch.";
 
 /// Builder for constructing an `AgentSession`.
 ///
@@ -120,6 +136,12 @@ impl SessionBuilder {
         // ── 7. Wiki components (optional) ──────────────────────────
         let wiki_components = build_wiki_components(&self.sqlite_store, &self.config).await;
 
+        // Append wiki preparation instructions when wiki is enabled.
+        if wiki_components.is_some() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(WIKI_PREPARATION_PROMPT);
+        }
+
         // ── 8. Hook registry ─────────────────────────────────────────
         let hooks_builder = crate::session::history::builder::build_default_hooks_builder();
 
@@ -127,7 +149,12 @@ impl SessionBuilder {
 
         let pending_done = tokio_util::task::TaskTracker::new();
 
-        let finalizer = ResponseFinalizer::new(hooks.clone(), compactor.clone(), None, self.config.max_tokens);
+        let finalizer = ResponseFinalizer::new(
+            hooks.clone(),
+            compactor.clone(),
+            None,
+            self.config.max_tokens,
+        );
 
         Ok(AgentSession {
             runtime_ctx,

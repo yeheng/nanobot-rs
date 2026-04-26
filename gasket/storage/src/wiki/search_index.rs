@@ -62,8 +62,12 @@ pub trait PageSearchIndex: Send + Sync {
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
 
     /// Search with page type filter.
-    async fn search_by_type(&self, query: &str, page_type: &str, limit: usize)
-        -> Result<Vec<SearchHit>>;
+    async fn search_by_type(
+        &self,
+        query: &str,
+        page_type: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>>;
 
     /// Search by tags (exact match, OR semantics).
     async fn search_by_tags(&self, tags: &[String], limit: usize) -> Result<Vec<SearchHit>>;
@@ -422,7 +426,12 @@ where
         tokio::task::spawn_blocking(f),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("Tantivy operation timed out after {}s", TANTIVY_TIMEOUT_SECS))?
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Tantivy operation timed out after {}s",
+            TANTIVY_TIMEOUT_SECS
+        )
+    })?
     .map_err(|e| anyhow::anyhow!("Tantivy spawn_blocking panicked: {}", e))?
 }
 
@@ -532,13 +541,23 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let idx = TantivyPageIndex::open(dir.path().to_path_buf()).unwrap();
 
-        let mut page = make_page("entities/gasket", "Gasket Project", "A Rust agent framework.", vec![]);
+        let mut page = make_page(
+            "entities/gasket",
+            "Gasket Project",
+            "A Rust agent framework.",
+            vec![],
+        );
         page.page_type = "entity".to_string();
         idx.upsert(&page).await.unwrap();
 
-        idx.upsert(&make_page("topics/rust", "Rust Topic", "About Rust programming.", vec![]))
-            .await
-            .unwrap();
+        idx.upsert(&make_page(
+            "topics/rust",
+            "Rust Topic",
+            "About Rust programming.",
+            vec![],
+        ))
+        .await
+        .unwrap();
 
         let entity_hits = idx.search_by_type("rust", "entity", 10).await.unwrap();
         assert_eq!(entity_hits.len(), 1);
@@ -550,13 +569,23 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let idx = TantivyPageIndex::open(dir.path().to_path_buf()).unwrap();
 
-        idx.upsert(&make_page("topics/rust", "Rust", "Rust language.", vec!["rust", "systems", "async"]))
-            .await
-            .unwrap();
+        idx.upsert(&make_page(
+            "topics/rust",
+            "Rust",
+            "Rust language.",
+            vec!["rust", "systems", "async"],
+        ))
+        .await
+        .unwrap();
 
-        idx.upsert(&make_page("topics/python", "Python", "Python language.", vec!["python", "scripting"]))
-            .await
-            .unwrap();
+        idx.upsert(&make_page(
+            "topics/python",
+            "Python",
+            "Python language.",
+            vec!["python", "scripting"],
+        ))
+        .await
+        .unwrap();
 
         let hits = idx
             .search_by_tags(&["rust".to_string(), "systems".to_string()], 10)
@@ -585,9 +614,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let idx = TantivyPageIndex::open(dir.path().to_path_buf()).unwrap();
 
-        idx.upsert(&make_page("topics/rust", "Rust Old", "Old content.", vec![]))
-            .await
-            .unwrap();
+        idx.upsert(&make_page(
+            "topics/rust",
+            "Rust Old",
+            "Old content.",
+            vec![],
+        ))
+        .await
+        .unwrap();
         idx.upsert(&make_page(
             "topics/rust",
             "Rust New",

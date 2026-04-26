@@ -183,7 +183,11 @@ pub(crate) fn calculate_cost(
 }
 
 /// Log token usage statistics.
-pub(crate) fn log_token_stats(usage: &Option<gasket_types::TokenUsage>, cost: f64, max_tokens: u32) {
+pub(crate) fn log_token_stats(
+    usage: &Option<gasket_types::TokenUsage>,
+    cost: f64,
+    max_tokens: u32,
+) {
     if let Some(u) = usage {
         let remaining = max_tokens.saturating_sub(u.total_tokens as u32);
         info!(

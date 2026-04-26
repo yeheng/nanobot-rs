@@ -18,6 +18,8 @@ use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::ModelResolver;
 use gasket_engine::SqliteStore;
 
+use gasket_engine::broker::MemoryBroker;
+
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
 use crate::provider::setup_vault;
@@ -75,13 +77,19 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     );
     let pool = sqlite_store.pool();
 
+    // Broker for wiki indexing events (auto-updates Tantivy on writes)
+    let broker = Arc::new(MemoryBroker::new(256, 64));
+
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) =
         if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
             use gasket_engine::wiki::{PageIndex, PageStore};
             use gasket_storage::wiki::TantivyPageIndex;
-            let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
+            let ps = Arc::new(
+                PageStore::new(pool.clone(), wiki_root.clone())
+                    .with_broker(broker.clone()),
+            );
             if let Err(e) = ps.init_dirs().await {
                 tracing::warn!("Failed to init wiki dirs: {}", e);
             }
@@ -100,6 +108,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         } else {
             (None, None)
         };
+
+    // Spawn wiki indexing service for auto Tantivy updates
+    if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
+        let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
+        let _ = svc.spawn(broker.clone());
+    }
 
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));

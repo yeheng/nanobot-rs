@@ -10,8 +10,6 @@
 //!
 //! The resulting `ChatRequest` is then passed to the executor for LLM execution.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use gasket_providers::ChatMessage;
@@ -23,12 +21,6 @@ use crate::session::context::AgentContext;
 use crate::vault::{VaultInjector, VaultStore};
 use gasket_storage::process_history;
 use gasket_storage::HistoryConfig;
-
-/// Type alias for memory loader futures.
-pub type MemoryLoaderFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
-
-/// Memory loader function type.
-pub type MemoryLoader = Arc<dyn Fn(&str) -> MemoryLoaderFuture + Send + Sync>;
 
 /// Outcome of the context building pipeline.
 ///
@@ -65,8 +57,6 @@ pub struct ContextBuilder {
     skills_context: Option<String>,
     hooks: Arc<HookRegistry>,
     history_config: HistoryConfig,
-    /// Optional memory loader function
-    memory_loader: Option<MemoryLoader>,
 }
 
 impl ContextBuilder {
@@ -84,17 +74,7 @@ impl ContextBuilder {
             skills_context,
             hooks,
             history_config,
-            memory_loader: None,
         }
-    }
-
-    /// Set the memory loader for injecting long-term memory context.
-    pub fn with_memory_loader<F>(mut self, loader: F) -> Self
-    where
-        F: Fn(&str) -> MemoryLoaderFuture + Send + Sync + 'static,
-    {
-        self.memory_loader = Some(Arc::new(loader));
-        self
     }
 
     /// Build the complete chat request pipeline.
@@ -190,16 +170,7 @@ impl ContextBuilder {
             system_prompts.push(skills.clone());
         }
 
-        // ── 5.5. Long-term memory loading (injected as User Message) ─────
-        // Memory content varies per turn (on-demand semantic search depends on
-        // user input). Injecting it as User Message preserves Prompt Cache on
-        // the static System Prompt, reducing API costs by 90%+ on long sessions.
-        // See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-        let memory_context = if let Some(ref loader) = self.memory_loader {
-            loader(&content).await
-        } else {
-            None
-        };
+        // ── 5.5. Memory loading removed — agent queries wiki via tools ─────
 
         let mut messages = Self::assemble_prompt(
             history_snapshot,
@@ -210,7 +181,6 @@ impl ContextBuilder {
             } else {
                 Some(existing_summary.as_str())
             },
-            memory_context.as_deref(),
         );
 
         // ── 6. AfterHistory + BeforeLLM hooks ─────────────────────
@@ -241,20 +211,11 @@ impl ContextBuilder {
     }
 
     /// Pure, synchronous assembly of the LLM prompt sequence.
-    ///
-    /// # Architecture Note: User Message Injection
-    ///
-    /// `memory_context` is injected as a **User Message** rather than appended
-    /// to the System Prompt. This preserves Prompt Cache on Anthropic models
-    /// (and similar caching mechanisms on other providers), because the System
-    /// Prompt remains static across turns while the dynamic memory content
-    /// varies per request. For long sessions, this reduces API costs by 90%+.
     fn assemble_prompt(
         processed_history: Vec<SessionEvent>,
         current_message: &str,
         system_prompts: &[String],
         summary: Option<&str>,
-        memory_context: Option<&str>,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
@@ -294,19 +255,7 @@ impl ContextBuilder {
             }
         }
 
-        // 4. Long-term memory as User Message (preserves System Prompt cache)
-        // The [SYSTEM] prefix elevates authority without breaking the cache.
-        if let Some(memory_text) = memory_context {
-            if !memory_text.is_empty() {
-                messages.push(ChatMessage::user(format!(
-                    "[SYSTEM: Relevant long-term memories loaded for this turn. \
-                     Consider them in your response.]\n\n{}",
-                    memory_text
-                )));
-            }
-        }
-
-        // 5. Current message
+        // 4. Current message
         messages.push(ChatMessage::user(current_message));
 
         messages

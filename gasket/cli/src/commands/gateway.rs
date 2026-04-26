@@ -87,6 +87,11 @@ pub async fn cmd_gateway() -> Result<()> {
     setup_http_server(&providers, &agent, &mut tasks).await;
     setup_broker_pipeline(&broker, &providers, &agent, &mut tasks);
     start_heartbeat_service(&broker, &workspace, &mut tasks);
+    // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
+    if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
+        let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
+        tasks.push(svc.spawn(broker.clone()));
+    }
     cron_service.ensure_system_cron_jobs().await;
     start_cron_checker(&cron_service, &broker, tools, subagent_spawner, &mut tasks);
     tasks.extend(providers.spawn_all(&inbound_sender));

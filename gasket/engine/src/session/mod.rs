@@ -623,59 +623,6 @@ impl AgentSession {
             history_config,
         );
 
-        // Wire wiki-based memory loader if wiki components are available.
-        let loader = self.wiki_components.as_ref().map(|wc| {
-            let page_index = wc.page_index.clone();
-            let page_store = wc.page_store.clone();
-            Arc::new(move |user_input: &str| {
-                let query = user_input.to_string();
-                let index = page_index.clone();
-                let store = page_store.clone();
-                let fut: history::builder::MemoryLoaderFuture = Box::pin(async move {
-                    let hits = index
-                        .search_with_store(&query, 3, Some(&store))
-                        .await
-                        .ok()?;
-                    if hits.is_empty() {
-                        return None;
-                    }
-                    let mut parts =
-                        vec!["[Relevant long-term memories loaded for this turn]".to_string()];
-                    for hit in hits {
-                        if let Ok(page) = store.read(&hit.path).await {
-                            let preview = if page.content.chars().count() > 800 {
-                                page.content.chars().take(800).collect::<String>() + "..."
-                            } else {
-                                page.content.clone()
-                            };
-                            parts.push(format!(
-                                "## {} (path: {} | tags: [{}])\n{}",
-                                page.title,
-                                page.path,
-                                page.tags.join(", "),
-                                preview
-                            ));
-                        }
-                    }
-                    if parts.len() > 1 {
-                        Some(parts.join("\n\n"))
-                    } else {
-                        None
-                    }
-                });
-                fut
-            }) as history::builder::MemoryLoader
-        });
-        let builder = if let Some(loader) = loader {
-            builder.with_memory_loader(move |input: &str| {
-                let loader = loader.clone();
-                let input = input.to_string();
-                Box::pin(async move { loader(&input).await })
-            })
-        } else {
-            builder
-        };
-
         builder.build(content, session_key).await
     }
 }
