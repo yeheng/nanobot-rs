@@ -137,8 +137,7 @@ impl HostExecutor {
             let mut limit_flags = 0u32;
 
             if limits.max_memory_mb > 0 {
-                info.ProcessMemoryLimit =
-                    (u64::from(limits.max_memory_mb) * 1024 * 1024) as usize;
+                info.ProcessMemoryLimit = (u64::from(limits.max_memory_mb) * 1024 * 1024) as usize;
                 limit_flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
             }
 

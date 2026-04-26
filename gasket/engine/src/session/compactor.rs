@@ -1001,10 +1001,7 @@ mod tests {
     ) {
         use sqlx::sqlite::SqlitePoolOptions;
 
-        let pool = SqlitePoolOptions::new()
-            .connect(":memory:")
-            .await
-            .unwrap();
+        let pool = SqlitePoolOptions::new().connect(":memory:").await.unwrap();
 
         sqlx::query(
             r#"
@@ -1128,10 +1125,7 @@ mod tests {
             &["msg0", "msg1", "msg2", "msg3", "msg4", "msg5"],
         )
         .await;
-        assert_eq!(
-            event_store.get_max_sequence(&session_key).await.unwrap(),
-            5
-        );
+        assert_eq!(event_store.get_max_sequence(&session_key).await.unwrap(), 5);
 
         // Phase 2: Successful compaction → watermark = 5
         run_compaction(
@@ -1146,7 +1140,11 @@ mod tests {
         .await
         .expect("first compaction should succeed");
 
-        let (_, wm) = session_store.load_summary(&session_key).await.unwrap().unwrap();
+        let (_, wm) = session_store
+            .load_summary(&session_key)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(wm, 5, "watermark should be 5 after first compaction");
 
         // GC should have removed old events
@@ -1163,10 +1161,7 @@ mod tests {
             &["msg6", "msg7", "msg8", "msg9"],
         )
         .await;
-        assert_eq!(
-            event_store.get_max_sequence(&session_key).await.unwrap(),
-            9
-        );
+        assert_eq!(event_store.get_max_sequence(&session_key).await.unwrap(), 9);
 
         // Verify new events are readable from old watermark
         let uncompacted = event_store
