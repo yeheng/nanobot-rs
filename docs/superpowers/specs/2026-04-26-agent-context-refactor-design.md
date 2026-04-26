@@ -15,7 +15,13 @@
 
 ## Decision
 
-Eliminate `AgentContext` entirely. Storage I/O moves into self-contained `PipelineHook` implementations that own their `Arc<EventStore>` / `Arc<SessionStore>` dependencies. `AgentSession` no longer holds any context struct.
+Eliminate `AgentContext` entirely. Storage references move to the components that actually need them:
+- **Preprocess (history loading)**: `ContextBuilder` holds `Arc<EventStore>` + `Arc<SessionStore>` directly
+- **Postprocess (event persistence)**: `ResponseFinalizer` holds `Arc<EventStore>` directly
+- **Checkpoint**: `AgentSession` holds `Option<Arc<EventStore>>` for callback construction
+- **Wiki**: Tools capture their own storage references at registration
+
+Core infrastructure (history loading, event persistence, compaction) stays as direct method calls — not hooks — because ordering is critical and these behaviors are not pluggable.
 
 ## Design
 
@@ -29,58 +35,60 @@ Remove from `session/context.rs`:
 
 Remove re-exports from `session/mod.rs` and `lib.rs`.
 
-### 2. New Hooks
+### 2. ContextBuilder: Direct Store References
 
-#### 2.1 `HistoryLoadHook` (`hooks/history.rs`, new file)
-
-Runs at `HookPoint::AfterHistory`. Replaces steps 2-4 in current `ContextBuilder::build()`:
-
-- Load summary + watermark from `SessionStore`
-- Save user event to `EventStore`
-- Load events after watermark, trim by token budget
-- Inject history into `ctx.messages`
-
-Owns: `Arc<EventStore>`, `Arc<SessionStore>`, `HistoryConfig`
+`ContextBuilder` replaces `context: AgentContext` with direct store fields. History loading stays inline in `build()` — not as a hook — because it must complete before `AfterHistory` hooks execute. Moving it to a hook would create ordering dependencies with other `AfterHistory` hooks.
 
 ```rust
-pub struct HistoryLoadHook {
+pub struct ContextBuilder {
     event_store: Arc<EventStore>,
     session_store: Arc<SessionStore>,
-    config: HistoryConfig,
-}
-
-impl PipelineHook for HistoryLoadHook {
-    fn name(&self) -> &str { "history_loader" }
-    fn point(&self) -> HookPoint { HookPoint::AfterHistory }
+    system_prompt: String,
+    skills_context: Option<String>,
+    hooks: Arc<HookRegistry>,
+    history_config: HistoryConfig,
 }
 ```
 
-#### 2.2 `PersistHook` (`hooks/persist.rs`, new file)
+`build()` now calls `self.event_store.*` and `self.session_store.*` directly instead of `self.context.*`:
+- `self.session_store.load_summary(session_key)` replaces `self.context.load_summary_with_watermark(session_key)`
+- `self.event_store.append_event(&user_event)` replaces `self.context.save_event(user_event)`
+- `self.event_store.get_events_after_sequence(...)` replaces `self.context.get_events_after_watermark(...)`
 
-Runs at `HookPoint::AfterResponse` (parallel strategy). Replaces `save_assistant_event()` in `ResponseFinalizer`:
+The checkpoint loading logic (merging latest checkpoint into summary) moves from `AgentContext::load_summary_with_watermark()` into a private helper in `ContextBuilder`.
 
-- Construct `SessionEvent` from response content
-- Save to `EventStore`
+### 3. ResponseFinalizer: Direct Store Reference
 
-Owns: `Arc<EventStore>`
+`ResponseFinalizer` replaces `context: &AgentContext` with `event_store: Arc<EventStore>`:
 
 ```rust
-pub struct PersistHook {
+pub struct ResponseFinalizer {
+    hooks: Arc<HookRegistry>,
     event_store: Arc<EventStore>,
-}
-
-impl PipelineHook for PersistHook {
-    fn name(&self) -> &str { "persist" }
-    fn point(&self) -> HookPoint { HookPoint::AfterResponse }
+    compactor: Option<Arc<ContextCompactor>>,
+    pricing: Option<ModelPricing>,
+    max_tokens: u32,
 }
 ```
 
-### 3. Checkpoint Mechanism
+`finalize()` signature changes:
+
+```rust
+// Before:
+pub(crate) async fn finalize(&self, result: ExecutionResult, ctx: &FinalizeContext, context: &AgentContext, model: &str) -> AgentResponse
+
+// After:
+pub(crate) async fn finalize(&self, result: ExecutionResult, ctx: &FinalizeContext, model: &str) -> AgentResponse
+```
+
+`save_assistant_event()` and `trigger_compaction()` remain as direct calls inside `finalize()` — event persistence and compaction are core infrastructure, not pluggable behaviors. They use `self.event_store` and `self.compactor` directly.
+
+### 4. Checkpoint Mechanism
 
 `SessionCheckpointCallback` remains a kernel callback (not a `PipelineHook`) — it runs inside the kernel execution loop, not at a pipeline stage.
 
 Changes:
-- `AgentSession` gains `event_store: Option<Arc<EventStore>>` field, used solely for constructing the callback
+- `AgentSession` gains `event_store: Option<Arc<EventStore>>` field
 - `preprocess()` constructs `SessionCheckpointCallback` from `self.event_store` directly — no `AgentContext` destructure
 
 ```rust
@@ -93,34 +101,7 @@ if let (Some(ref compactor), Some(ref store)) = (&self.compactor, &self.event_st
 }
 ```
 
-### 4. ContextBuilder Simplification
-
-`session/history/builder.rs`:
-
-- Remove `context: AgentContext` field
-- `build()` no longer calls `self.context.*` methods
-- Retains: BeforeRequest hook execution, system prompt assembly, AfterHistory + BeforeLLM hook dispatch
-- HistoryLoadHook handles all storage I/O during AfterHistory
-
-```rust
-pub struct ContextBuilder {
-    system_prompt: String,
-    skills_context: Option<String>,
-    hooks: Arc<HookRegistry>,
-    history_config: HistoryConfig,
-}
-```
-
-### 5. ResponseFinalizer Simplification
-
-`session/finalizer.rs`:
-
-- Remove `AgentContext` parameter from `finalize()`
-- Remove `save_assistant_event()` function
-- Remove `trigger_compaction()` — compaction trigger moves to an AfterResponse hook or stays as direct call
-- `finalize()` becomes: execute AfterResponse hooks (including PersistHook), calculate cost, build response
-
-### 6. PipelineContext Simplification
+### 5. PipelineContext Simplification
 
 Remove `context: AgentContext` field from `PipelineContext`.
 
@@ -135,50 +116,131 @@ struct PipelineContext {
 }
 ```
 
-### 7. AgentSession Changes
+`postprocess()` signature no longer needs `&PipelineContext.context`:
+
+```rust
+async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentResponse {
+    ctx.finalizer.finalize(result, &ctx.fctx, &ctx.model).await
+}
+```
+
+### 6. AgentSession Changes
 
 - Remove `context: AgentContext` field
 - Add `event_store: Option<Arc<EventStore>>` for checkpoint callback
 - Remove `wiki_components: Option<WikiComponents>` — tools hold their own references
 - Remove `WikiComponents` struct and `WikiHealth` enum
 - Remove methods: `page_store()`, `page_index()`, `wiki_log()`, `wiki_health()`
-- Remove `clear_session()` (move to `AgentSession` directly using `self.event_store`)
+- `clear_session()` rewrites to use `self.event_store` directly:
 
-### 8. SessionBuilder Changes
+```rust
+pub async fn clear_session(&self, session_key: &SessionKey) {
+    if let Some(ref store) = self.event_store {
+        match store.clear_session(session_key).await {
+            Ok(_) => info!("Session '{}' cleared", session_key),
+            Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
+        }
+    }
+}
+```
+
+### 7. SessionBuilder Changes
 
 `session/builder.rs`:
 
-- Construct `HistoryLoadHook` with `Arc<EventStore>` + `Arc<SessionStore>`
-- Construct `PersistHook` with `Arc<EventStore>`
-- Add both to `HookBuilder` alongside existing `ExternalShellHook` + `VaultHook`
+- Construct `EventStore` / `SessionStore` as before
+- Pass `event_store` / `session_store` to `ContextBuilder` directly
+- Pass `event_store` to `ResponseFinalizer`
+- Pass `event_store` to `AgentSession` (for checkpoint + clear_session)
 - Wiki tools capture `Arc<PageStore>`/`Arc<PageIndex>`/`Arc<WikiLog>` at registration time
 - `build_wiki_components()` returns components only for tool registration, not stored on session
+
+```rust
+let event_store = Arc::new(EventStore::new(pool));
+let session_store = Arc::new(SessionStore::new(pool));
+
+// ContextBuilder gets direct store refs
+let context_builder = ContextBuilder::new(
+    event_store.clone(),
+    session_store.clone(),
+    system_prompt,
+    skills_context,
+    hooks.clone(),
+    history_config,
+);
+
+// ResponseFinalizer gets direct event_store ref
+let finalizer = ResponseFinalizer::new(
+    hooks.clone(),
+    event_store.clone(),
+    compactor.clone(),
+    pricing,
+    config.max_tokens,
+);
+
+Ok(AgentSession {
+    event_store: Some(event_store),
+    compactor,
+    hooks,
+    finalizer,
+    ...
+})
+```
+
+### 8. Test Migration
+
+Existing tests in `session/context.rs`:
+
+| Test | Action |
+|------|--------|
+| `test_stateless_context_is_not_persistent` | Delete — `Stateless` variant removed |
+| `test_stateless_load_session` | Delete — `Stateless` variant removed |
+| `test_stateless_save_event` | Delete — `Stateless` variant removed |
+| `test_stateless_context_clear_session` | Delete — `Stateless` variant removed |
+| `test_persistent_context_creation` | Migrate to `history/builder.rs` tests — verifies ContextBuilder store setup |
+| `test_persistent_context_save_event` | Migrate to `finalizer.rs` tests — verifies ResponseFinalizer event persistence |
+
+New tests needed:
+- `history/builder.rs`: Test `ContextBuilder::build()` with in-memory SQLite (integration test)
+- `finalizer.rs`: Test `ResponseFinalizer::finalize()` saves assistant event correctly
+- `session/mod.rs`: Test `clear_session()` works with `Some(event_store)` and is no-op with `None`
 
 ### 9. File Changes Summary
 
 | File | Action |
 |------|--------|
 | `session/context.rs` | Delete entire file |
-| `session/mod.rs` | Remove context re-exports, remove WikiComponents/WikiHealth, update struct fields |
-| `session/builder.rs` | Construct hooks with store refs, remove WikiComponents from AgentSession |
-| `session/history/builder.rs` | Remove `context` field, simplify `build()` |
-| `session/finalizer.rs` | Remove `AgentContext` param, remove save/compact logic |
-| `hooks/history.rs` | New — HistoryLoadHook |
-| `hooks/persist.rs` | New — PersistHook |
-| `hooks/mod.rs` | Add new module re-exports |
-| `lib.rs` | Remove AgentContext/PersistentContext re-exports |
+| `session/mod.rs` | Remove context re-exports, remove WikiComponents/WikiHealth, add `event_store` field, rewrite `clear_session()` |
+| `session/builder.rs` | Pass store refs to ContextBuilder and ResponseFinalizer, remove WikiComponents from AgentSession |
+| `session/history/builder.rs` | Replace `context: AgentContext` with `event_store` + `session_store` fields, inline checkpoint loading helper |
+| `session/finalizer.rs` | Replace `AgentContext` param with `Arc<EventStore>` field, keep save/compact as direct calls |
+| `hooks/mod.rs` | No changes (no new hooks) |
+| `lib.rs` | Remove `AgentContext`/`PersistentContext`/`WikiHealth` re-exports |
 
-### 10. Compaction Trigger
+### 10. Documentation Updates
 
-`trigger_compaction()` currently lives in `ResponseFinalizer`. After refactoring, it moves to an AfterResponse hook or stays as a direct method on `AgentSession` using `self.compactor`. The compactor already owns `EventStore`/`SessionStore` references internally, so no additional wiring needed.
+The following doc files reference `AgentContext` and need updating:
 
-Prefer: keep `trigger_compaction()` as a direct call inside `postprocess()`, since compaction is a core infrastructure concern (not a pluggable behavior) and the compactor is already on `AgentSession`.
+| File | Change |
+|------|--------|
+| `docs/architecture.md` | Update session layer diagram |
+| `docs/architecture-en.md` | Update session layer diagram |
+| `docs/modules.md` | Remove AgentContext from module descriptions |
+| `docs/modules-en.md` | Remove AgentContext from module descriptions |
+| `docs/session-en.md` | Update session management docs |
+| `docs/data-structures.md` | Remove AgentContext from data structure diagrams |
+| `docs/data-structures-en.md` | Remove AgentContext from data structure diagrams |
+| `docs/technical-design.md` | Update technical design references |
+| `docs/core-modules-design.md` | Update core module design |
 
 ## Acceptance Criteria
 
 1. `AgentContext` enum and `PersistentContext` struct no longer exist
 2. No file imports `AgentContext` or `PersistentContext`
 3. `AgentSession` has no `context` field
-4. Unit tests for `AgentSession` can run without a database (by not registering HistoryLoadHook/PersistHook)
-5. All existing integration tests pass
-6. `HistoryLoadHook` and `PersistHook` have dedicated unit tests
+4. `ContextBuilder` holds `Arc<EventStore>` + `Arc<SessionStore>` directly
+5. `ResponseFinalizer` holds `Arc<EventStore>` directly
+6. `clear_session()` on `AgentSession` works via `self.event_store`
+7. All existing integration tests pass
+8. Migrated tests (from `context.rs`) pass in their new locations
+9. Unit tests for `AgentSession` can run without a database (by not passing store refs)
