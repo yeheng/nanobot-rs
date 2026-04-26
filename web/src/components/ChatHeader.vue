@@ -33,12 +33,18 @@ const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
 };
 
 const mdStyleMeta: Record<MarkdownStyle, { label: string; icon: string }> = {
-  classic: { label: 'Classic', icon: 'Type' },
-  github:  { label: 'GitHub',  icon: 'Github' },
-  hope:    { label: 'Hope',    icon: 'Waves' },
-  fancy:   { label: 'Fancy',   icon: 'Sparkles' },
-  journal: { label: 'Journal', icon: 'BookOpen' },
-  geek:    { label: 'Geek',    icon: 'Terminal' },
+  classic:       { label: 'Classic',       icon: 'Type' },
+  github:        { label: 'GitHub',        icon: 'Github' },
+  hope:          { label: 'Hope',          icon: 'Waves' },
+  fancy:         { label: 'Fancy',         icon: 'Sparkles' },
+  journal:       { label: 'Journal',       icon: 'BookOpen' },
+  geek:          { label: 'Geek',          icon: 'Terminal' },
+  'vlook-hope':    { label: 'VLOOK Hope',    icon: 'Waves' },
+  'vlook-fancy':   { label: 'VLOOK Fancy',   icon: 'Sparkles' },
+  'vlook-geek':    { label: 'VLOOK Geek',    icon: 'Terminal' },
+  'vlook-joint':   { label: 'VLOOK Joint',   icon: 'Puzzle' },
+  'vlook-solaris': { label: 'VLOOK Solaris', icon: 'Sun' },
+  'vlook-thinking':{ label: 'VLOOK Thinking',icon: 'Brain' },
 };
 </script>
 

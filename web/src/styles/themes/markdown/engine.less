@@ -1,0 +1,186 @@
+/* ═══════════════════════════════════════════════════════════
+   Markdown Theme Engine
+   统一 prose 样式规则，通过 CSS 自定义属性实现多主题
+   Theme 文件只需覆盖变量 + 补充少量特殊规则
+   ═══════════════════════════════════════════════════════════ */
+
+.prose {
+  color: hsl(var(--foreground));
+  line-height: var(--md-line-height, 1.6);
+  font-family: var(--md-font-family, inherit);
+  font-size: var(--md-font-size, inherit);
+
+  p {
+    margin: var(--md-p-margin, 0 0 0.75em 0);
+    text-align: var(--md-p-align, left);
+  }
+  p:last-child {
+    margin-bottom: 0;
+  }
+
+  a {
+    color: var(--md-a-color, hsl(var(--primary)));
+    text-decoration: var(--md-a-decoration, none);
+    border-bottom: var(--md-a-border-bottom, none);
+    transition: var(--md-a-transition, none);
+  }
+  a:hover {
+    text-decoration: var(--md-a-hover-decoration, underline);
+    border-bottom: var(--md-a-hover-border-bottom, none);
+    color: var(--md-a-hover-color, inherit);
+  }
+
+  /* 标题通用 */
+  h1, h2, h3, h4 {
+    margin: 1em 0 0.5em 0;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+  }
+  h1:first-child,
+  h2:first-child,
+  h3:first-child {
+    margin-top: 0;
+  }
+
+  /* h1 */
+  h1 {
+    font-size: var(--md-h1-size, 1.75em);
+    font-weight: var(--md-h1-weight, 600);
+    color: var(--md-h1-color, hsl(var(--foreground)));
+    margin: var(--md-h1-margin, 1em 0 0.5em 0);
+    padding: var(--md-h1-padding, 0);
+    background: var(--md-h1-bg, none);
+    text-align: var(--md-h1-align, left);
+    letter-spacing: var(--md-h1-letter-spacing, 0);
+    text-transform: var(--md-h1-text-transform, none);
+    border-bottom: var(--md-h1-border-bottom, none);
+    border-left: var(--md-h1-border-left, none);
+    border-right: var(--md-h1-border-right, none);
+  }
+
+  /* h2 */
+  h2 {
+    font-size: var(--md-h2-size, 1.4em);
+    font-weight: var(--md-h2-weight, 600);
+    color: var(--md-h2-color, hsl(var(--foreground)));
+    margin: var(--md-h2-margin, 1em 0 0.5em 0);
+    padding: var(--md-h2-padding, 0);
+    background: var(--md-h2-bg, none);
+    text-align: var(--md-h2-align, left);
+    letter-spacing: var(--md-h2-letter-spacing, 0);
+    text-transform: var(--md-h2-text-transform, none);
+    border-bottom: var(--md-h2-border-bottom, none);
+    border-left: var(--md-h2-border-left, none);
+    border-right: var(--md-h2-border-right, none);
+  }
+
+  /* h3 */
+  h3 {
+    font-size: var(--md-h3-size, 1.2em);
+    font-weight: var(--md-h3-weight, 600);
+    color: var(--md-h3-color, hsl(var(--foreground)));
+    margin: var(--md-h3-margin, 0.9em 0 0.4em 0);
+    padding: var(--md-h3-padding, 0);
+    background: var(--md-h3-bg, none);
+    text-align: var(--md-h3-align, left);
+    letter-spacing: var(--md-h3-letter-spacing, 0);
+    text-transform: var(--md-h3-text-transform, none);
+    border-bottom: var(--md-h3-border-bottom, none);
+    border-left: var(--md-h3-border-left, none);
+    border-right: var(--md-h3-border-right, none);
+  }
+
+  /* h4 */
+  h4 {
+    font-size: var(--md-h4-size, 1em);
+    font-weight: var(--md-h4-weight, 600);
+    color: var(--md-h4-color, hsl(var(--foreground)));
+    margin: var(--md-h4-margin, 0.75em 0 0.35em 0);
+    padding: var(--md-h4-padding, 0);
+    background: var(--md-h4-bg, none);
+    text-align: var(--md-h4-align, left);
+    letter-spacing: var(--md-h4-letter-spacing, 0);
+    text-transform: var(--md-h4-text-transform, none);
+    border-bottom: var(--md-h4-border-bottom, none);
+    border-left: var(--md-h4-border-left, none);
+    border-right: var(--md-h4-border-right, none);
+  }
+
+  /* Blockquote */
+  blockquote {
+    margin: var(--md-blockquote-margin, 0 0 1em 0);
+    padding: var(--md-blockquote-padding, 0 0 0 12px);
+    border-left: var(--md-blockquote-border-left, 4px solid hsl(var(--border)));
+    border-radius: var(--md-blockquote-border-radius, 0);
+    background: var(--md-blockquote-bg, none);
+    color: var(--md-blockquote-color, hsl(var(--muted-foreground)));
+    font-style: var(--md-blockquote-font-style, italic);
+    position: relative;
+  }
+
+  /* Code */
+  pre {
+    background: var(--md-pre-bg, hsl(var(--muted)));
+    border: var(--md-pre-border, 1px solid hsl(var(--border)));
+    padding: var(--md-pre-padding, 12px);
+    border-radius: var(--md-pre-radius, 8px);
+    overflow-x: auto;
+    margin: 0.75em 0;
+    position: relative;
+  }
+  code {
+    font-family: var(--md-code-font, 'Menlo', 'Monaco', 'Courier New', monospace);
+    font-size: var(--md-code-size, 0.85em);
+    background: var(--md-code-bg, hsl(var(--muted)));
+    color: var(--md-code-color, hsl(var(--foreground)));
+    padding: var(--md-code-padding, 2px 6px);
+    border: var(--md-code-border, none);
+    border-radius: var(--md-code-radius, 4px);
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    border: none;
+    font-size: 0.9em;
+    color: hsl(var(--foreground));
+  }
+
+  /* Lists */
+  ul, ol {
+    margin: 0 0 1em var(--md-list-margin-left, 0);
+    padding-left: var(--md-list-padding-left, 1.5em);
+  }
+  li {
+    margin-bottom: var(--md-list-item-margin, 0.25em);
+  }
+  li::marker {
+    color: var(--md-list-marker-color, inherit);
+  }
+
+  /* Tables */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    border: var(--md-table-border, 1px solid hsl(var(--border)));
+    border-radius: var(--md-table-border-radius, 0);
+    overflow: hidden;
+  }
+  th, td {
+    border: var(--md-table-border, 1px solid hsl(var(--border)));
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th {
+    background: var(--md-table-th-bg, hsl(var(--muted)));
+    color: var(--md-table-th-color, inherit);
+    border-bottom: var(--md-table-th-border-bottom, 1px solid hsl(var(--border)));
+    font-weight: var(--md-table-th-font-weight, 600);
+  }
+  td {
+    border-bottom: var(--md-table-td-border-bottom, 1px solid hsl(var(--border)));
+  }
+  tr:nth-child(even) {
+    background: var(--md-table-tr-even-bg, transparent);
+  }
+}

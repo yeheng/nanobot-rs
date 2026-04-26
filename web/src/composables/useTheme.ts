@@ -5,7 +5,7 @@ const LEGACY_KEY = 'gasket_theme'
 
 export type ThemeMode = 'light' | 'dark'
 export type ThemeHue = 'zinc' | 'blue' | 'rose' | 'emerald' | 'amber' | 'violet'
-export type MarkdownStyle = 'classic' | 'github' | 'hope' | 'fancy' | 'journal' | 'geek'
+export type MarkdownStyle = 'classic' | 'github' | 'hope' | 'fancy' | 'journal' | 'geek' | 'vlook-hope' | 'vlook-fancy' | 'vlook-geek' | 'vlook-joint' | 'vlook-solaris' | 'vlook-thinking'
 
 export interface ThemeState {
   mode: ThemeMode
@@ -14,7 +14,7 @@ export interface ThemeState {
 }
 
 const HUES: ThemeHue[] = ['zinc', 'blue', 'rose', 'emerald', 'amber', 'violet']
-const MARKDOWN_STYLES: MarkdownStyle[] = ['classic', 'github', 'hope', 'fancy', 'journal', 'geek']
+const MARKDOWN_STYLES: MarkdownStyle[] = ['classic', 'github', 'hope', 'fancy', 'journal', 'geek', 'vlook-hope', 'vlook-fancy', 'vlook-geek', 'vlook-joint', 'vlook-solaris', 'vlook-thinking']
 
 // Migrate legacy markdown style names to new VLOOK-inspired names
 function migrateMarkdownStyle(old: string | undefined): MarkdownStyle {

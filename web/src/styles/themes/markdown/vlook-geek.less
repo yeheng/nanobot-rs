@@ -1,9 +1,14 @@
-/* ── Geek 极邃 ───────────────────────────────────────────── */
-.prose[data-md-style="geek"] {
+/* ── VLOOK Geek ──────────────────────────────────────────── */
+.prose[data-md-style="vlook-geek"] {
   /* Base */
   --md-font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", monospace;
   --md-line-height: 1.6;
   --md-font-size: 0.83rem;
+
+  /* Color override: rose accent on dark base */
+  --primary: 350 80% 54%;
+  --ring: 350 80% 54%;
+  --primary-foreground: 0 0% 98%;
 
   /* Headings */
   --md-h1-size: 1.25em;
@@ -72,34 +77,34 @@
 }
 
 /* Monospace font for headings */
-.prose[data-md-style="geek"] h1,
-.prose[data-md-style="geek"] h2,
-.prose[data-md-style="geek"] h3,
-.prose[data-md-style="geek"] h4 {
+.prose[data-md-style="vlook-geek"] h1,
+.prose[data-md-style="vlook-geek"] h2,
+.prose[data-md-style="vlook-geek"] h3,
+.prose[data-md-style="vlook-geek"] h4 {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", monospace;
 }
 
 /* Blockquote prefix */
-.prose[data-md-style="geek"] blockquote::before {
+.prose[data-md-style="vlook-geek"] blockquote::before {
   content: '> ';
   color: hsl(var(--muted-foreground) / 0.5);
 }
 
 /* Pre code reset */
-.prose[data-md-style="geek"] pre code {
+.prose[data-md-style="vlook-geek"] pre code {
   border: none;
   background: transparent;
 }
 
 /* Compact table */
-.prose[data-md-style="geek"] table {
+.prose[data-md-style="vlook-geek"] table {
   font-size: 0.9em;
 }
-.prose[data-md-style="geek"] th,
-.prose[data-md-style="geek"] td {
+.prose[data-md-style="vlook-geek"] th,
+.prose[data-md-style="vlook-geek"] td {
   padding: 5px 8px;
 }
-.prose[data-md-style="geek"] th {
+.prose[data-md-style="vlook-geek"] th {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.85em;

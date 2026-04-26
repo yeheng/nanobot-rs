@@ -1,10 +1,17 @@
-/* ── Hope 海洋之心 ───────────────────────────────────────── */
-.prose[data-md-style="hope"] {
+/* ── VLOOK Hope ──────────────────────────────────────────── */
+.prose[data-md-style="vlook-hope"] {
   /* Base */
   --md-line-height: 1.7;
 
+  /* Color override: blue primary */
+  --primary: 213 91% 45%;
+  --ring: 213 91% 45%;
+  --primary-foreground: 0 0% 98%;
+
   /* Headings */
   --md-h1-size: 1.8em;
+  --md-h1-weight: 600;
+  --md-h1-align: center;
   --md-h1-padding: 0 0 0.35em 0;
   --md-h1-border-bottom: 2px solid hsl(var(--primary));
   --md-h1-margin: 1em 0 0.6em 0;
@@ -60,6 +67,6 @@
   --md-table-tr-even-bg: hsl(var(--muted) / 0.25);
 }
 
-.prose[data-md-style="hope"] tr:last-child td {
+.prose[data-md-style="vlook-hope"] tr:last-child td {
   border-bottom: none;
 }

@@ -1,8 +1,13 @@
-/* ── Fancy 慕幻 ──────────────────────────────────────────── */
-.prose[data-md-style="fancy"] {
+/* ── VLOOK Fancy ─────────────────────────────────────────── */
+.prose[data-md-style="vlook-fancy"] {
   /* Base */
   --md-line-height: 1.7;
   --md-font-size: 0.95rem;
+
+  /* Color override: warm amber/brown */
+  --primary: 24 68% 49%;
+  --ring: 24 68% 49%;
+  --primary-foreground: 0 0% 98%;
 
   /* Headings */
   --md-h1-size: 1.85em;
@@ -10,12 +15,13 @@
   --md-h1-color: transparent;
   --md-h1-bg: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
   --md-h1-letter-spacing: -0.03em;
+  --md-h1-align: right;
 
   --md-h2-size: 1.4em;
   --md-h2-color: hsl(var(--primary));
   --md-h2-margin: 1em 0 0.5em 0;
-  --md-h2-padding: 0 0 0 0.5em;
-  --md-h2-border-left: 4px solid hsl(var(--ring));
+  --md-h2-padding: 0 0.5em 0 0;
+  --md-h2-border-right: 4px solid hsl(var(--ring));
 
   --md-h3-size: 1.15em;
   --md-h3-color: hsl(var(--ring));
@@ -53,31 +59,31 @@
 }
 
 /* Gradient text for h1 */
-.prose[data-md-style="fancy"] h1 {
+.prose[data-md-style="vlook-fancy"] h1 {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 /* Animated underline link */
-.prose[data-md-style="fancy"] a {
+.prose[data-md-style="vlook-fancy"] a {
   background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
   background-size: 0% 2px;
   background-repeat: no-repeat;
   background-position: left bottom;
   transition: background-size 0.3s ease;
 }
-.prose[data-md-style="fancy"] a:hover {
+.prose[data-md-style="vlook-fancy"] a:hover {
   background-size: 100% 2px;
 }
 
 /* Fancy blockquote with gradient bar */
-.prose[data-md-style="fancy"] blockquote {
+.prose[data-md-style="vlook-fancy"] blockquote {
   border: none;
   background: linear-gradient(135deg, hsl(var(--primary) / 0.08) 0%, hsl(var(--ring) / 0.08) 100%);
   font-style: normal;
 }
-.prose[data-md-style="fancy"] blockquote::before {
+.prose[data-md-style="vlook-fancy"] blockquote::before {
   content: '';
   position: absolute;
   left: 0;
@@ -89,7 +95,7 @@
 }
 
 /* Pre top gradient line */
-.prose[data-md-style="fancy"] pre::before {
+.prose[data-md-style="vlook-fancy"] pre::before {
   content: '';
   position: absolute;
   top: 0;
@@ -100,6 +106,6 @@
   background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
 }
 
-.prose[data-md-style="fancy"] tr:last-child td {
+.prose[data-md-style="vlook-fancy"] tr:last-child td {
   border-bottom: none;
 }
