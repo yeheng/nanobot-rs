@@ -147,8 +147,8 @@ async fn setup_wiki(
         tracing::warn!("Failed to create wiki tables: {}", e);
     }
     let tantivy_dir = wiki_root.join(".tantivy");
-    let pi = match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
-        Ok(idx) => Some(Arc::new(idx)),
+    let pi = match gasket_storage::wiki::TantivyPageIndex::open(tantivy_dir) {
+        Ok(idx) => Some(Arc::new(gasket_engine::wiki::PageIndex::new(Arc::new(idx)))),
         Err(e) => {
             tracing::warn!("Tantivy index open failed, search disabled: {}", e);
             None

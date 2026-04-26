@@ -1,8 +1,5 @@
 //! Background indexing service — consumes `Topic::WikiChanged` events and
 //! asynchronously updates the Tantivy search index.
-//!
-//! This decouples Tantivy I/O from the hot write path, ensuring that
-//! `PageStore::write` returns in <10 ms even when the index is large.
 
 use std::sync::Arc;
 
@@ -27,8 +24,6 @@ impl WikiIndexingService {
     }
 
     /// Spawn the service as a background Tokio task.
-    ///
-    /// Returns a `JoinHandle` that can be awaited during graceful shutdown.
     pub fn spawn(self, broker: Arc<MemoryBroker>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut sub = match broker.subscribe(&Topic::WikiChanged).await {
@@ -51,9 +46,9 @@ impl WikiIndexingService {
                         break;
                     }
                     Err(BrokerError::Lagged(n)) => {
-                        warn!("WikiIndexingService: lagged {} messages, running repair", n);
-                        if let Err(e) = self.page_store.repair_index(&self.page_index).await {
-                            warn!("WikiIndexingService: repair failed: {}", e);
+                        warn!("WikiIndexingService: lagged {} messages, doing full rebuild", n);
+                        if let Err(e) = self.page_index.rebuild(&self.page_store).await {
+                            warn!("WikiIndexingService: rebuild failed: {}", e);
                         }
                     }
                     Err(e) => {
@@ -65,24 +60,12 @@ impl WikiIndexingService {
     }
 
     async fn handle_envelope(&self, payload: &gasket_broker::BrokerPayload) {
-        let (path, sync_sequence) = match payload {
-            gasket_broker::BrokerPayload::WikiChanged {
-                path,
-                sync_sequence,
-            } => (path, *sync_sequence),
+        let path = match payload {
+            gasket_broker::BrokerPayload::WikiChanged { path } => path,
             _ => return,
         };
 
-        // sync_sequence == 0 signals a deletion.
-        if sync_sequence == 0 {
-            if let Err(e) = self.page_index.delete(path).await {
-                warn!("WikiIndexingService: failed to delete {}: {}", path, e);
-            } else {
-                debug!("WikiIndexingService: deleted {}", path);
-            }
-            return;
-        }
-
+        // Check if page still exists — if not, it was a deletion.
         match self.page_store.read(path).await {
             Ok(page) => {
                 if let Err(e) = self.page_index.upsert(&page).await {
@@ -90,12 +73,14 @@ impl WikiIndexingService {
                 } else {
                     debug!("WikiIndexingService: upserted {}", path);
                 }
-                if let Err(e) = self.page_store.update_indexed_sequence(sync_sequence).await {
-                    warn!("WikiIndexingService: failed to update watermark: {}", e);
-                }
             }
-            Err(e) => {
-                warn!("WikiIndexingService: failed to read page {}: {}", path, e);
+            Err(_) => {
+                // Page doesn't exist anymore — delete from index.
+                if let Err(e) = self.page_index.delete(path).await {
+                    warn!("WikiIndexingService: failed to delete {}: {}", path, e);
+                } else {
+                    debug!("WikiIndexingService: deleted {}", path);
+                }
             }
         }
     }

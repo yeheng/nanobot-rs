@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 use crate::error::AgentError;
 use crate::hooks::HookRegistry;
 use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
-use crate::session::finalizer::{calculate_cost, log_token_stats, ResponseFinalizer};
+use crate::session::finalizer::ResponseFinalizer;
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;
@@ -511,12 +511,6 @@ impl AgentSession {
             let result = result?;
 
             let response = Self::postprocess(result, &ctx).await;
-
-            // Log token stats if pricing is configured.
-            if let Some(ref pricing) = ctx.pricing {
-                let cost = calculate_cost(&response.token_usage, Some(pricing));
-                log_token_stats(&response.token_usage, cost);
-            }
 
             Ok(response)
         });

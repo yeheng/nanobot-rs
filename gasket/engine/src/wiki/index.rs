@@ -1,32 +1,25 @@
-//! PageIndex: Tantivy-backed full-text search over wiki pages.
+//! PageIndex: async wrapper over `PageSearchIndex` trait.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 
+use gasket_storage::wiki::{IndexPage, PageSearchIndex, SearchHit};
+
 use super::page::{PageSummary, WikiPage};
-use super::query::tantivy_adapter::{SearchHit, TantivyIndex};
 use super::store::PageStore;
 
 pub struct PageIndex {
-    tantivy: Arc<TantivyIndex>,
+    index: Arc<dyn PageSearchIndex>,
 }
 
 impl PageIndex {
-    pub fn open(index_dir: PathBuf) -> Result<Self> {
-        let tantivy = TantivyIndex::open(index_dir)?;
-        Ok(Self {
-            tantivy: Arc::new(tantivy),
-        })
+    pub fn new(index: Arc<dyn PageSearchIndex>) -> Self {
+        Self { index }
     }
 
-    pub fn from_tantivy(tantivy: Arc<TantivyIndex>) -> Self {
-        Self { tantivy }
-    }
-
-    pub fn tantivy(&self) -> &Arc<TantivyIndex> {
-        &self.tantivy
+    pub fn index(&self) -> &Arc<dyn PageSearchIndex> {
+        &self.index
     }
 
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<PageSummary>> {
@@ -39,7 +32,7 @@ impl PageIndex {
         limit: usize,
         store: Option<&PageStore>,
     ) -> Result<Vec<PageSummary>> {
-        let hits = self.tantivy.search_async(query.to_string(), limit).await?;
+        let hits = self.index.search(query, limit).await?;
 
         if let Some(store) = store {
             let mut summaries = Vec::new();
@@ -70,44 +63,45 @@ impl PageIndex {
     }
 
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        self.tantivy.search_async(query.to_string(), limit).await
+        self.index.search(query, limit).await
     }
 
-    /// Upsert a page into the search index using spawn_blocking.
+    /// Upsert a wiki page into the search index.
     pub async fn upsert(&self, page: &WikiPage) -> Result<()> {
-        let tantivy = self.tantivy.clone();
-        let page = page.clone();
-        tokio::task::spawn_blocking(move || tantivy.upsert(&page))
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+        self.index.upsert(&wiki_page_to_index(page)).await
     }
 
-    /// Delete a page from the search index using spawn_blocking.
+    /// Delete a page from the search index.
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let tantivy = self.tantivy.clone();
-        let path = path.to_string();
-        tokio::task::spawn_blocking(move || tantivy.delete(&path))
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+        self.index.delete(path).await
     }
 
-    /// Rebuild the index from all pages in the store using spawn_blocking.
+    /// Rebuild the index from all pages in the store.
     pub async fn rebuild(&self, store: &PageStore) -> Result<usize> {
         let pages = store.list(Default::default()).await?;
         let mut full_pages = Vec::new();
         for summary in &pages {
             if let Ok(page) = store.read(&summary.path).await {
-                full_pages.push(page);
+                full_pages.push(wiki_page_to_index(&page));
             }
         }
-        let tantivy = self.tantivy.clone();
-        let pages_for_blocking = full_pages.clone();
-        tokio::task::spawn_blocking(move || tantivy.rebuild(&pages_for_blocking))
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {}", e))?
+        self.index.rebuild(&full_pages).await
     }
 
     pub fn doc_count(&self) -> u64 {
-        self.tantivy.doc_count()
+        self.index.doc_count()
+    }
+}
+
+/// Convert engine `WikiPage` to storage `IndexPage`.
+fn wiki_page_to_index(page: &WikiPage) -> IndexPage {
+    IndexPage {
+        path: page.path.clone(),
+        title: page.title.clone(),
+        content: page.content.clone(),
+        page_type: page.page_type.as_str().to_string(),
+        category: page.category.clone(),
+        tags: page.tags.clone(),
+        confidence: page.confidence,
     }
 }

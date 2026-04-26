@@ -18,6 +18,7 @@ use crate::session::context::AgentContext;
 use crate::session::finalizer::ResponseFinalizer;
 use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
 use crate::wiki::{PageIndex, PageStore, WikiLog};
+use gasket_storage::wiki::TantivyPageIndex;
 use gasket_providers::LlmProvider;
 use gasket_storage::{EventStore, SessionStore};
 
@@ -126,7 +127,7 @@ impl SessionBuilder {
 
         let pending_done = tokio_util::task::TaskTracker::new();
 
-        let finalizer = ResponseFinalizer::new(hooks.clone(), compactor.clone(), None);
+        let finalizer = ResponseFinalizer::new(hooks.clone(), compactor.clone(), None, self.config.max_tokens);
 
         Ok(AgentSession {
             runtime_ctx,
@@ -170,26 +171,20 @@ async fn build_wiki_components(
     let store = Arc::new(store);
 
     let tantivy_dir = wiki_base.join(".tantivy");
-    let index = match PageIndex::open(tantivy_dir) {
+    let tantivy_index = match TantivyPageIndex::open(tantivy_dir) {
         Ok(idx) => Arc::new(idx),
         Err(e) => {
             warn!("Failed to open Tantivy index: {}", e);
             return None;
         }
     };
+    let index = Arc::new(PageIndex::new(tantivy_index));
 
     let log = Arc::new(WikiLog::new(pool));
 
     if let Err(e) = gasket_storage::wiki::tables::create_wiki_tables(&sqlite_store.pool()).await {
         warn!("Failed to create wiki tables: {}", e);
         return None;
-    }
-
-    // Repair any Tantivy index drift caused by unclean shutdown.
-    match store.repair_index(&index).await {
-        Ok(0) => {}
-        Ok(n) => info!("Repaired {} pages in Tantivy index after startup", n),
-        Err(e) => warn!("Tantivy index repair failed: {}", e),
     }
 
     info!(

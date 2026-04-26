@@ -46,7 +46,10 @@ pub(super) struct CronJobFrontmatter {
     pub cron: String,
     pub channel: Option<String>,
     pub to: Option<String>,
-    #[serde(default = "default_true", deserialize_with = "deserialize_bool_or_string")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_bool_or_string"
+    )]
     pub enabled: bool,
     pub tool: Option<String>,
     pub tool_args: Option<serde_json::Value>,
@@ -67,7 +70,10 @@ where
         serde_yaml::Value::String(s) => match s.to_lowercase().as_str() {
             "true" | "1" | "yes" | "on" => Ok(true),
             "false" | "0" | "no" | "off" => Ok(false),
-            _ => Err(serde::de::Error::custom(format!("invalid boolean string: {}", s))),
+            _ => Err(serde::de::Error::custom(format!(
+                "invalid boolean string: {}",
+                s
+            ))),
         },
         serde_yaml::Value::Number(n) => {
             if let Some(i) = n.as_i64() {

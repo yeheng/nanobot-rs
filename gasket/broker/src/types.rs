@@ -66,10 +66,8 @@ pub enum BrokerPayload {
     Inbound(InboundMessage),
     Outbound(OutboundMessage),
     /// Wiki page was written or deleted.
-    /// `path` is the wiki page path; `sync_sequence` is the monotonic SQLite sequence.
     WikiChanged {
         path: String,
-        sync_sequence: u64,
     },
 }
 

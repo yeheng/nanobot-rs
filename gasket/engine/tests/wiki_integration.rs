@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gasket_engine::wiki::{
     slugify, PageFilter, PageIndex, PageStore, PageType, WikiLinter, WikiPage,
 };
+use gasket_storage::wiki::TantivyPageIndex;
 use tempfile::TempDir;
 
 async fn setup_store() -> (PageStore, TempDir) {
@@ -54,7 +55,8 @@ async fn test_full_ingest_query_lint_cycle() {
 
     // Query via Tantivy
     let tantivy_dir = dir.path().join(".tantivy");
-    let index = PageIndex::open(tantivy_dir).unwrap();
+    let tantivy = TantivyPageIndex::open(tantivy_dir).unwrap();
+    let index = PageIndex::new(Arc::new(tantivy));
 
     // Rebuild index from store
     let rebuilt = index.rebuild(&store).await.unwrap();

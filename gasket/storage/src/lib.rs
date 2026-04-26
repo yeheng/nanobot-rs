@@ -1,14 +1,9 @@
-//! SQLite-backed storage, history processing, and semantic embedding for gasket.
+//! SQLite-backed storage, history processing, and wiki search for gasket.
 //!
 //! This crate provides:
 //! - **Persistence:** Sessions, conversation messages, summaries, cron jobs
 //! - **History:** Token-budget-aware history truncation and multi-dimensional retrieval
-//! - **Search:** Full-text search types and semantic embedding
-//! - **Vector math:** Cosine similarity and top-K retrieval
-//!
-//! **Note:** Explicit long-term memory (facts, preferences, decisions) lives
-//! exclusively in `~/.gasket/memory/*.md` files. SQLite only stores
-//! machine-state.
+//! - **Wiki Search:** Tantivy BM25 full-text search with `PageSearchIndex` trait
 
 mod cron_store;
 mod event_store;
@@ -22,7 +17,6 @@ pub mod wiki;
 // ── Merged from gasket-history ──
 pub mod processor;
 pub mod query;
-pub mod search;
 
 use std::path::PathBuf;
 

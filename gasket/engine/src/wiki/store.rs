@@ -3,7 +3,7 @@ use gasket_broker::{BrokerPayload, Envelope, MemoryBroker, Topic};
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 
@@ -14,8 +14,6 @@ use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,
-    /// Lazy-initialized monotonic sequence for SQLite → Tantivy sync tracking.
-    next_sequence: Mutex<Option<u64>>,
     /// Optional broker for publishing wiki change events.
     broker: Option<Arc<MemoryBroker>>,
 }
@@ -25,7 +23,6 @@ impl PageStore {
         Self {
             db: WikiPageStore::new(pool),
             wiki_root,
-            next_sequence: Mutex::new(None),
             broker: None,
         }
     }
@@ -62,18 +59,11 @@ impl PageStore {
     }
 
     /// Read a page — pure query, no sync side effects.
-    ///
-    /// 1. Query SQLite cache. If present, return it directly.
-    /// 2. If not in cache, read from disk and parse (but do NOT write to SQLite).
-    ///
-    /// Sync responsibility is delegated to `WikiRefreshTool` or background tasks.
     pub async fn read(&self, path: &str) -> Result<WikiPage> {
-        // 1. Try SQLite cache first.
         if let Some(row) = self.db.get(path).await? {
             return Ok(self.row_to_page(row));
         }
 
-        // 2. Fall back to disk (read-only, no SQLite update).
         let disk_path = self.wiki_root.join(format!("{}.md", path));
         let markdown = fs::read_to_string(&disk_path).await?;
         let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
@@ -81,30 +71,24 @@ impl PageStore {
         Ok(page)
     }
 
-    /// Batch-read full pages from SQLite (no lazy mtime sync — suitable for
-    /// query engines where consistency is handled at a higher level).
+    /// Batch-read full pages from SQLite.
     pub async fn read_many(&self, paths: &[String]) -> Result<Vec<WikiPage>> {
         let rows = self.db.get_many(paths).await?;
         Ok(rows.into_iter().map(|row| self.row_to_page(row)).collect())
     }
 
     /// Write page: disk is SSOT. Atomic write to disk first, then update SQLite.
-    /// If disk write fails, SQLite is untouched and the error propagates immediately.
-    /// Returns the assigned sync_sequence.
-    pub async fn write(&self, page: &WikiPage) -> Result<u64> {
+    pub async fn write(&self, page: &WikiPage) -> Result<()> {
         self.sync_to_disk(page).await?;
-
         let disk_path = self.wiki_root.join(format!("{}.md", page.path));
         let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
-        let seq = self.upsert_db(page, mtime).await?;
-        self.notify_wiki_changed(&page.path, seq).await;
-        Ok(seq)
+        self.upsert_db(page, mtime).await?;
+        self.notify_wiki_changed(&page.path).await;
+        Ok(())
     }
 
     /// Update SQLite index for a page that is already on disk.
-    /// Used by bulk reindexing tools to avoid redundant disk writes.
-    /// Returns the assigned sync_sequence.
-    pub async fn index_page(&self, page: &WikiPage) -> Result<u64> {
+    pub async fn index_page(&self, page: &WikiPage) -> Result<()> {
         let disk_path = self.wiki_root.join(format!("{}.md", page.path));
         let mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
         self.upsert_db(page, mtime).await
@@ -114,7 +98,7 @@ impl PageStore {
         let disk_path = self.wiki_root.join(format!("{}.md", path));
         let _ = fs::remove_file(&disk_path).await;
         self.db.delete(path).await?;
-        self.notify_wiki_changed(path, 0).await;
+        self.notify_wiki_changed(path).await;
         Ok(())
     }
 
@@ -208,7 +192,7 @@ impl PageStore {
         .await
         .map_err(|e| anyhow::anyhow!("disk walk panicked: {}", e))??;
 
-        // Remove stale DB records (file deleted on disk).
+        // Remove stale DB records.
         let db_rows = self.db.list_all().await?;
         for row in &db_rows {
             if !disk_paths.contains(&row.path) {
@@ -234,11 +218,9 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
-                page.sync_sequence = old.sync_sequence as u64;
             }
 
-            let seq = self.upsert_db(&page, mtime).await?;
-            page.sync_sequence = seq;
+            self.upsert_db(&page, mtime).await?;
             synced += 1;
         }
 
@@ -275,14 +257,12 @@ impl PageStore {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&chrono::Utc)),
             file_mtime: row.file_mtime,
-            sync_sequence: row.sync_sequence as u64,
         }
     }
 
-    async fn upsert_db(&self, page: &WikiPage, file_mtime: i64) -> Result<u64> {
+    async fn upsert_db(&self, page: &WikiPage, file_mtime: i64) -> Result<()> {
         let tags_str = serde_json::to_string(&page.tags)?;
         let checksum = Some(format!("{}", page.content.len()));
-        let seq = self.alloc_sequence().await?;
         self.db
             .upsert(&gasket_storage::wiki::WikiPageInput {
                 path: &page.path,
@@ -298,77 +278,18 @@ impl PageStore {
                 access_count: page.access_count,
                 last_accessed: page.last_accessed.map(|dt| dt.to_rfc3339()),
                 file_mtime,
-                sync_sequence: seq,
             })
             .await?;
-        Ok(seq)
+        Ok(())
     }
 
-    /// Allocate the next monotonic sync sequence.
-    async fn alloc_sequence(&self) -> Result<u64> {
-        let needs_init = { self.next_sequence.lock().unwrap().is_none() };
-        if needs_init {
-            let max = self.db.max_sync_sequence().await.unwrap_or(0);
-            let mut guard = self.next_sequence.lock().unwrap();
-            if guard.is_none() {
-                *guard = Some(max + 1);
-            }
-        }
-        let mut guard = self.next_sequence.lock().unwrap();
-        let seq = guard.unwrap();
-        *guard = Some(seq + 1);
-        Ok(seq)
-    }
-
-    /// Repair Tantivy index by re-indexing pages whose sync_sequence is ahead
-    /// of the recorded last indexed sequence. Returns count of repaired pages.
-    pub async fn repair_index(&self, page_index: &super::PageIndex) -> Result<usize> {
-        let last_seq = self
-            .db
-            .get_sync_state("tantivy_last_sequence")
-            .await
-            .unwrap_or(0);
-        let max_seq = self.db.max_sync_sequence().await.unwrap_or(0);
-        if last_seq >= max_seq {
-            return Ok(0);
-        }
-        tracing::info!(
-            "Repairing Tantivy index: last_indexed={}, current_max={}",
-            last_seq,
-            max_seq
-        );
-        let rows = self.db.get_unindexed_pages(last_seq).await?;
-        let mut repaired = 0usize;
-        for row in rows {
-            let page = self.row_to_page(row);
-            if let Err(e) = page_index.upsert(&page).await {
-                tracing::warn!("Repair index: failed to upsert {}: {}", page.path, e);
-            } else {
-                repaired += 1;
-            }
-        }
-        // Update watermark to max_seq regardless of partial failures;
-        // failed pages will be retried on next repair.
-        self.update_indexed_sequence(max_seq).await?;
-        tracing::info!("Repaired {} pages in Tantivy index", repaired);
-        Ok(repaired)
-    }
-
-    /// Update the Tantivy index watermark to the given sequence.
-    pub async fn update_indexed_sequence(&self, sequence: u64) -> Result<()> {
-        self.db
-            .update_sync_state("tantivy_last_sequence", sequence)
-            .await
-    }
-
-    /// Publish a non-blocking `WikiChanged` event to the broker if one is attached.
-    async fn notify_wiki_changed(&self, path: &str, sync_sequence: u64) {
+    /// Publish a non-blocking `WikiChanged` event if a broker is attached.
+    async fn notify_wiki_changed(&self, path: &str) {
         if let Some(ref broker) = self.broker {
             let envelope = Envelope::new(
                 Topic::WikiChanged,
                 BrokerPayload::WikiChanged {
                     path: path.to_string(),
-                    sync_sequence,
                 },
             );
             if let Err(e) = broker.try_publish(envelope) {

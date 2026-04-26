@@ -3,6 +3,7 @@
 use anyhow::Result;
 use gasket_engine::wiki::{slugify, PageFilter, PageStore, PageType, WikiLinter, WikiPage};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn wiki_base_dir() -> PathBuf {
     dirs::home_dir()
@@ -121,8 +122,9 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
     // Rebuild Tantivy index from SQLite
     let tantivy_dir = wiki_root.join(".tantivy");
     std::fs::create_dir_all(&tantivy_dir).ok();
-    match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
-        Ok(index) => {
+    match gasket_storage::wiki::TantivyPageIndex::open(tantivy_dir) {
+        Ok(tantivy_idx) => {
+            let index = gasket_engine::wiki::PageIndex::new(Arc::new(tantivy_idx));
             let count = index.rebuild(&ps).await?;
             println!("  Tantivy index rebuilt with {} pages", count);
         }
@@ -248,8 +250,9 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("~/.gasket/wiki/.tantivy"));
 
     if tantivy_dir.exists() {
-        match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
-            Ok(index) => {
+        match gasket_storage::wiki::TantivyPageIndex::open(tantivy_dir) {
+            Ok(tantivy_idx) => {
+                let index = gasket_engine::wiki::PageIndex::new(Arc::new(tantivy_idx));
                 let hits = index.search_raw(query, limit).await?;
                 if hits.is_empty() {
                     println!("No results for '{}'", query);

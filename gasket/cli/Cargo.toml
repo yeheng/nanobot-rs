@@ -46,6 +46,7 @@ full = ["default", "all-providers", "workspace-download", "all-channels", "telem
 
 [dependencies]
 gasket-engine = { path = "../engine" }
+gasket-storage = { path = "../storage" }
 gasket-sandbox = { path = "../sandbox" }
 gasket-types = { path = "../types" }
 

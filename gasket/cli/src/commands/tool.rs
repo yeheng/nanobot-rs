@@ -31,8 +31,8 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         if let Err(e) = gasket_engine::create_wiki_tables(&sqlite_store.pool()).await {
             tracing::warn!("Failed to create wiki tables: {}", e);
         }
-        let pi = match gasket_engine::wiki::PageIndex::open(wiki_root.join(".tantivy")) {
-            Ok(idx) => Some(Arc::new(idx)),
+        let pi = match gasket_storage::wiki::TantivyPageIndex::open(wiki_root.join(".tantivy")) {
+            Ok(idx) => Some(Arc::new(gasket_engine::wiki::PageIndex::new(Arc::new(idx)))),
             Err(e) => {
                 tracing::warn!("Tantivy index open failed, search disabled: {}", e);
                 None

@@ -28,6 +28,7 @@ pub struct ResponseFinalizer {
     hooks: Arc<HookRegistry>,
     compactor: Option<Arc<ContextCompactor>>,
     pricing: Option<ModelPricing>,
+    max_tokens: u32,
 }
 
 impl ResponseFinalizer {
@@ -35,11 +36,13 @@ impl ResponseFinalizer {
         hooks: Arc<HookRegistry>,
         compactor: Option<Arc<ContextCompactor>>,
         pricing: Option<ModelPricing>,
+        max_tokens: u32,
     ) -> Self {
         Self {
             hooks,
             compactor,
             pricing,
+            max_tokens,
         }
     }
 
@@ -58,7 +61,7 @@ impl ResponseFinalizer {
         execute_after_response_hooks(&self.hooks, &result, ctx).await;
 
         let cost = calculate_cost(&result.token_usage, self.pricing.as_ref());
-        log_token_stats(&result.token_usage, cost);
+        log_token_stats(&result.token_usage, cost, self.max_tokens);
 
         AgentResponse {
             content: result.content,
@@ -180,11 +183,12 @@ pub(crate) fn calculate_cost(
 }
 
 /// Log token usage statistics.
-pub(crate) fn log_token_stats(usage: &Option<gasket_types::TokenUsage>, cost: f64) {
+pub(crate) fn log_token_stats(usage: &Option<gasket_types::TokenUsage>, cost: f64, max_tokens: u32) {
     if let Some(u) = usage {
+        let remaining = max_tokens.saturating_sub(u.total_tokens as u32);
         info!(
-            "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-            u.input_tokens, u.output_tokens, u.total_tokens, cost
+            "[Token] Used: {} / Max: {} | Remaining: {} | Input: {} | Output: {} | Cost: ${:.4}",
+            u.total_tokens, max_tokens, remaining, u.input_tokens, u.output_tokens, cost
         );
     }
 }

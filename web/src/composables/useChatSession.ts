@@ -1,4 +1,4 @@
-import { computed, nextTick, reactive, ref } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useChatStore } from '@/stores/chatStore';
 import { useIMWebSocket } from '@/hooks/useIMWebSocket';
 import type { Message, SubagentState } from '@/types';
@@ -279,6 +279,13 @@ export function useChatSession(chatId: { value: string }) {
     }
   };
 
+  // Auto-fetch context when connection is established or restored
+  watch(isConnected, (connected, prev) => {
+    if (connected && !prev) {
+      fetchContext();
+    }
+  });
+
   const forceCompact = async () => {
     if (isCompacting.value) return;
     isCompacting.value = true;
@@ -324,6 +331,8 @@ export function useChatSession(chatId: { value: string }) {
     try {
       send(text);
       chatStore.updateMessageStatus(chatId.value, msgId, 'sent');
+      // Refresh context after sending since backend may have updated token usage
+      fetchContext();
       return true;
     } catch (e) {
       chatStore.updateMessageStatus(chatId.value, msgId, 'error');

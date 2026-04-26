@@ -40,7 +40,10 @@ export function useIMWebSocket(
     if (ws.value) {
       isManualClose = true;
       ws.value.close();
-      isManualClose = false;
+      // NOTE: do NOT reset isManualClose here.
+      // onclose is async; resetting it immediately causes the old socket's
+      // onclose to fire with isManualClose=false, triggering a spurious
+      // reconnect that races with the new socket.
     }
 
     const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:3000'}/ws?user_id=${encodeURIComponent(chatId.value)}`;
@@ -51,6 +54,7 @@ export function useIMWebSocket(
       reconnectAttempts.value = 0;
       showReconnectButton.value = false;
       isReconnecting.value = false;
+      isManualClose = false;
     };
 
     ws.value.onmessage = (event) => {
@@ -102,10 +106,12 @@ export function useIMWebSocket(
 
   const close = () => {
     if (ws.value) {
+      isManualClose = true;
       ws.value.close();
     }
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
   };
 

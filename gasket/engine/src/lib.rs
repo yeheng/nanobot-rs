@@ -24,7 +24,6 @@ pub mod heartbeat;
 pub mod hooks;
 pub mod kernel;
 pub mod plugin;
-pub mod search;
 pub mod session;
 pub mod skills;
 pub mod subagents;
@@ -93,8 +92,6 @@ pub use hooks::{
     ExternalShellHook, HookAction, HookBuilder, HookContext, HookPoint, HookRegistry,
     MutableContext, PipelineHook, ReadonlyContext, ToolCallInfo, VaultHook,
 };
-
-// ── Search ─────────────────────────────────────────────────
 
 // ── Skills ─────────────────────────────────────────────────
 pub use skills::{parse_skill_file, Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
