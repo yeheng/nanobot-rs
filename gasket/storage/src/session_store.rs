@@ -87,9 +87,7 @@ impl SessionStore {
         };
 
         let key_str = session_key.to_string();
-        if let Ok(Some((ck_summary, _ck_seq))) =
-            self.load_checkpoint(&key_str, i64::MAX).await
-        {
+        if let Ok(Some((ck_summary, _ck_seq))) = self.load_checkpoint(&key_str, i64::MAX).await {
             if !ck_summary.is_empty() {
                 if !summary.is_empty() {
                     summary.push_str("\n\n[Working Memory]\n");

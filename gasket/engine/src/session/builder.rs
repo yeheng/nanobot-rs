@@ -173,9 +173,10 @@ impl SessionBuilder {
 /// Does NOT initialize PageStore/PageIndex/WikiLog — that happens
 /// during tool registration in `tools/builder.rs`.
 fn is_wiki_available(config: &AgentConfig) -> bool {
-    config.wiki.as_ref().map_or(false, |cfg| {
-        cfg.enabled && std::path::Path::new(&cfg.base_path).exists()
-    })
+    config
+        .wiki
+        .as_ref()
+        .is_some_and(|cfg| cfg.enabled && std::path::Path::new(&cfg.base_path).exists())
 }
 
 /// Build an AgentSession with all services initialized.
