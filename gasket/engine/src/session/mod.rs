@@ -239,7 +239,6 @@ struct PipelineContext {
     messages: Vec<ChatMessage>,
     fctx: FinalizeContext,
     model: String,
-    _pricing: Option<ModelPricing>,
     finalizer: ResponseFinalizer,
 }
 
@@ -490,7 +489,6 @@ impl AgentSession {
                         estimated_tokens: 0,
                     },
                     model: self.config.model.clone(),
-                    _pricing: self.pricing.clone(),
                     finalizer: self.finalizer.clone(),
                 };
                 return Ok((ctx, Some(msg)));
@@ -515,7 +513,6 @@ impl AgentSession {
             messages,
             fctx,
             model: self.config.model.clone(),
-            _pricing: self.pricing.clone(),
             finalizer: self.finalizer.clone(),
         };
         Ok((ctx, None))

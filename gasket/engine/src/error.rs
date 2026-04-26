@@ -45,10 +45,6 @@ pub enum AgentError {
     #[error("Max iterations ({0}) reached")]
     MaxIterations(u32),
 
-    /// Generic error with message
-    #[error("{0}")]
-    Other(String),
-
     /// Internal error preserving the full error chain
     #[error(transparent)]
     Internal(Box<dyn std::error::Error + Send + Sync>),

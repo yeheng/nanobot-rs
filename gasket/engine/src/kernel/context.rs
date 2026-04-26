@@ -72,9 +72,6 @@ impl Clone for RuntimeContext {
 }
 
 /// Minimal config for the LLM iteration loop.
-/// `#[non_exhaustive]` prevents external crates from adding fields
-/// — only LLM loop parameters belong here.
-#[non_exhaustive]
 #[derive(Clone)]
 pub struct KernelConfig {
     pub model: String,

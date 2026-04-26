@@ -55,10 +55,8 @@ pub struct ToolRegistryConfig {
     /// SQLite store for history search (optional).
     pub sqlite_store: Option<SqliteStore>,
     /// Optional wiki PageStore for unified knowledge management.
-    #[allow(dead_code)]
     pub page_store: Option<Arc<crate::wiki::PageStore>>,
     /// Optional wiki PageIndex for semantic search.
-    #[allow(dead_code)]
     pub page_index: Option<Arc<crate::wiki::PageIndex>>,
     /// Optional LLM provider for plan-generation tools.
     pub provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
