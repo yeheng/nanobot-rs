@@ -4,11 +4,18 @@
 
 **Goal:** Eliminate the `AgentContext` enum by moving storage references to the components that use them directly.
 
-**Architecture:** `ContextBuilder` and `ResponseFinalizer` hold `Arc<EventStore>`/`Arc<SessionStore>` directly. `AgentSession` holds `Option<Arc<EventStore>>` for checkpoint and `clear_session()`. Wiki tool providers already hold their own refs — `WikiComponents` on `AgentSession` is unused and removed.
+**Architecture:** `ContextBuilder` and `ResponseFinalizer` hold `Arc<EventStore>`/`Arc<SessionStore>` directly. `AgentSession` holds `Arc<EventStore>`/`Arc<SessionStore>` directly (non-optional — AgentSession IS persistent, period). Wiki tool providers already hold their own refs — `WikiComponents` on `AgentSession` is unused and removed.
 
 **Tech Stack:** Rust, tokio, sqlx, Arc-based dependency sharing
 
 **Spec:** `docs/superpowers/specs/2026-04-26-agent-context-refactor-design.md`
+
+**Critical Rule — Commit Strategy:**
+Each commit MUST compile independently. No exceptions. Tasks 1-4 produce intermediate broken commits in the original plan — that breaks `git bisect` and is unacceptable. There are two valid approaches:
+1. **Single atomic commit**: Make all file changes in one commit (Tasks 1-6), then docs/CLAUDE.md in separate commits.
+2. **Per-file independent commits**: Restructure so each commit only touches files that compile cleanly together.
+
+Either approach is fine. This plan uses **approach 1** — Tasks 1-6 are checkpointed as build-and-fix cycles within a local branch, then committed as a single atomic change.
 
 ---
 
@@ -17,10 +24,11 @@
 | File | Responsibility |
 |------|---------------|
 | `gasket/engine/src/session/context.rs` | **DELETE** — remove AgentContext/PersistentContext |
-| `gasket/engine/src/session/history/builder.rs` | ContextBuilder — replace `context` with direct store refs |
+| `gasket/engine/src/session/history/builder.rs` | ContextBuilder — replace `context` with direct store refs, use `SessionStore::load_summary_with_checkpoint()` |
 | `gasket/engine/src/session/finalizer.rs` | ResponseFinalizer — replace `AgentContext` param with `Arc<EventStore>` field |
-| `gasket/engine/src/session/mod.rs` | AgentSession — remove `context` field, add `event_store`, remove WikiComponents |
-| `gasket/engine/src/session/builder.rs` | SessionBuilder — rewire store refs to consumers |
+| `gasket/engine/src/session/mod.rs` | AgentSession — remove `context` field, add non-optional `event_store`/`session_store`, remove WikiComponents |
+| `gasket/engine/src/session/builder.rs` | SessionBuilder — rewire store refs to consumers, replace `build_wiki_components()` with `is_wiki_available()` |
+| `gasket/storage/src/session.rs` | **ADD** `load_summary_with_checkpoint()` method to `SessionStore` |
 | `gasket/engine/src/lib.rs` | Remove `AgentContext`/`PersistentContext`/`WikiHealth` re-exports |
 
 ---
@@ -73,30 +81,30 @@ pub fn new(
 }
 ```
 
-- [ ] **Step 3: Add private helper for summary + checkpoint loading**
+- [ ] **Step 3: Add `load_summary_with_checkpoint()` to SessionStore (gasket-storage crate)**
 
-Add this helper function (not method) near the top of the file, after imports. This inlines the logic from `AgentContext::load_summary_with_watermark()`:
+This is session reconstruction logic (merge summary + checkpoint), not builder logic. It belongs on `SessionStore`.
+
+In `gasket/storage/src/session.rs`, add:
 
 ```rust
 /// Load summary with watermark and merge latest checkpoint.
-async fn load_summary_with_watermark(
-    session_store: &SessionStore,
+///
+/// Returns `(merged_summary, watermark)`.
+/// If no summary exists, returns `("", 0)`.
+pub async fn load_summary_with_checkpoint(
+    &self,
     session_key: &SessionKey,
-) -> Result<(String, i64), AgentError> {
-    let (mut summary, watermark) = match session_store.load_summary(session_key).await {
+) -> Result<(String, i64), StoreError> {
+    let (mut summary, watermark) = match self.load_summary(session_key).await {
         Ok(Some((content, watermark))) => (content, watermark),
         Ok(None) => (String::new(), 0),
-        Err(e) => {
-            return Err(AgentError::SessionError(format!(
-                "Failed to load summary for {}: {}",
-                session_key, e
-            )))
-        }
+        Err(e) => return Err(e),
     };
 
     let key_str = session_key.to_string();
     if let Ok(Some((ck_summary, _ck_seq))) =
-        session_store.load_checkpoint(&key_str, i64::MAX).await
+        self.load_checkpoint(&key_str, i64::MAX).await
     {
         if !ck_summary.is_empty() {
             if !summary.is_empty() {
@@ -117,7 +125,10 @@ Replace the three `self.context.*` calls in `build()`:
 Step 2 (line 127-131) — load summary:
 ```rust
 let (existing_summary, watermark) =
-    load_summary_with_watermark(&self.session_store, session_key).await?;
+    self.session_store.load_summary_with_checkpoint(session_key).await
+    .map_err(|e| AgentError::SessionError(
+        format!("Failed to load summary for {}: {}", session_key, e)
+    ))?;
 ```
 
 Step 3 (line 133-143) — save user event:
@@ -158,11 +169,12 @@ Add: `use gasket_storage::EventStore;` (if not already imported)
 Run: `cargo build --package gasket-engine`
 Expected: Compile errors in `session/mod.rs`, `session/builder.rs`, `session/finalizer.rs` (expected — we fix those next). ContextBuilder itself should compile cleanly.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Local checkpoint (squashed into final atomic commit)**
 
 ```bash
+# Local checkpoint — will be squashed. Do not push.
 git add gasket/engine/src/session/history/builder.rs
-git commit -m "refactor: ContextBuilder holds EventStore/SessionStore directly instead of AgentContext"
+git commit -m "checkpoint: ContextBuilder store refs"
 ```
 
 ---
@@ -275,11 +287,12 @@ Add: `use gasket_storage::EventStore;`
 Run: `cargo build --package gasket-engine`
 Expected: Compile errors in `session/mod.rs` and `session/builder.rs` (expected — fix next).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Local checkpoint**
 
 ```bash
+# Local checkpoint — will be squashed. Do not push.
 git add gasket/engine/src/session/finalizer.rs
-git commit -m "refactor: ResponseFinalizer holds EventStore directly instead of AgentContext"
+git commit -m "checkpoint: ResponseFinalizer store refs"
 ```
 
 ---
@@ -293,13 +306,13 @@ git commit -m "refactor: ResponseFinalizer holds EventStore directly instead of 
 
 - [ ] **Step 1: Update `AgentSession` struct fields (line 241-258)**
 
-Remove `context: AgentContext` and `wiki_components: Option<WikiComponents>`. Add `event_store`:
+Remove `context: AgentContext` and `wiki_components: Option<WikiComponents>`. Add non-optional store fields:
 
 ```rust
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
-    event_store: Option<Arc<EventStore>>,
-    session_store: Option<Arc<SessionStore>>,
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
     config: AgentConfig,
     system_prompt: String,
     hooks: Arc<HookRegistry>,
@@ -309,6 +322,8 @@ pub struct AgentSession {
     pending_done: tokio_util::task::TaskTracker,
 }
 ```
+
+**Design note:** Stores are non-optional. `AgentSession` IS a persistent session — making stores `Option` just recreates the `Stateless` pattern under a different name. Tests use in-memory SQLite via `setup_test_db()`, exactly like existing tests.
 
 - [ ] **Step 2: Remove `WikiComponents` struct, `WikiHealth` enum, and wiki accessor methods**
 
@@ -325,11 +340,9 @@ Remove imports no longer needed:
 
 ```rust
 pub async fn clear_session(&self, session_key: &SessionKey) {
-    if let Some(ref store) = self.event_store {
-        match store.clear_session(session_key).await {
-            Ok(_) => info!("Session '{}' cleared", session_key),
-            Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
-        }
+    match self.event_store.clear_session(session_key).await {
+        Ok(_) => info!("Session '{}' cleared", session_key),
+        Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
     }
 }
 ```
@@ -366,11 +379,11 @@ if let (Some(ref compactor), AgentContext::Persistent(ref persistent_ctx)) =
 }
 
 // After:
-if let (Some(ref compactor), Some(ref store)) = (&self.compactor, &self.event_store) {
+if let Some(ref compactor) = &self.compactor {
     runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
         session_key: fctx.session_key.clone(),
         compactor: compactor.clone(),
-        event_store: store.clone(),
+        event_store: self.event_store.clone(),
     });
 }
 ```
@@ -389,24 +402,7 @@ async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentRes
 
 - [ ] **Step 8: Update `prepare_pipeline()` — pass stores to ContextBuilder**
 
-`AgentSession` needs both `event_store` and `session_store`. Update struct to include `session_store: Option<Arc<SessionStore>>` alongside `event_store`:
-
-```rust
-pub struct AgentSession {
-    runtime_ctx: RuntimeContext,
-    event_store: Option<Arc<EventStore>>,
-    session_store: Option<Arc<SessionStore>>,
-    config: AgentConfig,
-    system_prompt: String,
-    hooks: Arc<HookRegistry>,
-    compactor: Option<Arc<ContextCompactor>>,
-    pricing: Option<ModelPricing>,
-    finalizer: ResponseFinalizer,
-    pending_done: tokio_util::task::TaskTracker,
-}
-```
-
-Then update `prepare_pipeline()`:
+(The `session_store` field is already declared in Step 1's struct definition. Now wire it through `prepare_pipeline()`:)
 
 ```rust
 async fn prepare_pipeline(
@@ -421,14 +417,9 @@ async fn prepare_pipeline(
         ..Default::default()
     };
 
-    let event_store = self.event_store.as_ref()
-        .ok_or_else(|| AgentError::SessionError("No event store available".to_string()))?;
-    let session_store = self.session_store.as_ref()
-        .ok_or_else(|| AgentError::SessionError("No session store available".to_string()))?;
-
     let builder = ContextBuilder::new(
-        event_store.clone(),
-        session_store.clone(),
+        self.event_store.clone(),
+        self.session_store.clone(),
         self.system_prompt.clone(),
         None,
         self.hooks.clone(),
@@ -439,7 +430,7 @@ async fn prepare_pipeline(
 }
 ```
 
-- [ ] **Step 10: Update imports**
+- [ ] **Step 9: Update imports**
 
 Remove: `use crate::session::context::AgentContext;`
 Remove: `pub use context::{AgentContext, PersistentContext};` (line 16)
@@ -447,16 +438,17 @@ Add: `use gasket_storage::EventStore;` if not already imported
 
 Remove: `use crate::wiki::{PageIndex, PageStore, WikiLog};` — only needed if other code in this file uses them. Check and keep only what's needed.
 
-- [ ] **Step 11: Verify build**
+- [ ] **Step 10: Verify build**
 
 Run: `cargo build --package gasket-engine`
 Expected: Compile errors only in `session/builder.rs` (fix next).
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 11: Local checkpoint**
 
 ```bash
+# Local checkpoint — will be squashed. Do not push.
 git add gasket/engine/src/session/mod.rs
-git commit -m "refactor: AgentSession uses direct store refs instead of AgentContext"
+git commit -m "checkpoint: AgentSession store refs + WikiComponents removal"
 ```
 
 ---
@@ -495,8 +487,8 @@ let finalizer = ResponseFinalizer::new(
 ```rust
 Ok(AgentSession {
     runtime_ctx,
-    event_store: Some(event_store),
-    session_store: Some(session_store),
+    event_store,
+    session_store,
     config: self.config,
     system_prompt,
     hooks,
@@ -509,35 +501,45 @@ Ok(AgentSession {
 
 Remove `wiki_components` field and `context` field.
 
-- [ ] **Step 4: Update wiki components handling**
+- [ ] **Step 4: Simplify wiki availability check**
 
-`build_wiki_components()` should return components only for tool registration. If no external code uses the wiki accessors on `AgentSession`, the result can be used locally and dropped:
+Replace `build_wiki_components()` (which constructs full WikiComponents only to check if wiki works) with a lightweight probe:
 
 ```rust
-// Build wiki components for tool registration only
-let wiki_components = build_wiki_components(&self.sqlite_store, &self.config).await;
+/// Check if wiki is configured and minimally functional.
+///
+/// Returns true if wiki config is enabled and the base path exists.
+/// Does NOT initialize PageStore/PageIndex/WikiLog — that happens
+/// during tool registration in `tools/builder.rs`.
+fn is_wiki_available(config: &AgentConfig) -> bool {
+    config.wiki.as_ref().map_or(false, |cfg| {
+        cfg.enabled && std::path::Path::new(&cfg.base_path).exists()
+    })
+}
+```
 
-// Append wiki preparation instructions when wiki is enabled.
-if wiki_components.is_some() {
+Usage in `build()`:
+
+```rust
+if is_wiki_available(&self.config) {
     system_prompt.push_str("\n\n");
     system_prompt.push_str(WIKI_PREPARATION_PROMPT);
 }
-// wiki_components is used during tool registration elsewhere
-// and NOT stored on AgentSession
 ```
 
-**Note:** If `build_wiki_components()` is currently called by code outside `session/` (e.g., in `cli/`), check how `WikiToolProvider` is constructed. The wiki components need to be passed to the tool provider instead. Search for `WikiToolProvider::new` call sites.
+**Note:** Verified — `WikiToolProvider` gets `page_store`/`page_index` from `ToolRegistryConfig` in `tools/builder.rs`, not from `AgentSession.wiki_components`. The wiki accessor methods on `AgentSession` (`page_store()`, `page_index()`, `wiki_log()`, `wiki_health()`) have zero external callers — confirmed by grep. So `wiki_components` can be removed from `AgentSession` entirely, and `build_wiki_components()` is replaced by `is_wiki_available()` for prompt decisions only.
 
 - [ ] **Step 5: Verify build**
 
 Run: `cargo build --package gasket-engine`
 Expected: Compile errors in `lib.rs` (fix next).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Local checkpoint**
 
 ```bash
+# Local checkpoint — will be squashed. Do not push.
 git add gasket/engine/src/session/builder.rs
-git commit -m "refactor: SessionBuilder wires store refs directly to consumers"
+git commit -m "checkpoint: SessionBuilder store refs"
 ```
 
 ---
@@ -581,11 +583,12 @@ Expected: Clean compile (or errors only from external callers).
 Run: `grep -r "AgentContext\|PersistentContext\|WikiHealth" --include="*.rs" gasket/cli/ gasket/channels/ gasket/broker/`
 Expected: No matches. If there are matches, update those files too.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Local checkpoint**
 
 ```bash
+# Local checkpoint — will be squashed. Do not push.
 git add gasket/engine/src/lib.rs
-git commit -m "refactor: remove AgentContext/PersistentContext/WikiHealth from public API"
+git commit -m "checkpoint: lib.rs re-exports cleanup"
 ```
 
 ---
@@ -615,40 +618,105 @@ rm gasket/engine/src/session/context.rs
 Run: `cargo build --package gasket-engine`
 Expected: Clean compile.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Atomic commit (squash all Tasks 1-6 into one)**
 
 ```bash
-git add -A gasket/engine/src/session/
-git commit -m "refactor: delete AgentContext — storage I/O now uses direct store refs"
+# Squash all Tasks 1-6 checkpoints into a single atomic commit:
+git reset --soft HEAD~5  # count of checkpoint commits above
+git add -A
+git commit -m "refactor: eliminate AgentContext — components hold store refs directly
+
+Remove AgentContext enum and PersistentContext struct. Components that
+previously depended on AgentContext for storage I/O now hold Arc<EventStore>
+or Arc<SessionStore> directly (non-optional — AgentSession IS persistent):
+
+- ContextBuilder: holds Arc<EventStore> + Arc<SessionStore>
+- ResponseFinalizer: holds Arc<EventStore>
+- AgentSession: holds Arc<EventStore> + Arc<SessionStore> (non-optional)
+- SessionStore: gains load_summary_with_checkpoint() method
+
+Also remove WikiComponents/WikiHealth from AgentSession (unused — wiki
+tools get refs from ToolRegistryConfig), replace build_wiki_components()
+with lightweight is_wiki_available() probe, and drop corresponding
+re-exports from lib.rs."
 ```
 
 ---
 
 ### Task 7: Verify full workspace build + tests
 
-**Files:** None (verification only)
+**Files:** None (verification only, plus test migration/creation)
 
-- [ ] **Step 1: Full workspace build**
+**Test Migration from `context.rs`:**
+
+| Original test | Action |
+|------|--------|
+| `test_stateless_context_is_not_persistent` | Delete — `Stateless` variant removed |
+| `test_stateless_load_session` | Delete — `Stateless` variant removed |
+| `test_stateless_save_event` | Delete — `Stateless` variant removed |
+| `test_stateless_context_clear_session` | Delete — `Stateless` variant removed |
+| `test_persistent_context_creation` | Migrate to `history/builder.rs` — verifies ContextBuilder store setup with in-memory SQLite |
+| `test_persistent_context_save_event` | Migrate to `finalizer.rs` — verifies ResponseFinalizer saves assistant event correctly |
+
+**New tests to add:**
+
+| File | Test | What it covers |
+|------|------|----------------|
+| `history/builder.rs` | `test_builder_creates_chat_request` | `ContextBuilder::build()` with in-memory SQLite produces a valid `ChatRequest` |
+| `finalizer.rs` | `test_finalizer_persists_event` | `finalize()` persists assistant event to `EventStore` |
+| `session/mod.rs` | `test_clear_session_works` | `clear_session()` clears events for given session key |
+
+- [ ] **Step 1: Delete Stateless tests — 4 tests removed from `context.rs`**
+
+These tests tested the `Stateless` variant which no longer exists. No replacement needed.
+
+- [ ] **Step 2: Migrate `test_persistent_context_creation` to `history/builder.rs`**
+
+The test verifies `ContextBuilder` can use an in-memory SQLite-backed store. Create `setup_test_db()` helper (already in `context.rs` — move it) and verify `builder.build()` succeeds.
+
+- [ ] **Step 3: Migrate `test_persistent_context_save_event` to `finalizer.rs`**
+
+The test verifies `ResponseFinalizer::finalize()` persists an assistant event. Use `setup_test_db()` and verify the event appears in the store after `finalize()` completes.
+
+- [ ] **Step 4: Add `clear_session` test to `session/mod.rs`**
+
+```rust
+#[tokio::test]
+async fn test_clear_session_works() {
+    let pool = setup_test_db().await;
+    let event_store = Arc::new(EventStore::new(pool.clone()));
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let session = /* build AgentSession with event_store, session_store */;
+    // Save an event first
+    let event = SessionEvent { session_key: "test:session".into(), ... };
+    event_store.append_event(&event).await.unwrap();
+    // Clear session
+    session.clear_session(&SessionKey::parse("test:session").unwrap()).await;
+    // Verify events for this session are gone
+    let events = event_store.get_session_history(&SessionKey::parse("test:session").unwrap()).await.unwrap();
+    assert!(events.is_empty());
+}
+```
+
+- [ ] **Step 5: Full workspace build**
 
 Run: `cargo build --workspace`
 Expected: Clean compile.
 
-- [ ] **Step 2: Run existing tests**
+- [ ] **Step 6: Run engine tests**
 
 Run: `cargo test --package gasket-engine`
-Expected: All tests pass. Tests previously in `context.rs` are now deleted (Stateless tests) or migrated.
+Expected: All tests pass, including migrated and new tests.
 
-- [ ] **Step 3: Run full workspace tests**
+- [ ] **Step 7: Run full workspace tests**
 
 Run: `cargo test --workspace`
 Expected: All tests pass.
 
-- [ ] **Step 4: Fix any remaining compilation errors**
-
-If `gasket-cli` or other crates reference `AgentContext`, update them to use the new API.
+- [ ] **Step 8: Verify no remaining AgentContext references in code**
 
 Run: `grep -r "AgentContext" --include="*.rs" gasket/`
-Expected: No matches outside spec/docs files.
+Expected: No matches outside spec/docs files. (Already verified: zero matches in cli/, channels/, broker/)
 
 ---
 

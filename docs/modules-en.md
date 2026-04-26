@@ -353,7 +353,6 @@ flowchart LR
 |------|----------------|
 | `mod.rs` | `AgentSession` — Session management core, wraps kernel execution |
 | `config.rs` | `AgentConfig` — Agent configuration with kernel conversion support |
-| `context.rs` | `AgentContext` enum — Zero-cost enum dispatch (Persistent/Stateless) |
 | `compactor.rs` | `ContextCompactor` — Context compression (based on token budget) |
 | `prompt.rs` | Bootstrap file loading, skills context, token truncation |
 | `store.rs` | `MemoryStore` — Memory store wrapper (exports MemoryStore only) |
@@ -375,35 +374,15 @@ flowchart LR
 ```rust
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,    // Kernel execution context
-    context: AgentContext,          // Persistent/stateless context
+    event_store: Arc<EventStore>,   // Event store (non-optional — persistent session)
+    session_store: Arc<SessionStore>, // Session store (non-optional)
     config: AgentConfig,            // Agent configuration
-    workspace: PathBuf,             // Workspace path
     system_prompt: String,          // System prompt
-    skills_context: Option<String>, // Skills context
     hooks: Arc<HookRegistry>,       // Hook registry
-    history_config: gasket_storage::HistoryConfig, // History configuration
     compactor: Option<Arc<ContextCompactor>>, // Context compactor
-    indexing_service: Option<Arc<IndexingService>>, // Indexing service
-    wiki: Option<WikiComponents>,  // Wiki knowledge system
     pricing: Option<ModelPricing>,  // Optional pricing for cost calculation
+    finalizer: ResponseFinalizer,   // Response post-processor
     pending_done: tokio_util::task::TaskTracker, // Graceful shutdown tracker
-}
-```
-
-### AgentContext Enum
-
-```rust
-pub enum AgentContext {
-    Persistent(PersistentContext),  // Main agent with full event sourcing
-    Stateless,                      // Subagent with no persistence
-}
-
-pub struct PersistentContext {
-    pub event_store: Arc<EventStore>,
-    pub sqlite_store: Arc<SqliteStore>,
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
-    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 ```
 

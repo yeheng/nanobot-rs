@@ -362,56 +362,36 @@ pub struct SessionMetadata {
 - **last_consolidated_event**: Tracks the last event included in a summary; used for incremental summarization
 - **total_events/total_tokens**: Running counters for resource monitoring and limits
 
-### 3.8 AgentContext (Enum-based)
+### 3.8 Direct Store Refs Pattern (AgentContext removed)
 
-Zero-cost enum dispatch for agent state management — no runtime overhead.
+Components hold `Arc<EventStore>` / `Arc<SessionStore>` directly, eliminating the intermediate `AgentContext` enum layer.
 
 ```rust
-#[derive(Debug, Clone)]
-pub enum AgentContext {
-    /// Persistent context (main Agent)
-    Persistent(PersistentContext),
-
-    /// Stateless context (sub Agent)
-    Stateless,
+// ContextBuilder — holds store refs directly
+pub struct ContextBuilder {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 
-/// Persistent context data for main agents.
-#[derive(Clone)]
-pub struct PersistentContext {
-    /// Event store for persisting events
-    pub event_store: Arc<EventStore>,
-    /// SQLite store for saving embeddings (semantic recall index)
-    pub sqlite_store: Arc<SqliteStore>,
-    /// Optional text embedder for automatic embedding generation
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
+// ResponseFinalizer — holds event store directly
+pub struct ResponseFinalizer {
+    event_store: Arc<EventStore>,
+    // ...
+}
+
+// AgentSession — non-optional store fields (AgentSession IS persistent)
+pub struct AgentSession {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 ```
 
-**Key Methods on AgentContext:**
-
-| Method | Description |
-|--------|-------------|
-| `persistent(event_store, sqlite_store) -> Self` | Create persistent variant |
-| `is_persistent(&self) -> bool` | Check variant |
-| `load_session(&self, key) -> Session` | Load from event store |
-| `save_event(&self, event) -> Result` | Append event |
-| `get_history(&self, key, branch) -> Vec<SessionEvent>` | Get branch history |
-| `recall_history(&self, key, embedding, top_k) -> Vec<String>` | Semantic recall |
-| `clear_session(&self, key) -> Result` | Clear session |
-
-**Variants:**
-
-| Variant | Purpose |
-|---------|---------|
-| `Persistent(PersistentContext)` | Main agent, full event sourcing |
-| `Stateless` | Subagent, no persistence |
-
 **Design Benefits:**
-- Zero runtime dispatch overhead (enum dispatch vs trait object vtable)
-- Better cache locality (enum variants are inline)
-- Compile-time exhaustiveness checking
+- Eliminates indirection — components call store methods directly
+- Non-optional design — AgentSession is inherently persistent
+- Cleaner dependency graph
 
 ### 3.9 ContextCompactor
 

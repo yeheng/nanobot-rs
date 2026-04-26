@@ -380,11 +380,11 @@ flowchart TB
     end
     
     subgraph New_Way
-        E[AgentContext Enum]
-        E -->|Persistent| P2[Persistent Context]
-        E -->|Stateless| S2[Stateless]
+        E[Direct Store Refs]
+        E -->|Arc EventStore| P2[ContextBuilder / ResponseFinalizer]
+        E -->|Arc SessionStore| P2
     end
-    
+
     style E fill:#C8E6C9
 ```
 

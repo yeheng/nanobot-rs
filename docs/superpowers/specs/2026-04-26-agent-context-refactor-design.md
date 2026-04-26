@@ -18,7 +18,7 @@
 Eliminate `AgentContext` entirely. Storage references move to the components that actually need them:
 - **Preprocess (history loading)**: `ContextBuilder` holds `Arc<EventStore>` + `Arc<SessionStore>` directly
 - **Postprocess (event persistence)**: `ResponseFinalizer` holds `Arc<EventStore>` directly
-- **Checkpoint**: `AgentSession` holds `Option<Arc<EventStore>>` for callback construction
+- **Checkpoint**: `AgentSession` holds `Arc<EventStore>` directly for callback construction
 - **Wiki**: Tools capture their own storage references at registration
 
 Core infrastructure (history loading, event persistence, compaction) stays as direct method calls — not hooks — because ordering is critical and these behaviors are not pluggable.
@@ -51,11 +51,11 @@ pub struct ContextBuilder {
 ```
 
 `build()` now calls `self.event_store.*` and `self.session_store.*` directly instead of `self.context.*`:
-- `self.session_store.load_summary(session_key)` replaces `self.context.load_summary_with_watermark(session_key)`
+- `self.session_store.load_summary_with_checkpoint(session_key)` replaces `self.context.load_summary_with_watermark(session_key)` (logic moved to `SessionStore` as a new method)
 - `self.event_store.append_event(&user_event)` replaces `self.context.save_event(user_event)`
 - `self.event_store.get_events_after_sequence(...)` replaces `self.context.get_events_after_watermark(...)`
 
-The checkpoint loading logic (merging latest checkpoint into summary) moves from `AgentContext::load_summary_with_watermark()` into a private helper in `ContextBuilder`.
+The checkpoint loading logic (merging latest checkpoint into summary) moves from `AgentContext::load_summary_with_watermark()` to `SessionStore::load_summary_with_checkpoint()` — it's session reconstruction logic, not builder logic.
 
 ### 3. ResponseFinalizer: Direct Store Reference
 
@@ -88,15 +88,15 @@ pub(crate) async fn finalize(&self, result: ExecutionResult, ctx: &FinalizeConte
 `SessionCheckpointCallback` remains a kernel callback (not a `PipelineHook`) — it runs inside the kernel execution loop, not at a pipeline stage.
 
 Changes:
-- `AgentSession` gains `event_store: Option<Arc<EventStore>>` field
+- `AgentSession` gains `event_store: Arc<EventStore>` field (non-optional — AgentSession IS persistent)
 - `preprocess()` constructs `SessionCheckpointCallback` from `self.event_store` directly — no `AgentContext` destructure
 
 ```rust
-if let (Some(ref compactor), Some(ref store)) = (&self.compactor, &self.event_store) {
+if let Some(ref compactor) = &self.compactor {
     runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
         session_key: fctx.session_key.clone(),
         compactor: compactor.clone(),
-        event_store: store.clone(),
+        event_store: self.event_store.clone(),
     });
 }
 ```
@@ -127,7 +127,8 @@ async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentRes
 ### 6. AgentSession Changes
 
 - Remove `context: AgentContext` field
-- Add `event_store: Option<Arc<EventStore>>` for checkpoint callback
+- Add `event_store: Arc<EventStore>` for checkpoint callback (non-optional)
+- Add `session_store: Arc<SessionStore>` for ContextBuilder construction (non-optional)
 - Remove `wiki_components: Option<WikiComponents>` — tools hold their own references
 - Remove `WikiComponents` struct and `WikiHealth` enum
 - Remove methods: `page_store()`, `page_index()`, `wiki_log()`, `wiki_health()`
@@ -135,11 +136,9 @@ async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentRes
 
 ```rust
 pub async fn clear_session(&self, session_key: &SessionKey) {
-    if let Some(ref store) = self.event_store {
-        match store.clear_session(session_key).await {
-            Ok(_) => info!("Session '{}' cleared", session_key),
-            Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
-        }
+    match self.event_store.clear_session(session_key).await {
+        Ok(_) => info!("Session '{}' cleared", session_key),
+        Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
     }
 }
 ```
@@ -153,7 +152,7 @@ pub async fn clear_session(&self, session_key: &SessionKey) {
 - Pass `event_store` to `ResponseFinalizer`
 - Pass `event_store` to `AgentSession` (for checkpoint + clear_session)
 - Wiki tools capture `Arc<PageStore>`/`Arc<PageIndex>`/`Arc<WikiLog>` at registration time
-- `build_wiki_components()` returns components only for tool registration, not stored on session
+- `build_wiki_components()` replaced by `is_wiki_available()` — lightweight config+path probe, no full component construction
 
 ```rust
 let event_store = Arc::new(EventStore::new(pool));
@@ -179,7 +178,8 @@ let finalizer = ResponseFinalizer::new(
 );
 
 Ok(AgentSession {
-    event_store: Some(event_store),
+    event_store,
+    session_store,
     compactor,
     hooks,
     finalizer,
@@ -203,17 +203,19 @@ Existing tests in `session/context.rs`:
 New tests needed:
 - `history/builder.rs`: Test `ContextBuilder::build()` with in-memory SQLite (integration test)
 - `finalizer.rs`: Test `ResponseFinalizer::finalize()` saves assistant event correctly
-- `session/mod.rs`: Test `clear_session()` works with `Some(event_store)` and is no-op with `None`
+- `session/mod.rs`: Test `clear_session()` works correctly (stores always present)
+- `gasket/storage/src/session.rs`: Test `load_summary_with_checkpoint()` (unit test for new SessionStore method)
 
 ### 9. File Changes Summary
 
 | File | Action |
 |------|--------|
 | `session/context.rs` | Delete entire file |
-| `session/mod.rs` | Remove context re-exports, remove WikiComponents/WikiHealth, add `event_store` field, rewrite `clear_session()` |
-| `session/builder.rs` | Pass store refs to ContextBuilder and ResponseFinalizer, remove WikiComponents from AgentSession |
-| `session/history/builder.rs` | Replace `context: AgentContext` with `event_store` + `session_store` fields, inline checkpoint loading helper |
+| `session/mod.rs` | Remove context re-exports, remove WikiComponents/WikiHealth, add non-optional `event_store`/`session_store` fields, rewrite `clear_session()` |
+| `session/builder.rs` | Pass store refs to ContextBuilder and ResponseFinalizer, replace `build_wiki_components()` with `is_wiki_available()` |
+| `session/history/builder.rs` | Replace `context: AgentContext` with `event_store` + `session_store` fields, use `SessionStore::load_summary_with_checkpoint()` |
 | `session/finalizer.rs` | Replace `AgentContext` param with `Arc<EventStore>` field, keep save/compact as direct calls |
+| `storage/src/session.rs` | Add `load_summary_with_checkpoint()` method to `SessionStore` |
 | `hooks/mod.rs` | No changes (no new hooks) |
 | `lib.rs` | Remove `AgentContext`/`PersistentContext`/`WikiHealth` re-exports |
 
@@ -240,7 +242,10 @@ The following doc files reference `AgentContext` and need updating:
 3. `AgentSession` has no `context` field
 4. `ContextBuilder` holds `Arc<EventStore>` + `Arc<SessionStore>` directly
 5. `ResponseFinalizer` holds `Arc<EventStore>` directly
-6. `clear_session()` on `AgentSession` works via `self.event_store`
-7. All existing integration tests pass
-8. Migrated tests (from `context.rs`) pass in their new locations
-9. Unit tests for `AgentSession` can run without a database (by not passing store refs)
+6. `AgentSession` holds non-optional `Arc<EventStore>` + `Arc<SessionStore>` — no `Option` wrappers
+7. `clear_session()` on `AgentSession` works via `self.event_store` (no `if let Some` guard)
+8. `SessionStore` has `load_summary_with_checkpoint()` method for summary+checkpoint merging
+9. `build_wiki_components()` replaced by lightweight `is_wiki_available()` config probe
+10. All existing integration tests pass
+11. Migrated tests (from `context.rs`) pass in their new locations
+12. All tests use in-memory SQLite (no `Option`-based "no database" pattern)

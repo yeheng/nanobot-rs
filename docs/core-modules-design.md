@@ -106,10 +106,7 @@ pub struct EventMetadata {
 
 ```rust
 pub struct ContextBuilder {
-    context: AgentContext,
-    system_prompt: String,
-    skills_context: Option<String>,
-    hooks: Arc<HookRegistry>,
+    context: AgentContext,  // 已移除 — 现在为 event_store + session_store
     history_config: HistoryConfig,
     memory_loader: Option<MemoryLoader>,
 }
@@ -784,7 +781,8 @@ Session 是**有状态**的 orchestration 层，Kernel 是**纯函数**的执行
 ```rust
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,           // Kernel 执行上下文
-    context: AgentContext,                 // 持久化/无状态上下文
+    event_store: Arc<EventStore>,           // 事件存储（非可选）
+    session_store: Arc<SessionStore>,       // 会话存储（非可选）
     config: AgentConfig,                   // Agent 配置
     workspace: PathBuf,                    // 工作目录
     system_prompt: String,                 // 系统提示
@@ -863,7 +861,7 @@ impl AgentSession {
 async fn finalize_response(
     result: ExecutionResult,
     ctx: &FinalizeContext,
-    context: &AgentContext,
+    context: &AgentContext,  // 已移除 — event_store 现在是 ResponseFinalizer 字段
     hooks: &HookRegistry,
     model: &str,
     compactor: Option<&Arc<ContextCompactor>>,
@@ -2517,9 +2515,9 @@ pub struct VaultHook {
 pub struct HistoryRecallHook {
     embedder: Arc<TextEmbedder>,
     k: usize,
-    context: AgentContext,
+    event_store: Arc<EventStore>,  // 已从 AgentContext 迁移
+    session_store: Arc<SessionStore>,
 }
-
 /// External Shell Hook - 执行外部脚本
 /// 文件位置:
 ///   ~/.gasket/hooks/pre_request.sh   → BeforeRequest

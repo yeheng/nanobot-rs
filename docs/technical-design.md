@@ -106,37 +106,35 @@ pub enum StreamEvent {
 
 ## 2. 核心抽象层
 
-### 2.1 AgentContext: 状态隔离抽象
+### 2.1 直接存储引用模式
 
 ```rust
-/// 会话上下文枚举 - 编译期确定持久化策略
-pub enum AgentContext {
-    Persistent(PersistentContext),  // 保存到 SQLite
-    Stateless(StatelessContext),    // 内存-only
+// 组件直接持有存储引用，无中间抽象层
+// ContextBuilder
+pub struct ContextBuilder {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 
-impl AgentContext {
-    /// 统一接口，内部自动分发
-    pub async fn save_event(&self, event: SessionEvent) -> Result<()> {
-        match self {
-            Self::Persistent(ctx) => ctx.event_store.save(event).await,
-            Self::Stateless(ctx) => {
-                ctx.events.lock().unwrap().push(event);
-                Ok(())
-            }
-        }
-    }
-    
-    pub fn is_persistent(&self) -> bool {
-        matches!(self, Self::Persistent(_))
-    }
+// ResponseFinalizer
+pub struct ResponseFinalizer {
+    event_store: Arc<EventStore>,
+    // ...
+}
+
+// AgentSession — 非可选，AgentSession 本身就是持久化会话
+pub struct AgentSession {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 ```
 
-**设计决策**: 使用枚举而非 Trait Object，原因：
-- 编译期类型确定，零运行时开销
-- 避免虚函数表开销
-- 明确表达两种互斥状态
+**设计决策**: 组件直接持有 `Arc<EventStore>` / `Arc<SessionStore>`，原因：
+- 消除间接层，依赖关系更清晰
+- 非可选设计 — AgentSession 本身就是持久化会话
+- 存储调用内联，无 enum dispatch 开销
 
 ### 2.2 LlmProvider: Provider 抽象
 
@@ -399,7 +397,7 @@ async fn execute_streaming(
 async fn finalize_response(
     result: ExecutionResult,
     ctx: &FinalizeContext,
-    context: &AgentContext,
+    event_store: &EventStore,
     hooks: &HookRegistry,
 ) -> AgentResponse {
     // 1. 脱敏处理后保存到历史
@@ -825,7 +823,8 @@ impl LlmProvider for CustomProvider {
 /// 1. 使用 Arc 共享大对象
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,           // Clone: 增加 Arc 计数
-    context: AgentContext,                 // Clone: 增加 Arc 计数
+    event_store: Arc<EventStore>,          // Clone: 增加 Arc 计数
+    session_store: Arc<SessionStore>,      // Clone: 增加 Arc 计数
     hooks: Arc<HookRegistry>,              // 共享
     compactor: Option<Arc<ContextCompactor>>, // 共享
     indexing_service: Option<Arc<IndexingService>>, // 共享

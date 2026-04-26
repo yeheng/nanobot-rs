@@ -399,18 +399,18 @@ flowchart TB
     end
 
     subgraph 新方法
-        E["AgentContext 枚举"]
-        E -->|Persistent| P2[持久化上下文]
-        E -->|Stateless| S2[无状态]
+        E["直接 Store 引用"]
+        E -->|Arc EventStore| P2[ContextBuilder / ResponseFinalizer]
+        E -->|Arc SessionStore| P2
     end
 
     style E fill:#C8E6C9
 ```
 
 **好处**：
-- 编译期就知道类型
-- 零运行时开销
-- 代码更清晰
+- 组件直接持有存储引用，消除间接层
+- 非可选设计 — AgentSession 本身就是持久化会话
+- 代码更简洁清晰
 
 ### 3. 文件 + 数据库混合存储
 

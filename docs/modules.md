@@ -363,7 +363,6 @@ flowchart LR
 |------|------|
 | `mod.rs` | `AgentSession` — 会话管理核心，包装 kernel 执行 |
 | `config.rs` | `AgentConfig` — Agent 配置（含 kernel 转换支持） |
-| `context.rs` | `AgentContext` 枚举 — 零成本枚举分发（Persistent/Stateless） |
 | `compactor.rs` | `ContextCompactor` — 上下文压缩（基于 token budget） |
 | `prompt.rs` | 引导文件加载、技能上下文、token 截断 |
 | `store.rs` | `MemoryStore` — 内存存储包装器（仅导出 MemoryStore） |
@@ -385,34 +384,15 @@ flowchart LR
 ```rust
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,    // kernel 执行上下文
-    context: AgentContext,          // 持久化/无状态上下文
+    event_store: Arc<EventStore>,   // 事件存储（非可选 — 持久化会话）
+    session_store: Arc<SessionStore>, // 会话存储（非可选）
     config: AgentConfig,            // Agent 配置
-    workspace: PathBuf,             // 工作空间路径
     system_prompt: String,          // 系统提示
-    skills_context: Option<String>, // 技能上下文
     hooks: Arc<HookRegistry>,       // Hook 注册表
-    history_config: gasket_storage::HistoryConfig, // 历史配置
     compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
-    indexing_service: Option<Arc<HistoryIndexingService>>, // 索引服务
     pricing: Option<ModelPricing>,  // 可选价格配置
+    finalizer: ResponseFinalizer,   // 响应后处理
     pending_done: tokio_util::task::TaskTracker, // 优雅关闭追踪器
-}
-```
-
-### AgentContext 枚举
-
-```rust
-pub enum AgentContext {
-    Persistent(PersistentContext),  // 主 Agent，完整事件溯源
-    Stateless,                      // 子 Agent，无持久化
-}
-
-pub struct PersistentContext {
-    pub event_store: Arc<EventStore>,
-    pub sqlite_store: Arc<SqliteStore>,
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
-    pub coordinator: Option<Arc<HistoryCoordinator>>,
 }
 ```
 
