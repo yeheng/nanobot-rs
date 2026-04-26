@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// A scheduled job (config from file, state from database)
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ pub(super) struct CronJobFrontmatter {
     pub cron: String,
     pub channel: Option<String>,
     pub to: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "deserialize_bool_or_string")]
     pub enabled: bool,
     pub tool: Option<String>,
     pub tool_args: Option<serde_json::Value>,
@@ -54,6 +54,30 @@ pub(super) struct CronJobFrontmatter {
 
 fn default_true() -> bool {
     true
+}
+
+/// Deserialize a bool from either a boolean or a string like "true" / "false".
+fn deserialize_bool_or_string<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    match value {
+        serde_yaml::Value::Bool(b) => Ok(b),
+        serde_yaml::Value::String(s) => match s.to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => Err(serde::de::Error::custom(format!("invalid boolean string: {}", s))),
+        },
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i != 0)
+            } else {
+                Err(serde::de::Error::custom("invalid boolean number"))
+            }
+        }
+        _ => Err(serde::de::Error::custom("expected boolean or string")),
+    }
 }
 
 /// Report from refresh_all_jobs operation

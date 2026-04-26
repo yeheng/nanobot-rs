@@ -101,7 +101,7 @@ pub(super) fn serialize_to_markdown(job: &CronJob) -> anyhow::Result<String> {
     );
     frontmatter.insert(
         serde_yaml::Value::String("enabled".into()),
-        serde_yaml::Value::String(job.enabled.to_string()),
+        serde_yaml::Value::Bool(job.enabled),
     );
 
     if let Some(ref tool) = job.tool {

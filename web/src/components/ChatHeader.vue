@@ -2,7 +2,7 @@
 import { Button } from '@/components/ui/button';
 import { Menu as HeadlessMenu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue';
 import { Cpu, Loader2, Moon, MoreVertical, Palette, RotateCcw, Sun, Trash2, Check } from 'lucide-vue-next';
-import { useTheme, type ThemeHue } from '../composables/useTheme';
+import { useTheme, type ThemeHue, type MarkdownStyle } from '../composables/useTheme';
 import type { ContextStats, WatermarkInfo } from '../types';
 
 const props = defineProps<{
@@ -21,7 +21,7 @@ const emit = defineEmits<{
   (e: 'clear-history'): void;
 }>();
 
-const { mode, hue, setMode, setHue, hues } = useTheme();
+const { mode, hue, setMode, setHue, hues, markdownStyle, setMarkdownStyle, markdownStyles } = useTheme();
 
 const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
   zinc:    { label: 'Zinc',    dot: 'bg-zinc-500' },
@@ -30,6 +30,15 @@ const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
   emerald: { label: 'Emerald', dot: 'bg-emerald-500' },
   amber:   { label: 'Amber',   dot: 'bg-amber-500' },
   violet:  { label: 'Violet',  dot: 'bg-violet-500' },
+};
+
+const mdStyleMeta: Record<MarkdownStyle, { label: string; icon: string }> = {
+  classic: { label: 'Classic', icon: 'Type' },
+  github:  { label: 'GitHub',  icon: 'Github' },
+  hope:    { label: 'Hope',    icon: 'Waves' },
+  fancy:   { label: 'Fancy',   icon: 'Sparkles' },
+  journal: { label: 'Journal', icon: 'BookOpen' },
+  geek:    { label: 'Geek',    icon: 'Terminal' },
 };
 </script>
 
@@ -162,6 +171,18 @@ const hueMeta: Record<ThemeHue, { label: string; dot: string }> = {
                 <span class="w-3 h-3 rounded-full mr-2 shrink-0" :class="hueMeta[h].dot" />
                 <span class="flex-1 text-left">{{ hueMeta[h].label }}</span>
                 <Check v-if="hue === h" class="w-3 h-3 th-text-muted shrink-0" />
+              </button>
+            </MenuItem>
+            <div class="my-1 border-t border-border" />
+            <!-- Markdown Style -->
+            <div class="px-3 py-1.5 text-[10px] font-semibold th-text-muted uppercase tracking-wider">Markdown</div>
+            <MenuItem v-for="s in markdownStyles" :key="s" v-slot="{ active }">
+              <button
+                @click="setMarkdownStyle(s)"
+                :class="[active ? 'bg-accent' : '', 'group flex w-full items-center px-3 py-2 text-xs th-text-secondary']"
+              >
+                <span class="flex-1 text-left">{{ mdStyleMeta[s].label }}</span>
+                <Check v-if="markdownStyle === s" class="w-3 h-3 th-text-muted shrink-0" />
               </button>
             </MenuItem>
           </MenuItems>

@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import { AlertCircle, Bot, Check, CheckCheck, User } from 'lucide-vue-next';
+import { useTheme } from '../composables/useTheme';
 import { marked } from 'marked';
 // marked-highlight removed — customRenderer.code handles highlighting directly
 import { computed, nextTick, ref, watch } from 'vue';
@@ -38,6 +39,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'retry'): void;
 }>();
+
+const { markdownStyle } = useTheme();
 
 // Mermaid rendering — lazy loaded to avoid init-time crashes
 const mermaidContainerRef = ref<HTMLDivElement | null>(null);
@@ -197,7 +200,7 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
         <!-- Content -->
         <div v-if="message.content || isStreaming"
           class="px-4 py-2.5 rounded-2xl rounded-tl-sm th-bubble-bg th-text text-sm border th-border shadow-sm min-w-0 w-full">
-          <div ref="mermaidContainerRef" class="prose prose-invert prose-sm max-w-none" v-html="parsedContent" @click="copyCode" />
+          <div ref="mermaidContainerRef" class="prose prose-invert prose-sm max-w-none" :data-md-style="markdownStyle" v-html="parsedContent" @click="copyCode" />
           <!-- Streaming cursor -->
           <span v-if="isStreaming" class="inline-block w-2 h-4 bg-primary/80 ml-0.5 align-middle animate-pulse rounded-sm" />
         </div>

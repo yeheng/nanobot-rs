@@ -167,9 +167,18 @@ pub async fn cmd_wiki_stats() -> Result<()> {
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let all = ps.list(PageFilter::default()).await?;
-    let entities = all.iter().filter(|p| p.page_type == PageType::Entity).count();
-    let topics = all.iter().filter(|p| p.page_type == PageType::Topic).count();
-    let sources = all.iter().filter(|p| p.page_type == PageType::Source).count();
+    let entities = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Entity)
+        .count();
+    let topics = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Topic)
+        .count();
+    let sources = all
+        .iter()
+        .filter(|p| p.page_type == PageType::Source)
+        .count();
 
     println!("Wiki Statistics:");
     println!("  Total pages: {}", all.len());
