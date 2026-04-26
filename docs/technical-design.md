@@ -70,10 +70,11 @@ flowchart TB
 ### 1.3 设计原则
 
 ```rust
-// 1. 枚举分发优于 Trait Object
-pub enum AgentContext {
-    Persistent(PersistentContext),
-    Stateless(StatelessContext),
+// 1. 直接存储引用 — 组件持有 Arc<EventStore> / Arc<SessionStore>，消除中间抽象层
+pub struct AgentSession {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 
 // 2. 事件溯源模式

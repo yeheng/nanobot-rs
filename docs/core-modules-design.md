@@ -106,7 +106,8 @@ pub struct EventMetadata {
 
 ```rust
 pub struct ContextBuilder {
-    context: AgentContext,  // 已移除 — 现在为 event_store + session_store
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
     history_config: HistoryConfig,
     memory_loader: Option<MemoryLoader>,
 }
@@ -861,7 +862,7 @@ impl AgentSession {
 async fn finalize_response(
     result: ExecutionResult,
     ctx: &FinalizeContext,
-    context: &AgentContext,  // 已移除 — event_store 现在是 ResponseFinalizer 字段
+    event_store: &EventStore,
     hooks: &HookRegistry,
     model: &str,
     compactor: Option<&Arc<ContextCompactor>>,
