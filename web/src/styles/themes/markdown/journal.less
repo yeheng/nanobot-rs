@@ -1,0 +1,141 @@
+/* ── Journal 期刊杂志 ────────────────────────────────────── */
+.prose[data-md-style="journal"] {
+  font-family: Georgia, "Noto Serif", "Songti SC", "STSong", "Times New Roman", serif;
+  line-height: 1.8;
+  font-size: 0.95rem;
+}
+
+.prose[data-md-style="journal"] h1,
+.prose[data-md-style="journal"] h2,
+.prose[data-md-style="journal"] h3,
+.prose[data-md-style="journal"] h4 {
+  font-family: Georgia, "Noto Serif", "Songti SC", serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+}
+
+.prose[data-md-style="journal"] h1 {
+  font-size: 1.75em;
+  margin: 1.1em 0 0.6em 0;
+  text-align: center;
+  position: relative;
+  padding-bottom: 0.4em;
+}
+
+.prose[data-md-style="journal"] h1::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 35%;
+  right: 35%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.5), transparent);
+}
+
+.prose[data-md-style="journal"] h2 {
+  font-size: 1.35em;
+  margin: 1em 0 0.5em 0;
+  font-style: italic;
+}
+
+.prose[data-md-style="journal"] h3 {
+  font-size: 1.15em;
+  margin: 0.9em 0 0.4em 0;
+}
+
+.prose[data-md-style="journal"] p {
+  margin-bottom: 1em;
+  text-align: justify;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+.prose[data-md-style="journal"] p:first-of-type::first-letter {
+  font-size: 2.8em;
+  float: left;
+  line-height: 0.9;
+  padding-right: 0.1em;
+  font-weight: 700;
+  color: hsl(var(--primary));
+}
+
+.prose[data-md-style="journal"] a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: hsl(var(--primary) / 0.4);
+  transition: text-decoration-color 0.2s;
+}
+
+.prose[data-md-style="journal"] a:hover {
+  text-decoration-color: hsl(var(--primary));
+}
+
+.prose[data-md-style="journal"] blockquote {
+  border: none;
+  padding: 1em 1.5em;
+  margin: 1em 0;
+  font-style: italic;
+  color: hsl(var(--muted-foreground));
+  position: relative;
+  background-color: hsl(var(--muted) / 0.15);
+  border-radius: 0 8px 8px 0;
+}
+
+.prose[data-md-style="journal"] blockquote::before {
+  content: '"';
+  position: absolute;
+  top: -0.15em;
+  left: 0.2em;
+  font-size: 3em;
+  color: hsl(var(--primary) / 0.2);
+  font-family: Georgia, serif;
+  line-height: 1;
+}
+
+.prose[data-md-style="journal"] pre,
+.prose[data-md-style="journal"] code {
+  font-family: "Menlo", "Monaco", "Courier New", monospace;
+  font-size: 0.8em;
+}
+
+.prose[data-md-style="journal"] pre {
+  border-radius: 6px;
+  padding: 14px;
+  background-color: hsl(var(--muted) / 0.35);
+}
+
+.prose[data-md-style="journal"] code {
+  background-color: hsl(var(--muted) / 0.5);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.prose[data-md-style="journal"] ul,
+.prose[data-md-style="journal"] ol {
+  margin-left: 0;
+  padding-left: 1.75em;
+}
+
+.prose[data-md-style="journal"] li {
+  margin-bottom: 0.35em;
+}
+
+.prose[data-md-style="journal"] table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  border: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="journal"] th,
+.prose[data-md-style="journal"] td {
+  padding: 8px 12px;
+  border: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="journal"] th {
+  background-color: hsl(var(--muted) / 0.4);
+  font-weight: 600;
+}

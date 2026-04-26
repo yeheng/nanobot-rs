@@ -1,0 +1,124 @@
+/* ── Geek 极邃 ───────────────────────────────────────────── */
+.prose[data-md-style="geek"] {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", monospace;
+  line-height: 1.6;
+  font-size: 0.83rem;
+}
+
+.prose[data-md-style="geek"] h1,
+.prose[data-md-style="geek"] h2,
+.prose[data-md-style="geek"] h3,
+.prose[data-md-style="geek"] h4 {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", monospace;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: hsl(var(--foreground));
+}
+
+.prose[data-md-style="geek"] h1 {
+  font-size: 1.25em;
+  margin: 1.2em 0 0.6em 0;
+  padding-bottom: 0.3em;
+  border-bottom: 2px solid hsl(var(--foreground) / 0.15);
+}
+
+.prose[data-md-style="geek"] h2 {
+  font-size: 1.1em;
+  margin: 1em 0 0.5em 0;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid hsl(var(--foreground) / 0.1);
+}
+
+.prose[data-md-style="geek"] h3 {
+  font-size: 0.95em;
+  margin: 0.9em 0 0.4em 0;
+  color: hsl(var(--muted-foreground));
+}
+
+.prose[data-md-style="geek"] h4 {
+  font-size: 0.85em;
+  margin: 0.75em 0 0.35em 0;
+  color: hsl(var(--muted-foreground) / 0.8);
+}
+
+.prose[data-md-style="geek"] p {
+  margin-bottom: 0.65em;
+}
+
+.prose[data-md-style="geek"] a {
+  color: hsl(var(--primary));
+  text-decoration: none;
+  border-bottom: 1px dotted hsl(var(--primary) / 0.5);
+}
+
+.prose[data-md-style="geek"] a:hover {
+  border-bottom: 1px solid hsl(var(--primary));
+}
+
+.prose[data-md-style="geek"] blockquote {
+  border-left: 2px solid hsl(var(--muted-foreground) / 0.4);
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: hsl(var(--muted-foreground));
+  font-style: normal;
+}
+
+.prose[data-md-style="geek"] blockquote::before {
+  content: '> ';
+  color: hsl(var(--muted-foreground) / 0.5);
+}
+
+.prose[data-md-style="geek"] pre {
+  border-radius: 4px;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--muted) / 0.25);
+  padding: 12px;
+}
+
+.prose[data-md-style="geek"] code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", monospace;
+  background-color: transparent;
+  border: 1px solid hsl(var(--border));
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+.prose[data-md-style="geek"] pre code {
+  border: none;
+  background-color: transparent;
+}
+
+.prose[data-md-style="geek"] ul,
+.prose[data-md-style="geek"] ol {
+  margin-left: 0;
+  padding-left: 1.5em;
+}
+
+.prose[data-md-style="geek"] li {
+  margin-bottom: 0.2em;
+}
+
+.prose[data-md-style="geek"] li::marker {
+  color: hsl(var(--muted-foreground) / 0.6);
+}
+
+.prose[data-md-style="geek"] table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.prose[data-md-style="geek"] th,
+.prose[data-md-style="geek"] td {
+  padding: 5px 8px;
+  border: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="geek"] th {
+  background-color: hsl(var(--muted) / 0.3);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.85em;
+}

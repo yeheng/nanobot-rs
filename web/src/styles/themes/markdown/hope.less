@@ -1,0 +1,120 @@
+/* ── Hope 海洋之心 ───────────────────────────────────────── */
+.prose[data-md-style="hope"] {
+  line-height: 1.7;
+}
+
+.prose[data-md-style="hope"] h1,
+.prose[data-md-style="hope"] h2,
+.prose[data-md-style="hope"] h3,
+.prose[data-md-style="hope"] h4 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: hsl(var(--foreground));
+}
+
+.prose[data-md-style="hope"] h1 {
+  font-size: 1.8em;
+  padding-bottom: 0.35em;
+  border-bottom: 2px solid hsl(var(--primary));
+  margin: 1em 0 0.6em 0;
+}
+
+.prose[data-md-style="hope"] h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.25em;
+  border-bottom: 1.5px solid hsl(var(--primary) / 0.6);
+  margin: 1em 0 0.5em 0;
+}
+
+.prose[data-md-style="hope"] h3 {
+  font-size: 1.2em;
+  color: hsl(var(--primary));
+  margin: 0.9em 0 0.45em 0;
+}
+
+.prose[data-md-style="hope"] h4 {
+  font-size: 1.05em;
+  color: hsl(var(--primary) / 0.85);
+  margin: 0.8em 0 0.4em 0;
+}
+
+.prose[data-md-style="hope"] a {
+  color: hsl(var(--primary));
+  text-decoration: none;
+  border-bottom: 1px dashed hsl(var(--primary) / 0.4);
+  transition: border-bottom 0.2s;
+}
+
+.prose[data-md-style="hope"] a:hover {
+  border-bottom: 1px solid hsl(var(--primary));
+}
+
+.prose[data-md-style="hope"] blockquote {
+  border-left: 4px solid hsl(var(--primary));
+  border-radius: 0 8px 8px 0;
+  background-color: hsl(var(--primary) / 0.06);
+  padding: 0.75em 1em;
+  color: hsl(var(--foreground) / 0.9);
+  font-style: normal;
+  margin: 0.75em 0;
+}
+
+.prose[data-md-style="hope"] pre {
+  border-radius: 8px;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  background-color: hsl(var(--muted) / 0.4);
+  padding: 14px;
+}
+
+.prose[data-md-style="hope"] code {
+  background-color: hsl(var(--primary) / 0.08);
+  color: hsl(var(--primary));
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.82em;
+}
+
+.prose[data-md-style="hope"] pre code {
+  background-color: transparent;
+  color: inherit;
+}
+
+.prose[data-md-style="hope"] ul,
+.prose[data-md-style="hope"] ol {
+  margin-left: 0;
+  padding-left: 2em;
+}
+
+.prose[data-md-style="hope"] li {
+  margin-bottom: 0.3em;
+}
+
+.prose[data-md-style="hope"] li::marker {
+  color: hsl(var(--primary) / 0.7);
+}
+
+.prose[data-md-style="hope"] table {
+  border-collapse: collapse;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="hope"] th {
+  background-color: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  font-weight: 600;
+  border-bottom: 2px solid hsl(var(--primary) / 0.3);
+}
+
+.prose[data-md-style="hope"] td {
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="hope"] tr:nth-child(even) {
+  background-color: hsl(var(--muted) / 0.25);
+}
+
+.prose[data-md-style="hope"] tr:last-child td {
+  border-bottom: none;
+}

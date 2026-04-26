@@ -1,0 +1,145 @@
+/* ── Fancy 慕幻 ──────────────────────────────────────────── */
+.prose[data-md-style="fancy"] {
+  line-height: 1.7;
+  font-size: 0.95rem;
+}
+
+.prose[data-md-style="fancy"] h1 {
+  font-size: 1.85em;
+  font-weight: 700;
+  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin: 1em 0 0.5em 0;
+  letter-spacing: -0.03em;
+}
+
+.prose[data-md-style="fancy"] h2 {
+  font-size: 1.4em;
+  font-weight: 600;
+  color: hsl(var(--primary));
+  margin: 1em 0 0.5em 0;
+  padding-left: 0.5em;
+  border-left: 4px solid hsl(var(--ring));
+}
+
+.prose[data-md-style="fancy"] h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  color: hsl(var(--ring));
+  margin: 0.85em 0 0.4em 0;
+}
+
+.prose[data-md-style="fancy"] h4 {
+  font-size: 1em;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  margin: 0.75em 0 0.35em 0;
+}
+
+.prose[data-md-style="fancy"] a {
+  color: hsl(var(--primary));
+  text-decoration: none;
+  background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
+  background-size: 0% 2px;
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  transition: background-size 0.3s ease;
+}
+
+.prose[data-md-style="fancy"] a:hover {
+  background-size: 100% 2px;
+}
+
+.prose[data-md-style="fancy"] blockquote {
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.08) 0%, hsl(var(--ring) / 0.08) 100%);
+  padding: 1em 1.25em;
+  margin: 0.75em 0;
+  font-style: normal;
+  position: relative;
+}
+
+.prose[data-md-style="fancy"] blockquote::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
+}
+
+.prose[data-md-style="fancy"] pre {
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--muted) / 0.3);
+  padding: 16px;
+  position: relative;
+}
+
+.prose[data-md-style="fancy"] pre::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--ring)) 100%);
+}
+
+.prose[data-md-style="fancy"] code {
+  background-color: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8em;
+}
+
+.prose[data-md-style="fancy"] pre code {
+  background-color: transparent;
+  color: inherit;
+}
+
+.prose[data-md-style="fancy"] ul,
+.prose[data-md-style="fancy"] ol {
+  margin-left: 0;
+  padding-left: 1.75em;
+}
+
+.prose[data-md-style="fancy"] li {
+  margin-bottom: 0.35em;
+}
+
+.prose[data-md-style="fancy"] li::marker {
+  color: hsl(var(--primary));
+}
+
+.prose[data-md-style="fancy"] table {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="fancy"] th {
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.15) 0%, hsl(var(--ring) / 0.15) 100%);
+  font-weight: 600;
+  color: hsl(var(--primary));
+  border-bottom: 2px solid hsl(var(--primary) / 0.2);
+}
+
+.prose[data-md-style="fancy"] td {
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.prose[data-md-style="fancy"] tr:nth-child(even) {
+  background-color: hsl(var(--muted) / 0.2);
+}
+
+.prose[data-md-style="fancy"] tr:last-child td {
+  border-bottom: none;
+}
