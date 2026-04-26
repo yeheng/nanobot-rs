@@ -7,19 +7,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::error::AgentError;
 use crate::kernel::RuntimeContext;
 use crate::session::compactor::ContextCompactor;
 use crate::session::config::AgentConfigExt;
-use crate::session::context::AgentContext;
 
 use crate::session::finalizer::ResponseFinalizer;
-use crate::session::{prompt, AgentConfig, AgentSession, WikiComponents};
-use crate::wiki::{PageIndex, PageStore, WikiLog};
+use crate::session::{prompt, AgentConfig, AgentSession};
 use gasket_providers::LlmProvider;
-use gasket_storage::wiki::TantivyPageIndex;
 use gasket_storage::{EventStore, SessionStore};
 
 /// Wiki preparation prompt appended to system prompt when wiki is enabled.
@@ -89,10 +86,7 @@ impl SessionBuilder {
             checkpoint_callback: std::sync::Arc::new(crate::kernel::NoopCheckpoint),
         };
 
-        // ── 3. Agent context ─────────────────────────────────────────
-        let context = AgentContext::persistent(event_store.clone(), session_store.clone());
-
-        // ── 5. Context compactor ─────────────────────────────────────
+        // ── 3. Context compactor ─────────────────────────────────────
         let history_config = gasket_storage::HistoryConfig {
             max_events: self.config.memory_window,
             ..Default::default()
@@ -133,11 +127,8 @@ impl SessionBuilder {
             system_prompt.push_str(&skills);
         }
 
-        // ── 7. Wiki components (optional) ──────────────────────────
-        let wiki_components = build_wiki_components(&self.sqlite_store, &self.config).await;
-
-        // Append wiki preparation instructions when wiki is enabled.
-        if wiki_components.is_some() {
+        // ── 7. Wiki availability check (prompt only) ──────────────
+        if is_wiki_available(&self.config) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(WIKI_PREPARATION_PROMPT);
         }
@@ -151,6 +142,7 @@ impl SessionBuilder {
 
         let finalizer = ResponseFinalizer::new(
             hooks.clone(),
+            event_store.clone(),
             compactor.clone(),
             None,
             self.config.max_tokens,
@@ -158,12 +150,12 @@ impl SessionBuilder {
 
         Ok(AgentSession {
             runtime_ctx,
-            context,
+            event_store,
+            session_store,
             config: self.config,
             system_prompt,
             hooks,
             compactor,
-            wiki_components,
             pricing: None,
             finalizer,
             pending_done,
@@ -175,55 +167,16 @@ impl SessionBuilder {
 // Internal helpers — pure functions, no builder state
 // ---------------------------------------------------------------------------
 
-/// Build wiki components (optional).
+/// Check if wiki is configured and minimally available.
 ///
-/// Returns `None` when wiki is disabled by config or initialization failed.
-async fn build_wiki_components(
-    sqlite_store: &gasket_storage::SqliteStore,
-    config: &AgentConfig,
-) -> Option<WikiComponents> {
-    let wiki_config = match config.wiki.as_ref() {
-        Some(cfg) if cfg.enabled => cfg.clone(),
-        _ => return None,
-    };
-
-    let pool = sqlite_store.pool().clone();
-    let wiki_base = PathBuf::from(&wiki_config.base_path);
-
-    let store = PageStore::new(pool.clone(), wiki_base.clone());
-    if let Err(e) = store.init_dirs().await {
-        warn!("Failed to init wiki PageStore: {}", e);
-        return None;
-    }
-    let store = Arc::new(store);
-
-    let tantivy_dir = wiki_base.join(".tantivy");
-    let tantivy_index = match TantivyPageIndex::open(tantivy_dir) {
-        Ok(idx) => Arc::new(idx),
-        Err(e) => {
-            warn!("Failed to open Tantivy index: {}", e);
-            return None;
-        }
-    };
-    let index = Arc::new(PageIndex::new(tantivy_index));
-
-    let log = Arc::new(WikiLog::new(pool));
-
-    if let Err(e) = gasket_storage::wiki::tables::create_wiki_tables(&sqlite_store.pool()).await {
-        warn!("Failed to create wiki tables: {}", e);
-        return None;
-    }
-
-    info!(
-        "Wiki knowledge system initialized at {}",
-        wiki_config.base_path
-    );
-
-    Some(WikiComponents {
-        page_store: store,
-        page_index: index,
-        wiki_log: log,
-    })
+/// Returns true if wiki config is enabled and the base path exists.
+/// Does NOT initialize PageStore/PageIndex/WikiLog — that happens
+/// during tool registration in `tools/builder.rs`.
+fn is_wiki_available(config: &AgentConfig) -> bool {
+    config
+        .wiki
+        .as_ref()
+        .is_some_and(|cfg| cfg.enabled && std::path::Path::new(&cfg.base_path).exists())
 }
 
 /// Build an AgentSession with all services initialized.

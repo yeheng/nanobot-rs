@@ -6,16 +6,12 @@
 pub mod builder;
 pub mod compactor;
 pub mod config;
-pub mod context;
 pub mod finalizer;
 pub mod history;
 pub mod prompt;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
-pub use context::{AgentContext, PersistentContext};
-
-use crate::wiki::{PageIndex, PageStore, WikiLog};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -213,25 +209,6 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
     None
 }
 
-/// Wiki knowledge system components — always exist together or not at all.
-#[derive(Clone)]
-pub(crate) struct WikiComponents {
-    page_store: Arc<PageStore>,
-    page_index: Arc<PageIndex>,
-    wiki_log: Arc<WikiLog>,
-}
-
-/// Health status of the wiki knowledge system.
-#[derive(Debug, Clone)]
-pub enum WikiHealth {
-    /// Wiki not configured (config.wiki is None or disabled)
-    Disabled,
-    /// Wiki fully operational
-    Healthy,
-    /// Wiki was configured but initialization failed
-    Degraded { reason: String },
-}
-
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
 /// Owns session state (events, prompts, compaction) and delegates
@@ -240,13 +217,12 @@ pub enum WikiHealth {
 /// to avoid the indirection and dynamic dispatch of a plugin trait.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
-    context: AgentContext,
+    event_store: Arc<gasket_storage::EventStore>,
+    session_store: Arc<gasket_storage::SessionStore>,
     config: AgentConfig,
     system_prompt: String,
     hooks: Arc<HookRegistry>,
     compactor: Option<Arc<ContextCompactor>>,
-    /// Wiki components (page store, index, log). None when wiki is disabled.
-    wiki_components: Option<WikiComponents>,
     /// Pricing config for cost tracking. None when cost tracking is disabled.
     pricing: Option<ModelPricing>,
     /// Response finalizer — owns post-processing logic.
@@ -262,9 +238,8 @@ struct PipelineContext {
     runtime_ctx: RuntimeContext,
     messages: Vec<ChatMessage>,
     fctx: FinalizeContext,
-    context: AgentContext,
     model: String,
-    pricing: Option<ModelPricing>,
+    _pricing: Option<ModelPricing>,
     finalizer: ResponseFinalizer,
 }
 
@@ -323,36 +298,11 @@ impl AgentSession {
         &self.hooks
     }
 
-    /// Get the wiki page store.
-    pub fn page_store(&self) -> Option<&Arc<PageStore>> {
-        self.wiki_components.as_ref().map(|w| &w.page_store)
-    }
-
-    /// Get the wiki page index.
-    pub fn page_index(&self) -> Option<&Arc<PageIndex>> {
-        self.wiki_components.as_ref().map(|w| &w.page_index)
-    }
-
-    /// Get the wiki log.
-    pub fn wiki_log(&self) -> Option<&Arc<WikiLog>> {
-        self.wiki_components.as_ref().map(|w| &w.wiki_log)
-    }
-
-    /// Get the wiki health status.
-    pub fn wiki_health(&self) -> WikiHealth {
-        self.wiki_components
-            .as_ref()
-            .map(|_| WikiHealth::Healthy)
-            .unwrap_or(WikiHealth::Disabled)
-    }
-
     /// Clear session for the given key.
     pub async fn clear_session(&self, session_key: &SessionKey) {
-        if self.context.is_persistent() {
-            match self.context.clear_session(session_key).await {
-                Ok(_) => info!("Session '{}' cleared", session_key),
-                Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
-            }
+        match self.event_store.clear_session(session_key).await {
+            Ok(_) => info!("Session '{}' cleared", session_key),
+            Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
         }
     }
 
@@ -539,9 +489,8 @@ impl AgentSession {
                         local_vault_values: vec![],
                         estimated_tokens: 0,
                     },
-                    context: self.context.clone(),
                     model: self.config.model.clone(),
-                    pricing: self.pricing.clone(),
+                    _pricing: self.pricing.clone(),
                     finalizer: self.finalizer.clone(),
                 };
                 return Ok((ctx, Some(msg)));
@@ -552,15 +501,12 @@ impl AgentSession {
         let fctx = FinalizeContext::from_request(&request);
         let messages = request.messages;
         let mut runtime_ctx = self.runtime_ctx.clone();
-        let context = self.context.clone();
 
-        if let (Some(ref compactor), AgentContext::Persistent(ref persistent_ctx)) =
-            (&self.compactor, &context)
-        {
+        if let Some(ref compactor) = &self.compactor {
             runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
                 session_key: fctx.session_key.clone(),
                 compactor: compactor.clone(),
-                event_store: persistent_ctx.event_store.clone(),
+                event_store: self.event_store.clone(),
             });
         }
 
@@ -568,9 +514,8 @@ impl AgentSession {
             runtime_ctx,
             messages,
             fctx,
-            context,
             model: self.config.model.clone(),
-            pricing: self.pricing.clone(),
+            _pricing: self.pricing.clone(),
             finalizer: self.finalizer.clone(),
         };
         Ok((ctx, None))
@@ -597,9 +542,7 @@ impl AgentSession {
 
     /// Stage 3: PostProcess — finalize response, persist events, trigger compaction.
     async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentResponse {
-        ctx.finalizer
-            .finalize(result, &ctx.fctx, &ctx.context, &ctx.model)
-            .await
+        ctx.finalizer.finalize(result, &ctx.fctx, &ctx.model).await
     }
 
     /// Common pre-processing pipeline.
@@ -616,7 +559,8 @@ impl AgentSession {
         };
 
         let builder = ContextBuilder::new(
-            self.context.clone(),
+            self.event_store.clone(),
+            self.session_store.clone(),
             self.system_prompt.clone(),
             None,
             self.hooks.clone(),

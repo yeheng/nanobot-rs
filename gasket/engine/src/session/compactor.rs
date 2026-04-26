@@ -947,4 +947,297 @@ mod tests {
         assert!(text.contains("hello"));
         assert!(!text.contains("Previous summary"));
     }
+
+    // ── Crash Recovery Integration Test ──────────────────────────────────
+
+    struct MockProvider {
+        response: parking_lot::Mutex<String>,
+        fail: AtomicBool,
+    }
+
+    impl MockProvider {
+        fn new(summary: &str) -> Self {
+            Self {
+                response: parking_lot::Mutex::new(summary.to_string()),
+                fail: AtomicBool::new(false),
+            }
+        }
+
+        fn set_fail(&self, fail: bool) {
+            self.fail.store(fail, Ordering::Release);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl gasket_providers::LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn default_model(&self) -> &str {
+            "mock-model"
+        }
+
+        async fn chat(
+            &self,
+            _request: gasket_providers::ChatRequest,
+        ) -> std::result::Result<gasket_providers::ChatResponse, gasket_providers::ProviderError>
+        {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(gasket_providers::ProviderError::ApiError {
+                    status_code: 500,
+                    message: "simulated crash".into(),
+                });
+            }
+            let content = self.response.lock().clone();
+            Ok(gasket_providers::ChatResponse::text(content))
+        }
+    }
+
+    async fn setup_compaction_db() -> (
+        sqlx::SqlitePool,
+        gasket_storage::EventStore,
+        gasket_storage::SessionStore,
+    ) {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new().connect(":memory:").await.unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE sessions_v2 (
+                key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_consolidated_event TEXT,
+                total_events INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT ''
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE session_events (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT '',
+                chat_id TEXT NOT NULL DEFAULT '',
+                event_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tools_used TEXT DEFAULT '[]',
+                token_usage TEXT,
+                token_len INTEGER NOT NULL DEFAULT 0,
+                event_data TEXT,
+                extra TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("CREATE INDEX idx_events_channel_chat ON session_events(channel, chat_id)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE INDEX idx_events_channel_chat_sequence ON session_events(channel, chat_id, sequence)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("CREATE INDEX idx_sessions_v2_channel_chat ON sessions_v2(channel, chat_id)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_key TEXT PRIMARY KEY,
+                content TEXT NOT NULL DEFAULT '',
+                covered_upto_sequence INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                compaction_in_progress INTEGER NOT NULL DEFAULT 0,
+                compaction_started_at TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        (
+            pool.clone(),
+            gasket_storage::EventStore::new(pool.clone()),
+            gasket_storage::SessionStore::new(pool),
+        )
+    }
+
+    async fn append_messages(
+        event_store: &gasket_storage::EventStore,
+        session_key: &SessionKey,
+        messages: &[&str],
+    ) {
+        for msg in messages {
+            let event = SessionEvent {
+                id: uuid::Uuid::now_v7(),
+                session_key: session_key.to_string(),
+                event_type: gasket_types::EventType::UserMessage,
+                content: msg.to_string(),
+                metadata: gasket_types::EventMetadata::default(),
+                created_at: chrono::Utc::now(),
+                sequence: 0,
+            };
+            event_store.append_event(&event).await.unwrap();
+        }
+    }
+
+    /// Verify crash recovery: if compaction fails mid-flight, the watermark
+    /// invariant holds and no data is lost.
+    ///
+    /// 1. Create 6 events → compact successfully → watermark = 5
+    /// 2. Add 4 more events → compaction FAILS (simulated crash)
+    /// 3. Watermark unchanged at 5, all 4 new events still accessible
+    /// 4. Retry compaction → watermark advances to 9, events GC'd
+    #[tokio::test]
+    async fn test_crash_recovery_watermark() {
+        let (_pool, event_store, session_store) = setup_compaction_db().await;
+        let session_key = SessionKey::new(gasket_types::ChannelType::Cli, "crash-test");
+        let provider = Arc::new(MockProvider::new("Summary of the conversation."));
+        let model = "mock-model";
+        let prompt = DEFAULT_SUMMARIZATION_PROMPT;
+
+        // Phase 1: Create initial events (seq 0-5)
+        append_messages(
+            &event_store,
+            &session_key,
+            &["msg0", "msg1", "msg2", "msg3", "msg4", "msg5"],
+        )
+        .await;
+        assert_eq!(event_store.get_max_sequence(&session_key).await.unwrap(), 5);
+
+        // Phase 2: Successful compaction → watermark = 5
+        run_compaction(
+            &event_store,
+            &session_store,
+            &*provider,
+            model,
+            prompt,
+            &session_key,
+            &[],
+        )
+        .await
+        .expect("first compaction should succeed");
+
+        let (_, wm) = session_store
+            .load_summary(&session_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(wm, 5, "watermark should be 5 after first compaction");
+
+        // GC should have removed old events
+        let remaining = event_store
+            .get_events_after_sequence(&session_key, 0)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 0, "events up to watermark should be GC'd");
+
+        // Phase 3: Add 4 more events (seq 6-9)
+        append_messages(
+            &event_store,
+            &session_key,
+            &["msg6", "msg7", "msg8", "msg9"],
+        )
+        .await;
+        assert_eq!(event_store.get_max_sequence(&session_key).await.unwrap(), 9);
+
+        // Verify new events are readable from old watermark
+        let uncompacted = event_store
+            .get_events_after_sequence(&session_key, wm)
+            .await
+            .unwrap();
+        assert_eq!(uncompacted.len(), 4);
+
+        // Phase 4: Simulate crash — LLM fails mid-compaction
+        provider.set_fail(true);
+        let result = run_compaction(
+            &event_store,
+            &session_store,
+            &*provider,
+            model,
+            prompt,
+            &session_key,
+            &[],
+        )
+        .await;
+        assert!(result.is_err(), "compaction should fail when LLM crashes");
+        provider.set_fail(false);
+
+        // Phase 5: Verify watermark invariant — NO data loss
+        let (_, wm_after_crash) = session_store
+            .load_summary(&session_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            wm_after_crash, 5,
+            "watermark must NOT advance after failed compaction"
+        );
+
+        let events_after_crash = event_store
+            .get_events_after_sequence(&session_key, wm_after_crash)
+            .await
+            .unwrap();
+        assert_eq!(
+            events_after_crash.len(),
+            4,
+            "no data loss: all 4 new events still accessible"
+        );
+        assert_eq!(events_after_crash[0].content, "msg6");
+        assert_eq!(events_after_crash[3].content, "msg9");
+
+        // Phase 6: Retry compaction successfully
+        run_compaction(
+            &event_store,
+            &session_store,
+            &*provider,
+            model,
+            prompt,
+            &session_key,
+            &[],
+        )
+        .await
+        .expect("retry compaction should succeed");
+
+        // Phase 7: Full recovery verified
+        let (summary, final_wm) = session_store
+            .load_summary(&session_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_wm, 9, "watermark should advance to 9");
+        assert!(!summary.is_empty());
+
+        let events_after_final = event_store
+            .get_events_after_sequence(&session_key, final_wm)
+            .await
+            .unwrap();
+        assert_eq!(
+            events_after_final.len(),
+            0,
+            "all events compacted — nothing uncompacted remains"
+        );
+    }
 }

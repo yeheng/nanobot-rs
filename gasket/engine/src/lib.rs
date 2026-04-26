@@ -11,7 +11,7 @@
 //!
 //! ## Design Principles
 //!
-//! - **Enum-based dispatch**: `AgentContext` enum instead of trait objects
+//! - **Direct store refs**: Components hold `Arc<EventStore>` directly
 //! - **Event sourcing**: All state changes persisted as events
 //! - **Streaming-first**: SSE streaming with backpressure support
 
@@ -33,9 +33,7 @@ pub mod vault;
 pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
-pub use session::{
-    AgentConfig, AgentContext, AgentResponse, ContextCompactor, PersistentContext, WikiHealth,
-};
+pub use session::{AgentConfig, AgentResponse, ContextCompactor};
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;
 

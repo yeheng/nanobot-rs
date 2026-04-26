@@ -271,29 +271,15 @@ The butler's toolkit:
 ```rust
 struct AgentSession {
     runtime_ctx: RuntimeContext,         // Execution dependencies
-    context: AgentContext,               // Persistent or stateless
+    event_store: Arc<EventStore>,        // Event persistence (non-optional)
+    session_store: Arc<SessionStore>,    // Session storage (non-optional)
     config: AgentConfig,                 // Behavior settings
-    workspace: PathBuf,                  // Working directory
     system_prompt: String,               // AI personality
-    skills_context: Option<String>,      // Loaded skills
-    hooks: HookRegistry,                 // Extension points
-    history_config: HistoryConfig,       // History loading config
-    compactor: Option<ContextCompactor>, // Compression
-    indexing_service: Option<Arc<IndexingService>>, // Search indexing
-    wiki: Option<WikiComponents>,         // Wiki knowledge system
+    hooks: Arc<HookRegistry>,            // Extension points
+    compactor: Option<Arc<ContextCompactor>>, // Compression
     pricing: Option<ModelPricing>,       // Cost calculation
+    finalizer: ResponseFinalizer,        // Response post-processing
     pending_done: TaskTracker,           // Graceful shutdown tracker
-}
-```
-
-### AgentContext (Enum)
-
-Zero-cost abstraction for state management:
-
-```rust
-enum AgentContext {
-    Persistent(PersistentContext),  // Main agent with storage
-    Stateless,                       // Subagent without storage
 }
 ```
 

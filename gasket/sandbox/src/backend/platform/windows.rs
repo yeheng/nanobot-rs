@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
-use tokio::process::Command as AsyncCommand;
 use tracing::{debug, warn};
 use winapi::shared::minwindef::FALSE;
 use winapi::um::handleapi::CloseHandle;
@@ -32,6 +31,10 @@ use crate::error::{Result, SandboxError};
 /// RAII wrapper for a Windows Job Object handle.
 struct JobObject(HANDLE);
 
+// SAFETY: HANDLE is an opaque kernel object handle, safe to send between threads.
+// The RAII wrapper ensures exclusive ownership and proper cleanup via Drop.
+unsafe impl Send for JobObject {}
+
 impl Drop for JobObject {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -46,7 +49,7 @@ impl Drop for JobObject {
 /// resource limits.
 ///
 /// Applies:
-/// - Per-process memory limit (from `SandboxConfig.limits.max_memory_bytes`)
+/// - Per-process memory limit (from `SandboxConfig.limits.max_memory_mb`)
 /// - Per-process CPU time limit (from `SandboxConfig.limits.max_cpu_secs`)
 /// - Active process limit (from `SandboxConfig.limits.max_processes`)
 /// - Lowered priority class (`BELOW_NORMAL_PRIORITY_CLASS`)
@@ -133,15 +136,20 @@ impl HostExecutor {
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             let mut limit_flags = 0u32;
 
-            if limits.max_memory_bytes > 0 {
-                info.ProcessMemoryLimit = limits.max_memory_bytes as usize;
+            if limits.max_memory_mb > 0 {
+                info.ProcessMemoryLimit = (u64::from(limits.max_memory_mb) * 1024 * 1024) as usize;
                 limit_flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
             }
 
             if limits.max_cpu_secs > 0 {
                 // PerProcessUserTimeLimit is in 100-nanosecond intervals.
-                info.BasicLimitInformation.PerProcessUserTimeLimit =
-                    (limits.max_cpu_secs as u64) * 10_000_000;
+                // LARGE_INTEGER is a union — write via raw pointer to avoid
+                // needing to know the exact winapi UNION! accessors.
+                let time_100ns = (limits.max_cpu_secs as i64) * 10_000_000;
+                std::ptr::write(
+                    &mut info.BasicLimitInformation.PerProcessUserTimeLimit as *mut _ as *mut i64,
+                    time_100ns,
+                );
                 limit_flags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
             }
 
@@ -218,40 +226,39 @@ impl SandboxBackend for HostExecutor {
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
         let validated = self.validate_working_dir(working_dir, config)?;
-
-        let mut command = AsyncCommand::new("cmd");
-        command
-            .arg("/C")
-            .arg(cmd)
-            .current_dir(&validated)
-            .kill_on_drop(true);
-
-        debug!("Windows async command: {:?}", command);
-
-        // Spawn the child so we can attach it to a Job Object before waiting.
-        let mut child = command
-            .spawn()
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
-
-        // Apply resource constraints.
         let job = self.create_job_object(config);
-        if let Some(ref job) = job {
-            let raw_handle = child.as_raw_handle();
-            let ok = unsafe { AssignProcessToJobObject(job.0, raw_handle as HANDLE) };
-            if ok == FALSE {
-                warn!("HostExecutor: AssignProcessToJobObject failed");
-            }
-        }
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
+        let cmd = cmd.to_string();
+        let max_output = config.limits.max_output_bytes;
+
+        let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
+            let mut command = Command::new("cmd");
+            command.arg("/C").arg(&cmd).current_dir(&validated);
+
+            debug!("Windows command: {:?}", command);
+
+            let mut child = command
+                .spawn()
+                .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
+
+            if let Some(ref job) = job {
+                let raw_handle = child.as_raw_handle();
+                let ok = unsafe { AssignProcessToJobObject(job.0, raw_handle as HANDLE) };
+                if ok == FALSE {
+                    warn!("HostExecutor: AssignProcessToJobObject failed");
+                }
+            }
+
+            child
+                .wait_with_output()
+                .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))
+        })
+        .await
+        .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))??;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        let max_output = config.limits.max_output_bytes;
         let stdout = if stdout.len() > max_output {
             let original_len = stdout.len();
             let mut truncated = stdout;

@@ -443,56 +443,36 @@ ProcessedHistory {
 }
 ```
 
-### 4.3 AgentContext (基于枚举)
+### 4.3 直接存储引用模式（已移除 AgentContext）
 
-零成本枚举分发 — 无运行时开销。
+组件直接持有 `Arc<EventStore>` / `Arc<SessionStore>`，消除了中间的 `AgentContext` 枚举层。
 
 ```rust
-#[derive(Debug, Clone)]
-pub enum AgentContext {
-    /// 持久化上下文（主 Agent）
-    Persistent(PersistentContext),
-
-    /// 无状态上下文（子 Agent）
-    Stateless,
+// ContextBuilder — 直接持有存储引用
+pub struct ContextBuilder {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 
-/// 主代理的持久化上下文数据。
-#[derive(Clone)]
-pub struct PersistentContext {
-    /// 用于持久化事件的事件存储
-    pub event_store: Arc<EventStore>,
-    /// 用于保存嵌入的 SQLite 存储（语义召回索引）
-    pub sqlite_store: Arc<SqliteStore>,
-    /// 可选的文本嵌入器，用于自动生成嵌入
-    #[cfg(feature = "local-embedding")]
-    pub embedder: Option<Arc<TextEmbedder>>,
+// ResponseFinalizer — 直接持有事件存储
+pub struct ResponseFinalizer {
+    event_store: Arc<EventStore>,
+    // ...
+}
+
+// AgentSession — 非可选存储字段（AgentSession 本身就是持久化的）
+pub struct AgentSession {
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
+    // ...
 }
 ```
 
-**AgentContext 上的关键方法：**
-
-| 方法 | 描述 |
-|------|------|
-| `persistent(event_store, sqlite_store) -> Self` | 创建持久化变体 |
-| `is_persistent(&self) -> bool` | 检查变体 |
-| `load_session(&self, key) -> Session` | 从事件存储加载 |
-| `save_event(&self, event) -> Result` | 追加事件 |
-| `get_events_after_watermark(&self, key, watermark) -> Vec<SessionEvent>` | 获取水印后事件 |
-| `recall_history(&self, key, embedding, top_k) -> Vec<String>` | 语义召回 |
-| `clear_session(&self, key) -> Result` | 清除会话 |
-
-**变体：**
-
-| 变体 | 用途 |
-|------|------|
-| `Persistent(PersistentContext)` | 主代理，完整事件溯源 |
-| `Stateless` | 子代理，无持久化 |
-
 **设计优势：**
-- 零运行时分发开销（枚举分发 vs 特征对象 vtable）
-- 更好的缓存局部性（枚举变体内联）
-- 编译时穷举检查
+- 消除间接层 — 组件直接调用存储方法
+- 非可选设计 — AgentSession 本身就是持久化会话
+- 更简洁的依赖关系图
 
 ### 4.4 ContextCompactor
 

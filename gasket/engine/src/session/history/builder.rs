@@ -17,10 +17,9 @@ use gasket_types::{SessionEvent, SessionKey};
 
 use crate::error::AgentError;
 use crate::hooks::{HookAction, HookBuilder, HookPoint, HookRegistry, MutableContext, VaultHook};
-use crate::session::context::AgentContext;
 use crate::vault::{VaultInjector, VaultStore};
 use gasket_storage::process_history;
-use gasket_storage::HistoryConfig;
+use gasket_storage::{EventStore, HistoryConfig, SessionStore};
 
 /// Outcome of the context building pipeline.
 ///
@@ -52,7 +51,8 @@ pub struct ChatRequest {
 /// Decouples the complex pipeline preparation logic from `AgentLoop`,
 /// following the Single Responsibility Principle.
 pub struct ContextBuilder {
-    context: AgentContext,
+    event_store: Arc<EventStore>,
+    session_store: Arc<SessionStore>,
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<HookRegistry>,
@@ -62,14 +62,16 @@ pub struct ContextBuilder {
 impl ContextBuilder {
     /// Create a new context builder.
     pub fn new(
-        context: AgentContext,
+        event_store: Arc<EventStore>,
+        session_store: Arc<SessionStore>,
         system_prompt: String,
         skills_context: Option<String>,
         hooks: Arc<HookRegistry>,
         history_config: HistoryConfig,
     ) -> Self {
         Self {
-            context,
+            event_store,
+            session_store,
             system_prompt,
             skills_context,
             hooks,
@@ -126,9 +128,15 @@ impl ContextBuilder {
 
         // ── 2. Load summary with watermark (read path optimization) ─────
         let (existing_summary, watermark) = self
-            .context
-            .load_summary_with_watermark(session_key)
-            .await?;
+            .session_store
+            .load_summary_with_checkpoint(session_key)
+            .await
+            .map_err(|e| {
+                AgentError::SessionError(format!(
+                    "Failed to load summary for {}: {}",
+                    session_key, e
+                ))
+            })?;
 
         // ── 3. Save user event ────────────────
         let user_event = SessionEvent {
@@ -140,13 +148,27 @@ impl ContextBuilder {
             created_at: chrono::Utc::now(),
             sequence: 0,
         };
-        self.context.save_event(user_event).await?;
+        self.event_store
+            .append_event(&user_event)
+            .await
+            .map_err(|e| {
+                AgentError::SessionError(format!("Failed to persist user event: {}", e))
+            })?;
 
         // ── 4. Load only events after the watermark ──────────────────
-        let history_events = self
-            .context
-            .get_events_after_watermark(session_key, watermark)
-            .await?;
+        let history_events = if watermark == 0 {
+            self.event_store.get_session_history(session_key).await
+        } else {
+            self.event_store
+                .get_events_after_sequence(session_key, watermark)
+                .await
+        }
+        .map_err(|e| {
+            AgentError::SessionError(format!(
+                "Failed to load history for '{}': {}",
+                session_key, e
+            ))
+        })?;
 
         // ── 4.5. Token-budget trimming (safety net) ──────────────────
         let processed = process_history(history_events, &self.history_config);
