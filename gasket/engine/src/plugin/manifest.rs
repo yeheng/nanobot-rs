@@ -102,28 +102,18 @@ fn default_timeout() -> u64 {
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     /// Permission to call LLM chat API
-    ///
-    /// RPC method: "llm/chat"
     LlmChat,
 
-    /// Permission to search memory
-    ///
-    /// RPC method: "memory/search"
-    MemorySearch,
+    /// Permission to search wiki pages
+    WikiSearch,
 
-    /// Permission to write to memory
-    ///
-    /// RPC method: "memory/write"
-    MemoryWrite,
+    /// Permission to write wiki pages
+    WikiWrite,
 
-    /// Permission to decay old memories
-    ///
-    /// RPC method: "memory/decay"
-    MemoryDecay,
+    /// Permission to run wiki decay
+    WikiDecay,
 
     /// Permission to spawn subagents
-    ///
-    /// RPC method: "subagent/spawn"
     SubagentSpawn,
 }
 
@@ -135,9 +125,9 @@ impl Permission {
     pub fn method_name(&self) -> &'static str {
         match self {
             Permission::LlmChat => "llm/chat",
-            Permission::MemorySearch => "memory/search",
-            Permission::MemoryWrite => "memory/write",
-            Permission::MemoryDecay => "memory/decay",
+            Permission::WikiSearch => "wiki/search",
+            Permission::WikiWrite => "wiki/write",
+            Permission::WikiDecay => "wiki/decay",
             Permission::SubagentSpawn => "subagent/spawn",
         }
     }
@@ -202,8 +192,8 @@ parameters:
   required: ["query"]
 permissions:
   - llm_chat
-  - memory_search
-  - memory_write
+  - wiki_search
+  - wiki_write
 "#;
 
         let manifest: PluginManifest =
@@ -227,8 +217,8 @@ permissions:
         );
         assert_eq!(manifest.permissions.len(), 3);
         assert!(manifest.permissions.contains(&Permission::LlmChat));
-        assert!(manifest.permissions.contains(&Permission::MemorySearch));
-        assert!(manifest.permissions.contains(&Permission::MemoryWrite));
+        assert!(manifest.permissions.contains(&Permission::WikiSearch));
+        assert!(manifest.permissions.contains(&Permission::WikiWrite));
     }
 
     #[test]
@@ -262,9 +252,9 @@ parameters:
     fn test_permission_serde_roundtrip() {
         let permissions = vec![
             Permission::LlmChat,
-            Permission::MemorySearch,
-            Permission::MemoryWrite,
-            Permission::MemoryDecay,
+            Permission::WikiSearch,
+            Permission::WikiWrite,
+            Permission::WikiDecay,
             Permission::SubagentSpawn,
         ];
 
@@ -275,18 +265,18 @@ parameters:
         // Verify all permissions survived roundtrip
         assert_eq!(parsed.len(), 5);
         assert!(parsed.contains(&Permission::LlmChat));
-        assert!(parsed.contains(&Permission::MemorySearch));
-        assert!(parsed.contains(&Permission::MemoryWrite));
-        assert!(parsed.contains(&Permission::MemoryDecay));
+        assert!(parsed.contains(&Permission::WikiSearch));
+        assert!(parsed.contains(&Permission::WikiWrite));
+        assert!(parsed.contains(&Permission::WikiDecay));
         assert!(parsed.contains(&Permission::SubagentSpawn));
     }
 
     #[test]
     fn test_permission_method_names() {
         assert_eq!(Permission::LlmChat.method_name(), "llm/chat");
-        assert_eq!(Permission::MemorySearch.method_name(), "memory/search");
-        assert_eq!(Permission::MemoryWrite.method_name(), "memory/write");
-        assert_eq!(Permission::MemoryDecay.method_name(), "memory/decay");
+        assert_eq!(Permission::WikiSearch.method_name(), "wiki/search");
+        assert_eq!(Permission::WikiWrite.method_name(), "wiki/write");
+        assert_eq!(Permission::WikiDecay.method_name(), "wiki/decay");
         assert_eq!(Permission::SubagentSpawn.method_name(), "subagent/spawn");
     }
 }

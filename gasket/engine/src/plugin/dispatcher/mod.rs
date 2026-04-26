@@ -214,9 +214,9 @@ impl Default for RpcDispatcher {
 ///
 /// Registers all built-in callback handlers for plugin RPC methods:
 /// - `llm/chat` - LLM chat completions
-/// - `memory/search` - Memory search
-/// - `memory/write` - Memory write (memorize)
-/// - `memory/decay` - Memory decay
+/// - `wiki/search` - Wiki search
+/// - `wiki/write` - Wiki write
+/// - `wiki/decay` - Wiki decay
 /// - `subagent/spawn` - Subagent spawning
 ///   Generic handler that delegates an RPC method to an engine tool.
 pub struct ToolDelegateHandler {
@@ -268,21 +268,21 @@ pub fn build_dispatcher() -> RpcDispatcher {
     // Unwrap is safe: built-in handlers have unique method names.
     d.register(Arc::new(LlmChatHandler)).unwrap();
     d.register(Arc::new(ToolDelegateHandler::new(
-        "memory/search",
-        Permission::MemorySearch,
-        "memory_search",
+        "wiki/search",
+        Permission::WikiSearch,
+        "wiki_search",
     )))
     .unwrap();
     d.register(Arc::new(ToolDelegateHandler::new(
-        "memory/write",
-        Permission::MemoryWrite,
-        "memorize",
+        "wiki/write",
+        Permission::WikiWrite,
+        "wiki_write",
     )))
     .unwrap();
     d.register(Arc::new(ToolDelegateHandler::new(
-        "memory/decay",
-        Permission::MemoryDecay,
-        "memory_decay",
+        "wiki/decay",
+        Permission::WikiDecay,
+        "wiki_decay",
     )))
     .unwrap();
     d.register(Arc::new(SubagentSpawnHandler)).unwrap();
@@ -470,7 +470,7 @@ mod tests {
         let mut dispatcher = RpcDispatcher::new();
         let handler = Arc::new(EchoHandler {
             method: "test/notify".to_string(),
-            permission: Permission::MemorySearch,
+            permission: Permission::WikiSearch,
         });
         dispatcher.register(handler).unwrap();
 
@@ -481,7 +481,7 @@ mod tests {
             params: Some(json!({"event": "test"})),
         };
 
-        let permissions = vec![Permission::MemorySearch];
+        let permissions = vec![Permission::WikiSearch];
         let ctx = create_test_ctx();
         let response = dispatcher.dispatch(request, &permissions, &ctx).await;
 

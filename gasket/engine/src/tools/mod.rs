@@ -5,8 +5,10 @@
 //! - `filesystem`: File read/write/edit operations
 //! - `web_fetch`: Web content fetching
 //! - `web_search`: Web search
-//! - `memory_search`: Memory search
-//! - `memorize`: Write structured long-term memories
+//! - `wiki_search`: Wiki search
+//! - `wiki_write`: Write wiki pages
+//! - `wiki_decay`: Run wiki frequency decay
+//! - `wiki_refresh`: Refresh wiki index from disk
 //! - `message`: Send messages to users
 //! - `cron`: Scheduled tasks
 //! - `spawn`: Spawn sub-agents

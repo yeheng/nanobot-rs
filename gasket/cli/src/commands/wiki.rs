@@ -1,4 +1,4 @@
-//! Memory and Wiki knowledge system commands.
+//! Wiki knowledge system CLI commands.
 
 use anyhow::Result;
 use gasket_engine::wiki::{slugify, PageFilter, PageStore, PageType, WikiLinter, WikiPage};
@@ -8,118 +8,6 @@ fn wiki_base_dir() -> PathBuf {
     dirs::home_dir()
         .map(|p| p.join(".gasket/wiki"))
         .expect("Could not find home directory")
-}
-
-/// Refresh wiki pages from Markdown files → SQLite → Tantivy.
-pub async fn cmd_memory_refresh() -> Result<()> {
-    println!("Refreshing wiki from Markdown files...");
-
-    let wiki_root = wiki_base_dir();
-    if !wiki_root.exists() {
-        println!("Wiki directory does not exist: {}", wiki_root.display());
-        println!("Nothing to refresh.");
-        return Ok(());
-    }
-
-    let store = gasket_engine::SqliteStore::new().await?;
-    let ps = PageStore::new(store.pool(), wiki_root.clone());
-
-    // Collect all .md files first (sync scan)
-    let files = collect_md_files(&wiki_root, &wiki_root)?;
-
-    // Sync all .md files
-    let mut synced = 0;
-    let mut errors = 0;
-    for (rel_str, full_path) in files {
-        let content = match tokio::fs::read_to_string(&full_path).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Failed to read {}: {}", full_path.display(), e);
-                errors += 1;
-                continue;
-            }
-        };
-
-        match WikiPage::from_markdown(rel_str.clone(), &content) {
-            Ok(page) => {
-                if let Err(e) = ps.write(&page).await {
-                    tracing::warn!("Failed to write {}: {}", rel_str, e);
-                    errors += 1;
-                } else {
-                    synced += 1;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to parse {}: {}", rel_str, e);
-                errors += 1;
-            }
-        }
-    }
-
-    // Rebuild Tantivy index
-    let tantivy_dir = wiki_root.join(".tantivy");
-    if tantivy_dir.exists() {
-        match gasket_engine::wiki::PageIndex::open(tantivy_dir) {
-            Ok(index) => {
-                let count = index.rebuild(&ps).await?;
-                println!("Tantivy index rebuilt with {} pages.", count);
-            }
-            Err(e) => {
-                println!("Tantivy rebuild skipped: {}", e);
-            }
-        }
-    }
-
-    println!("Refresh complete: {} synced, {} errors", synced, errors);
-    Ok(())
-}
-
-fn collect_md_files(root: &PathBuf, dir: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            files.extend(collect_md_files(root, &path)?);
-        } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
-            let rel = path.strip_prefix(root)?;
-            let rel_str = {
-                let s = rel.to_string_lossy();
-                s.strip_suffix(".md").unwrap_or(&s).to_string()
-            };
-            files.push((rel_str, path));
-        }
-    }
-    Ok(files)
-}
-
-/// Run wiki frequency decay (replaces memory decay).
-pub async fn cmd_memory_decay() -> Result<()> {
-    println!("Running wiki frequency decay...");
-
-    let wiki_root = wiki_base_dir();
-    if !wiki_root.exists() {
-        println!("Wiki directory does not exist: {}", wiki_root.display());
-        println!("Nothing to decay.");
-        return Ok(());
-    }
-
-    let store = gasket_engine::SqliteStore::new().await?;
-    let ps = PageStore::new(store.pool(), wiki_root);
-
-    let report = gasket_engine::wiki::FrequencyManager::run_decay_batch(ps.db()).await?;
-
-    println!("Decay complete:");
-    println!("  {} candidates scanned", report.total_scanned);
-    println!("  {} pages decayed", report.decayed);
-    if report.errors > 0 {
-        println!("  {} errors", report.errors);
-    }
-    if report.decayed == 0 {
-        println!("  All pages are fresh — no decay needed.");
-    }
-
-    Ok(())
 }
 
 /// Initialize wiki directory structure and SQLite tables.
@@ -137,9 +25,6 @@ pub async fn cmd_wiki_init() -> Result<()> {
 }
 
 /// Migrate existing memory files (~/.gasket/memory/) to wiki pages.
-///
-/// Reads each .md file from memory directories, creates a WikiPage with
-/// appropriate path mapping, and writes to the wiki PageStore.
 pub async fn cmd_wiki_migrate() -> Result<()> {
     let memory_dir = dirs::home_dir()
         .map(|p| p.join(".gasket/memory"))
@@ -165,7 +50,6 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
     let mut migrated = 0;
     let mut errors = 0;
 
-    // Map scenario directories to wiki path prefixes
     let scenario_map = [
         ("profile", "entities/people"),
         ("active", "topics"),
@@ -197,7 +81,6 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
                 }
             };
 
-            // Extract title from frontmatter or filename
             let title = extract_title(&content).unwrap_or_else(|| {
                 path.file_stem()
                     .and_then(|s| s.to_str())
@@ -208,12 +91,10 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
             let slug = slugify(&title);
             let page_path = format!("{}/{}", prefix, slug);
 
-            // Extract body (skip frontmatter)
             let body = skip_frontmatter(&content);
 
             let mut page = WikiPage::new(page_path, title, PageType::Topic, body.to_string());
 
-            // Extract tags from frontmatter if present
             if let Some(tags) = extract_tags(&content) {
                 page.tags = tags;
             }
@@ -234,7 +115,6 @@ pub async fn cmd_wiki_migrate() -> Result<()> {
         println!("  {} errors", errors);
     }
 
-    // Ensure SQLite index is fully synced with disk (SSOT).
     let cached = ps.sync_db_from_disk().await?;
     println!("  {} disk cache files synced to index", cached);
 
@@ -287,18 +167,9 @@ pub async fn cmd_wiki_stats() -> Result<()> {
     let ps = PageStore::new(store.pool(), wiki_root);
 
     let all = ps.list(PageFilter::default()).await?;
-    let entities = all
-        .iter()
-        .filter(|p| p.page_type == PageType::Entity)
-        .count();
-    let topics = all
-        .iter()
-        .filter(|p| p.page_type == PageType::Topic)
-        .count();
-    let sources = all
-        .iter()
-        .filter(|p| p.page_type == PageType::Source)
-        .count();
+    let entities = all.iter().filter(|p| p.page_type == PageType::Entity).count();
+    let topics = all.iter().filter(|p| p.page_type == PageType::Topic).count();
+    let sources = all.iter().filter(|p| p.page_type == PageType::Source).count();
 
     println!("Wiki Statistics:");
     println!("  Total pages: {}", all.len());
@@ -335,7 +206,6 @@ pub async fn cmd_wiki_ingest(path: &str, tier: &str) -> Result<()> {
 
     let mut page = WikiPage::new(page_path.clone(), title.clone(), PageType::Topic, content);
 
-    // Detect type from path
     if path.contains("entity") || path.contains("entities") {
         page.page_type = PageType::Entity;
         page.path = format!("entities/{}", slug);
@@ -364,7 +234,6 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
     let store = gasket_engine::SqliteStore::new().await?;
     let ps = PageStore::new(store.pool(), wiki_root);
 
-    // Try Tantivy search first
     let tantivy_dir = dirs::home_dir()
         .map(|p| p.join(".gasket/wiki/.tantivy"))
         .unwrap_or_else(|| PathBuf::from("~/.gasket/wiki/.tantivy"));
@@ -521,14 +390,11 @@ fn extract_tags(content: &str) -> Option<Vec<String>> {
     let rest = &content.trim_start()[3..];
     let end = rest.find("\n---")?;
     let yaml = &rest[..end];
-    // Look for tags: line
     for line in yaml.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("tags:") {
-            // Simple extraction: tags:\n  - tag1\n  - tag2
             let tags_str = trimmed.trim_start_matches("tags:").trim();
             if tags_str.is_empty() || tags_str == "[]" {
-                // Multi-line tags follow
                 let mut tags = Vec::new();
                 let yaml_lines: Vec<&str> = yaml.lines().collect();
                 if let Some(idx) = yaml_lines
@@ -548,7 +414,6 @@ fn extract_tags(content: &str) -> Option<Vec<String>> {
                     return Some(tags);
                 }
             } else {
-                // Inline: tags: [tag1, tag2]
                 let tags: Vec<String> = tags_str
                     .trim_start_matches('[')
                     .trim_end_matches(']')

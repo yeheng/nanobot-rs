@@ -20,7 +20,7 @@ mod provider;
 mod workspace_downloader;
 
 use cli::{
-    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, MemoryCommands, ToolCommands,
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, ToolCommands,
     VaultCommands, WikiCommands,
 };
 
@@ -100,10 +100,6 @@ async fn main() -> Result<()> {
             VaultCommands::Import { file, merge } => commands::cmd_vault_import(file, merge).await,
             VaultCommands::Export { file } => commands::cmd_vault_export(file).await,
             VaultCommands::Rekey => commands::cmd_vault_rekey().await,
-        },
-        Some(Commands::Memory { command }) => match command {
-            MemoryCommands::Refresh => commands::cmd_memory_refresh().await,
-            MemoryCommands::Decay => commands::cmd_memory_decay().await,
         },
         Some(Commands::Wiki { command }) => match command {
             WikiCommands::Init => commands::cmd_wiki_init().await,

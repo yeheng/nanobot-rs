@@ -225,7 +225,7 @@ impl ToolProvider for WikiToolProvider {
             reg!(
                 WikiSearchTool::new(store.clone(), index.clone()),
                 "Wiki Search",
-                "memory",
+                "wiki",
                 ["search", "wiki"],
                 false,
                 false
@@ -233,7 +233,7 @@ impl ToolProvider for WikiToolProvider {
             reg!(
                 WikiWriteTool::new(store.clone()),
                 "Wiki Write",
-                "memory",
+                "wiki",
                 ["write", "wiki"],
                 false,
                 true
@@ -241,7 +241,7 @@ impl ToolProvider for WikiToolProvider {
             reg!(
                 WikiRefreshTool::new(store.clone(), index.clone()),
                 "Wiki Refresh",
-                "memory",
+                "wiki",
                 ["refresh", "wiki"],
                 false,
                 false
@@ -249,7 +249,7 @@ impl ToolProvider for WikiToolProvider {
             reg!(
                 SearchSopsTool::new(index.clone()),
                 "Search SOPs",
-                "memory",
+                "wiki",
                 ["search", "sop", "wiki"],
                 false,
                 false
@@ -259,7 +259,7 @@ impl ToolProvider for WikiToolProvider {
         reg!(
             WikiReadTool::new(store.clone()),
             "Wiki Read",
-            "memory",
+            "wiki",
             ["read", "wiki"],
             false,
             false
@@ -267,7 +267,7 @@ impl ToolProvider for WikiToolProvider {
         reg!(
             WikiDecayTool::new(store.clone()),
             "Wiki Decay",
-            "memory",
+            "wiki",
             ["decay", "wiki"],
             false,
             true
@@ -370,7 +370,7 @@ impl ToolProvider for SystemToolProvider {
             reg!(
                 HistoryQueryTool::new(db.pool().clone()),
                 "Query History",
-                "memory",
+                "wiki",
                 ["history", "search", "sqlite"],
                 false,
                 false

@@ -53,12 +53,6 @@ pub enum Commands {
         command: VaultCommands,
     },
 
-    /// Memory management commands
-    Memory {
-        #[command(subcommand)]
-        command: MemoryCommands,
-    },
-
     /// Wiki knowledge system commands
     Wiki {
         #[command(subcommand)]
@@ -230,15 +224,6 @@ pub enum VaultCommands {
 
     /// Change the vault master password and re-encrypt all entries
     Rekey,
-}
-
-#[derive(Subcommand)]
-pub enum MemoryCommands {
-    /// Manually refresh memory files from disk (detects external file changes by comparing mtime and size)
-    Refresh,
-
-    /// Run memory frequency decay (demote stale hot/warm/cold memories)
-    Decay,
 }
 
 #[derive(Subcommand)]

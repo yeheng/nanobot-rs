@@ -309,17 +309,17 @@ impl CronService {
     pub async fn ensure_system_cron_jobs(&self) {
         let system_jobs = [
             (
-                "system-memory-decay",
-                "Memory Decay",
+                "system-wiki-decay",
+                "Wiki Decay",
                 "0 0 */6 * * * *",
-                Some("memory_decay".to_string()),
+                Some("wiki_decay".to_string()),
                 None,
             ),
             (
-                "system-memory-refresh",
-                "Memory Refresh",
+                "system-wiki-refresh",
+                "Wiki Refresh",
                 "0 0 */3 * * * *",
-                Some("memory_refresh".to_string()),
+                Some("wiki_refresh".to_string()),
                 Some(serde_json::json!({"action": "sync"})),
             ),
             (
