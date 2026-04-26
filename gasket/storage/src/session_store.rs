@@ -70,6 +70,37 @@ impl SessionStore {
         Ok(result.rows_affected() > 0)
     }
 
+    // ── Combined Summary + Checkpoint ──
+
+    /// Load summary with watermark and merge latest checkpoint.
+    ///
+    /// Returns `(merged_summary, watermark)`.
+    /// If no summary exists, returns `("", 0)`.
+    pub async fn load_summary_with_checkpoint(
+        &self,
+        session_key: &SessionKey,
+    ) -> anyhow::Result<(String, i64)> {
+        let (mut summary, watermark) = match self.load_summary(session_key).await {
+            Ok(Some((content, watermark))) => (content, watermark),
+            Ok(None) => (String::new(), 0),
+            Err(e) => return Err(e),
+        };
+
+        let key_str = session_key.to_string();
+        if let Ok(Some((ck_summary, _ck_seq))) =
+            self.load_checkpoint(&key_str, i64::MAX).await
+        {
+            if !ck_summary.is_empty() {
+                if !summary.is_empty() {
+                    summary.push_str("\n\n[Working Memory]\n");
+                }
+                summary.push_str(&ck_summary);
+            }
+        }
+
+        Ok((summary, watermark))
+    }
+
     // ── Session Checkpoints API ──
 
     /// Save a checkpoint summary for a session at a specific target_sequence.
