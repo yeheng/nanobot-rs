@@ -19,6 +19,7 @@ argon2 = { version = "0.5", features = ["std"] }
 rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 gasket-channels = { path = "../channels" }
+gasket-embedding = { path = "../embedding", optional = true }
 tokio.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
@@ -67,6 +68,8 @@ feishu = ["gasket-channels/feishu"]
 wecom = ["gasket-channels/wecom"]
 websocket = ["gasket-channels/websocket"]
 all-channels = ["telegram", "discord", "slack", "dingtalk", "feishu", "wecom", "websocket"]
+
+embedding = ["gasket-embedding"]
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -104,6 +104,15 @@ pub struct AgentsConfig {
     pub models: HashMap<String, ModelProfile>,
 }
 
+/// Embedding configuration (only available with `embedding` feature).
+#[cfg(feature = "embedding")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: gasket_embedding::ProviderConfig,
+    #[serde(default)]
+    pub recall: gasket_embedding::RecallConfig,
+}
+
 /// Root configuration structure — maps directly to `~/.gasket/config.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -117,6 +126,9 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub state_machine: Option<serde_json::Value>,
+    #[cfg(feature = "embedding")]
+    #[serde(default)]
+    pub embedding: Option<EmbeddingConfig>,
 }
 
 impl Config {

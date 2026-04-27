@@ -207,6 +207,8 @@ async fn setup_agent_pipeline(
         page_index: page_index.clone(),
         provider: Some(provider_info.provider.clone()),
         model: Some(provider_info.model.clone()),
+        #[cfg(feature = "embedding")]
+        history_search: None,
     });
 
     let mut subagent_tools = common_tools.clone();

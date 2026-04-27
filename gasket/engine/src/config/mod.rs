@@ -5,6 +5,8 @@ mod tools;
 
 use std::path::PathBuf;
 
+#[cfg(feature = "embedding")]
+pub use app_config::EmbeddingConfig;
 pub use app_config::{
     config_path, load_config, AgentDefaults, AgentsConfig, Config, ConfigLoader, ModelConfig,
     ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,

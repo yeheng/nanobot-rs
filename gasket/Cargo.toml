@@ -13,6 +13,7 @@ resolver = "2"
 members = [
     "types",
     "storage",
+    "embedding",
     "broker",
     "engine",
     "cli",
@@ -100,6 +101,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # Internal crates
 gasket-types = { path = "types" }
 gasket-storage = { path = "storage" }
+gasket-embedding = { path = "embedding" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }

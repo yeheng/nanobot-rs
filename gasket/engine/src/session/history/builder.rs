@@ -289,9 +289,17 @@ impl ContextBuilder {
 /// Creates:
 /// - ExternalShellHook at BeforeRequest and AfterResponse
 /// - VaultHook at BeforeLLM (if vault is available)
+/// - HistoryRecallHook at AfterHistory (if `event_store` is provided)
+///
+/// With the `embedding` feature enabled, accepts an optional `EmbeddingConfig`
+/// to set up the semantic recall hook instead of the keyword-based one.
 ///
 /// Callers can append additional hooks before calling `.build_shared()`.
-pub fn build_default_hooks_builder() -> HookBuilder {
+pub fn build_default_hooks_builder(
+    #[allow(unused_variables)] event_store: Option<Arc<EventStore>>,
+) -> HookBuilder {
+    #[cfg(not(feature = "embedding"))]
+    use crate::hooks::HistoryRecallHook;
     use crate::hooks::{ExternalHookRunner, ExternalShellHook, HookPoint};
     use std::path::PathBuf;
 
@@ -323,12 +331,136 @@ pub fn build_default_hooks_builder() -> HookBuilder {
         tracing::debug!("[ContextBuilder] Vault not available, skipping vault injector");
     }
 
+    // Add history recall hook if event store is available (keyword-based, without embedding feature)
+    #[cfg(not(feature = "embedding"))]
+    if let Some(store) = event_store {
+        builder = builder.with_hook(Arc::new(HistoryRecallHook::new(store)));
+    }
+
     builder
+}
+
+/// Build the default hook registry for main agents with optional embedding support.
+///
+/// When the `embedding` feature is enabled and an `EmbeddingConfig` is provided,
+/// sets up the full semantic recall pipeline:
+/// 1. Builds embedding provider from config
+/// 2. Creates EmbeddingStore (shares the EventStore SQLite pool)
+/// 3. Runs cold-start index rebuild
+/// 4. Creates RecallSearcher
+/// 5. Starts EmbeddingIndexer listening to `event_store.subscribe()`
+/// 6. Registers the semantic HistoryRecallHook
+///
+/// Returns `(HookRegistry, Option<EmbeddingIndexer>)` — the caller must keep
+/// the indexer alive for background embedding processing.
+#[cfg(feature = "embedding")]
+pub async fn build_default_hooks_with_embedding(
+    event_store: Option<Arc<EventStore>>,
+    embedding_config: Option<crate::config::EmbeddingConfig>,
+) -> (
+    Arc<HookRegistry>,
+    Option<gasket_embedding::EmbeddingIndexer>,
+) {
+    use crate::hooks::{ExternalHookRunner, ExternalShellHook, HistoryRecallHook, HookPoint};
+    use std::path::PathBuf;
+
+    let hooks_dir = dirs::home_dir()
+        .map(|p| p.join(".gasket").join("hooks"))
+        .unwrap_or_else(|| {
+            tracing::warn!("Could not resolve home directory, disabling external hooks.");
+            PathBuf::from("/dev/null")
+        });
+
+    let external_runner = ExternalHookRunner::new(hooks_dir);
+
+    let mut builder = HookBuilder::new()
+        .with_hook(Arc::new(ExternalShellHook::new(
+            external_runner.clone(),
+            HookPoint::BeforeRequest,
+        )))
+        .with_hook(Arc::new(ExternalShellHook::new(
+            external_runner,
+            HookPoint::AfterResponse,
+        )));
+
+    // Add vault hook if available
+    if let Ok(store) = VaultStore::new() {
+        tracing::debug!("[ContextBuilder] Vault initialized successfully, adding vault injector");
+        let vault_hook = VaultHook::new(VaultInjector::new(Arc::new(store)));
+        builder = builder.with_hook(Arc::new(vault_hook));
+    } else {
+        tracing::debug!("[ContextBuilder] Vault not available, skipping vault injector");
+    }
+
+    let mut indexer = None;
+
+    if let (Some(es), Some(emb_cfg)) = (event_store.clone(), embedding_config) {
+        match setup_embedding_recall(&es, &emb_cfg).await {
+            Ok((searcher, idx)) => {
+                builder = builder.with_hook(Arc::new(HistoryRecallHook::new(
+                    Arc::new(searcher),
+                    emb_cfg.recall.clone(),
+                    es,
+                )));
+                indexer = Some(idx);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[ContextBuilder] Failed to set up embedding recall, skipping: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    (builder.build_shared(), indexer)
+}
+
+/// Set up the embedding recall pipeline: provider → store → index → searcher → indexer.
+#[cfg(feature = "embedding")]
+async fn setup_embedding_recall(
+    event_store: &Arc<EventStore>,
+    config: &crate::config::EmbeddingConfig,
+) -> anyhow::Result<(
+    gasket_embedding::RecallSearcher,
+    gasket_embedding::EmbeddingIndexer,
+)> {
+    use gasket_embedding::{EmbeddingIndexer, EmbeddingStore, HnswIndex, RecallSearcher};
+    use gasket_storage::EventStoreTrait;
+
+    // Build provider from config.
+    let provider = config.provider.build()?;
+
+    // Create embedding stores sharing the same SQLite pool.
+    // One for RecallSearcher (holds ownership), one for EmbeddingIndexer.
+    let pool = event_store.pool();
+    let emb_store_for_searcher = EmbeddingStore::new(pool.clone());
+    let emb_store_for_indexer = EmbeddingStore::new(pool);
+
+    // Run migration on one (idempotent).
+    emb_store_for_indexer.run_migration().await?;
+
+    // Create in-memory index.
+    let dim = provider.dim();
+    let index = Arc::new(HnswIndex::new(dim));
+
+    // Cold-start: load existing embeddings into the index.
+    EmbeddingIndexer::rebuild_index(&emb_store_for_indexer, &index).await?;
+
+    // Build searcher.
+    let provider_arc: Arc<dyn gasket_embedding::EmbeddingProvider> = Arc::from(provider);
+    let searcher = RecallSearcher::new(provider_arc.clone(), index.clone(), emb_store_for_searcher);
+
+    // Subscribe to new events and start background indexer.
+    let rx = event_store.as_ref().subscribe();
+    let idx = EmbeddingIndexer::start(provider_arc, emb_store_for_indexer, index, rx)?;
+
+    Ok((searcher, idx))
 }
 
 /// Build the default hook registry for main agents.
 ///
 /// Convenience wrapper around `build_default_hooks_builder().build_shared()`.
 pub fn build_default_hooks() -> Arc<HookRegistry> {
-    build_default_hooks_builder().build_shared()
+    build_default_hooks_builder(None).build_shared()
 }

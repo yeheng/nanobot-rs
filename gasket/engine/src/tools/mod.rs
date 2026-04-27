@@ -24,6 +24,8 @@ mod evolution;
 mod filesystem;
 mod format;
 mod history_query;
+#[cfg(feature = "embedding")]
+mod history_search;
 mod http;
 mod message;
 mod provider;
@@ -54,6 +56,8 @@ pub use evolution::EvolutionTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use format::format_subagent_response;
 pub use history_query::HistoryQueryTool;
+#[cfg(feature = "embedding")]
+pub use history_search::HistorySearchTool;
 pub use http::build_client_with_proxy;
 pub use message::MessageTool;
 pub use provider::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};

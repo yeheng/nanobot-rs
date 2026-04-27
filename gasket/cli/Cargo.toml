@@ -38,11 +38,14 @@ provider-minimax = ["gasket-engine/provider-minimax"]
 provider-moonshot = ["gasket-engine/provider-moonshot"]
 all-providers = ["provider-anthropic", "provider-gemini", "provider-copilot", "provider-minimax", "provider-moonshot"]
 
+# Embedding
+embedding = ["gasket-engine/embedding"]
+
 # Workspace template download (now in CLI, not core)
 workspace-download = ["dep:tar", "dep:flate2"]
 
 # Full build (all optional features enabled)
-full = ["default", "all-providers", "workspace-download", "all-channels", "telemetry"]
+full = ["default", "all-providers", "workspace-download", "all-channels", "telemetry", "embedding"]
 
 [dependencies]
 gasket-engine = { path = "../engine" }
