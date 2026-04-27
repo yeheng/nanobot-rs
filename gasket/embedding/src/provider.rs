@@ -140,12 +140,15 @@ impl EmbeddingProvider for ApiProvider {
             .await
             .map_err(|e| anyhow!("failed to parse embedding response: {e}"))?;
 
+        // Try OpenAI format first: { data: [{ embedding: [...] }] }
+        // Fall back to Ollama native format: { embedding: [...] }
         let embedding = json
             .get("data")
             .and_then(|d| d.get(0))
             .and_then(|d| d.get("embedding"))
+            .or_else(|| json.get("embedding"))
             .and_then(|e| e.as_array())
-            .ok_or_else(|| anyhow!("unexpected embedding response format"))?;
+            .ok_or_else(|| anyhow!("unexpected embedding response format: {}", json))?;
 
         let vec: Vec<f32> = embedding
             .iter()
@@ -176,8 +179,17 @@ impl EmbeddingProvider for ApiProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("embedding API error {status}: {body}"));
+            let body_text = resp.text().await.unwrap_or_default();
+            // Ollama /api/embeddings does not support batch input — fall back to sequential calls.
+            if status.as_u16() == 400 && self.endpoint.contains("/api/embed") {
+                tracing::debug!("Batch not supported by provider, falling back to sequential embed calls");
+                let mut results = Vec::with_capacity(texts.len());
+                for text in texts {
+                    results.push(self.embed(text).await?);
+                }
+                return Ok(results);
+            }
+            return Err(anyhow!("embedding API error {status}: {body_text}"));
         }
 
         let json: serde_json::Value = resp

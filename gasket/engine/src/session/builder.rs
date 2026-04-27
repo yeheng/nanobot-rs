@@ -51,6 +51,10 @@ pub struct SessionBuilder {
         Arc<gasket_embedding::RecallSearcher>,
         gasket_embedding::EmbeddingIndexer,
     )>,
+    /// Optional shared broadcast sender so the AgentSession's EventStore
+    /// shares the same channel as the embedding infrastructure.
+    #[cfg(feature = "embedding")]
+    event_store_tx: Option<tokio::sync::broadcast::Sender<gasket_types::SessionEvent>>,
 }
 
 impl SessionBuilder {
@@ -70,6 +74,8 @@ impl SessionBuilder {
             sqlite_store,
             #[cfg(feature = "embedding")]
             embedding_recall: None,
+            #[cfg(feature = "embedding")]
+            event_store_tx: None,
         }
     }
 
@@ -85,6 +91,18 @@ impl SessionBuilder {
         self
     }
 
+    /// Share the broadcast sender from an external EventStore so that
+    /// the AgentSession's EventStore and the embedding indexer listen
+    /// on the same channel.
+    #[cfg(feature = "embedding")]
+    pub fn with_event_store_tx(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<gasket_types::SessionEvent>,
+    ) -> Self {
+        self.event_store_tx = Some(tx);
+        self
+    }
+
     /// Build the complete `AgentSession`.
     ///
     /// All services are constructed in dependency order as local variables —
@@ -93,6 +111,13 @@ impl SessionBuilder {
         // ── 1. Storage layer ─────────────────────────────────────────
         let pool = self.sqlite_store.pool();
         let session_store = Arc::new(SessionStore::new(pool.clone()));
+        #[cfg(feature = "embedding")]
+        let event_store = if let Some(tx) = self.event_store_tx {
+            Arc::new(EventStore::with_pool_and_sender(pool, tx))
+        } else {
+            Arc::new(EventStore::new(pool))
+        };
+        #[cfg(not(feature = "embedding"))]
         let event_store = Arc::new(EventStore::new(pool));
 
         // ── 2. Kernel runtime context ────────────────────────────────
@@ -247,9 +272,12 @@ pub async fn build_session_with_embedding(
     sqlite_store: Arc<gasket_storage::SqliteStore>,
     searcher: Arc<gasket_embedding::RecallSearcher>,
     indexer: gasket_embedding::EmbeddingIndexer,
+    event_store_tx: Option<tokio::sync::broadcast::Sender<gasket_types::SessionEvent>>,
 ) -> Result<AgentSession, AgentError> {
-    SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
-        .with_embedding_recall(searcher, indexer)
-        .build()
-        .await
+    let mut builder = SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
+        .with_embedding_recall(searcher, indexer);
+    if let Some(tx) = event_store_tx {
+        builder = builder.with_event_store_tx(tx);
+    }
+    builder.build().await
 }

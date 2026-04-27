@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use tracing::info;
 
 use crate::index::HnswIndex;
 use crate::provider::EmbeddingProvider;
@@ -80,6 +81,7 @@ impl RecallSearcher {
     /// 2. If the hot index has fewer than `top_k` live entries, stream from SQLite
     ///    to fill the gap and ensure full historical recall.
     pub async fn recall(&self, query: &str, config: &RecallConfig) -> Result<Vec<(String, f32)>> {
+        info!("Recalling with query: {:?}, config: {:?}", query, config);
         let query_vec = self.provider.embed(query).await?;
 
         // ── Tier 1: hot index (memory) ──────────────────────────────

@@ -241,13 +241,12 @@ impl EmbeddingStore {
         let mut offset: i64 = 0;
 
         loop {
-            let rows = sqlx::query(
-                "SELECT event_id, embedding FROM event_embeddings LIMIT ? OFFSET ?"
-            )
-            .bind(BATCH_SIZE)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
+            let rows =
+                sqlx::query("SELECT event_id, embedding FROM event_embeddings LIMIT ? OFFSET ?")
+                    .bind(BATCH_SIZE)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             if rows.is_empty() {
                 break;

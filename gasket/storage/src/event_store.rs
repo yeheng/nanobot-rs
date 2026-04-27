@@ -82,6 +82,17 @@ impl EventStore {
         Self { pool, tx }
     }
 
+    /// Create an EventStore with an existing broadcast sender.
+    /// Used to share the same event broadcast channel across multiple EventStore instances.
+    pub fn with_pool_and_sender(pool: SqlitePool, tx: broadcast::Sender<SessionEvent>) -> Self {
+        Self { pool, tx }
+    }
+
+    /// Clone the broadcast sender so another EventStore instance can share the same channel.
+    pub fn sender(&self) -> broadcast::Sender<SessionEvent> {
+        self.tx.clone()
+    }
+
     /// Returns a reference to the underlying SQLite pool.
     ///
     /// Needed by embedding subsystem to share the same database connection.
@@ -507,12 +518,18 @@ impl EventStore {
             "#
         };
         let rows: Vec<EventRow> = if limit > 0 {
-            sqlx::query_as(sql).bind(limit as i64).fetch_all(&self.pool).await?
+            sqlx::query_as(sql)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await?
         } else {
             sqlx::query_as(sql).fetch_all(&self.pool).await?
         };
         // Reverse to restore chronological order when LIMIT was applied.
-        let mut events: Vec<SessionEvent> = rows.into_iter().map(|r| r.try_into()).collect::<Result<Vec<_>, _>>()?;
+        let mut events: Vec<SessionEvent> = rows
+            .into_iter()
+            .map(|r| r.try_into())
+            .collect::<Result<Vec<_>, _>>()?;
         if limit > 0 {
             events.reverse();
         }
