@@ -338,7 +338,7 @@ impl AgentSession {
     pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
         self.compactor
             .as_ref()
-            .map_or(false, |c| c.force_compact(session_key, vault_values))
+            .is_some_and(|c| c.force_compact(session_key, vault_values))
     }
 
     /// Force-trigger context compaction and await completion.
@@ -360,7 +360,7 @@ impl AgentSession {
 
     /// Check if context compaction is currently in progress.
     pub fn is_compacting(&self) -> bool {
-        self.compactor.as_ref().map_or(false, |c| {
+        self.compactor.as_ref().is_some_and(|c| {
             c.is_compressing_flag()
                 .load(std::sync::atomic::Ordering::Acquire)
         })

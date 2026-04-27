@@ -67,8 +67,7 @@ pub async fn get_usage_stats(
     compaction_threshold: f32,
     is_compressing: bool,
 ) -> Result<UsageStats> {
-    let (summary_text, watermark) =
-        load_summary_with_watermark(session_store, session_key).await;
+    let (summary_text, watermark) = load_summary_with_watermark(session_store, session_key).await;
     let summary_tokens = if summary_text.is_empty() {
         0
     } else {

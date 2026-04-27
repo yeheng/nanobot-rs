@@ -2,8 +2,12 @@
 
 use async_trait::async_trait;
 use serenity::all::{GatewayIntents, Message as DiscordMessage};
+use serenity::builder::CreateMessage;
+use serenity::http::Http;
+use serenity::model::id::ChannelId;
 use serenity::prelude::*;
-use tracing::{debug, info, instrument};
+use std::sync::Arc;
+use tracing::{debug, info, instrument, warn};
 
 use crate::adapter::ImAdapter;
 use crate::events::{ChannelType, InboundMessage};
@@ -13,6 +17,7 @@ use crate::middleware::InboundSender;
 pub struct DiscordConfig {
     pub token: String,
     pub allow_from: Vec<String>,
+    pub proxy_url: Option<String>,
 }
 
 impl From<&crate::config::DiscordConfig> for DiscordConfig {
@@ -20,6 +25,7 @@ impl From<&crate::config::DiscordConfig> for DiscordConfig {
         Self {
             token: cfg.token.clone(),
             allow_from: cfg.allow_from.clone(),
+            proxy_url: cfg.proxy_url.clone(),
         }
     }
 }
@@ -28,12 +34,24 @@ impl From<&crate::config::DiscordConfig> for DiscordConfig {
 #[derive(Clone)]
 pub struct DiscordAdapter {
     config: DiscordConfig,
+    http: Arc<Http>,
 }
 
 impl DiscordAdapter {
     pub fn from_config(cfg: &crate::config::DiscordConfig, _inbound: InboundSender) -> Self {
-        Self { config: cfg.into() }
+        let config: DiscordConfig = cfg.into();
+        let http = build_http(&config);
+        Self { config, http }
     }
+}
+
+fn build_http(config: &DiscordConfig) -> Arc<Http> {
+    let mut builder = serenity::http::HttpBuilder::new(&config.token);
+    if let Some(ref proxy) = config.proxy_url {
+        builder = builder.proxy(proxy);
+        info!("Discord REST API proxy configured: {}", proxy);
+    }
+    Arc::new(builder.build())
 }
 
 #[async_trait]
@@ -46,7 +64,16 @@ impl ImAdapter for DiscordAdapter {
     async fn start(&self, inbound_sender: InboundSender) -> anyhow::Result<()> {
         info!("Starting Discord adapter");
 
-        let intents = GatewayIntents::GUILD_MESSAGES
+        if self.config.proxy_url.is_some() {
+            warn!(
+                "Discord REST API proxy is configured, but Gateway WebSocket connections \
+                 require a system-level transparent proxy (e.g., TUN mode). \
+                 If you see 'TimedOut' errors, ensure your system proxy is active."
+            );
+        }
+
+        let intents = GatewayIntents::GUILDS
+            | GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
@@ -64,11 +91,6 @@ impl ImAdapter for DiscordAdapter {
     }
 
     async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
-        use serenity::builder::CreateMessage;
-        use serenity::http::Http;
-        use serenity::model::id::ChannelId;
-
-        let http = Http::new(&self.config.token);
         let channel_id = ChannelId::new(msg.chat_id().parse()?);
 
         let mut builder = CreateMessage::new().content(msg.content());
@@ -82,7 +104,7 @@ impl ImAdapter for DiscordAdapter {
             }
         }
 
-        channel_id.send_message(&http, builder).await?;
+        channel_id.send_message(&self.http, builder).await?;
         Ok(())
     }
 }
@@ -127,6 +149,10 @@ impl EventHandler for DiscordHandler {
     }
 
     async fn ready(&self, _ctx: Context, ready: serenity::model::gateway::Ready) {
-        info!("Discord bot ready: {}", ready.user.name);
+        info!("Discord bot ready: {} ({})", ready.user.name, ready.user.id);
+    }
+
+    async fn resume(&self, _ctx: Context, _event: serenity::model::event::ResumedEvent) {
+        info!("Discord gateway connection resumed");
     }
 }

@@ -79,6 +79,13 @@ pub struct DiscordConfig {
     /// Allowed user IDs
     #[serde(default)]
     pub allow_from: Vec<String>,
+
+    /// HTTP proxy URL for Discord REST API (e.g., "http://127.0.0.1:7890").
+    /// Note: Discord Gateway WebSocket connections require a system-level
+    /// transparent proxy (e.g., TUN mode) as tokio-tungstenite does not
+    /// natively support HTTP proxies.
+    #[serde(default, alias = "proxyUrl")]
+    pub proxy_url: Option<String>,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -87,6 +94,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("enabled", &self.enabled)
             .field("token", &"***REDACTED***")
             .field("allow_from", &self.allow_from)
+            .field("proxy_url", &self.proxy_url)
             .finish()
     }
 }
