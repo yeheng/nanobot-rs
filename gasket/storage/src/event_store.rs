@@ -82,6 +82,13 @@ impl EventStore {
         Self { pool, tx }
     }
 
+    /// Returns a reference to the underlying SQLite pool.
+    ///
+    /// Needed by embedding subsystem to share the same database connection.
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
+    }
+
     /// Parse a session key string into (channel, chat_id).
     /// Falls back to ChannelType::Cli if no channel prefix.
     fn parse_session_key_str(session_key: &str) -> (String, String) {
@@ -1112,10 +1119,7 @@ mod tests {
         assert_eq!(events.len(), 2);
 
         // Also works with just one ID
-        let events = store
-            .get_events_by_ids_global(&[e1.id])
-            .await
-            .unwrap();
+        let events = store.get_events_by_ids_global(&[e1.id]).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].content, "From session A");
 
