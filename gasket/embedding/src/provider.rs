@@ -38,10 +38,7 @@ pub enum ProviderConfig {
     },
     /// Local ONNX embedding provider (not yet implemented).
     #[cfg(feature = "local-onnx")]
-    LocalOnnx {
-        model: String,
-        dim: usize,
-    },
+    LocalOnnx { model: String, dim: usize },
     /// Placeholder variant when local-onnx feature is disabled.
     #[cfg(not(feature = "local-onnx"))]
     #[serde(skip)]
@@ -52,8 +49,14 @@ impl ProviderConfig {
     /// Construct a boxed provider from this configuration.
     pub fn build(&self) -> Result<Box<dyn EmbeddingProvider>> {
         match self {
-            ProviderConfig::Api { endpoint, model, api_key, dim } => {
-                let provider = ApiProvider::new(endpoint.clone(), model.clone(), api_key.clone(), *dim)?;
+            ProviderConfig::Api {
+                endpoint,
+                model,
+                api_key,
+                dim,
+            } => {
+                let provider =
+                    ApiProvider::new(endpoint.clone(), model.clone(), api_key.clone(), *dim)?;
                 Ok(Box::new(provider))
             }
             #[cfg(feature = "local-onnx")]
@@ -61,9 +64,7 @@ impl ProviderConfig {
                 Err(anyhow!("Local ONNX provider not yet implemented"))
             }
             #[cfg(not(feature = "local-onnx"))]
-            ProviderConfig::LocalOnnx => {
-                Err(anyhow!("Local ONNX provider not yet implemented"))
-            }
+            ProviderConfig::LocalOnnx => Err(anyhow!("Local ONNX provider not yet implemented")),
         }
     }
 }
@@ -84,7 +85,13 @@ impl ApiProvider {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| anyhow!("failed to build HTTP client: {e}"))?;
-        Ok(Self { endpoint, model, api_key, dim, client })
+        Ok(Self {
+            endpoint,
+            model,
+            api_key,
+            dim,
+            client,
+        })
     }
 
     /// Create a new API provider with a custom reqwest client (for testing).
@@ -95,7 +102,13 @@ impl ApiProvider {
         dim: usize,
         client: reqwest::Client,
     ) -> Self {
-        Self { endpoint, model, api_key, dim, client }
+        Self {
+            endpoint,
+            model,
+            api_key,
+            dim,
+            client,
+        }
     }
 }
 
@@ -136,7 +149,11 @@ impl EmbeddingProvider for ApiProvider {
 
         let vec: Vec<f32> = embedding
             .iter()
-            .map(|v| v.as_f64().map(|f| f as f32).ok_or_else(|| anyhow!("non-numeric embedding value")))
+            .map(|v| {
+                v.as_f64()
+                    .map(|f| f as f32)
+                    .ok_or_else(|| anyhow!("non-numeric embedding value"))
+            })
             .collect::<Result<Vec<f32>>>()?;
 
         Ok(vec)
@@ -263,7 +280,12 @@ dim: 1536
 "#;
         let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
         match config {
-            ProviderConfig::Api { endpoint, model, api_key, dim } => {
+            ProviderConfig::Api {
+                endpoint,
+                model,
+                api_key,
+                dim,
+            } => {
                 assert_eq!(endpoint, "https://api.openai.com/v1/embeddings");
                 assert_eq!(model, "text-embedding-3-small");
                 assert_eq!(api_key, "sk-test-key");
@@ -297,7 +319,12 @@ dim: 1536
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
         match parsed {
-            ProviderConfig::Api { endpoint, model, api_key, dim } => {
+            ProviderConfig::Api {
+                endpoint,
+                model,
+                api_key,
+                dim,
+            } => {
                 assert_eq!(endpoint, "https://api.example.com/embeddings");
                 assert_eq!(model, "model-x");
                 assert_eq!(api_key, "key-123");
@@ -323,7 +350,8 @@ dim: 1536
             "usage": { "prompt_tokens": 5, "total_tokens": 5 }
         });
 
-        let mock = server.mock("POST", "/embeddings")
+        let mock = server
+            .mock("POST", "/embeddings")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(serde_json::to_string(&response_body).unwrap())
@@ -356,7 +384,8 @@ dim: 1536
             "model": "test-model"
         });
 
-        let mock = server.mock("POST", "/embeddings")
+        let mock = server
+            .mock("POST", "/embeddings")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(serde_json::to_string(&response_body).unwrap())

@@ -70,11 +70,7 @@ impl RecallSearcher {
     }
 
     /// Search for similar events. Returns (event_id, score) pairs sorted by descending score.
-    pub async fn recall(
-        &self,
-        query: &str,
-        config: &RecallConfig,
-    ) -> Result<Vec<(String, f32)>> {
+    pub async fn recall(&self, query: &str, config: &RecallConfig) -> Result<Vec<(String, f32)>> {
         let query_vec = self.provider.embed(query).await?;
 
         let overfetch = config.top_k * 2;
@@ -156,15 +152,39 @@ mod tests {
 
         // Save to store so it's consistent.
         store
-            .save("evt-1", "sess-a", "", "", &[1.0, 0.0, 0.0], "user_message", "h1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "",
+                "",
+                &[1.0, 0.0, 0.0],
+                "user_message",
+                "h1",
+            )
             .await
             .unwrap();
         store
-            .save("evt-2", "sess-a", "", "", &[0.0, 1.0, 0.0], "assistant_message", "h2")
+            .save(
+                "evt-2",
+                "sess-a",
+                "",
+                "",
+                &[0.0, 1.0, 0.0],
+                "assistant_message",
+                "h2",
+            )
             .await
             .unwrap();
         store
-            .save("evt-3", "sess-a", "", "", &[0.9, 0.1, 0.0], "user_message", "h3")
+            .save(
+                "evt-3",
+                "sess-a",
+                "",
+                "",
+                &[0.9, 0.1, 0.0],
+                "user_message",
+                "h3",
+            )
             .await
             .unwrap();
 
@@ -179,7 +199,10 @@ mod tests {
         let results = searcher.recall("anything", &config).await.unwrap();
         // All entries have zero similarity with the zero query vector,
         // but 0.0 >= 0.0 filter passes them all.
-        assert!(!results.is_empty(), "should find entries with min_score=0.0");
+        assert!(
+            !results.is_empty(),
+            "should find entries with min_score=0.0"
+        );
     }
 
     #[tokio::test]
@@ -199,7 +222,10 @@ mod tests {
             ..Default::default()
         };
         let results = searcher.recall("anything", &config).await.unwrap();
-        assert!(results.is_empty(), "zero similarity should not pass min_score=0.3");
+        assert!(
+            results.is_empty(),
+            "zero similarity should not pass min_score=0.3"
+        );
     }
 
     #[tokio::test]

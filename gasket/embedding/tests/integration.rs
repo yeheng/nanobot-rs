@@ -178,7 +178,11 @@ async fn test_full_recall_flow() {
                 "",
                 "",
                 &embedding,
-                if i % 2 == 0 { "user_message" } else { "assistant_message" },
+                if i % 2 == 0 {
+                    "user_message"
+                } else {
+                    "assistant_message"
+                },
                 &format!("hash-{i}"),
             )
             .await
@@ -202,8 +206,14 @@ async fn test_full_recall_flow() {
         min_score: 0.0,
         ..Default::default()
     };
-    let results = searcher.recall("rust error handling", &config).await.unwrap();
-    assert!(!results.is_empty(), "should find results for relevant query");
+    let results = searcher
+        .recall("rust error handling", &config)
+        .await
+        .unwrap();
+    assert!(
+        !results.is_empty(),
+        "should find results for relevant query"
+    );
 
     // The top result should be one of the rust/error-related events.
     let top_ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
@@ -293,7 +303,10 @@ async fn test_cold_start_rebuild() {
     let query_vec = provider.embed("rust").await.unwrap();
     let results = index.search(&query_vec, 3);
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].0, "evt-b", "evt-b should be the top match for 'rust'");
+    assert_eq!(
+        results[0].0, "evt-b",
+        "evt-b should be the top match for 'rust'"
+    );
 
     // Verify the round-trip: embeddings loaded from store match what we'd
     // compute fresh.
@@ -304,7 +317,10 @@ async fn test_cold_start_rebuild() {
         // All stored embeddings should have the correct dimensionality.
         assert_eq!(s.embedding.len(), dim);
         // The stored embedding is valid (not all zeros for non-empty text).
-        assert_ne!(s.embedding, fresh, "stored embedding should differ per content");
+        assert_ne!(
+            s.embedding, fresh,
+            "stored embedding should differ per content"
+        );
     }
 }
 
@@ -327,9 +343,8 @@ async fn test_indexer_broadcast_processing() {
     // Subscribe to broadcast BEFORE starting indexer so no events are missed.
     let rx = event_store.subscribe();
 
-    let mut indexer =
-        EmbeddingIndexer::start(provider.clone(), embedding_store, index.clone(), rx)
-            .expect("start indexer");
+    let mut indexer = EmbeddingIndexer::start(provider.clone(), embedding_store, index.clone(), rx)
+        .expect("start indexer");
 
     // Append events to EventStore — they get broadcast to the indexer.
     let e1 = make_event(EventType::UserMessage, "First user message via broadcast");
@@ -354,7 +369,11 @@ async fn test_indexer_broadcast_processing() {
 
     // e1 and e2 should be indexed (UserMessage and AssistantMessage).
     // e3 is a ToolCall, so it should be skipped.
-    assert_eq!(index.len(), 2, "only user/assistant messages should be indexed");
+    assert_eq!(
+        index.len(),
+        2,
+        "only user/assistant messages should be indexed"
+    );
 
     // Verify embeddings exist in the store for the two processed events.
     let stored = index.search(&provider.embed("query").await.unwrap(), 10);
@@ -409,9 +428,8 @@ async fn test_indexer_dedup() {
 
     // Subscribe and start the indexer.
     let rx = event_store.subscribe();
-    let mut indexer =
-        EmbeddingIndexer::start(provider.clone(), embedding_store, index.clone(), rx)
-            .expect("start indexer");
+    let mut indexer = EmbeddingIndexer::start(provider.clone(), embedding_store, index.clone(), rx)
+        .expect("start indexer");
 
     // Append the same event via EventStore, which broadcasts to the indexer.
     event_store.append_event(&event).await.unwrap();
@@ -422,7 +440,8 @@ async fn test_indexer_dedup() {
     // Index should still be empty — the indexer's dedup check should skip the
     // event because the embedding already exists in the store.
     assert_eq!(
-        index.len(), 0,
+        index.len(),
+        0,
         "duplicate event should be skipped by indexer dedup",
     );
 
