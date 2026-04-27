@@ -64,13 +64,25 @@ impl ImAdapter for DiscordAdapter {
     }
 
     async fn send(&self, msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
+        use serenity::builder::CreateMessage;
         use serenity::http::Http;
         use serenity::model::id::ChannelId;
 
         let http = Http::new(&self.config.token);
-        let channel_id: u64 = msg.chat_id().parse()?;
-        let channel = ChannelId::new(channel_id);
-        channel.say(&http, msg.content()).await?;
+        let channel_id = ChannelId::new(msg.chat_id().parse()?);
+
+        let mut builder = CreateMessage::new().content(msg.content());
+
+        // Reply to the original message if message_id is present in metadata.
+        // This creates a Discord reply thread / message reference.
+        if let Some(ref meta) = msg.metadata {
+            if let Some(message_id) = meta.get("message_id").and_then(|v| v.as_str()) {
+                let reply_id = message_id.parse()?;
+                builder = builder.reference_message((channel_id, reply_id));
+            }
+        }
+
+        channel_id.send_message(&http, builder).await?;
         Ok(())
     }
 }
@@ -102,7 +114,9 @@ impl EventHandler for DiscordHandler {
             chat_id: msg.channel_id.to_string(),
             content: msg.content.clone(),
             media: None,
-            metadata: None,
+            metadata: Some(serde_json::json!({
+                "message_id": msg.id.to_string(),
+            })),
             timestamp: chrono::Utc::now(),
             trace_id: None,
         };

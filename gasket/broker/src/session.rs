@@ -234,11 +234,12 @@ async fn run_session_task<H: MessageHandler + 'static>(
                 match handler.handle_command(&session_key, "force_compact").await {
                     Ok(events) => {
                         for event in events {
-                            let outbound = OutboundMessage::with_ws_message(
+                            let mut outbound = OutboundMessage::with_ws_message(
                                 msg.channel.clone(),
                                 msg.chat_id.clone(),
                                 event,
                             );
+                            outbound.metadata = msg.metadata.clone();
                             if let Err(e) = broker
                                 .publish(Envelope::new(
                                     Topic::Outbound,
@@ -297,7 +298,8 @@ async fn process_message<H: MessageHandler + 'static>(
         let _response = result_handle.await??;
     } else {
         let content = handler.handle_message(session_key, &msg.content).await?;
-        let outbound = OutboundMessage::new(msg.channel, msg.chat_id.clone(), content);
+        let mut outbound = OutboundMessage::new(msg.channel, msg.chat_id.clone(), content);
+        outbound.metadata = msg.metadata.clone();
         output.send(outbound).await?;
     }
     Ok(())

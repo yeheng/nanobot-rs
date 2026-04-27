@@ -128,7 +128,7 @@ impl SessionBuilder {
             config: kernel_config,
             spawner: None,
             token_tracker: None,
-            checkpoint_callback: std::sync::Arc::new(crate::kernel::NoopCheckpoint),
+            checkpoint_callback: None,
         };
 
         // ── 3. Context compactor ─────────────────────────────────────

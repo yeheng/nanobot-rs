@@ -336,11 +336,9 @@ impl AgentSession {
 
     /// Force-trigger context compaction.
     pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
-        if let Some(ref compactor) = self.compactor {
-            compactor.force_compact(session_key, vault_values)
-        } else {
-            false
-        }
+        self.compactor
+            .as_ref()
+            .map_or(false, |c| c.force_compact(session_key, vault_values))
     }
 
     /// Force-trigger context compaction and await completion.
@@ -349,27 +347,23 @@ impl AgentSession {
         session_key: &SessionKey,
         vault_values: &[String],
     ) -> Result<(), AgentError> {
-        if let Some(ref compactor) = self.compactor {
-            compactor
+        match self.compactor.as_ref() {
+            Some(c) => c
                 .force_compact_and_wait(session_key, vault_values)
                 .await
-                .map_err(|e| AgentError::SessionError(e.to_string()))
-        } else {
-            Err(AgentError::SessionError(
+                .map_err(|e| AgentError::SessionError(e.to_string())),
+            None => Err(AgentError::SessionError(
                 "No compactor available".to_string(),
-            ))
+            )),
         }
     }
 
     /// Check if context compaction is currently in progress.
     pub fn is_compacting(&self) -> bool {
-        if let Some(ref compactor) = self.compactor {
-            compactor
-                .is_compressing_flag()
+        self.compactor.as_ref().map_or(false, |c| {
+            c.is_compressing_flag()
                 .load(std::sync::atomic::Ordering::Acquire)
-        } else {
-            false
-        }
+        })
     }
 
     /// Get context usage statistics.
@@ -377,10 +371,9 @@ impl AgentSession {
         &self,
         session_key: &SessionKey,
     ) -> Option<crate::session::compactor::UsageStats> {
-        if let Some(ref compactor) = self.compactor {
-            compactor.get_usage_stats(session_key).await.ok()
-        } else {
-            None
+        match self.compactor.as_ref() {
+            Some(c) => c.get_usage_stats(session_key).await.ok(),
+            None => None,
         }
     }
 
@@ -389,10 +382,9 @@ impl AgentSession {
         &self,
         session_key: &SessionKey,
     ) -> Option<crate::session::compactor::WatermarkInfo> {
-        if let Some(ref compactor) = self.compactor {
-            compactor.get_watermark_info(session_key).await.ok()
-        } else {
-            None
+        match self.compactor.as_ref() {
+            Some(c) => c.get_watermark_info(session_key).await.ok(),
+            None => None,
         }
     }
 
@@ -530,11 +522,11 @@ impl AgentSession {
         let mut runtime_ctx = self.runtime_ctx.clone();
 
         if let Some(ref compactor) = &self.compactor {
-            runtime_ctx.checkpoint_callback = Arc::new(SessionCheckpointCallback {
+            runtime_ctx.checkpoint_callback = Some(Arc::new(SessionCheckpointCallback {
                 session_key: fctx.session_key.clone(),
                 compactor: compactor.clone(),
                 event_store: self.event_store.clone(),
-            });
+            }));
         }
 
         let ctx = PipelineContext {

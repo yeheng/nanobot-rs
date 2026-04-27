@@ -253,13 +253,18 @@ impl LocalOnnxProvider {
     /// e.g. `"BGESmallENV15"` or `"AllMiniLML6V2"`.
     /// The model is downloaded from HuggingFace on first use if not cached.
     pub fn new(model_name: &str, dim: usize) -> Result<Self> {
-        let model_enum: fastembed::EmbeddingModel = model_name
-            .parse()
-            .map_err(|e: String| anyhow!("unknown local embedding model '{}': {}", model_name, e))?;
+        let model_enum: fastembed::EmbeddingModel = model_name.parse().map_err(|e: String| {
+            anyhow!("unknown local embedding model '{}': {}", model_name, e)
+        })?;
 
         let options = fastembed::TextInitOptions::new(model_enum);
-        let model = fastembed::TextEmbedding::try_new(options)
-            .map_err(|e| anyhow!("failed to load local embedding model '{}': {}", model_name, e))?;
+        let model = fastembed::TextEmbedding::try_new(options).map_err(|e| {
+            anyhow!(
+                "failed to load local embedding model '{}': {}",
+                model_name,
+                e
+            )
+        })?;
 
         Ok(Self {
             model: std::sync::Arc::new(parking_lot::Mutex::new(model)),
@@ -282,7 +287,9 @@ impl EmbeddingProvider for LocalOnnxProvider {
         .map_err(|e| anyhow!("embedding task failed: {e}"))?
         .map_err(|e| anyhow!("local embedding failed: {e}"))?;
 
-        embeddings.into_iter().next()
+        embeddings
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow!("local embedding returned no results"))
     }
 

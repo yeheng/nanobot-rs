@@ -12,7 +12,7 @@ pub(crate) mod steppable_executor;
 pub mod stream;
 pub(crate) mod tool_executor;
 
-pub use context::{CheckpointCallback, KernelConfig, NoopCheckpoint, RuntimeContext};
+pub use context::{CheckpointCallback, KernelConfig, RuntimeContext};
 pub use error::KernelError;
 pub use executor::{
     ExecutionResult, ExecutorOptions, KernelExecutor, StepResult, SteppableExecutor, TokenLedger,

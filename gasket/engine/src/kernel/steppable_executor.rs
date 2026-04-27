@@ -51,15 +51,6 @@ impl SteppableExecutor {
         self
     }
 
-    /// Enable proactive checkpointing via interceptor.
-    pub fn with_checkpoint(
-        mut self,
-        callback: Arc<dyn crate::kernel::context::CheckpointCallback>,
-    ) -> Self {
-        self.ctx.checkpoint_callback = callback;
-        self
-    }
-
     /// Execute one iteration: LLM call → optional tool calls → return result.
     ///
     /// `messages` is mutated in place (assistant response + tool results appended).
@@ -71,14 +62,11 @@ impl SteppableExecutor {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
     ) -> Result<StepResult, KernelError> {
         // Proactive checkpoint injection (before LLM call)
-        if let Some(summary) = self
-            .ctx
-            .checkpoint_callback
-            .get_checkpoint(messages.len())
-            .await
-        {
-            debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
-            messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
+        if let Some(ref cb) = self.ctx.checkpoint_callback {
+            if let Some(summary) = cb.get_checkpoint(messages.len()).await {
+                debug!("[Steppable] Injecting checkpoint ({} chars)", summary.len());
+                messages.push(ChatMessage::system(format!("[Working Memory] {}", summary)));
+            }
         }
 
         let request_handler =

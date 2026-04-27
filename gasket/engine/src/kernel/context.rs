@@ -10,22 +10,13 @@ use gasket_providers::LlmProvider;
 ///
 /// Called before each `step()` with the current message count; returns
 /// a summary to inject, or `None` to skip.
+///
+/// This is a kernel-level extension point (fires per iteration inside the
+/// step loop), distinct from session-level `PipelineHook`s (fire once per
+/// request during context construction).
 #[async_trait]
 pub trait CheckpointCallback: Send + Sync {
     async fn get_checkpoint(&self, msg_len: usize) -> Option<String>;
-}
-
-/// No-op checkpoint callback — always returns `None`.
-///
-/// Used as the default in `RuntimeContext` so the kernel never needs
-/// to check for `Option<Arc<dyn CheckpointCallback>>`.
-pub struct NoopCheckpoint;
-
-#[async_trait]
-impl CheckpointCallback for NoopCheckpoint {
-    async fn get_checkpoint(&self, _msg_len: usize) -> Option<String> {
-        None
-    }
 }
 
 /// Everything the kernel needs to execute one LLM request.
@@ -36,9 +27,9 @@ pub struct RuntimeContext {
     pub config: KernelConfig,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
-    /// Checkpoint callback for proactive working-memory injection.
-    /// Defaults to `NoopCheckpoint` (always returns `None`) — never `None` itself.
-    pub checkpoint_callback: Arc<dyn CheckpointCallback>,
+    /// Optional checkpoint callback for proactive working-memory injection.
+    /// `None` means no checkpointing — checked before each step iteration.
+    pub checkpoint_callback: Option<Arc<dyn CheckpointCallback>>,
 }
 
 impl RuntimeContext {
@@ -53,7 +44,7 @@ impl RuntimeContext {
             config,
             spawner: None,
             token_tracker: None,
-            checkpoint_callback: Arc::new(NoopCheckpoint),
+            checkpoint_callback: None,
         }
     }
 }

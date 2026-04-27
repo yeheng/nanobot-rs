@@ -135,14 +135,6 @@ impl KernelExecutor {
         self
     }
 
-    pub fn with_checkpoint(
-        mut self,
-        callback: Arc<dyn crate::kernel::context::CheckpointCallback>,
-    ) -> Self {
-        self.ctx.checkpoint_callback = callback;
-        self
-    }
-
     pub async fn execute_with_options(
         &self,
         messages: Vec<ChatMessage>,

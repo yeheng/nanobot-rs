@@ -80,11 +80,9 @@ impl MonitoredSpawner {
         };
         let kernel_config = config.to_kernel_config();
 
-        let ctx = crate::kernel::RuntimeContext::new(provider, tools, kernel_config);
-        let steppable = match checkpoint_callback {
-            Some(cb) => SteppableExecutor::new(ctx).with_checkpoint(cb),
-            None => SteppableExecutor::new(ctx),
-        };
+        let mut ctx = crate::kernel::RuntimeContext::new(provider, tools, kernel_config);
+        ctx.checkpoint_callback = checkpoint_callback;
+        let steppable = SteppableExecutor::new(ctx);
 
         let handle = tokio::spawn(async move {
             let mut runner = MonitoredRunner::new(spec, steppable, progress_tx, interventor_rx);
