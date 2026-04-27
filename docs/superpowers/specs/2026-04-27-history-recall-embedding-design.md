@@ -442,8 +442,6 @@ On `on_events_deleted`:
 
 ### 9.2 Integration Point
 
-### 9.2 Integration Point
-
 The compactor maintains a `Vec<Box<dyn CompactionListener>>`. After `delete_events_upto()`, it calls each listener with the deleted event IDs. This keeps the compactor decoupled from the embedding crate.
 
 **Required change to `EventStore`**: The existing `delete_events_upto()` only returns `u64` (rows affected), not the deleted event IDs. Two options:
