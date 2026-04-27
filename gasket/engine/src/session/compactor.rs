@@ -70,6 +70,19 @@ pub const SUMMARY_SUFFIX: &str = "\n[End of Summary]";
 pub const RECALL_PREFIX: &str = "[回忆]";
 
 // ---------------------------------------------------------------------------
+// CompactionListener — notification interface for embedding cleanup
+// ---------------------------------------------------------------------------
+
+/// Listener notified when compaction deletes events.
+///
+/// Implementors (e.g. `EmbeddingIndexer`) use this to clean up associated
+/// embeddings when events are garbage-collected by the compactor.
+pub trait CompactionListener: Send + Sync {
+    /// Called with the IDs of events about to be (or already) deleted.
+    fn on_events_deleted(&self, event_ids: &[String]);
+}
+
+// ---------------------------------------------------------------------------
 // ContextCompactor — public API
 // ---------------------------------------------------------------------------
 
@@ -172,6 +185,8 @@ pub struct ContextCompactor {
     last_failed_attempt: Arc<parking_lot::Mutex<Option<Instant>>>,
     /// Optional checkpoint configuration for proactive working-memory snapshots.
     checkpoint_config: Option<CheckpointConfig>,
+    /// Listeners notified when events are deleted during compaction.
+    listeners: Vec<Arc<dyn CompactionListener>>,
 }
 
 impl ContextCompactor {
@@ -198,6 +213,7 @@ impl ContextCompactor {
             pending_compaction: Arc::new(AtomicBool::new(false)),
             last_failed_attempt: Arc::new(parking_lot::Mutex::new(None)),
             checkpoint_config: None,
+            listeners: Vec::new(),
         }
     }
 
@@ -217,6 +233,11 @@ impl ContextCompactor {
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.compaction_threshold = threshold;
         self
+    }
+
+    /// Add a compaction listener to be notified when events are deleted.
+    pub fn add_listener(&mut self, listener: Arc<dyn CompactionListener>) {
+        self.listeners.push(listener);
     }
 
     /// Get a clone of the is_compressing guard for external inspection.
@@ -363,6 +384,8 @@ impl ContextCompactor {
             warn!("Failed to mark compaction started for {}: {}", sk, e);
         }
 
+        let listeners: Vec<Arc<dyn CompactionListener>> = self.listeners.clone();
+
         let result = run_compaction(
             &self.event_store,
             &self.session_store,
@@ -371,6 +394,7 @@ impl ContextCompactor {
             &self.summarization_prompt,
             session_key,
             vault_values,
+            &listeners,
         )
         .await
         .map_err(|e| anyhow::anyhow!("Compaction failed for {}: {}", sk, e));
@@ -606,6 +630,8 @@ impl ContextCompactor {
         let vault = vault_values.to_vec();
         let last_failed = self.last_failed_attempt.clone();
         let pending = self.pending_compaction.clone();
+        // Clone Arc references to listeners so the background task can notify them.
+        let listeners: Vec<Arc<dyn CompactionListener>> = self.listeners.clone();
 
         tokio::spawn(async move {
             let _guard = guard;
@@ -624,6 +650,7 @@ impl ContextCompactor {
                     &summarization_prompt,
                     &sk,
                     &vault,
+                    &listeners,
                 )
                 .await
                 {
@@ -652,6 +679,7 @@ impl ContextCompactor {
                         &summarization_prompt,
                         &sk,
                         &vault,
+                        &listeners,
                     )
                     .await
                     {
@@ -696,6 +724,7 @@ impl Drop for CompactionGuard {
 // ---------------------------------------------------------------------------
 
 /// Execute the full compaction pipeline: load → build context → summarize → persist.
+#[allow(clippy::too_many_arguments)]
 async fn run_compaction(
     event_store: &EventStore,
     session_store: &SessionStore,
@@ -704,6 +733,7 @@ async fn run_compaction(
     summarization_prompt: &str,
     session_key: &SessionKey,
     vault_values: &[String],
+    listeners: &[Arc<dyn CompactionListener>],
 ) -> Result<()> {
     // 1. Load target sequence
     let target_sequence = event_store
@@ -755,6 +785,7 @@ async fn run_compaction(
         &summary_text,
         vault_values,
         target_sequence,
+        listeners,
     )
     .await?;
 
@@ -815,6 +846,7 @@ async fn persist_and_gc(
     summary_text: &str,
     vault_values: &[String],
     target_sequence: i64,
+    listeners: &[Arc<dyn CompactionListener>],
 ) -> Result<()> {
     // Redact secrets
     let summary_to_persist = if vault_values.is_empty() {
@@ -829,12 +861,24 @@ async fn persist_and_gc(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save summary for {}: {}", session_key, e))?;
 
+    // Fetch event IDs before deletion so listeners know what was removed.
+    let deleted_ids = event_store
+        .get_event_ids_up_to(session_key, target_sequence)
+        .await
+        .unwrap_or_default();
+
     // Garbage-collect old events (non-fatal on failure)
     match event_store
         .delete_events_upto(session_key, target_sequence)
         .await
     {
         Ok(deleted) => {
+            // Notify listeners after successful deletion.
+            if !deleted_ids.is_empty() {
+                for listener in listeners {
+                    listener.on_events_deleted(&deleted_ids);
+                }
+            }
             info!(
                 "Compaction complete for {}: {} tokens summary, {} events GC'd (watermark={})",
                 session_key,
@@ -1136,6 +1180,7 @@ mod tests {
             prompt,
             &session_key,
             &[],
+            &[],
         )
         .await
         .expect("first compaction should succeed");
@@ -1180,6 +1225,7 @@ mod tests {
             prompt,
             &session_key,
             &[],
+            &[],
         )
         .await;
         assert!(result.is_err(), "compaction should fail when LLM crashes");
@@ -1216,6 +1262,7 @@ mod tests {
             model,
             prompt,
             &session_key,
+            &[],
             &[],
         )
         .await
