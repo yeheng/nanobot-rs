@@ -56,6 +56,7 @@ impl EmbeddingStore {
     }
 
     /// Insert a single embedding. Uses INSERT OR IGNORE for idempotency.
+    #[allow(clippy::too_many_arguments)]
     pub async fn save(
         &self,
         event_id: &str,
@@ -131,9 +132,11 @@ impl EmbeddingStore {
 
     /// Load all embeddings (for cold-start index rebuild).
     pub async fn load_all(&self) -> Result<Vec<StoredEmbedding>> {
-        let rows = sqlx::query("SELECT event_id, session_key, embedding, event_type, created_at FROM event_embeddings")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT event_id, session_key, embedding, event_type, created_at FROM event_embeddings",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
@@ -183,10 +186,11 @@ impl EmbeddingStore {
 
     /// Check if an embedding exists for the given event ID.
     pub async fn exists(&self, event_id: &str) -> Result<bool> {
-        let row: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM event_embeddings WHERE event_id = ?")
-            .bind(event_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM event_embeddings WHERE event_id = ?")
+                .bind(event_id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(row.is_some())
     }
@@ -212,8 +216,12 @@ fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
 
 /// Deserialize raw bytes back to Vec<f32>.
 fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
-    assert!(bytes.len() % 4 == 0, "embedding blob length must be a multiple of 4");
-    bytes.chunks_exact(4)
+    assert!(
+        bytes.len().is_multiple_of(4),
+        "embedding blob length must be a multiple of 4"
+    );
+    bytes
+        .chunks_exact(4)
         .map(|chunk| {
             let arr: [u8; 4] = chunk.try_into().expect("chunk is exactly 4 bytes");
             f32::from_le_bytes(arr)
@@ -246,7 +254,15 @@ mod tests {
         assert!(!store.exists("evt-1").await.unwrap());
 
         store
-            .save("evt-1", "sess-a", "tg", "chat-1", &sample_embedding(), "user_message", "hash1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "tg",
+                "chat-1",
+                &sample_embedding(),
+                "user_message",
+                "hash1",
+            )
             .await
             .unwrap();
 
@@ -287,15 +303,34 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save("evt-1", "sess-a", "", "", &sample_embedding(), "user_message", "h1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h1",
+            )
             .await
             .unwrap();
         store
-            .save("evt-2", "sess-a", "", "", &sample_embedding(), "user_message", "h2")
+            .save(
+                "evt-2",
+                "sess-a",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h2",
+            )
             .await
             .unwrap();
 
-        let deleted = store.delete_by_event_ids(&["evt-1".to_string()]).await.unwrap();
+        let deleted = store
+            .delete_by_event_ids(&["evt-1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(deleted, 1);
 
         assert!(!store.exists("evt-1").await.unwrap());
@@ -307,11 +342,27 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save("evt-1", "sess-a", "", "", &sample_embedding(), "user_message", "h1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h1",
+            )
             .await
             .unwrap();
         store
-            .save("evt-2", "sess-b", "", "", &sample_embedding(), "user_message", "h2")
+            .save(
+                "evt-2",
+                "sess-b",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h2",
+            )
             .await
             .unwrap();
 
@@ -327,11 +378,27 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save("evt-1", "sess-a", "", "", &sample_embedding(), "user_message", "h1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h1",
+            )
             .await
             .unwrap();
         store
-            .save("evt-1", "sess-a", "", "", &sample_embedding(), "user_message", "h1")
+            .save(
+                "evt-1",
+                "sess-a",
+                "",
+                "",
+                &sample_embedding(),
+                "user_message",
+                "h1",
+            )
             .await
             .unwrap();
 
