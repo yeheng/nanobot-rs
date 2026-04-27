@@ -143,6 +143,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             page_index,
             provider: Some(provider_info.provider.clone()),
             model: Some(provider_info.model.clone()),
+            #[cfg(feature = "embedding")]
+            history_search: None,
         });
 
     let mut tools = common_tools.clone();

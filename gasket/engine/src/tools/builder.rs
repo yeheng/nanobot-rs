@@ -62,6 +62,17 @@ pub struct ToolRegistryConfig {
     pub provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     /// Model identifier for plan-generation tools.
     pub model: Option<String>,
+    /// Optional semantic history search (embedding feature).
+    #[cfg(feature = "embedding")]
+    pub history_search: Option<HistorySearchParams>,
+}
+
+/// Parameters needed to construct the `history_search` tool.
+#[cfg(feature = "embedding")]
+pub struct HistorySearchParams {
+    pub searcher: std::sync::Arc<gasket_embedding::RecallSearcher>,
+    pub config: gasket_embedding::RecallConfig,
+    pub event_store: std::sync::Arc<gasket_storage::EventStore>,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
@@ -79,6 +90,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         page_index,
         provider,
         model,
+        #[cfg(feature = "embedding")]
+        history_search,
     } = registry_config;
 
     let mut tools = ToolRegistry::new();
@@ -114,6 +127,19 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
+    }
+
+    // ── Embedding-based history search (conditional) ───────────
+    #[cfg(feature = "embedding")]
+    {
+        use super::HistorySearchTool;
+        if let Some(params) = history_search {
+            tools.register(Box::new(HistorySearchTool::new(
+                params.searcher,
+                params.config,
+                params.event_store,
+            )));
+        }
     }
 
     // Discover external plugins from ~/.gasket/scripts/

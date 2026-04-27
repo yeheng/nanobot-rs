@@ -53,6 +53,8 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         page_index,
         provider: Some(provider_info.provider.clone()),
         model: Some(provider_info.model.clone()),
+        #[cfg(feature = "embedding")]
+        history_search: None,
     });
 
     let tools_arc = Arc::new(tools.clone());
