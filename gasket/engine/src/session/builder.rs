@@ -134,9 +134,9 @@ impl SessionBuilder {
         }
 
         // ── 8. Hook registry ─────────────────────────────────────────
-        let hooks_builder = crate::session::history::builder::build_default_hooks_builder(
-            Some(event_store.clone()),
-        );
+        let hooks_builder = crate::session::history::builder::build_default_hooks_builder(Some(
+            event_store.clone(),
+        ));
 
         let hooks = hooks_builder.build_shared();
 
