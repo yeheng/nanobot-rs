@@ -310,6 +310,50 @@ impl EventStore {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    /// Load events by IDs across all sessions (no session scoping).
+    ///
+    /// Unlike `get_events_by_ids`, this does not filter by session key,
+    /// making it suitable for cross-session recall.
+    pub async fn get_events_by_ids_global(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT * FROM session_events WHERE id IN ({}) ORDER BY created_at ASC",
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, EventRow>(&query);
+        for id in ids {
+            q = q.bind(id.to_string());
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
+    /// Return event IDs that will be deleted by `delete_events_upto`.
+    ///
+    /// Used by CompactionListener to know which embeddings to clean up
+    /// before the actual deletion occurs.
+    pub async fn get_event_ids_up_to(
+        &self,
+        session_key: &SessionKey,
+        up_to_seq: i64,
+    ) -> Result<Vec<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM session_events WHERE channel = ? AND chat_id = ? AND sequence <= ?",
+        )
+        .bind(session_key.channel.to_string())
+        .bind(&session_key.chat_id)
+        .bind(up_to_seq)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn clear_session(&self, session_key: &SessionKey) -> Result<(), StoreError> {
         let channel = session_key.channel.to_string();
         let chat_id = &session_key.chat_id;
@@ -427,6 +471,45 @@ impl EventStore {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
+
+    /// Search session events by keyword using SQL LIKE.
+    ///
+    /// Returns matching `user_message` and `assistant_message` events
+    /// ordered by creation time (newest first).
+    pub async fn search_session_events(
+        &self,
+        session_key: &SessionKey,
+        keyword: &str,
+        limit: i64,
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        let pattern = format!(
+            "%{}%",
+            keyword
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+
+        let rows: Vec<EventRow> = sqlx::query_as(
+            r#"
+            SELECT id, session_key, channel, chat_id, event_type, content,
+                   tools_used, token_usage, token_len, event_data, extra, created_at, sequence
+            FROM session_events
+            WHERE session_key = ?1
+              AND content LIKE ?2 ESCAPE '\'
+              AND event_type IN ('user_message', 'assistant_message')
+            ORDER BY created_at DESC
+            LIMIT ?3
+            "#,
+        )
+        .bind(session_key.to_string())
+        .bind(&pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(TryInto::try_into).collect()
     }
 }
 
@@ -991,5 +1074,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(session_count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_events_by_ids_global() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Create events in two different sessions
+        let e1 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session_a".into(),
+            event_type: EventType::UserMessage,
+            content: "From session A".into(),
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+            sequence: 0,
+        };
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session_b".into(),
+            event_type: EventType::AssistantMessage,
+            content: "From session B".into(),
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+            sequence: 0,
+        };
+        store.append_event(&e2).await.unwrap();
+
+        // Global query returns both events regardless of session
+        let events = store
+            .get_events_by_ids_global(&[e1.id, e2.id])
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+
+        // Also works with just one ID
+        let events = store
+            .get_events_by_ids_global(&[e1.id])
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].content, "From session A");
+
+        // Non-existent ID returns empty
+        let events = store
+            .get_events_by_ids_global(&[Uuid::now_v7()])
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+
+        // Empty input returns empty
+        let events = store.get_events_by_ids_global(&[]).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_event_ids_up_to() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        let key = SessionKey::parse("test:session").unwrap();
+
+        // Insert 5 events; append_event_internal assigns sequential sequences
+        let mut ids = vec![];
+        for i in 0..5 {
+            let e = SessionEvent {
+                id: Uuid::now_v7(),
+                session_key: "test:session".into(),
+                event_type: EventType::UserMessage,
+                content: format!("Event {i}"),
+                metadata: EventMetadata::default(),
+                created_at: Utc::now(),
+                sequence: 0,
+            };
+            ids.push(e.id);
+            store.append_event(&e).await.unwrap();
+        }
+
+        // Query IDs up to sequence 2 (should return events with seq 0, 1, 2)
+        let result = store.get_event_ids_up_to(&key, 2).await.unwrap();
+        assert_eq!(result.len(), 3);
+        for id_str in &result {
+            let parsed: Uuid = id_str.parse().unwrap();
+            assert!(ids[..3].contains(&parsed));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_event_ids_up_to_empty() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        let key = SessionKey::parse("nonexistent:session").unwrap();
+
+        // No events exist for this session
+        let result = store.get_event_ids_up_to(&key, 100).await.unwrap();
+        assert!(result.is_empty());
+
+        // Sequence 0 matches nothing even if session exists
+        let e = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            event_type: EventType::UserMessage,
+            content: "only event".into(),
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+            sequence: 0,
+        };
+        store.append_event(&e).await.unwrap();
+
+        let key = SessionKey::parse("test:session").unwrap();
+        // sequence <= -1 matches nothing (first event has seq 0)
+        let result = store.get_event_ids_up_to(&key, -1).await.unwrap();
+        assert!(result.is_empty());
     }
 }
