@@ -1,0 +1,33 @@
+[package]
+name = "gasket-embedding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Embedding-based semantic search for gasket history recall"
+
+[features]
+default = []
+local-onnx = ["fastembed"]
+
+[dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json"] }
+instant-distance = "0.5"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+reqwest = { workspace = true }
+tiktoken-rs.workspace = true
+gasket-types = { path = "../types" }
+gasket-storage = { path = "../storage" }
+fastembed = { version = "4", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
