@@ -304,6 +304,21 @@ token_budget trimming                    -> Vec<RecallHit>
 - **Token budget**: Trims results using `tiktoken-rs` counting, stops when budget is exceeded
 - **Global search**: No session scoping — searches across all sessions' embeddings
 
+### 7.3 Cross-Session Event Loading
+
+The existing `EventStore.get_events_by_ids()` requires a `SessionKey` parameter and filters by `channel + chat_id`. For global recall, a new method is needed:
+
+```rust
+impl EventStore {
+    /// Load events by IDs across all sessions (no session scoping).
+    pub async fn get_events_by_ids_global(&self, ids: &[Uuid]) -> Result<Vec<SessionEvent>, StoreError> {
+        // SELECT * FROM session_events WHERE id IN (?) ORDER BY created_at ASC
+    }
+}
+```
+
+This method will be added to `gasket/storage/src/event_store.rs` as part of the implementation. The `RecallSearcher` uses this method instead of `get_events_by_ids` to enable cross-session result loading.
+
 ---
 
 ## 8. Engine Integration
@@ -335,7 +350,7 @@ pub struct HistoryRecallHook {
 - Injects matching hits as a user message with `[SYSTEM: ...]` prefix
 - On failure: warn + continue (never blocks the pipeline)
 
-When `embedding` is not enabled, the existing keyword-based implementation is preserved unchanged.
+When `embedding` is not enabled, the existing keyword-based implementation is preserved unchanged. **Implementation approach**: Both versions live in the same file (`recall.rs`) as two mutually exclusive struct definitions gated by `#[cfg(feature = "embedding")]` and `#[cfg(not(feature = "embedding"))]`. This is a clean alternate-implementation pattern — same struct name, same trait impl, different internal fields.
 
 ### 8.3 history_search Tool (new)
 
@@ -354,7 +369,21 @@ pub struct HistorySearchTool {
   - `top_k` (integer, optional): Number of results, default 5
 - Returns formatted recall hits for the LLM to reference
 
-### 8.4 Initialization
+### 8.4 Configuration Parsing
+
+The `embedding:` section in `config.yaml` is parsed into the application's existing config struct. Add these types to the engine crate (or a shared config module):
+
+```rust
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: ProviderConfig,
+    pub recall: RecallConfig,
+}
+```
+
+`ProviderConfig` and `RecallConfig` are re-exported from `gasket-embedding`. The config parsing code (where `config.yaml` is deserialized into the runtime config struct) needs to include `pub embedding: Option<EmbeddingConfig>`. When `None`, the embedding system is not initialized.
+
+### 8.5 Initialization
 
 In `build_default_hooks_builder` (or equivalent initialization point):
 
@@ -413,7 +442,21 @@ On `on_events_deleted`:
 
 ### 9.2 Integration Point
 
+### 9.2 Integration Point
+
 The compactor maintains a `Vec<Box<dyn CompactionListener>>`. After `delete_events_upto()`, it calls each listener with the deleted event IDs. This keeps the compactor decoupled from the embedding crate.
+
+**Required change to `EventStore`**: The existing `delete_events_upto()` only returns `u64` (rows affected), not the deleted event IDs. Two options:
+
+1. **Pre-deletion query**: Before calling `delete_events_upto`, query the IDs to be deleted:
+   ```rust
+   let ids: Vec<String> = event_store.get_event_ids_up_to(session_key, target_sequence).await?;
+   event_store.delete_events_upto(session_key, target_sequence).await?;
+   for listener in &listeners { listener.on_events_deleted(&ids); }
+   ```
+2. **Modify return type**: Change `delete_events_upto` to return `Result<Vec<String>, StoreError>` containing the deleted IDs.
+
+Option 1 is preferred — it avoids changing the existing API and keeps the ID-query logic in the compactor where it's needed.
 
 ### 9.3 Session Clear
 
@@ -493,11 +536,15 @@ cargo test --package gasket-embedding
 
 ## 13. Migration Path
 
-1. Add `gasket-embedding` crate to workspace members
+1. Add `gasket-embedding` crate to workspace members in `gasket/Cargo.toml`:
+   - Add `"embedding"` to `workspace.members`
+   - Add `gasket-embedding = { path = "embedding" }` to `[workspace.dependencies]`
 2. Add `embedding` feature to `gasket-engine/Cargo.toml`
 3. Implement embedding crate (provider -> store -> index -> indexer -> searcher)
-4. Modify `HistoryRecallHook` with `#[cfg(feature = "embedding")]` / `#[cfg(not(...))]`
-5. Add `history_search` tool under feature gate
-6. Add `CompactionListener` to compactor
-7. Add `embedding` config section parsing
-8. Update docs
+4. Add `get_events_by_ids_global()` to `EventStore` (for cross-session recall)
+5. Add `get_event_ids_up_to()` to `EventStore` (for compaction listener pre-deletion query)
+6. Modify `HistoryRecallHook` with `#[cfg(feature = "embedding")]` / `#[cfg(not(...))]`
+7. Add `history_search` tool under feature gate
+8. Add `CompactionListener` trait and integration to compactor
+9. Add `embedding` config section parsing to the runtime config struct
+10. Update docs
