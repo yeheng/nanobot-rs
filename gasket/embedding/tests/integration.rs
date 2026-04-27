@@ -193,7 +193,7 @@ async fn test_full_recall_flow() {
     assert_eq!(index.len(), 5);
 
     // Rebuild from store to verify cold-start path works.
-    let rebuilt = EmbeddingIndexer::rebuild_index(&store, &index)
+    let rebuilt = EmbeddingIndexer::rebuild_index(&store, &index, None)
         .await
         .unwrap();
     assert_eq!(rebuilt, 5);
@@ -292,7 +292,7 @@ async fn test_cold_start_rebuild() {
     let index = HnswIndex::new(dim);
     assert_eq!(index.len(), 0, "index should start empty");
 
-    let count = EmbeddingIndexer::rebuild_index(&store, &index)
+    let count = EmbeddingIndexer::rebuild_index(&store, &index, None)
         .await
         .unwrap();
 

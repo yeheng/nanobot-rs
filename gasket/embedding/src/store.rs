@@ -194,6 +194,99 @@ impl EmbeddingStore {
 
         Ok(row.is_some())
     }
+
+    /// Count total embeddings.
+    pub async fn count(&self) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_embeddings")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
+    }
+
+    /// Load recent embeddings ordered by created_at DESC.
+    pub async fn load_recent(&self, limit: usize) -> Result<Vec<StoredEmbedding>> {
+        let rows = sqlx::query(
+            "SELECT event_id, session_key, embedding, event_type, created_at FROM event_embeddings ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            let blob: Vec<u8> = row.get("embedding");
+            results.push(StoredEmbedding {
+                event_id: row.get("event_id"),
+                session_key: row.get("session_key"),
+                embedding: bytes_to_embedding(&blob),
+                event_type: row.get("event_type"),
+                created_at: row.get("created_at"),
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// Scan all embeddings from SQLite in batches and compute similarity on-the-fly.
+    /// Returns top-k results with score >= min_score, excluding given ids.
+    pub async fn search_similar(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: f32,
+        exclude: &std::collections::HashSet<String>,
+    ) -> Result<Vec<(String, f32)>> {
+        const BATCH_SIZE: i64 = 1000;
+        let mut results: Vec<(String, f32)> = Vec::with_capacity(top_k);
+        let mut offset: i64 = 0;
+
+        loop {
+            let rows = sqlx::query(
+                "SELECT event_id, embedding FROM event_embeddings LIMIT ? OFFSET ?"
+            )
+            .bind(BATCH_SIZE)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for row in rows {
+                let event_id: String = row.get("event_id");
+                if exclude.contains(&event_id) {
+                    continue;
+                }
+                let blob: Vec<u8> = row.get("embedding");
+                let embedding = bytes_to_embedding(&blob);
+                let sim = crate::index::cosine_similarity(query, &embedding);
+                if sim >= min_score {
+                    if results.len() < top_k {
+                        results.push((event_id, sim));
+                    } else {
+                        // Replace the weakest candidate if this one is better.
+                        let min_idx = results
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, a), (_, b)| {
+                                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(i, _)| i)
+                            .unwrap();
+                        if sim > results[min_idx].1 {
+                            results[min_idx] = (event_id, sim);
+                        }
+                    }
+                }
+            }
+
+            offset += BATCH_SIZE;
+        }
+
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(results)
+    }
 }
 
 /// Input for batch embedding insert.

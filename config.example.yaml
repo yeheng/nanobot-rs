@@ -181,11 +181,19 @@ channels:
 
 # Embedding configuration (optional)
 # Enable semantic search and history recall features
+# Requires: cargo build --features embedding
 embedding:
-  enabled: false  # Set to true to enable semantic history recall
-  model: "AllMiniLML6V2"  # Options: AllMiniLML6V2 (384d, default), AllMiniLML12V2 (384d), BGESmallENV15 (384d), BGEBaseENV15 (768d), BGELargeENV15 (1024d), BGEM3 (1024d)
-  # cache_dir: "~/.gasket/embedding-cache"  # Optional: custom cache directory
-  # local_model_path: "/path/to/pre-downloaded/model"  # Optional: load from local path
+  provider:
+    type: Api
+    endpoint: "https://api.openai.com/v1/embeddings"
+    model: "text-embedding-3-small"
+    api_key: "${OPENAI_API_KEY}"
+    dim: 1536
+  recall:
+    top_k: 5
+    token_budget: 500
+    min_score: 0.3
+  hot_limit: 1000  # Max embeddings kept in memory index (0 = pure SQLite)
 
 # Tool configurations
 tools:

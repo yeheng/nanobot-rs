@@ -104,6 +104,11 @@ pub struct AgentsConfig {
     pub models: HashMap<String, ModelProfile>,
 }
 
+#[cfg(feature = "embedding")]
+fn default_hot_limit() -> usize {
+    1000
+}
+
 /// Embedding configuration (only available with `embedding` feature).
 #[cfg(feature = "embedding")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +116,10 @@ pub struct EmbeddingConfig {
     pub provider: gasket_embedding::ProviderConfig,
     #[serde(default)]
     pub recall: gasket_embedding::RecallConfig,
+    /// Maximum number of recent embeddings to keep in the in-memory hot index.
+    /// 0 = disable memory index entirely (pure SQLite streaming).
+    #[serde(default = "default_hot_limit")]
+    pub hot_limit: usize,
 }
 
 /// Root configuration structure — maps directly to `~/.gasket/config.yaml`.

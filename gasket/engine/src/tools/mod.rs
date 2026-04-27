@@ -47,6 +47,8 @@ pub use gasket_types::{
 };
 
 // Re-export tool implementations
+#[cfg(feature = "embedding")]
+pub use builder::HistorySearchParams;
 pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
 pub use clear_session::ClearSessionTool;
 pub use context::ContextTool;

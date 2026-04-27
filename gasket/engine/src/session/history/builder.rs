@@ -398,7 +398,7 @@ pub async fn build_default_hooks_with_embedding(
         match setup_embedding_recall(&es, &emb_cfg).await {
             Ok((searcher, idx)) => {
                 builder = builder.with_hook(Arc::new(HistoryRecallHook::new(
-                    Arc::new(searcher),
+                    searcher,
                     emb_cfg.recall.clone(),
                     es,
                 )));
@@ -418,11 +418,11 @@ pub async fn build_default_hooks_with_embedding(
 
 /// Set up the embedding recall pipeline: provider → store → index → searcher → indexer.
 #[cfg(feature = "embedding")]
-async fn setup_embedding_recall(
+pub async fn setup_embedding_recall(
     event_store: &Arc<EventStore>,
     config: &crate::config::EmbeddingConfig,
 ) -> anyhow::Result<(
-    gasket_embedding::RecallSearcher,
+    Arc<gasket_embedding::RecallSearcher>,
     gasket_embedding::EmbeddingIndexer,
 )> {
     use gasket_embedding::{EmbeddingIndexer, EmbeddingStore, HnswIndex, RecallSearcher};
@@ -444,12 +444,54 @@ async fn setup_embedding_recall(
     let dim = provider.dim();
     let index = Arc::new(HnswIndex::new(dim));
 
-    // Cold-start: load existing embeddings into the index.
-    EmbeddingIndexer::rebuild_index(&emb_store_for_indexer, &index).await?;
+    // Build provider arc early so it can be reused for backfill.
+    let provider_arc: Arc<dyn gasket_embedding::EmbeddingProvider> = Arc::from(provider);
+
+    // Cold-start: load recent embeddings into the hot index (bounded by hot_limit).
+    let hot_limit = config.hot_limit;
+    if hot_limit > 0 {
+        EmbeddingIndexer::rebuild_index(&emb_store_for_indexer, &index, Some(hot_limit)).await?;
+    }
+
+    // Backfill: if embedding store is empty, index recent historical events up to hot_limit.
+    let total_in_store = emb_store_for_indexer.count().await.unwrap_or(0);
+    if total_in_store == 0 && hot_limit > 0 {
+        tracing::info!(
+            "Embedding store is empty — backfilling up to {} recent historical events",
+            hot_limit
+        );
+        let events = event_store
+            .get_recent_events(hot_limit)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load historical events for backfill: {}", e))?;
+        let mut count = 0;
+        for event in events {
+            if let Err(e) = EmbeddingIndexer::process_event(
+                provider_arc.as_ref(),
+                &emb_store_for_indexer,
+                &index,
+                event,
+            )
+            .await
+            {
+                tracing::warn!("Backfill failed for event: {}", e);
+            } else {
+                count += 1;
+            }
+        }
+        tracing::info!(
+            "Backfilled {} recent historical events into embedding index (hot_limit={})",
+            count,
+            hot_limit
+        );
+    }
 
     // Build searcher.
-    let provider_arc: Arc<dyn gasket_embedding::EmbeddingProvider> = Arc::from(provider);
-    let searcher = RecallSearcher::new(provider_arc.clone(), index.clone(), emb_store_for_searcher);
+    let searcher = Arc::new(RecallSearcher::new(
+        provider_arc.clone(),
+        index.clone(),
+        emb_store_for_searcher,
+    ));
 
     // Subscribe to new events and start background indexer.
     let rx = event_store.as_ref().subscribe();

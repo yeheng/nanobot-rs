@@ -480,6 +480,45 @@ impl EventStore {
         Ok(rows.into_iter().map(|(k,)| k).collect())
     }
 
+    /// Get all user/assistant events across all sessions.
+    ///
+    /// Used for embedding backfill when the embedding store is empty.
+    pub async fn get_all_events(&self) -> Result<Vec<SessionEvent>, StoreError> {
+        self.get_recent_events(0).await
+    }
+
+    /// Get recent user/assistant events across all sessions.
+    ///
+    /// `limit = 0` means no limit (all events).
+    /// Used for hot-index backfill with a bounded memory footprint.
+    pub async fn get_recent_events(&self, limit: usize) -> Result<Vec<SessionEvent>, StoreError> {
+        let sql = if limit > 0 {
+            r#"
+            SELECT * FROM session_events
+            WHERE event_type IN ('user_message', 'assistant_message')
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        } else {
+            r#"
+            SELECT * FROM session_events
+            WHERE event_type IN ('user_message', 'assistant_message')
+            ORDER BY created_at ASC
+            "#
+        };
+        let rows: Vec<EventRow> = if limit > 0 {
+            sqlx::query_as(sql).bind(limit as i64).fetch_all(&self.pool).await?
+        } else {
+            sqlx::query_as(sql).fetch_all(&self.pool).await?
+        };
+        // Reverse to restore chronological order when LIMIT was applied.
+        let mut events: Vec<SessionEvent> = rows.into_iter().map(|r| r.try_into()).collect::<Result<Vec<_>, _>>()?;
+        if limit > 0 {
+            events.reverse();
+        }
+        Ok(events)
+    }
+
     /// Search session events by keyword using SQL LIKE.
     ///
     /// Returns matching `user_message` and `assistant_message` events

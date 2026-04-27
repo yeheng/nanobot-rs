@@ -45,6 +45,12 @@ pub struct SessionBuilder {
     config: AgentConfig,
     tools: Arc<crate::tools::ToolRegistry>,
     sqlite_store: Arc<gasket_storage::SqliteStore>,
+    /// Optional semantic recall searcher + indexer (embedding feature).
+    #[cfg(feature = "embedding")]
+    embedding_recall: Option<(
+        Arc<gasket_embedding::RecallSearcher>,
+        gasket_embedding::EmbeddingIndexer,
+    )>,
 }
 
 impl SessionBuilder {
@@ -62,7 +68,21 @@ impl SessionBuilder {
             config,
             tools,
             sqlite_store,
+            #[cfg(feature = "embedding")]
+            embedding_recall: None,
         }
+    }
+
+    /// Attach embedding recall infrastructure (searcher + indexer).
+    /// Required for semantic history recall and the `history_search` tool.
+    #[cfg(feature = "embedding")]
+    pub fn with_embedding_recall(
+        mut self,
+        searcher: Arc<gasket_embedding::RecallSearcher>,
+        indexer: gasket_embedding::EmbeddingIndexer,
+    ) -> Self {
+        self.embedding_recall = Some((searcher, indexer));
+        self
     }
 
     /// Build the complete `AgentSession`.
@@ -134,11 +154,32 @@ impl SessionBuilder {
         }
 
         // ── 8. Hook registry ─────────────────────────────────────────
-        let hooks_builder = crate::session::history::builder::build_default_hooks_builder(Some(
-            event_store.clone(),
-        ));
+        #[cfg(feature = "embedding")]
+        let (hooks, embedding_indexer) = if let Some((searcher, indexer)) = self.embedding_recall {
+            let mut builder = crate::session::history::builder::build_default_hooks_builder(Some(
+                event_store.clone(),
+            ));
+            let recall_config = gasket_embedding::RecallConfig::default();
+            builder = builder.with_hook(Arc::new(crate::hooks::HistoryRecallHook::new(
+                searcher,
+                recall_config,
+                event_store.clone(),
+            )));
+            (builder.build_shared(), Some(indexer))
+        } else {
+            let hooks_builder = crate::session::history::builder::build_default_hooks_builder(
+                Some(event_store.clone()),
+            );
+            (hooks_builder.build_shared(), None)
+        };
 
-        let hooks = hooks_builder.build_shared();
+        #[cfg(not(feature = "embedding"))]
+        let hooks = {
+            let hooks_builder = crate::session::history::builder::build_default_hooks_builder(
+                Some(event_store.clone()),
+            );
+            hooks_builder.build_shared()
+        };
 
         let pending_done = tokio_util::task::TaskTracker::new();
 
@@ -161,6 +202,8 @@ impl SessionBuilder {
             pricing: None,
             finalizer,
             pending_done,
+            #[cfg(feature = "embedding")]
+            embedding_indexer,
         })
     }
 }
@@ -190,6 +233,23 @@ pub async fn build_session(
     sqlite_store: Arc<gasket_storage::SqliteStore>,
 ) -> Result<AgentSession, AgentError> {
     SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
+        .build()
+        .await
+}
+
+/// Build an AgentSession with embedding recall support.
+#[cfg(feature = "embedding")]
+pub async fn build_session_with_embedding(
+    provider: Arc<dyn LlmProvider>,
+    workspace: PathBuf,
+    config: AgentConfig,
+    tools: Arc<crate::tools::ToolRegistry>,
+    sqlite_store: Arc<gasket_storage::SqliteStore>,
+    searcher: Arc<gasket_embedding::RecallSearcher>,
+    indexer: gasket_embedding::EmbeddingIndexer,
+) -> Result<AgentSession, AgentError> {
+    SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
+        .with_embedding_recall(searcher, indexer)
         .build()
         .await
 }

@@ -231,6 +231,10 @@ pub struct AgentSession {
     /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
     /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
     pending_done: tokio_util::task::TaskTracker,
+    /// Background embedding indexer (kept alive for the session lifetime).
+    #[allow(dead_code)]
+    #[cfg(feature = "embedding")]
+    embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>,
 }
 
 /// Context carried through the PreProcess → Execute → PostProcess pipeline.
@@ -267,6 +271,29 @@ impl AgentSession {
         sqlite_store: Arc<SqliteStore>,
     ) -> Result<Self, AgentError> {
         builder::build_session(provider, workspace, config, tools, sqlite_store).await
+    }
+
+    /// Create a session with embedding recall support.
+    #[cfg(feature = "embedding")]
+    pub async fn with_sqlite_store_and_embedding(
+        provider: Arc<dyn gasket_providers::LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: Arc<ToolRegistry>,
+        sqlite_store: Arc<SqliteStore>,
+        searcher: Arc<gasket_embedding::RecallSearcher>,
+        indexer: gasket_embedding::EmbeddingIndexer,
+    ) -> Result<Self, AgentError> {
+        builder::build_session_with_embedding(
+            provider,
+            workspace,
+            config,
+            tools,
+            sqlite_store,
+            searcher,
+            indexer,
+        )
+        .await
     }
 
     /// Set the subagent spawner.

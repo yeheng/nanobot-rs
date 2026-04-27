@@ -50,10 +50,14 @@ pub struct RecallHit {
 }
 
 /// Searches embeddings for semantically similar content.
+///
+/// Two-tier architecture:
+/// - **Hot index** (memory): recent embeddings for fast queries.
+/// - **Cold store** (SQLite): full historical embeddings streamed on-demand.
 pub struct RecallSearcher {
     provider: Arc<dyn EmbeddingProvider>,
     index: Arc<HnswIndex>,
-    _store: EmbeddingStore,
+    store: EmbeddingStore,
 }
 
 impl RecallSearcher {
@@ -65,24 +69,51 @@ impl RecallSearcher {
         Self {
             provider,
             index,
-            _store: store,
+            store,
         }
     }
 
     /// Search for similar events. Returns (event_id, score) pairs sorted by descending score.
+    ///
+    /// Query path:
+    /// 1. Search the in-memory hot index (fast).
+    /// 2. If the hot index has fewer than `top_k` live entries, stream from SQLite
+    ///    to fill the gap and ensure full historical recall.
     pub async fn recall(&self, query: &str, config: &RecallConfig) -> Result<Vec<(String, f32)>> {
         let query_vec = self.provider.embed(query).await?;
 
+        // ── Tier 1: hot index (memory) ──────────────────────────────
         let overfetch = config.top_k * 2;
-        let raw = self.index.search(&query_vec, overfetch);
-
-        let results: Vec<(String, f32)> = raw
+        let hot_raw = self.index.search(&query_vec, overfetch);
+        let mut hot_results: Vec<(String, f32)> = hot_raw
             .into_iter()
             .filter(|(_, score)| *score >= config.min_score)
-            .take(config.top_k)
             .collect();
 
-        Ok(results)
+        // If hot index already has enough results, return early.
+        if hot_results.len() >= config.top_k {
+            hot_results.truncate(config.top_k);
+            return Ok(hot_results);
+        }
+
+        // ── Tier 2: SQLite cold store (streaming) ───────────────────
+        // Build exclusion set so we don't double-count hot results.
+        let hot_ids: std::collections::HashSet<String> =
+            hot_results.iter().map(|(id, _)| id.clone()).collect();
+
+        let needed = config.top_k - hot_results.len();
+        let cold = self
+            .store
+            .search_similar(&query_vec, needed, config.min_score, &hot_ids)
+            .await?;
+
+        // Merge hot + cold and re-sort.
+        let mut merged = hot_results;
+        merged.extend(cold);
+        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        merged.truncate(config.top_k);
+
+        Ok(merged)
     }
 }
 

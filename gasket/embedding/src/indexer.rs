@@ -84,16 +84,26 @@ impl EmbeddingIndexer {
         }
     }
 
-    /// Cold-start: load all stored embeddings and insert into the in-memory index.
-    pub async fn rebuild_index(store: &EmbeddingStore, index: &HnswIndex) -> Result<usize> {
-        let all = store.load_all().await?;
-        let total = all.len();
+    /// Cold-start: load stored embeddings and insert into the in-memory index.
+    ///
+    /// When `limit` is `Some(n)`, only the most recent `n` embeddings are loaded
+    /// (keeps memory bounded). `None` means load everything.
+    pub async fn rebuild_index(
+        store: &EmbeddingStore,
+        index: &HnswIndex,
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        let embeddings = match limit {
+            Some(n) => store.load_recent(n).await?,
+            None => store.load_all().await?,
+        };
+        let total = embeddings.len();
 
-        for stored in &all {
+        for stored in &embeddings {
             index.insert(stored.event_id.clone(), stored.embedding.clone());
         }
 
-        tracing::info!("rebuild_index: loaded {total} embeddings into index");
+        tracing::info!("rebuild_index: loaded {total} embeddings into index (limit={limit:?})");
         Ok(total)
     }
 
@@ -226,7 +236,7 @@ mod tests {
             .unwrap();
 
         // Rebuild into an empty index.
-        let count = EmbeddingIndexer::rebuild_index(&store, &index)
+        let count = EmbeddingIndexer::rebuild_index(&store, &index, None)
             .await
             .unwrap();
         assert_eq!(count, 3);

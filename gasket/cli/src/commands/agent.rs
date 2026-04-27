@@ -131,6 +131,34 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         );
     }
 
+    // Initialize embedding recall if configured
+    #[cfg(feature = "embedding")]
+    let (history_search, embedding_recall) = if let Some(ref emb_cfg) = config.embedding {
+        let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
+        match gasket_engine::session::history::builder::setup_embedding_recall(
+            &event_store,
+            emb_cfg,
+        )
+        .await
+        {
+            Ok((searcher, indexer)) => {
+                let params = gasket_engine::tools::HistorySearchParams {
+                    searcher: searcher.clone(),
+                    config: emb_cfg.recall.clone(),
+                    event_store: event_store.clone(),
+                };
+                (Some(params), Some((searcher, indexer)))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize embedding recall: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+    // (non-embedding builds skip semantic recall initialization)
+
     // Build common tool registry once and share it between agent and subagent
     let common_tools =
         gasket_engine::tools::build_tool_registry(gasket_engine::tools::ToolRegistryConfig {
@@ -144,7 +172,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             provider: Some(provider_info.provider.clone()),
             model: Some(provider_info.model.clone()),
             #[cfg(feature = "embedding")]
-            history_search: None,
+            history_search,
         });
 
     let mut tools = common_tools.clone();
@@ -186,6 +214,35 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
+    #[cfg(feature = "embedding")]
+    let agent = if let Some((searcher, indexer)) = embedding_recall {
+        AgentSession::with_sqlite_store_and_embedding(
+            provider_info.provider,
+            workspace,
+            agent_config,
+            tools,
+            sqlite_store,
+            searcher,
+            indexer,
+        )
+        .await
+        .context("Failed to initialize agent (check workspace bootstrap files)")?
+        .with_pricing(pricing)
+        .with_spawner(subagent_spawner)
+    } else {
+        AgentSession::with_sqlite_store(
+            provider_info.provider,
+            workspace,
+            agent_config,
+            tools,
+            sqlite_store,
+        )
+        .await
+        .context("Failed to initialize agent (check workspace bootstrap files)")?
+        .with_pricing(pricing)
+        .with_spawner(subagent_spawner)
+    };
+    #[cfg(not(feature = "embedding"))]
     let agent = AgentSession::with_sqlite_store(
         provider_info.provider,
         workspace,

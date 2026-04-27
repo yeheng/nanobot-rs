@@ -185,3 +185,9 @@ pub mod providers {
 
 // Wiki
 pub use gasket_storage::wiki::create_wiki_tables;
+
+// Embedding (re-exported for CLI when feature is enabled)
+#[cfg(feature = "embedding")]
+pub mod embedding {
+    pub use gasket_embedding::{EmbeddingIndexer, RecallConfig, RecallSearcher};
+}
