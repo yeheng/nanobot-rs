@@ -21,6 +21,7 @@ uuid.workspace = true
 chrono.workspace = true
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json"] }
 instant-distance = "0.5"
+parking_lot = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 reqwest = { workspace = true }
 tiktoken-rs.workspace = true
