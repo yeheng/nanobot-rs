@@ -31,3 +31,5 @@ fastembed = { version = "4", optional = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+mockito = "1"
+serde_yaml = "0.9"
