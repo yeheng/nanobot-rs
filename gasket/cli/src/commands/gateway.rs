@@ -199,31 +199,32 @@ async fn setup_agent_pipeline(
 
     // Initialize embedding recall if configured
     #[cfg(feature = "embedding")]
-    let (history_search, embedding_recall, event_store_tx) = if let Some(ref emb_cfg) = config.embedding {
-        let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
-        let tx = Some(event_store.sender());
-        match gasket_engine::session::history::builder::setup_embedding_recall(
-            &event_store,
-            emb_cfg,
-        )
-        .await
-        {
-            Ok((searcher, indexer)) => {
-                let params = gasket_engine::tools::HistorySearchParams {
-                    searcher: searcher.clone(),
-                    config: emb_cfg.recall.clone(),
-                    event_store: event_store.clone(),
-                };
-                (Some(params), Some((searcher, indexer)), tx)
+    let (history_search, embedding_recall, event_store_tx) =
+        if let Some(ref emb_cfg) = config.embedding {
+            let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
+            let tx = Some(event_store.sender());
+            match gasket_engine::session::history::builder::setup_embedding_recall(
+                &event_store,
+                emb_cfg,
+            )
+            .await
+            {
+                Ok((searcher, indexer)) => {
+                    let params = gasket_engine::tools::HistorySearchParams {
+                        searcher: searcher.clone(),
+                        config: emb_cfg.recall.clone(),
+                        event_store: event_store.clone(),
+                    };
+                    (Some(params), Some((searcher, indexer)), tx)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize embedding recall: {}", e);
+                    (None, None, None)
+                }
             }
-            Err(e) => {
-                tracing::warn!("Failed to initialize embedding recall: {}", e);
-                (None, None, None)
-            }
-        }
-    } else {
-        (None, None, None)
-    };
+        } else {
+            (None, None, None)
+        };
     // (non-embedding builds skip semantic recall initialization)
 
     let common_tools = build_tool_registry(ToolRegistryConfig {

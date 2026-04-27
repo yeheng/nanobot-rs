@@ -182,7 +182,9 @@ impl EmbeddingProvider for ApiProvider {
             let body_text = resp.text().await.unwrap_or_default();
             // Ollama /api/embeddings does not support batch input — fall back to sequential calls.
             if status.as_u16() == 400 && self.endpoint.contains("/api/embed") {
-                tracing::debug!("Batch not supported by provider, falling back to sequential embed calls");
+                tracing::debug!(
+                    "Batch not supported by provider, falling back to sequential embed calls"
+                );
                 let mut results = Vec::with_capacity(texts.len());
                 for text in texts {
                     results.push(self.embed(text).await?);
