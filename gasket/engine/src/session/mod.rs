@@ -281,9 +281,7 @@ impl AgentSession {
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
         sqlite_store: Arc<SqliteStore>,
-        searcher: Arc<gasket_embedding::RecallSearcher>,
-        indexer: gasket_embedding::EmbeddingIndexer,
-        event_store_tx: Option<tokio::sync::broadcast::Sender<gasket_types::SessionEvent>>,
+        embedding: builder::EmbeddingContext,
     ) -> Result<Self, AgentError> {
         builder::build_session_with_embedding(
             provider,
@@ -291,9 +289,7 @@ impl AgentSession {
             config,
             tools,
             sqlite_store,
-            searcher,
-            indexer,
-            event_store_tx,
+            embedding,
         )
         .await
     }

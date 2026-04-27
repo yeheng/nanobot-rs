@@ -224,9 +224,11 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             agent_config,
             tools,
             sqlite_store,
-            searcher,
-            indexer,
-            event_store_tx,
+            gasket_engine::session::builder::EmbeddingContext {
+                searcher,
+                indexer,
+                event_store_tx,
+            },
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?

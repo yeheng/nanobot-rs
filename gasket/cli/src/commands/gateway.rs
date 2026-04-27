@@ -347,9 +347,11 @@ async fn setup_agent_pipeline(
                 agent_config,
                 tools.clone(),
                 sqlite_store.clone(),
-                searcher,
-                indexer,
-                event_store_tx,
+                gasket_engine::session::builder::EmbeddingContext {
+                    searcher,
+                    indexer,
+                    event_store_tx,
+                },
             )
             .await
             .context("Failed to initialize agent (check workspace bootstrap files)")?
