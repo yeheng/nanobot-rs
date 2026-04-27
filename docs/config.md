@@ -165,14 +165,34 @@ storage:
   
   # 工作空间根目录
   workspace_path: ~/.gasket
-  
-  # 嵌入模型配置（如启用 local-embedding 功能）
-  embedding:
-    model: BAAI/bge-small-zh-v1.5
-    cache_dir: ~/.gasket/.cache/embeddings
 
 # ============================================
-# 6. 日志与监控
+# 6. 嵌入与语义召回
+# ============================================
+# 需要: cargo build --features embedding
+embedding:
+  provider:
+    type: Api
+    endpoint: "https://api.openai.com/v1/embeddings"
+    model: "text-embedding-3-small"
+    api_key: "${OPENAI_API_KEY}"
+    dim: 1536
+
+  # 替代方案: 本地 ONNX（无需 API 密钥，完全离线运行）
+  # 需要: cargo build --features "embedding local-onnx"
+  # provider:
+  #   type: LocalOnnx
+  #   model: "BGESmallENV15"
+  #   dim: 384
+
+  recall:
+    top_k: 5
+    token_budget: 500
+    min_score: 0.3
+  hot_limit: 1000
+
+# ============================================
+# 7. 日志与监控
 # ============================================
 logging:
   level: info  # debug, info, warn, error
@@ -184,7 +204,7 @@ logging:
     endpoint: http://localhost:4317
 
 # ============================================
-# 7. Gateway 服务配置
+# 8. Gateway 服务配置
 # ============================================
 gateway:
   # 会话超时（秒）
@@ -199,7 +219,7 @@ gateway:
     burst_size: 10
 
 # ============================================
-# 8. 心跳与定时任务
+# 9. 心跳与定时任务
 # ============================================
 heartbeat:
   # 心跳文件路径
@@ -239,6 +259,13 @@ model: zhipu/glm-5
 | ollama | OpenAI Compatible | 本地模型 |
 | gemini | Gemini | Google API |
 | copilot | Copilot | GitHub Copilot |
+
+### Embedding 提供商类型
+
+| 类型 | 说明 | 所需特性 |
+|------|------|----------|
+| Api | OpenAI 兼容 HTTP API（OpenAI、Ollama 等） | `embedding` |
+| LocalOnnx | 本地 ONNX 模型（通过 fastembed） | `embedding local-onnx` |
 
 ### 温度参数 (temperature)
 

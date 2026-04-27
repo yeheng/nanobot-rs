@@ -165,14 +165,34 @@ storage:
   
   # Workspace root directory
   workspace_path: ~/.gasket
-  
-  # Embedding model configuration (if local-embedding enabled)
-  embedding:
-    model: BAAI/bge-small-zh-v1.5
-    cache_dir: ~/.gasket/.cache/embeddings
 
 # ============================================
-# 6. Logging & Monitoring
+# 6. Embedding & Semantic Recall
+# ============================================
+# Requires: cargo build --features embedding
+embedding:
+  provider:
+    type: Api
+    endpoint: "https://api.openai.com/v1/embeddings"
+    model: "text-embedding-3-small"
+    api_key: "${OPENAI_API_KEY}"
+    dim: 1536
+
+  # Alternative: Local ONNX (no API key, runs offline)
+  # Requires: cargo build --features "embedding local-onnx"
+  # provider:
+  #   type: LocalOnnx
+  #   model: "BGESmallENV15"
+  #   dim: 384
+
+  recall:
+    top_k: 5
+    token_budget: 500
+    min_score: 0.3
+  hot_limit: 1000
+
+# ============================================
+# 7. Logging & Monitoring
 # ============================================
 logging:
   level: info  # debug, info, warn, error
@@ -184,7 +204,7 @@ logging:
     endpoint: http://localhost:4317
 
 # ============================================
-# 7. Gateway Service Configuration
+# 8. Gateway Service Configuration
 # ============================================
 gateway:
   # Session timeout (seconds)
@@ -199,7 +219,7 @@ gateway:
     burst_size: 10
 
 # ============================================
-# 8. Heartbeat & Cron
+# 9. Heartbeat & Cron
 # ============================================
 heartbeat:
   # Heartbeat file path
@@ -239,6 +259,13 @@ model: zhipu/glm-5
 | ollama | OpenAI Compatible | Local models |
 | gemini | Gemini | Google API |
 | copilot | Copilot | GitHub Copilot |
+
+### Embedding Provider Types
+
+| Type | Description | Requires |
+|------|-------------|----------|
+| Api | OpenAI-compatible HTTP API (OpenAI, Ollama, etc.) | `embedding` feature |
+| LocalOnnx | Local ONNX model via fastembed | `embedding local-onnx` features |
 
 ### Temperature Parameter
 

@@ -60,8 +60,9 @@ impl ProviderConfig {
                 Ok(Box::new(provider))
             }
             #[cfg(feature = "local-onnx")]
-            ProviderConfig::LocalOnnx { .. } => {
-                Err(anyhow!("Local ONNX provider not yet implemented"))
+            ProviderConfig::LocalOnnx { model, dim } => {
+                let provider = LocalOnnxProvider::new(model, *dim)?;
+                Ok(Box::new(provider))
             }
             #[cfg(not(feature = "local-onnx"))]
             ProviderConfig::LocalOnnx => Err(anyhow!("Local ONNX provider not yet implemented")),
@@ -230,6 +231,86 @@ impl EmbeddingProvider for ApiProvider {
 }
 
 // ---------------------------------------------------------------------------
+// Local ONNX embedding provider (fastembed)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "local-onnx")]
+/// Local ONNX embedding provider powered by `fastembed`.
+///
+/// Models are automatically downloaded from HuggingFace on first use
+/// and cached locally. Inference runs in a blocking thread pool so
+/// it does not starve the async runtime.
+pub struct LocalOnnxProvider {
+    model: std::sync::Arc<parking_lot::Mutex<fastembed::TextEmbedding>>,
+    dim: usize,
+}
+
+#[cfg(feature = "local-onnx")]
+impl LocalOnnxProvider {
+    /// Create a new local ONNX provider.
+    ///
+    /// `model_name` is a supported fastembed model name (case-insensitive),
+    /// e.g. `"BGESmallENV15"` or `"AllMiniLML6V2"`.
+    /// The model is downloaded from HuggingFace on first use if not cached.
+    pub fn new(model_name: &str, dim: usize) -> Result<Self> {
+        let model_enum: fastembed::EmbeddingModel = model_name
+            .parse()
+            .map_err(|e: String| anyhow!("unknown local embedding model '{}': {}", model_name, e))?;
+
+        let options = fastembed::TextInitOptions::new(model_enum);
+        let model = fastembed::TextEmbedding::try_new(options)
+            .map_err(|e| anyhow!("failed to load local embedding model '{}': {}", model_name, e))?;
+
+        Ok(Self {
+            model: std::sync::Arc::new(parking_lot::Mutex::new(model)),
+            dim,
+        })
+    }
+}
+
+#[cfg(feature = "local-onnx")]
+#[async_trait]
+impl EmbeddingProvider for LocalOnnxProvider {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let model = self.model.clone();
+        let text = text.to_string();
+        let embeddings = tokio::task::spawn_blocking(move || {
+            let mut model = model.lock();
+            model.embed(vec![&text], None)
+        })
+        .await
+        .map_err(|e| anyhow!("embedding task failed: {e}"))?
+        .map_err(|e| anyhow!("local embedding failed: {e}"))?;
+
+        embeddings.into_iter().next()
+            .ok_or_else(|| anyhow!("local embedding returned no results"))
+    }
+
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let model = self.model.clone();
+        let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let embeddings = tokio::task::spawn_blocking(move || {
+            let texts_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let mut model = model.lock();
+            model.embed(&texts_refs, None)
+        })
+        .await
+        .map_err(|e| anyhow!("batch embedding task failed: {e}"))?
+        .map_err(|e| anyhow!("local batch embedding failed: {e}"))?;
+
+        Ok(embeddings)
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mock provider for testing
 // ---------------------------------------------------------------------------
 
@@ -346,6 +427,42 @@ dim: 1536
             }
             #[allow(unreachable_patterns)]
             _ => panic!("expected Api variant"),
+        }
+    }
+
+    #[cfg(feature = "local-onnx")]
+    #[test]
+    fn test_provider_config_deserialize_local_onnx() {
+        let yaml = r#"
+type: LocalOnnx
+model: BGESmallENV15
+dim: 384
+"#;
+        let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        match config {
+            ProviderConfig::LocalOnnx { model, dim } => {
+                assert_eq!(model, "BGESmallENV15");
+                assert_eq!(dim, 384);
+            }
+            _ => panic!("expected LocalOnnx variant"),
+        }
+    }
+
+    #[cfg(feature = "local-onnx")]
+    #[test]
+    fn test_provider_config_serialize_roundtrip_local_onnx() {
+        let config = ProviderConfig::LocalOnnx {
+            model: "BGESmallENV15".to_string(),
+            dim: 384,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
+        match parsed {
+            ProviderConfig::LocalOnnx { model, dim } => {
+                assert_eq!(model, "BGESmallENV15");
+                assert_eq!(dim, 384);
+            }
+            _ => panic!("expected LocalOnnx variant"),
         }
     }
 

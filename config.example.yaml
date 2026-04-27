@@ -182,6 +182,11 @@ channels:
 # Embedding configuration (optional)
 # Enable semantic search and history recall features
 # Requires: cargo build --features embedding
+#
+# Provider types:
+#   - Api:    OpenAI-compatible HTTP API (OpenAI, Ollama, etc.)
+#   - LocalOnnx: Local ONNX model via fastembed (requires --features local-onnx)
+#
 embedding:
   provider:
     type: Api
@@ -189,6 +194,14 @@ embedding:
     model: "text-embedding-3-small"
     api_key: "${OPENAI_API_KEY}"
     dim: 1536
+
+  # Local ONNX example (no API key needed, runs entirely offline)
+  # Requires: cargo build --features "embedding local-onnx"
+  # provider:
+  #   type: LocalOnnx
+  #   model: "BGESmallENV15"   # Case-insensitive, see fastembed model list
+  #   dim: 384
+
   recall:
     top_k: 5
     token_budget: 500
