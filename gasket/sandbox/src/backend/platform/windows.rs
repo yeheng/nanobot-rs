@@ -262,7 +262,8 @@ impl SandboxBackend for HostExecutor {
         let stdout = if stdout.len() > max_output {
             let original_len = stdout.len();
             let mut truncated = stdout;
-            truncated.truncate(max_output);
+            let end = truncated.floor_char_boundary(max_output);
+            truncated.truncate(end);
             truncated.push_str(&format!(
                 "\n\n[OUTPUT TRUNCATED: {} bytes exceeded limit of {} bytes]",
                 original_len, max_output

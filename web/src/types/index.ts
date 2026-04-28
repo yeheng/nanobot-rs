@@ -93,6 +93,8 @@ export interface Message {
   thinking?: string;
   thinkingChunks?: ThinkingChunk[];
   toolCalls?: ToolCall[];
+  /** Subagent states attached to this message for persistent display */
+  subagents?: SubagentState[];
   timestamp: number;
   status?: MessageStatus;
   pending?: boolean;

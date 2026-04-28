@@ -196,11 +196,17 @@ impl EvolutionTool {
                     first_err
                 );
 
+                let preview_len = content.chars().count().min(200);
+                let preview_end = content
+                    .char_indices()
+                    .nth(preview_len)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
                 let retry_prompt = format!(
                     "Your previous response was NOT valid JSON. It started with: {:?}\n\n\
                      You MUST output ONLY a JSON array — no markdown, no explanation, no greeting.\n\
                      Output: []",
-                    &content[..content.len().min(200)]
+                    &content[..preview_end]
                 );
 
                 let retry_request = ChatRequest {
@@ -223,11 +229,17 @@ impl EvolutionTool {
                         match Self::extract_json(&retry_content) {
                             Ok(m) => m,
                             Err(e) => {
+                                let preview_len = content.chars().count().min(500);
+                                let preview_end = content
+                                    .char_indices()
+                                    .nth(preview_len)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(content.len());
                                 warn!(
                                     "Evolution: retry also failed to parse as JSON: {}. \
                                      First response (500 chars): {}",
                                     e,
-                                    &content[..content.len().min(500)]
+                                    &content[..preview_end]
                                 );
                                 return Ok(0);
                             }

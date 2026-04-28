@@ -368,6 +368,7 @@ impl SubagentSpawner for SimpleSpawner {
         } else {
             task_spec
         };
+        let _task_desc = task_spec.task.clone();
 
         spawn_subagent(
             provider,
@@ -408,5 +409,115 @@ impl SubagentSpawner for SimpleSpawner {
             },
             model: result.model,
         })
+    }
+
+    async fn spawn_with_stream(
+        &self,
+        task: String,
+        model_id: Option<String>,
+    ) -> Result<
+        (
+            String,
+            mpsc::Receiver<StreamEvent>,
+            tokio::sync::oneshot::Receiver<TypesSubagentResult>,
+        ),
+        Box<dyn std::error::Error + Send>,
+    > {
+        use super::tracker::SubagentTracker;
+
+        let mut tracker = SubagentTracker::new();
+        let result_tx = tracker.result_sender();
+        let event_tx = tracker.event_sender();
+        let subagent_id = SubagentTracker::generate_id();
+
+        // Resolve provider and model: only attempt resolution when both model_id and resolver exist.
+        let (provider, model) = match (&model_id, &self.model_resolver) {
+            (Some(mid), Some(resolver)) => resolver
+                .resolve_model(mid)
+                .map(|(p, c)| (p, Some(c.model)))
+                .unwrap_or((self.provider.clone(), None)),
+            _ => (self.provider.clone(), None),
+        };
+
+        let task_spec = TaskSpec::new(&subagent_id, task);
+        let task_spec = if let Some(m) = model {
+            task_spec.with_model(m)
+        } else {
+            task_spec
+        };
+        let task_desc = task_spec.task.clone();
+
+        spawn_subagent(
+            provider,
+            self.tools.clone(),
+            self.workspace.clone(),
+            task_spec,
+            Some(event_tx),
+            result_tx,
+            self.token_tracker.clone(),
+            tracker.cancellation_token(),
+        );
+
+        let event_rx = tracker
+            .take_event_receiver()
+            .map_err(|e| anyhow::anyhow!("Failed to take event receiver: {}", e))?;
+
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        let result_subagent_id = subagent_id.clone();
+
+        tokio::spawn(async move {
+            let types_result = match tracker.wait_for_all(1).await {
+                Ok(results) => match results.into_iter().next() {
+                    Some(result) => TypesSubagentResult {
+                        id: result.id,
+                        task: result.task,
+                        response: SubagentResponse {
+                            content: result.response.content,
+                            reasoning_content: result.response.reasoning_content,
+                            tools_used: result.response.tools_used,
+                            model: result.response.model,
+                            token_usage: result.response.token_usage.map(|t| {
+                                gasket_types::tool::TokenUsage {
+                                    prompt_tokens: t.input_tokens as u32,
+                                    completion_tokens: t.output_tokens as u32,
+                                    total_tokens: t.total_tokens as u32,
+                                }
+                            }),
+                            cost: result.response.cost,
+                        },
+                        model: result.model,
+                    },
+                    None => TypesSubagentResult {
+                        id: result_subagent_id.clone(),
+                        task: task_desc.clone(),
+                        response: SubagentResponse {
+                            content: "Error: Subagent completed but no result received".to_string(),
+                            reasoning_content: None,
+                            tools_used: vec![],
+                            model: None,
+                            token_usage: None,
+                            cost: 0.0,
+                        },
+                        model: None,
+                    },
+                },
+                Err(e) => TypesSubagentResult {
+                    id: result_subagent_id,
+                    task: task_desc,
+                    response: SubagentResponse {
+                        content: format!("Error: {}", e),
+                        reasoning_content: None,
+                        tools_used: vec![],
+                        model: None,
+                        token_usage: None,
+                        cost: 0.0,
+                    },
+                    model: None,
+                },
+            };
+            let _ = completion_tx.send(types_result);
+        });
+
+        Ok((subagent_id, event_rx, completion_rx))
     }
 }

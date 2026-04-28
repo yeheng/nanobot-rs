@@ -229,6 +229,50 @@ pub enum ChatEvent {
         uncompacted_count: usize,
         compacted_percent: f64,
     },
+
+    /// Subagent started execution
+    SubagentStarted {
+        id: Arc<str>,
+        task: Arc<str>,
+        index: u32,
+    },
+
+    /// Subagent thinking/reasoning content
+    SubagentThinking { id: Arc<str>, content: Arc<str> },
+
+    /// Subagent streaming content chunk
+    SubagentContent { id: Arc<str>, content: Arc<str> },
+
+    /// Subagent tool call started
+    SubagentToolStart {
+        id: Arc<str>,
+        name: Arc<str>,
+        #[serde(default)]
+        arguments: Option<Arc<str>>,
+    },
+
+    /// Subagent tool call completed
+    SubagentToolEnd {
+        id: Arc<str>,
+        name: Arc<str>,
+        #[serde(default)]
+        output: Option<Arc<str>>,
+    },
+
+    /// Subagent completed execution
+    SubagentCompleted {
+        id: Arc<str>,
+        index: u32,
+        summary: Arc<str>,
+        tool_count: u32,
+    },
+
+    /// Subagent encountered an error
+    SubagentError {
+        id: Arc<str>,
+        index: u32,
+        error: Arc<str>,
+    },
 }
 
 impl ChatEvent {
@@ -278,6 +322,81 @@ impl ChatEvent {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: Arc::from(message.into()),
+        }
+    }
+
+    /// Create a subagent_started message
+    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
+        Self::SubagentStarted {
+            id: Arc::from(id.into()),
+            task: Arc::from(task.into()),
+            index,
+        }
+    }
+
+    /// Create a subagent_thinking message
+    pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::SubagentThinking {
+            id: Arc::from(id.into()),
+            content: Arc::from(content.into()),
+        }
+    }
+
+    /// Create a subagent_content message
+    pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::SubagentContent {
+            id: Arc::from(id.into()),
+            content: Arc::from(content.into()),
+        }
+    }
+
+    /// Create a subagent_tool_start message
+    pub fn subagent_tool_start(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Option<String>,
+    ) -> Self {
+        Self::SubagentToolStart {
+            id: Arc::from(id.into()),
+            name: Arc::from(name.into()),
+            arguments: arguments.map(Arc::from),
+        }
+    }
+
+    /// Create a subagent_tool_end message
+    pub fn subagent_tool_end(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        output: Option<String>,
+    ) -> Self {
+        Self::SubagentToolEnd {
+            id: Arc::from(id.into()),
+            name: Arc::from(name.into()),
+            output: output.map(Arc::from),
+        }
+    }
+
+    /// Create a subagent_completed message
+    pub fn subagent_completed(
+        id: impl Into<String>,
+        index: u32,
+        summary: impl Into<String>,
+        tool_count: u32,
+    ) -> Self {
+        Self::SubagentCompleted {
+            id: Arc::from(id.into()),
+            index,
+            summary: Arc::from(summary.into()),
+            tool_count,
+        }
+    }
+
+    /// Create a subagent_error message
+    pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
+        Self::SubagentError {
+            id: Arc::from(id.into()),
+            index,
+            error: Arc::from(error.into()),
         }
     }
 
@@ -436,6 +555,15 @@ impl StreamEvent {
         if self.agent_id.is_some() {
             return None;
         }
+        self.to_chat_event_unconditional()
+    }
+
+    /// Convert to a user-facing `ChatEvent`, regardless of `agent_id`.
+    ///
+    /// Unlike [`to_chat_event`](Self::to_chat_event), this does **not** filter
+    /// out subagent events.  Useful when the caller explicitly wants to forward
+    /// subagent reasoning / tool calls to the WebSocket.
+    pub fn to_chat_event_unconditional(&self) -> Option<ChatEvent> {
         Some(match &self.kind {
             StreamEventKind::Thinking { content } => ChatEvent::Thinking {
                 content: Arc::clone(content),

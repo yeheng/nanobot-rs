@@ -31,6 +31,34 @@ pub trait SubagentSpawner: Send + Sync {
         task: String,
         model_id: Option<String>,
     ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>>;
+
+    /// Spawn a subagent with a real-time event stream.
+    ///
+    /// Returns:
+    /// - `String`: the subagent ID (UUID)
+    /// - `Receiver<StreamEvent>`: real-time events (thinking, tool calls, content)
+    /// - `Receiver<SubagentResult>`: final result when execution completes
+    ///
+    /// Default implementation delegates to [`spawn`](Self::spawn) and returns
+    /// empty channels for backward compatibility.
+    async fn spawn_with_stream(
+        &self,
+        task: String,
+        model_id: Option<String>,
+    ) -> Result<
+        (
+            String,
+            tokio::sync::mpsc::Receiver<crate::StreamEvent>,
+            tokio::sync::oneshot::Receiver<SubagentResult>,
+        ),
+        Box<dyn std::error::Error + Send>,
+    > {
+        let result = self.spawn(task, model_id).await?;
+        let (_, rx) = tokio::sync::mpsc::channel(1);
+        let (tx, result_rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(result);
+        Ok((String::new(), rx, result_rx))
+    }
 }
 
 /// No-op spawner that always returns an error.

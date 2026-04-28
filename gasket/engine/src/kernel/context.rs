@@ -79,7 +79,7 @@ impl KernelConfig {
     pub fn new(model: String) -> Self {
         Self {
             model,
-            max_iterations: 20,
+            max_iterations: 100,
             max_retries: 3,
             temperature: 1.0,
             max_tokens: 65536,
@@ -98,7 +98,7 @@ mod tests {
     fn test_kernel_config_default() {
         let config = KernelConfig::new("test-model".to_string());
         assert_eq!(config.model, "test-model");
-        assert_eq!(config.max_iterations, 20);
+        assert_eq!(config.max_iterations, 100);
         assert_eq!(config.max_retries, 3);
     }
 }

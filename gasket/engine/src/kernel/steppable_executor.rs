@@ -15,6 +15,7 @@ use crate::kernel::{
     tool_executor::{ToolCallResult, ToolExecutor},
 };
 use crate::token_tracker::TokenUsage;
+use crate::tools::truncate_for_display;
 use crate::tools::ToolContext;
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
@@ -173,9 +174,12 @@ impl SteppableExecutor {
                         let tool_name = tool_call.function.name.clone();
                         let tool_args = tool_call.function.arguments.to_string();
 
+                        const DISPLAY_MAX_LEN: usize = 100;
+                        let display_args = truncate_for_display(&tool_args, DISPLAY_MAX_LEN);
+
                         if let Some(ref sender) = tx {
                             let _ = sender
-                                .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
+                                .send(StreamEvent::tool_start(&tool_name, Some(display_args)))
                                 .await;
                         }
 
@@ -189,12 +193,11 @@ impl SteppableExecutor {
                             duration.as_millis()
                         );
 
+                        let display_output = truncate_for_display(&result.output, DISPLAY_MAX_LEN);
+
                         if let Some(ref sender) = tx {
                             let _ = sender
-                                .send(StreamEvent::tool_end(
-                                    &tool_name,
-                                    Some(result.output.clone()),
-                                ))
+                                .send(StreamEvent::tool_end(&tool_name, Some(display_output)))
                                 .await;
                         }
 

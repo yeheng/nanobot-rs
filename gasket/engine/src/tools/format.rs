@@ -46,6 +46,28 @@ pub fn extract_json_array<T: serde::de::DeserializeOwned>(
     serde_json::from_str::<T>(trimmed)
 }
 
+/// Truncate a string for display in the WebSocket stream.
+///
+/// Prevents the frontend from storing excessively large tool inputs/outputs
+/// and causing browser memory issues.
+pub fn truncate_for_display(s: &str, max_len: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
+        s.to_string()
+    } else {
+        let byte_pos = s
+            .char_indices()
+            .nth(max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!(
+            "{}... ({} chars total, truncated)",
+            &s[..byte_pos],
+            char_count
+        )
+    }
+}
+
 /// Format a single [`SubagentResult`] into a human-readable string.
 pub fn format_subagent_response(result: &SubagentResult) -> String {
     let mut output = String::new();

@@ -120,10 +120,16 @@ impl KnowledgeExtractor {
     fn build_user_prompt(&self, source: &ParsedSource) -> String {
         // Truncate very long sources to avoid token overflow
         let max_chars = 12000;
-        let content = if source.content.len() > max_chars {
+        let char_count = source.content.chars().count();
+        let content = if char_count > max_chars {
+            let safe_len = source.content
+                .char_indices()
+                .nth(max_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(source.content.len());
             format!(
                 "{}\n\n[... content truncated, showing first {} chars]\n{}",
-                &source.content[..max_chars],
+                &source.content[..safe_len],
                 max_chars,
                 ""
             )

@@ -43,8 +43,14 @@ export function useChatSession(chatId: { value: string }) {
 
   // ── Subagent handling ───────────────────────────────────────
 
-  const handleSubagentStarted = (msg: { id: string; task: string; index: number }) => {
-    activeSubagents.value.set(msg.id, {
+  const getOrCreateBotSubagent = (botMsg: Message, id: string): SubagentState | undefined => {
+    if (!botMsg.subagents) botMsg.subagents = [];
+    let s = botMsg.subagents.find(sa => sa.id === id);
+    return s;
+  };
+
+  const handleSubagentStarted = (msg: { id: string; task: string; index: number }, botMsg: Message) => {
+    const state: SubagentState = {
       id: msg.id,
       index: msg.index,
       task: msg.task,
@@ -52,29 +58,47 @@ export function useChatSession(chatId: { value: string }) {
       toolCalls: [],
       toolCount: 0,
       startTime: Date.now(),
-    });
+    };
+    activeSubagents.value.set(msg.id, state);
+    chatStore.pushSubagent(chatId.value, botMsg.id, { ...state });
   };
 
-  const handleSubagentThinking = (msg: { id: string; content: string }) => {
+  const handleSubagentThinking = (msg: { id: string; content: string }, botMsg: Message) => {
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent) subagent.thinking = (subagent.thinking || '') + msg.content;
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s) {
+      s.thinking = (s.thinking || '') + msg.content;
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, { thinking: s.thinking });
+    }
   };
 
-  const handleSubagentContent = (msg: { id: string; content: string }) => {
+  const handleSubagentContent = (msg: { id: string; content: string }, botMsg: Message) => {
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent) subagent.content = (subagent.content || '') + msg.content;
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s) {
+      s.content = (s.content || '') + msg.content;
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, { content: s.content });
+    }
   };
 
-  const handleSubagentToolStart = (msg: { id: string; name: string; arguments?: string }) => {
+  const handleSubagentToolStart = (msg: { id: string; name: string; arguments?: string }, botMsg: Message) => {
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent) {
       const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
       subagent.toolCalls.push({ id: toolId, name: msg.name, arguments: msg.arguments, status: 'running', output: null });
       subagent.toolCount++;
     }
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s) {
+      const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
+      const newTools = [...s.toolCalls, { id: toolId, name: msg.name, arguments: msg.arguments, status: 'running' as const, output: null }];
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, { toolCalls: newTools, toolCount: s.toolCount + 1 });
+    }
   };
 
-  const handleSubagentToolEnd = (msg: { id: string; tool_id?: string; name: string; output?: string }) => {
+  const handleSubagentToolEnd = (msg: { id: string; tool_id?: string; name: string; output?: string }, botMsg: Message) => {
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent && subagent.toolCalls.length > 0) {
       let tool: any | undefined;
@@ -91,30 +115,23 @@ export function useChatSession(chatId: { value: string }) {
         tool.duration = (elapsed / 1000).toFixed(1) + 's';
       }
     }
-  };
-
-  const generateSubagentSummary = (subagents: SubagentState[]): string => {
-    const lines = ['\n\n---\n**✅ 并行任务完成**\n'];
-    for (const s of subagents) {
-      const status = s.status === 'error' ? '❌' : '✓';
-      const duration = s.endTime ? ((s.endTime - s.startTime) / 1000).toFixed(1) : '?';
-      lines.push(`${status} **Task ${s.index}**: ${s.summary || s.task} _(${s.toolCount} 工具, ${duration}s)_`);
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s && s.toolCalls.length > 0) {
+      const newTools = s.toolCalls.map(t => {
+        if (t.name === msg.name && t.status === 'running') {
+          const elapsed = Date.now() - parseInt(t.id.split('_')[0]);
+          return { ...t, status: 'complete' as const, output: msg.output || null, duration: (elapsed / 1000).toFixed(1) + 's' };
+        }
+        return t;
+      });
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, { toolCalls: newTools });
     }
-    return lines.join('\n');
   };
 
-  const finalizeSubagents = (botMsg: Message) => {
-    const subagents = [...activeSubagents.value.values()].sort((a, b) => a.index - b.index);
-    if (subagents.length === 0) return;
-    const summary = generateSubagentSummary(subagents);
-    chatStore.appendToMessage(chatId.value, botMsg.id, summary, 'content');
-    activeSubagents.value.clear();
-  };
-
-  const checkAndFinalizeSubagents = (botMsg: Message) => {
+  const checkAndFinalizeSubagents = () => {
     const allCompleted = [...activeSubagents.value.values()].every(s => s.status !== 'running');
     if (allCompleted && activeSubagents.value.size > 0) {
-      finalizeSubagents(botMsg);
+      activeSubagents.value.clear();
     }
   };
 
@@ -126,7 +143,16 @@ export function useChatSession(chatId: { value: string }) {
       subagent.toolCount = msg.tool_count;
       subagent.endTime = Date.now();
     }
-    checkAndFinalizeSubagents(botMsg);
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s) {
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, {
+        status: 'completed',
+        summary: msg.summary,
+        toolCount: msg.tool_count,
+        endTime: Date.now(),
+      });
+    }
+    checkAndFinalizeSubagents();
   };
 
   const handleSubagentError = (msg: { id: string; index: number; error: string }, botMsg: Message) => {
@@ -136,7 +162,15 @@ export function useChatSession(chatId: { value: string }) {
       subagent.error = msg.error;
       subagent.endTime = Date.now();
     }
-    checkAndFinalizeSubagents(botMsg);
+    const s = getOrCreateBotSubagent(botMsg, msg.id);
+    if (s) {
+      chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, {
+        status: 'error',
+        error: msg.error,
+        endTime: Date.now(),
+      });
+    }
+    checkAndFinalizeSubagents();
   };
 
   // ── WebSocket message processing ────────────────────────────
@@ -190,19 +224,19 @@ export function useChatSession(chatId: { value: string }) {
         fetchContext();
         break;
       case 'subagent_started':
-        handleSubagentStarted(msg);
+        handleSubagentStarted(msg, botMsg);
         break;
       case 'subagent_thinking':
-        handleSubagentThinking(msg);
+        handleSubagentThinking(msg, botMsg);
         break;
       case 'subagent_content':
-        handleSubagentContent(msg);
+        handleSubagentContent(msg, botMsg);
         break;
       case 'subagent_tool_start':
-        handleSubagentToolStart(msg);
+        handleSubagentToolStart(msg, botMsg);
         break;
       case 'subagent_tool_end':
-        handleSubagentToolEnd(msg);
+        handleSubagentToolEnd(msg, botMsg);
         break;
       case 'subagent_completed':
         handleSubagentCompleted(msg, botMsg);

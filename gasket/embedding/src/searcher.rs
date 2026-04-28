@@ -108,6 +108,14 @@ impl RecallSearcher {
             .store
             .search(&query_vec, needed, config.min_score, &hot_ids)
             .await?;
+
+        if !cold.is_empty() {
+            info!(
+                "[RecallSearcher] LanceDB cold store returned {} results for query",
+                cold.len()
+            );
+        }
+
         let cold_tuples: Vec<(String, f32)> = cold.into_iter().map(|r| (r.id, r.score)).collect();
 
         // Merge hot + cold and re-sort.

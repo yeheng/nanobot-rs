@@ -49,7 +49,7 @@ fn default_true() -> bool {
 /// Default model for agent
 pub const DEFAULT_MODEL: &str = "gpt-4o";
 /// Default maximum iterations for agent loop
-pub const DEFAULT_MAX_ITERATIONS: u32 = 20;
+pub const DEFAULT_MAX_ITERATIONS: u32 = 100;
 /// Default temperature for generation
 pub const DEFAULT_TEMPERATURE: f32 = 1.0;
 /// Default maximum tokens for generation

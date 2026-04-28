@@ -95,4 +95,4 @@ Wiki pages have access-frequency tiers. The system auto-adjusts priority based o
 
 Wiki knowledge is **not automatically injected** into the system prompt. The agent must proactively call `wiki_search` to retrieve relevant knowledge before responding. This is intentional — it keeps the system prompt stable for prompt caching and reduces token waste.
 
-**Preparation Protocol**: Before responding to any user query, always use `wiki_search` to check if relevant knowledge already exists in the wiki.
+**Preparation Protocol**: Before responding to any user query, always use `wiki_search` to check if relevant knowledge already exists in the wiki. 

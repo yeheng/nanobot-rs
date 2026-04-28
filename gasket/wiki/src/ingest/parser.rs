@@ -458,8 +458,10 @@ impl ConversationParser {
             .find(|e| e.role.to_lowercase() == "user")
             .map(|e| {
                 let mut title = e.content.clone();
-                if title.len() > 80 {
-                    title.truncate(77);
+                let char_count = title.chars().count();
+                if char_count > 80 {
+                    let end = title.floor_char_boundary(77);
+                    title.truncate(end);
                     title.push_str("...");
                 }
                 title
