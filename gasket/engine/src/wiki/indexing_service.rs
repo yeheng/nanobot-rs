@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use gasket_broker::{BrokerError, MemoryBroker, Topic};
+use gasket_broker::{get_broker, BrokerError, Topic};
 use tracing::{debug, error, info, warn};
 
 use super::{PageIndex, PageStore};
@@ -24,8 +24,10 @@ impl WikiIndexingService {
     }
 
     /// Spawn the service as a background Tokio task.
-    pub fn spawn(self, broker: Arc<MemoryBroker>) -> tokio::task::JoinHandle<()> {
+    /// Uses the global broker singleton to subscribe to WikiChanged events.
+    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            let broker = get_broker();
             let mut sub = match broker.subscribe(&Topic::WikiChanged).await {
                 Ok(s) => s,
                 Err(e) => {

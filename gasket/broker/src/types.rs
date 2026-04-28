@@ -69,6 +69,20 @@ pub enum BrokerPayload {
     WikiChanged {
         path: String,
     },
+    /// Subagent started executing a task.
+    SubagentStarted {
+        id: String,
+        task: String,
+        model: Option<String>,
+    },
+    /// Subagent finished executing a task.
+    SubagentCompleted {
+        id: String,
+        task: String,
+        model: Option<String>,
+        success: bool,
+        tool_count: usize,
+    },
 }
 
 /// Pure data envelope — no callbacks, no channels, fully Clone-safe.

@@ -1,9 +1,8 @@
 use anyhow::Result;
-use gasket_broker::{BrokerPayload, Envelope, MemoryBroker, Topic};
+use gasket_broker::{get_broker, BrokerPayload, Envelope, Topic};
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 
@@ -14,8 +13,6 @@ use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,
-    /// Optional broker for publishing wiki change events.
-    broker: Option<Arc<MemoryBroker>>,
 }
 
 impl PageStore {
@@ -23,14 +20,7 @@ impl PageStore {
         Self {
             db: WikiPageStore::new(pool),
             wiki_root,
-            broker: None,
         }
-    }
-
-    /// Attach a broker so that `write`/`delete` publish async indexing events.
-    pub fn with_broker(mut self, broker: Arc<MemoryBroker>) -> Self {
-        self.broker = Some(broker);
-        self
     }
 
     /// Get the wiki root directory.
@@ -283,22 +273,21 @@ impl PageStore {
         Ok(())
     }
 
-    /// Publish a non-blocking `WikiChanged` event if a broker is attached.
+    /// Publish a non-blocking `WikiChanged` event via the global broker.
     async fn notify_wiki_changed(&self, path: &str) {
-        if let Some(ref broker) = self.broker {
-            let envelope = Envelope::new(
-                Topic::WikiChanged,
-                BrokerPayload::WikiChanged {
-                    path: path.to_string(),
-                },
+        let broker = get_broker();
+        let envelope = Envelope::new(
+            Topic::WikiChanged,
+            BrokerPayload::WikiChanged {
+                path: path.to_string(),
+            },
+        );
+        if let Err(e) = broker.try_publish(envelope) {
+            tracing::debug!(
+                "PageStore: failed to publish WikiChanged for {}: {}",
+                path,
+                e
             );
-            if let Err(e) = broker.try_publish(envelope) {
-                tracing::debug!(
-                    "PageStore: failed to publish WikiChanged for {}: {}",
-                    path,
-                    e
-                );
-            }
         }
     }
 

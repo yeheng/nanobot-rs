@@ -39,6 +39,13 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         .context("Could not find home directory")?
         .join(".gasket");
 
+    // ── Infrastructure initialization (explicit, once) ──
+    gasket_engine::config::init_config(config.clone());
+    gasket_engine::broker::init_broker(MemoryBroker::new(256, 64));
+    let sqlite_store = SqliteStore::new().await.expect("Failed to open SqliteStore");
+    gasket_storage::init_db(sqlite_store);
+    let sqlite_store = Arc::new(gasket_storage::get_db().clone());
+
     // Check for vault placeholders and unlock if needed (JIT setup)
     let vault = setup_vault(&config)?;
 
@@ -70,15 +77,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     // Build tool registry (CLI mode: no bus/cron)
-    let sqlite_store = Arc::new(
-        SqliteStore::new()
-            .await
-            .expect("Failed to open SqliteStore"),
-    );
     let pool = sqlite_store.pool();
 
     // Broker for wiki indexing events (auto-updates Tantivy on writes)
-    let broker = Arc::new(MemoryBroker::new(256, 64));
+    gasket_engine::broker::init_broker(MemoryBroker::new(256, 64));
 
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
@@ -88,7 +90,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         use gasket_engine::wiki::{PageIndex, PageStore};
         use gasket_storage::wiki::TantivyPageIndex;
         let ps =
-            Arc::new(PageStore::new(pool.clone(), wiki_root.clone()).with_broker(broker.clone()));
+            Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
         if let Err(e) = ps.init_dirs().await {
             tracing::warn!("Failed to init wiki dirs: {}", e);
         }
@@ -111,7 +113,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // Spawn wiki indexing service for auto Tantivy updates
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
         let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
-        let _ = svc.spawn(broker.clone());
+        let _ = svc.spawn();
     }
 
     // Build model registry and provider registry for switch_model tool

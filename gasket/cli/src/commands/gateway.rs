@@ -34,7 +34,6 @@ use tower_http::cors::CorsLayer;
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
-    let vault = setup_vault(&config)?;
 
     if let Err(errors) = config.validate() {
         print_validation_errors(&errors);
@@ -46,18 +45,22 @@ pub async fn cmd_gateway() -> Result<()> {
         return Ok(());
     }
 
+    // ── Infrastructure initialization (explicit, once) ──
+    gasket_engine::config::init_config(config.clone());
+    gasket_engine::broker::init_broker(MemoryBroker::new(1024, 256));
+    let sqlite_store = SqliteStore::new().await.expect("Failed to open SqliteStore");
+    gasket_storage::init_db(sqlite_store);
+    let sqlite_store = Arc::new(gasket_storage::get_db().clone());
+
+    let vault = setup_vault(&config)?;
+
     warn_disabled_features(&config.channels);
 
     println!("🐈 Starting gateway...\n");
 
     let workspace = resolve_workspace()?;
-    let broker = Arc::new(MemoryBroker::new(1024, 256));
-    let sqlite_store = Arc::new(
-        SqliteStore::new()
-            .await
-            .expect("Failed to open SqliteStore"),
-    );
-    let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace, &broker).await;
+    let broker = gasket_engine::broker::broker_arc();
+    let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace).await;
     let cron_sqlite_store = Arc::new(
         SqliteStore::new()
             .await
@@ -92,7 +95,7 @@ pub async fn cmd_gateway() -> Result<()> {
     // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
         let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
-        tasks.push(svc.spawn(broker.clone()));
+        tasks.push(svc.spawn());
     }
     cron_service.ensure_system_cron_jobs().await;
     start_cron_checker(&cron_service, &broker, tools, subagent_spawner, &mut tasks);
@@ -190,7 +193,6 @@ fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
 async fn setup_wiki(
     sqlite_store: &Arc<SqliteStore>,
     workspace: &std::path::PathBuf,
-    broker: &Arc<MemoryBroker>,
 ) -> (
     Option<Arc<gasket_engine::wiki::PageStore>>,
     Option<Arc<gasket_engine::wiki::PageIndex>>,
@@ -201,8 +203,7 @@ async fn setup_wiki(
         return (None, None);
     }
     let ps = Arc::new(
-        gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone())
-            .with_broker(broker.clone()),
+        gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone()),
     );
     if let Err(e) = ps.init_dirs().await {
         tracing::warn!("Failed to init wiki dirs: {}", e);

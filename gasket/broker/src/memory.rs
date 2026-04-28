@@ -45,6 +45,16 @@ pub struct MemoryBroker {
     broadcast_capacity: usize,
 }
 
+impl std::fmt::Debug for MemoryBroker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryBroker")
+            .field("topics", &self.queues.len())
+            .field("p2p_capacity", &self.p2p_capacity)
+            .field("broadcast_capacity", &self.broadcast_capacity)
+            .finish()
+    }
+}
+
 impl Default for MemoryBroker {
     fn default() -> Self {
         Self::new(1024, 256)

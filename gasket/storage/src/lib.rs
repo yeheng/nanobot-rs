@@ -8,6 +8,7 @@
 mod cron_store;
 mod event_store;
 pub mod fs;
+pub mod global;
 mod kv_store;
 mod maintenance_store;
 mod migrations;
@@ -25,6 +26,7 @@ use tracing::debug;
 
 pub use cron_store::CronStore;
 pub use event_store::{EventFilter, EventStore, EventStoreTrait, StoreError};
+pub use global::{get_db, init_db};
 pub use kv_store::KvStore;
 pub use maintenance_store::MaintenanceStore;
 pub use session_store::SessionStore;
