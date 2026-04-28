@@ -129,5 +129,8 @@ nu-ansi-term = "0.50"
 # Interactive CLI
 dialoguer = "0.11"
 
+# HTML content extraction (Readability algorithm)
+readability = "0.3"
+
 # Concurrent data structures
 dashmap = "6"

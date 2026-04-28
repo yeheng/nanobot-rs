@@ -66,9 +66,8 @@ pub async fn cmd_gateway() -> Result<()> {
     let cron_sqlite_store = SqliteStore::new()
         .await
         .expect("Failed to open SQLite store for cron persistence");
-    let cron_service = Arc::new(
-        CronService::new(workspace.clone(), cron_sqlite_store.cron_store()).await,
-    );
+    let cron_service =
+        Arc::new(CronService::new(workspace.clone(), cron_sqlite_store.cron_store()).await);
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
         &config,
@@ -201,10 +200,7 @@ async fn setup_wiki(
     if !wiki_root.exists() {
         return (None, None);
     }
-    let ps = gasket_engine::wiki::PageStore::new(
-        pool.clone(),
-        wiki_root.clone(),
-    );
+    let ps = gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone());
     if let Err(e) = ps.init_dirs().await {
         tracing::warn!("Failed to init wiki dirs: {}", e);
     }
@@ -320,12 +316,7 @@ async fn setup_agent_pipeline(
         })),
     );
 
-    let extra_tools = build_extra_tools(
-        cron_service,
-        &provider_info,
-        &agent_config,
-        sqlite_store,
-    );
+    let extra_tools = build_extra_tools(cron_service, &provider_info, &agent_config, sqlite_store);
 
     let mut tools = common_tools.clone();
     for (tool, metadata) in extra_tools {
@@ -646,31 +637,26 @@ async fn shutdown_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
 }
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
-fn start_heartbeat_service(
-    workspace: &Path,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) {
+fn start_heartbeat_service(workspace: &Path, tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
     let heartbeat = gasket_engine::heartbeat::HeartbeatService::new(workspace.to_path_buf());
     tasks.push(tokio::spawn(async move {
         heartbeat
-            .run(|task_text| {
-                async move {
-                    let inbound = gasket_engine::channels::InboundMessage {
-                        channel: gasket_engine::channels::ChannelType::Cli,
-                        sender_id: "heartbeat".to_string(),
-                        chat_id: "heartbeat".to_string(),
-                        content: task_text,
-                        media: None,
-                        metadata: None,
-                        timestamp: chrono::Utc::now(),
-                        trace_id: None,
-                    };
-                    let envelope = gasket_engine::broker::Envelope::new(
-                        gasket_engine::broker::Topic::Inbound,
-                        BrokerPayload::Inbound(inbound),
-                    );
-                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
-                }
+            .run(|task_text| async move {
+                let inbound = gasket_engine::channels::InboundMessage {
+                    channel: gasket_engine::channels::ChannelType::Cli,
+                    sender_id: "heartbeat".to_string(),
+                    chat_id: "heartbeat".to_string(),
+                    content: task_text,
+                    media: None,
+                    metadata: None,
+                    timestamp: chrono::Utc::now(),
+                    trace_id: None,
+                };
+                let envelope = gasket_engine::broker::Envelope::new(
+                    gasket_engine::broker::Topic::Inbound,
+                    BrokerPayload::Inbound(inbound),
+                );
+                let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
             })
             .await;
     }));
@@ -725,7 +711,8 @@ fn start_cron_checker(
                                         gasket_engine::broker::Topic::Outbound,
                                         BrokerPayload::Outbound(msg),
                                     );
-                                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
+                                    let _ =
+                                        gasket_engine::broker::broker_arc().publish(envelope).await;
                                 }
                             });
                             tx

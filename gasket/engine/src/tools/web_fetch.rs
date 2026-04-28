@@ -1,10 +1,13 @@
 //! Web fetch tool for downloading web content
 
 use async_trait::async_trait;
+use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{info, instrument};
+use std::io::Cursor;
+use tracing::{info, instrument, warn};
+use url::Url;
 
 use super::{build_client_with_proxy, simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
@@ -127,9 +130,14 @@ impl Tool for WebFetchTool {
             ))
         })?;
 
-        // Simple text extraction for HTML
         let text = if content_type.contains("text/html") {
-            strip_html(&body)
+            let fallback: String = body.chars().take(2000).collect();
+            extract_core_content(&args.url, body)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Core content extraction failed: {}", e);
+                    fallback
+                })
         } else {
             body
         };
@@ -156,30 +164,45 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Strip HTML tags and convert to plain text.
+/// Extract core content from HTML using Readability algorithm.
 ///
-/// Uses the well-tested `html2text` crate for robust HTML parsing,
-/// handling edge cases like malformed tags, entities, and nested structures.
-fn strip_html(html: &str) -> String {
-    match html2text::from_read(html.as_bytes(), 10000) {
-        Ok(text) => text
-            .lines()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Err(_) => {
-            // html2text failed — return a safely truncated raw snippet
-            // instead of attempting fragile hand-rolled tag stripping.
-            let truncated: String = html.chars().take(2000).collect();
-            if truncated.len() < html.len() {
-                format!(
-                    "[HTML parsing failed. Showing raw snippet:]\n{}...",
-                    truncated
-                )
-            } else {
-                format!("[HTML parsing failed. Showing raw snippet:]\n{}", truncated)
+/// Offloaded to `spawn_blocking` because DOM parsing is CPU-intensive
+/// and must not block the async runtime.
+async fn extract_core_content(url_str: &str, html: String) -> Result<String, anyhow::Error> {
+    let url_clone = url_str.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let parsed_url = Url::parse(&url_clone)
+            .map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
+
+        let mut cursor = Cursor::new(html.as_bytes());
+
+        match readability::extractor::extract(&mut cursor, &parsed_url) {
+            Ok(product) => {
+                let title = product.title.trim();
+                let text = product.text.trim();
+
+                if text.len() < 100 {
+                    Ok(fallback_extract(&html))
+                } else {
+                    Ok(format!("Title: {}\n\n{}", title, text))
+                }
             }
+            Err(_) => Ok(fallback_extract(&html)),
         }
-    }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("HTML extraction task panicked: {}", e))?
+}
+
+/// Brute-force fallback: strip scripts/styles/HTML tags via regex.
+fn fallback_extract(html: &str) -> String {
+    let re_script = Regex::new(r"(?is)<(script|style).*?>.*?</\1>").unwrap();
+    let no_scripts = re_script.replace_all(html, " ");
+
+    let re_tags = Regex::new(r"(?is)<.*?>").unwrap();
+    let raw_text = re_tags.replace_all(&no_scripts, " ");
+
+    let re_ws = Regex::new(r"\s+").unwrap();
+    re_ws.replace_all(&raw_text, " ").trim().to_string()
 }

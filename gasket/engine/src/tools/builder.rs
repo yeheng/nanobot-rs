@@ -15,7 +15,10 @@ use super::{Tool, ToolMetadata, ToolRegistry};
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
 ///
 /// Creates the directory if it doesn't exist.
-pub fn resolve_exec_workspace(config: &crate::config::Config, fallback: &Path) -> std::path::PathBuf {
+pub fn resolve_exec_workspace(
+    config: &crate::config::Config,
+    fallback: &Path,
+) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
         std::path::PathBuf::from(ws)
     } else {
