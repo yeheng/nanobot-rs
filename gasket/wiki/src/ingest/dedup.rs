@@ -6,7 +6,7 @@
 use tracing::debug;
 
 use super::extractor::ExtractedItem;
-use crate::wiki::page::PageSummary;
+use crate::page::PageSummary;
 
 /// Result of a deduplication check.
 #[derive(Debug, Clone)]
@@ -111,7 +111,7 @@ impl Default for SemanticDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wiki::page::PageType;
+    use crate::page::PageType;
     use chrono::Utc;
 
     fn make_summary(path: &str, title: &str, tags: Vec<&str>) -> PageSummary {

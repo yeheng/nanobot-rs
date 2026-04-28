@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 
 use super::parser::ParsedSource;
-use crate::wiki::page::slugify;
+use crate::page::slugify;
 
 /// A single extracted knowledge item from a source.
 #[derive(Debug, Clone, Serialize, Deserialize)]

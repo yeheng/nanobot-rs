@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::{debug, instrument};
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageIndex, PageStore, PageType, WikiPage};
+use gasket_wiki::{PageIndex, PageStore, PageType, WikiPage};
 
 // ── WikiSearchTool ───────────────────────────────────────────────
 

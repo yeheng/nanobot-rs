@@ -13,6 +13,7 @@ gasket-broker = { path = "../broker" }
 gasket-storage = { path = "../storage" }
 gasket-providers = { path = "../providers" }
 gasket-sandbox = { path = "../sandbox" }
+gasket-wiki = { path = "../wiki" }
 # Vault crypto dependencies (migrated from gasket-vault crate)
 chacha20poly1305 = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
@@ -36,7 +37,6 @@ which = "8.0"
 readability = "0.3"
 bytes = "1"
 cron.workspace = true
-notify.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 url.workspace = true

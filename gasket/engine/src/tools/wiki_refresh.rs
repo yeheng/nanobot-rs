@@ -12,7 +12,7 @@ use std::time::UNIX_EPOCH;
 use tracing::{debug, info, instrument, warn};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageFilter, PageIndex, PageStore, PageType, WikiPage};
+use gasket_wiki::{PageFilter, PageIndex, PageStore, PageType, WikiPage};
 
 /// Tool for refreshing wiki page index and syncing from disk.
 pub struct WikiRefreshTool {

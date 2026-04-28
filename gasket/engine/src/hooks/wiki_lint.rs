@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{info, warn};
 
-use crate::wiki::lint::{LintReport, WikiLinter};
+use gasket_wiki::lint::{LintReport, WikiLinter};
 
 /// Wiki lint hook — runs periodic lint checks.
 pub struct WikiLintHook {

@@ -30,7 +30,7 @@ pub mod subagents;
 pub mod token_tracker;
 pub mod tools;
 pub mod vault;
-pub mod wiki;
+pub use gasket_wiki as wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{AgentConfig, AgentResponse, ContextCompactor};

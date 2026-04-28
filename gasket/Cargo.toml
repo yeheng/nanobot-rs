@@ -20,6 +20,7 @@ members = [
     "providers",
     "channels",
     "sandbox",
+    "wiki",
 ]
 
 [profile.release]

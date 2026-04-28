@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::wiki::page::{PageFilter, PageType, WikiPage};
-use crate::wiki::store::PageStore;
+use crate::page::{PageFilter, PageType, WikiPage};
+use crate::store::PageStore;
 
 /// A single structural lint issue.
 #[derive(Debug, Clone, Serialize, Deserialize)]

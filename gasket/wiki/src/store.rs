@@ -39,8 +39,8 @@ impl PageStore {
     }
 
     /// Run frequency decay batch on all stale pages.
-    pub async fn run_decay_batch(&self) -> anyhow::Result<crate::wiki::DecayReport> {
-        crate::wiki::FrequencyManager::run_decay_batch(&self.db).await
+    pub async fn run_decay_batch(&self) -> anyhow::Result<crate::DecayReport> {
+        crate::FrequencyManager::run_decay_batch(&self.db).await
     }
 
     /// Get metadata for a page by path (lightweight, no content).

@@ -14,7 +14,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::wiki::store::PageStore;
+use crate::store::PageStore;
 
 /// Complete lint report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,10 +135,10 @@ impl WikiLinter {
                 // Extract the missing path from the description
                 if let Some(missing_path) = extract_missing_path(&issue.description) {
                     // Create a placeholder page
-                    let page = crate::wiki::page::WikiPage::new(
+                    let page = crate::page::WikiPage::new(
                         missing_path.clone(),
                         missing_path.clone(),
-                        crate::wiki::page::PageType::Topic,
+                        crate::page::PageType::Topic,
                         "This page was auto-created as a placeholder. Please add content."
                             .to_string(),
                     );

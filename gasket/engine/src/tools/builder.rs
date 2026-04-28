@@ -54,9 +54,9 @@ pub struct ToolRegistryConfig {
     /// Extra tools to register (e.g. gateway-specific `MessageTool`, `CronTool`).
     pub extra_tools: Vec<(Box<dyn Tool>, ToolMetadata)>,
     /// Optional wiki PageStore for unified knowledge management.
-    pub page_store: Option<crate::wiki::PageStore>,
+    pub page_store: Option<gasket_wiki::PageStore>,
     /// Optional wiki PageIndex for semantic search.
-    pub page_index: Option<Arc<crate::wiki::PageIndex>>,
+    pub page_index: Option<Arc<gasket_wiki::PageIndex>>,
     /// Optional LLM provider for plan-generation tools.
     pub provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     /// Model identifier for plan-generation tools.

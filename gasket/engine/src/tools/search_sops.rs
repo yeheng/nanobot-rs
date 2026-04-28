@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageIndex, PageType};
+use gasket_wiki::{PageIndex, PageType};
 
 /// Search the wiki for SOP pages relevant to the given query.
 ///
@@ -18,7 +18,7 @@ pub async fn search_sops(
     page_index: &PageIndex,
     query: &str,
     limit: usize,
-) -> anyhow::Result<Vec<crate::wiki::PageSummary>> {
+) -> anyhow::Result<Vec<gasket_wiki::PageSummary>> {
     // Over-fetch to account for filtering, then truncate
     let fetch_limit = limit * 3;
     let results = page_index.search(query, fetch_limit).await?;

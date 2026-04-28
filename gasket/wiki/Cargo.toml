@@ -1,0 +1,29 @@
+[package]
+name = "gasket-wiki"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Wiki knowledge management system for gasket"
+
+[dependencies]
+gasket-types = { path = "../types" }
+gasket-storage = { path = "../storage" }
+gasket-broker = { path = "../broker" }
+gasket-providers = { path = "../providers" }
+
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+regex = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
