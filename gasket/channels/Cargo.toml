@@ -15,8 +15,9 @@ slack = ["tokio-tungstenite"]
 dingtalk = ["sha2", "axum", "tower", "tower-http", "dashmap"]
 feishu = ["axum", "tower", "tower-http", "dashmap"]
 wecom = ["sha1", "aes", "cbc", "quick-xml", "axum", "tower", "tower-http", "dashmap"]
+wechat = ["dep:wechatbot"]
 websocket = ["axum", "tower", "tower-http", "dashmap"]
-all-channels = ["telegram", "discord", "slack", "dingtalk", "feishu", "wecom", "websocket"]
+all-channels = ["telegram", "discord", "slack", "dingtalk", "feishu", "wecom", "wechat", "websocket"]
 
 [dependencies]
 # Internal crates
@@ -70,6 +71,9 @@ serenity = { workspace = true, optional = true }
 
 # Slack WebSocket (optional)
 tokio-tungstenite = { workspace = true, optional = true }
+
+# WeChat iLink Bot SDK (optional)
+wechatbot = { version = "0.3", optional = true }
 
 # Webhook HTTP server (optional - used by dingtalk, feishu, wecom, and standalone webhook)
 axum = { workspace = true, optional = true, features = ["ws"] }

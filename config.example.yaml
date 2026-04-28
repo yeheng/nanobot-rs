@@ -179,6 +179,12 @@ channels:
   websocket:
     enabled: true
 
+  wechat:
+    enabled: false
+    # baseUrl: "https://ilinkai.weixin.qq.com"  # optional
+    # credPath: "~/.wechatbot/credentials.json"  # optional
+    allowFrom: []
+
 # Embedding configuration (optional)
 # Enable semantic search and history recall features
 # Requires: cargo build --features embedding
@@ -201,6 +207,7 @@ embedding:
   #   type: LocalOnnx
   #   model: "BGESmallENV15"   # Case-insensitive, see fastembed model list
   #   dim: 384
+  #   cache_dir: "/path/to/embedding_cache"  # Optional directory for caching embeddings
 
   recall:
     top_k: 5

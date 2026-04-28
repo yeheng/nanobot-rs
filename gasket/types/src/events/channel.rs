@@ -20,6 +20,8 @@ pub enum ChannelType {
     Feishu,
     /// WeCom (企业微信) channel
     Wecom,
+    /// WeChat (个人微信) channel
+    Wechat,
     /// WebSocket channel
     WebSocket,
     /// CLI (command-line interface) channel
@@ -59,6 +61,7 @@ impl ChannelType {
             ChannelType::Dingtalk => "dingtalk",
             ChannelType::Feishu => "feishu",
             ChannelType::Wecom => "wecom",
+            ChannelType::Wechat => "wechat",
             ChannelType::WebSocket => "websocket",
             ChannelType::Cli => "cli",
             ChannelType::Custom(name) => name,
@@ -75,6 +78,7 @@ impl ChannelType {
             "dingtalk" => ChannelType::Dingtalk,
             "feishu" => ChannelType::Feishu,
             "wecom" => ChannelType::Wecom,
+            "wechat" => ChannelType::Wechat,
             "websocket" => ChannelType::WebSocket,
             "cli" => ChannelType::Cli,
             _ => ChannelType::Custom(s),
@@ -121,6 +125,7 @@ mod tests {
         assert_eq!(ChannelType::Dingtalk.as_str(), "dingtalk");
         assert_eq!(ChannelType::Feishu.as_str(), "feishu");
         assert_eq!(ChannelType::Wecom.as_str(), "wecom");
+        assert_eq!(ChannelType::Wechat.as_str(), "wechat");
         assert_eq!(ChannelType::Cli.as_str(), "cli");
     }
 

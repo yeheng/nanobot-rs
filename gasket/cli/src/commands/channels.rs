@@ -115,6 +115,24 @@ pub async fn cmd_channels_status() -> Result<()> {
         }
     }
 
+    // Check WeChat
+    #[cfg(feature = "wechat")]
+    {
+        if let Some(wechat) = &config.channels.wechat {
+            has_channels = true;
+            let status = if wechat.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+
+            println!("{}", "WeChat".green().bold());
+            println!("  Status:     {}", status);
+            println!("  Allow From: {} users", wechat.allow_from.len());
+            println!();
+        }
+    }
+
     if !has_channels {
         println!("No channels configured.");
         println!("\nAdd channel configuration to ~/.gasket/config.yaml");
@@ -159,6 +177,14 @@ channels:
     println!(
         "  Feishu:   {}",
         if cfg!(feature = "feishu") {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  WeChat:   {}",
+        if cfg!(feature = "wechat") {
             "✓"
         } else {
             "✗"

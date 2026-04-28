@@ -27,6 +27,7 @@ slack = ["gasket-engine/slack"]
 feishu = ["gasket-engine/feishu"]
 dingtalk = ["gasket-engine/dingtalk"]
 wecom = ["gasket-engine/wecom"]
+wechat = ["gasket-engine/wechat"]
 websocket = ["gasket-engine/websocket", "axum", "dep:tower-http"]
 all-channels = ["gasket-engine/all-channels", "axum", "teloxide", "dep:tower-http"]
 

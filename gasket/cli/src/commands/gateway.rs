@@ -132,7 +132,7 @@ fn print_no_channels_hint() {
 
 /// Warn when a channel is enabled in config but its compile-time feature is disabled.
 fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
-    let checks: [(&str, bool, bool); 7] = [
+    let checks: [(&str, bool, bool); 8] = [
         (
             "telegram",
             cfg!(feature = "telegram"),
@@ -162,6 +162,11 @@ fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
             "wecom",
             cfg!(feature = "wecom"),
             channels.wecom.as_ref().is_some_and(|c| c.enabled),
+        ),
+        (
+            "wechat",
+            cfg!(feature = "wechat"),
+            channels.wechat.as_ref().is_some_and(|c| c.enabled),
         ),
         (
             "websocket",

@@ -32,6 +32,8 @@ pub enum ImProvider {
     Feishu(crate::feishu::FeishuAdapter),
     #[cfg(feature = "wecom")]
     Wecom(crate::wecom::WeComAdapter),
+    #[cfg(feature = "wechat")]
+    Wechat(crate::wechat::WechatAdapter),
 }
 
 impl ImProvider {
@@ -52,6 +54,8 @@ impl ImProvider {
             Self::Feishu(_) => ChannelType::Feishu,
             #[cfg(feature = "wecom")]
             Self::Wecom(_) => ChannelType::Wecom,
+            #[cfg(feature = "wechat")]
+            Self::Wechat(_) => ChannelType::Wechat,
         }
     }
 
@@ -72,6 +76,8 @@ impl ImProvider {
             Self::Feishu(a) => a.name(),
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.name(),
+            #[cfg(feature = "wechat")]
+            Self::Wechat(a) => a.name(),
         }
     }
 
@@ -92,6 +98,8 @@ impl ImProvider {
             Self::Feishu(a) => a.start(inbound).await,
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.start(inbound).await,
+            #[cfg(feature = "wechat")]
+            Self::Wechat(a) => a.start(inbound).await,
         }
     }
 
@@ -127,6 +135,8 @@ impl ImProvider {
             Self::Feishu(a) => a.send(msg).await,
             #[cfg(feature = "wecom")]
             Self::Wecom(a) => a.send(msg).await,
+            #[cfg(feature = "wechat")]
+            Self::Wechat(a) => a.send(msg).await,
         }
     }
 }
@@ -195,6 +205,15 @@ impl ImProviders {
             }
         }
 
+        #[cfg(feature = "wechat")]
+        if let Some(ref cfg) = config.wechat {
+            if cfg.enabled {
+                providers.push(ImProvider::Wechat(
+                    crate::wechat::WechatAdapter::from_config(cfg, inbound.clone()),
+                ));
+            }
+        }
+
         #[cfg(feature = "websocket")]
         if let Some(ref cfg) = config.websocket {
             if cfg.enabled {
@@ -252,6 +271,8 @@ impl ImProviders {
                 ImProvider::Feishu(a) => ImProvider::Feishu(a.clone()),
                 #[cfg(feature = "wecom")]
                 ImProvider::Wecom(a) => ImProvider::Wecom(a.clone()),
+                #[cfg(feature = "wechat")]
+                ImProvider::Wechat(a) => ImProvider::Wechat(a.clone()),
             };
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = provider_clone.start(inbound).await {

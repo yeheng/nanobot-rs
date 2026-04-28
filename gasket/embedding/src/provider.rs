@@ -38,7 +38,14 @@ pub enum ProviderConfig {
     },
     /// Local ONNX embedding provider (not yet implemented).
     #[cfg(feature = "local-onnx")]
-    LocalOnnx { model: String, dim: usize },
+    LocalOnnx {
+        model: String,
+        dim: usize,
+        /// Custom directory for downloading/caching the ONNX model files.
+        /// Defaults to fastembed's built-in cache path when not set.
+        #[serde(default)]
+        cache_dir: Option<String>,
+    },
     /// Placeholder variant when local-onnx feature is disabled.
     #[cfg(not(feature = "local-onnx"))]
     #[serde(skip)]
@@ -60,8 +67,12 @@ impl ProviderConfig {
                 Ok(Box::new(provider))
             }
             #[cfg(feature = "local-onnx")]
-            ProviderConfig::LocalOnnx { model, dim } => {
-                let provider = LocalOnnxProvider::new(model, *dim)?;
+            ProviderConfig::LocalOnnx {
+                model,
+                dim,
+                cache_dir,
+            } => {
+                let provider = LocalOnnxProvider::new(model, *dim, cache_dir.as_deref())?;
                 Ok(Box::new(provider))
             }
             #[cfg(not(feature = "local-onnx"))]
@@ -252,12 +263,16 @@ impl LocalOnnxProvider {
     /// `model_name` is a supported fastembed model name (case-insensitive),
     /// e.g. `"BGESmallENV15"` or `"AllMiniLML6V2"`.
     /// The model is downloaded from HuggingFace on first use if not cached.
-    pub fn new(model_name: &str, dim: usize) -> Result<Self> {
+    /// `cache_dir` optionally overrides where model files are downloaded/cached.
+    pub fn new(model_name: &str, dim: usize, cache_dir: Option<&str>) -> Result<Self> {
         let model_enum: fastembed::EmbeddingModel = model_name.parse().map_err(|e: String| {
             anyhow!("unknown local embedding model '{}': {}", model_name, e)
         })?;
 
-        let options = fastembed::TextInitOptions::new(model_enum);
+        let mut options = fastembed::TextInitOptions::new(model_enum);
+        if let Some(dir) = cache_dir {
+            options = options.with_cache_dir(std::path::PathBuf::from(dir));
+        }
         let model = fastembed::TextEmbedding::try_new(options).map_err(|e| {
             anyhow!(
                 "failed to load local embedding model '{}': {}",
@@ -447,9 +462,38 @@ dim: 384
 "#;
         let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
         match config {
-            ProviderConfig::LocalOnnx { model, dim } => {
+            ProviderConfig::LocalOnnx {
+                model,
+                dim,
+                cache_dir,
+            } => {
                 assert_eq!(model, "BGESmallENV15");
                 assert_eq!(dim, 384);
+                assert_eq!(cache_dir, None);
+            }
+            _ => panic!("expected LocalOnnx variant"),
+        }
+    }
+
+    #[cfg(feature = "local-onnx")]
+    #[test]
+    fn test_provider_config_deserialize_local_onnx_with_cache_dir() {
+        let yaml = r#"
+type: LocalOnnx
+model: BGESmallENV15
+dim: 384
+cache_dir: "/tmp/gasket-models"
+"#;
+        let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        match config {
+            ProviderConfig::LocalOnnx {
+                model,
+                dim,
+                cache_dir,
+            } => {
+                assert_eq!(model, "BGESmallENV15");
+                assert_eq!(dim, 384);
+                assert_eq!(cache_dir.as_deref(), Some("/tmp/gasket-models"));
             }
             _ => panic!("expected LocalOnnx variant"),
         }
@@ -461,13 +505,19 @@ dim: 384
         let config = ProviderConfig::LocalOnnx {
             model: "BGESmallENV15".to_string(),
             dim: 384,
+            cache_dir: None,
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
         match parsed {
-            ProviderConfig::LocalOnnx { model, dim } => {
+            ProviderConfig::LocalOnnx {
+                model,
+                dim,
+                cache_dir,
+            } => {
                 assert_eq!(model, "BGESmallENV15");
                 assert_eq!(dim, 384);
+                assert_eq!(cache_dir, None);
             }
             _ => panic!("expected LocalOnnx variant"),
         }

@@ -32,6 +32,10 @@ pub struct ChannelsConfig {
     #[serde(default)]
     pub wecom: Option<WeComConfig>,
 
+    /// WeChat channel
+    #[serde(default)]
+    pub wechat: Option<WechatConfig>,
+
     /// WebSocket channel
     #[serde(default)]
     pub websocket: Option<WebSocketConfig>,
@@ -274,6 +278,39 @@ impl std::fmt::Debug for WeComConfig {
     }
 }
 
+// ── WeChat ────────────────────────────────────────────────────────────────
+
+/// WeChat channel configuration
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WechatConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Base URL for the iLink API (optional)
+    #[serde(default, alias = "baseUrl")]
+    pub base_url: Option<String>,
+
+    /// Path to store credentials (optional)
+    #[serde(default, alias = "credPath")]
+    pub cred_path: Option<String>,
+
+    /// Allowed users (empty = allow all)
+    #[serde(default, alias = "allowFrom")]
+    pub allow_from: Vec<String>,
+}
+
+impl std::fmt::Debug for WechatConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WechatConfig")
+            .field("enabled", &self.enabled)
+            .field("base_url", &self.base_url)
+            .field("cred_path", &self.cred_path)
+            .field("allow_from", &self.allow_from)
+            .finish()
+    }
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────
 
 /// WebSocket channel configuration
@@ -332,6 +369,9 @@ impl ChannelsConfig {
             count += 1;
         }
         if self.wecom.as_ref().is_some_and(|c| c.enabled) {
+            count += 1;
+        }
+        if self.wechat.as_ref().is_some_and(|c| c.enabled) {
             count += 1;
         }
         if self.websocket.as_ref().is_some_and(|c| c.enabled) {

@@ -47,6 +47,8 @@ pub mod slack;
 pub mod telegram;
 #[cfg(feature = "websocket")]
 pub mod websocket;
+#[cfg(feature = "wechat")]
+pub mod wechat;
 #[cfg(feature = "wecom")]
 pub mod wecom;
 
@@ -54,7 +56,7 @@ pub mod wecom;
 pub use adapter::ImAdapter;
 pub use config::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
-    WeComConfig, WebSocketConfig,
+    WeComConfig, WebSocketConfig, WechatConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{
