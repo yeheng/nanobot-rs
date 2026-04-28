@@ -177,7 +177,7 @@ impl HookRegistry {
                     response,
                     tool_calls,
                     token_usage,
-                    vault_values: std::mem::take(&mut ctx.vault_values),
+                    vault_values: &ctx.vault_values,
                 };
 
                 self.execute_parallel(hooks, &readonly).await

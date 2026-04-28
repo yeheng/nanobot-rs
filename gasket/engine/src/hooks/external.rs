@@ -504,6 +504,7 @@ mod tests {
 #[cfg(test)]
 mod hook_tests {
     use super::*;
+    use crate::hooks::HookContext;
     use gasket_providers::ChatMessage;
 
     #[test]
@@ -540,14 +541,14 @@ mod hook_tests {
         let hook = ExternalShellHook::new(runner, HookPoint::AfterResponse);
 
         let messages = vec![ChatMessage::user("test")];
-        let ctx = ReadonlyContext {
+        let ctx: ReadonlyContext = HookContext {
             session_key: "test:123",
             messages: &messages,
             user_input: Some("test"),
             response: Some("response content"),
             tool_calls: None,
             token_usage: None,
-            vault_values: Vec::new(),
+            vault_values: &[],
         };
 
         let result = hook.run_parallel(&ctx).await;

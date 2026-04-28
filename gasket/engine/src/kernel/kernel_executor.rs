@@ -4,21 +4,18 @@
 //! `execute_with_options` / `execute_stream_with_options` entry points.
 //! The multi-turn loop logic lives here; single-step logic is in `SteppableExecutor`.
 
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::kernel::{
-    context::{KernelConfig, RuntimeContext},
+    context::RuntimeContext,
     error::KernelError,
     steppable_executor::SteppableExecutor,
     stream::StreamEvent,
 };
 use crate::token_tracker::TokenUsage;
-use crate::tools::{SubagentSpawner, ToolRegistry};
 use crate::vault::redact_secrets;
-use gasket_providers::{ChatMessage, ChatResponse, LlmProvider};
+use gasket_providers::{ChatMessage, ChatResponse};
 
 /// Default response when no content is available
 const DEFAULT_NO_RESPONSE: &str = "I've completed processing but have no response to give.";
@@ -121,24 +118,8 @@ pub struct KernelExecutor {
 }
 
 impl KernelExecutor {
-    pub fn new(
-        provider: Arc<dyn LlmProvider>,
-        tools: Arc<ToolRegistry>,
-        config: KernelConfig,
-    ) -> Self {
-        Self {
-            ctx: RuntimeContext::new(provider, tools, config),
-        }
-    }
-
-    pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
-        self.ctx.spawner = Some(spawner);
-        self
-    }
-
-    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
-        self.ctx.token_tracker = Some(tracker);
-        self
+    pub fn new(ctx: RuntimeContext) -> Self {
+        Self { ctx }
     }
 
     pub async fn execute_with_options(

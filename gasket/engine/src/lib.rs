@@ -33,7 +33,7 @@ pub mod vault;
 pub use gasket_wiki as wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
-pub use session::{AgentConfig, AgentResponse, ContextCompactor};
+pub use session::{AgentConfig, AgentResponse, AgentSession, ContextCompactor};
 // Backward-compatible alias
 pub use session::AgentSession as AgentLoop;
 
@@ -44,19 +44,13 @@ pub use kernel::{
 
 // ── Subagents ──────────────────────────────────────────────
 pub use subagents::{run_subagent, ModelResolver, SimpleSpawner, SubagentTracker, TrackerError};
-
-// Re-export from gasket_types for convenience
 pub use gasket_types::SubagentSpawner;
-
-// ── History (re-export from storage) ───────────────────────
-pub use gasket_storage::{
-    count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
-    ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
-};
 
 // ── Storage (top-level re-exports) ─────────────────────────
 pub use gasket_storage::{
-    CronStore, EventStore, KvStore, MaintenanceStore, SessionStore, SqliteStore, StoreError,
+    count_tokens, process_history, CronStore, EventStore, HistoryConfig, HistoryQuery,
+    HistoryQueryBuilder, HistoryResult, KvStore, MaintenanceStore, ProcessedHistory, QueryOrder,
+    ResultMeta, SemanticQuery, SessionStore, SqliteStore, StoreError, TimeRange,
 };
 
 // ── Indexing (from session/history) ────────────────────────
@@ -67,9 +61,6 @@ pub use bus_adapter::EngineHandler;
 
 // ── Broker Outbound Dispatcher ─────────────────────────────
 pub use broker_outbound::OutboundDispatcher;
-
-// ── Session ────────────────────────────────────────────────
-pub use session::AgentSession;
 
 // ── Config ─────────────────────────────────────────────────
 pub use config::{

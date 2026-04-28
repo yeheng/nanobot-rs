@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use gasket_wiki::{PageStore, PageType, WikiPage};
+use gasket_wiki::{slugify, PageStore, PageType, WikiPage};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
@@ -140,15 +140,6 @@ impl CreatePlanTool {
     }
 }
 
-fn slugify(s: &str) -> String {
-    s.to_lowercase()
-        .replace(" ", "-")
-        .replace("/", "-")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-')
-        .collect()
-}
-
 #[derive(Deserialize)]
 struct CreatePlanArgs {
     goal: String,
@@ -227,14 +218,3 @@ impl Tool for CreatePlanTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_slugify() {
-        assert_eq!(slugify("Rust Setup"), "rust-setup");
-        assert_eq!(slugify("CI/CD Pipeline"), "ci-cd-pipeline");
-        assert_eq!(slugify("Hello World!"), "hello-world");
-    }
-}

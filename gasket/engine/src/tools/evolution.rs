@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
@@ -338,38 +337,7 @@ impl EvolutionTool {
 
     /// Extract JSON array from an LLM response.
     fn extract_json(text: &str) -> Result<Vec<EvolutionMemory>, serde_json::Error> {
-        let trimmed = text.trim();
-
-        // 1. Try direct parse first.
-        if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(trimmed) {
-            return Ok(val);
-        }
-
-        // 2. Extract JSON from markdown code blocks using regex.
-        static CODE_BLOCK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-        let code_block_re = CODE_BLOCK_RE
-            .get_or_init(|| Regex::new(r"(?s)```(?:json)?\s*(\[.*?\])\s*```").unwrap());
-        if let Some(caps) = code_block_re.captures(trimmed) {
-            let block = caps.get(1).map(|m| m.as_str()).unwrap_or(trimmed);
-            if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(block) {
-                return Ok(val);
-            }
-        }
-
-        // 3. Fallback: find the first '[' and last ']' to extract the JSON array.
-        if let Some(start) = trimmed.find('[') {
-            if let Some(end) = trimmed.rfind(']') {
-                if end > start {
-                    let slice = &trimmed[start..=end];
-                    if let Ok(val) = serde_json::from_str::<Vec<EvolutionMemory>>(slice) {
-                        return Ok(val);
-                    }
-                }
-            }
-        }
-
-        // 4. Final attempt: parse whatever is left for a clear error message.
-        serde_json::from_str::<Vec<EvolutionMemory>>(trimmed)
+        super::extract_json_array(text)
     }
 
     /// Format events into a conversation transcript for the LLM prompt.

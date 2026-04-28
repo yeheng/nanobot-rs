@@ -80,10 +80,10 @@ pub enum HookAction {
 
 /// Context passed to hooks during execution.
 ///
-/// The generic parameter `M` allows for different message access patterns:
-/// - `&'a mut Vec<ChatMessage>` for mutable access (Sequential hooks)
-/// - `&'a [ChatMessage]` for readonly access (Parallel hooks)
-pub struct HookContext<'a, M> {
+/// Two generic parameters control access patterns:
+/// - `M`: message access — `&'a mut Vec<ChatMessage>` (mutable) or `&'a [ChatMessage]` (readonly)
+/// - `V`: vault_values access — `Vec<String>` (mutable, for VaultHook) or `&'a [String]` (readonly)
+pub struct HookContext<'a, M, V = Vec<String>> {
     /// Session identifier (e.g., "telegram:12345")
     pub session_key: &'a str,
     /// Message list (mutable or readonly depending on hook point)
@@ -102,7 +102,7 @@ pub struct HookContext<'a, M> {
     /// secrets here so the caller can snapshot them after hook execution.
     /// This replaces the previous `Arc<RwLock<Vec<String>>>` shared state
     /// which was susceptible to cross-request race conditions.
-    pub vault_values: Vec<String>,
+    pub vault_values: V,
 }
 
 /// Tool call information for hooks
@@ -116,29 +116,11 @@ pub struct ToolCallInfo {
     pub arguments: Option<String>,
 }
 
-/// Mutable context for Sequential hooks
-pub type MutableContext<'a> = HookContext<'a, &'a mut Vec<ChatMessage>>;
+/// Mutable context for Sequential hooks — owns vault_values so VaultHook can push secrets.
+pub type MutableContext<'a> = HookContext<'a, &'a mut Vec<ChatMessage>, Vec<String>>;
 
-/// Readonly context for Parallel hooks
-pub type ReadonlyContext<'a> = HookContext<'a, &'a [ChatMessage]>;
-
-impl<'a> MutableContext<'a> {
-    /// Convert to a readonly context for parallel execution.
-    ///
-    /// This method consumes the mutable context and returns a readonly view
-    /// of the same messages, allowing parallel hook execution.
-    pub fn into_readonly(self) -> ReadonlyContext<'a> {
-        HookContext {
-            session_key: self.session_key,
-            messages: self.messages,
-            user_input: self.user_input,
-            response: self.response,
-            tool_calls: self.tool_calls,
-            token_usage: self.token_usage,
-            vault_values: self.vault_values,
-        }
-    }
-}
+/// Readonly context for Parallel hooks — borrows vault_values for read-only log redaction.
+pub type ReadonlyContext<'a> = HookContext<'a, &'a [ChatMessage], &'a [String]>;
 
 #[cfg(test)]
 mod tests {
@@ -178,21 +160,20 @@ mod tests {
     }
 
     #[test]
-    fn test_mutable_context_into_readonly() {
-        let mut messages = vec![ChatMessage::user("test")];
-        let ctx = MutableContext {
+    fn test_readonly_context_vault_values_are_slice() {
+        let vault = vec!["secret".to_string()];
+        let messages = vec![ChatMessage::user("test")];
+        let ctx: ReadonlyContext = HookContext {
             session_key: "test:123",
-            messages: &mut messages,
+            messages: &messages,
             user_input: Some("input"),
             response: None,
             tool_calls: None,
             token_usage: None,
-            vault_values: Vec::new(),
+            vault_values: &vault,
         };
-
-        let readonly = ctx.into_readonly();
-        assert_eq!(readonly.session_key, "test:123");
-        assert_eq!(readonly.messages.len(), 1);
+        assert_eq!(ctx.vault_values.len(), 1);
+        assert_eq!(ctx.vault_values[0], "secret");
     }
 
     #[test]

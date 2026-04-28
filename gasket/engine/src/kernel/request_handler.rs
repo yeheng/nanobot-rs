@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use tracing::warn;
 
 use crate::kernel::context::KernelConfig;
 use crate::tools::ToolRegistry;
-use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ThinkingConfig};
+use gasket_providers::{ChatRequest, ChatStream, LlmProvider, ProviderError, ThinkingConfig};
 
 /// Handler for LLM requests with retry support.
 pub struct RequestHandler<'a> {
@@ -48,25 +47,24 @@ impl<'a> RequestHandler<'a> {
         request
     }
 
-    pub async fn send_with_retry(&self, request: ChatRequest) -> Result<ChatStream> {
+    pub async fn send_with_retry(&self, request: ChatRequest) -> Result<ChatStream, ProviderError> {
         let mut retries = 0u32;
         let max_retries = self.config.max_retries;
         loop {
             match self.provider.chat_stream(request.clone()).await {
                 Ok(stream) => return Ok(stream),
                 Err(provider_err) => {
-                    let e = anyhow::anyhow!("{}", provider_err);
                     if !provider_err.is_retryable() {
-                        return Err(e.context("Provider request failed (non-retryable)"));
+                        return Err(provider_err);
                     }
 
                     if retries >= max_retries {
-                        return Err(e.context("Provider request failed after retries"));
+                        return Err(provider_err);
                     }
                     retries += 1;
                     warn!(
                         "Provider error (retryable): {}. Retrying {}/{}",
-                        e, retries, max_retries
+                        provider_err, retries, max_retries
                     );
                     let backoff_secs = (1u64 << retries.min(63)).min(15);
                     tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;

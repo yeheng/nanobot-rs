@@ -3,8 +3,6 @@
 //! External callers (like `MonitoredRunner`) drive the loop; `KernelExecutor`
 //! composes this internally.
 
-use std::sync::Arc;
-
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -39,16 +37,6 @@ pub struct SteppableExecutor {
 impl SteppableExecutor {
     pub fn new(ctx: RuntimeContext) -> Self {
         Self { ctx }
-    }
-
-    pub fn with_spawner(mut self, spawner: Arc<dyn crate::tools::SubagentSpawner>) -> Self {
-        self.ctx.spawner = Some(spawner);
-        self
-    }
-
-    pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
-        self.ctx.token_tracker = Some(tracker);
-        self
     }
 
     /// Execute one iteration: LLM call → optional tool calls → return result.
