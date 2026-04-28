@@ -136,6 +136,10 @@ pub struct Config {
     #[cfg(feature = "embedding")]
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
+    /// Optional path to an external stop-words file for keyword-based history recall.
+    /// When absent or unreadable, the built-in bilingual dictionary is used.
+    #[serde(default, alias = "stopWordsPath")]
+    pub stop_words_path: Option<std::path::PathBuf>,
 }
 
 impl Config {

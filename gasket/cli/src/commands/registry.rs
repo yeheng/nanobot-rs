@@ -115,5 +115,6 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
                 None
             }
         },
+        stop_words_path: config.stop_words_path.clone(),
     }
 }

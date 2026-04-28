@@ -212,10 +212,17 @@ impl JsonRpcDaemon {
         self.touch();
 
         let timeout_duration = Duration::from_millis(self.idle_timeout_ms.max(5000) as u64);
-        let response = tokio::time::timeout(timeout_duration, rx)
-            .await
-            .map_err(|_| PluginError::Timeout(self.idle_timeout_ms.max(5000) as u64 / 1000))?
-            .map_err(|_| PluginError::Io("Daemon response channel closed".to_string()))?;
+        let response = match tokio::time::timeout(timeout_duration, rx).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(_)) => {
+                self.pending.remove(&id);
+                return Err(PluginError::Io("Daemon response channel closed".to_string()));
+            }
+            Err(_) => {
+                self.pending.remove(&id);
+                return Err(PluginError::Timeout(self.idle_timeout_ms.max(5000) as u64 / 1000));
+            }
+        };
 
         if let Some(error) = response.error {
             return Err(PluginError::InvalidOutput(format!(

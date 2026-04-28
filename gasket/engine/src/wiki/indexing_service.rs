@@ -2,6 +2,7 @@
 //! asynchronously updates the Tantivy search index.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gasket_broker::{get_broker, BrokerError, Topic};
 use tracing::{debug, error, info, warn};
@@ -38,6 +39,10 @@ impl WikiIndexingService {
 
             info!("WikiIndexingService started");
 
+            // Guard to prevent concurrent rebuild tasks from piling up
+            // when the consumer falls behind repeatedly.
+            let is_rebuilding = Arc::new(AtomicBool::new(false));
+
             loop {
                 match sub.recv().await {
                     Ok(envelope) => {
@@ -49,11 +54,24 @@ impl WikiIndexingService {
                     }
                     Err(BrokerError::Lagged(n)) => {
                         warn!(
-                            "WikiIndexingService: lagged {} messages, doing full rebuild",
+                            "WikiIndexingService: lagged {} messages, scheduling async rebuild",
                             n
                         );
-                        if let Err(e) = self.page_index.rebuild(&self.page_store).await {
-                            warn!("WikiIndexingService: rebuild failed: {}", e);
+                        let index = self.page_index.clone();
+                        let store = self.page_store.clone();
+                        let guard = is_rebuilding.clone();
+                        // Only spawn a rebuild if one isn't already running.
+                        if !guard.load(Ordering::Relaxed) {
+                            tokio::spawn(async move {
+                                guard.store(true, Ordering::Relaxed);
+                                if let Err(e) = index.rebuild(&store).await {
+                                    warn!("WikiIndexingService: async rebuild failed: {}", e);
+                                }
+                                guard.store(false, Ordering::Relaxed);
+                                info!("WikiIndexingService: async rebuild completed");
+                            });
+                        } else {
+                            debug!("WikiIndexingService: rebuild already in progress, skipping");
                         }
                     }
                     Err(e) => {

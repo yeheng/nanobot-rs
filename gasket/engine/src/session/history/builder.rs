@@ -297,6 +297,7 @@ impl ContextBuilder {
 /// Callers can append additional hooks before calling `.build_shared()`.
 pub fn build_default_hooks_builder(
     #[allow(unused_variables)] event_store: Option<EventStore>,
+    #[allow(unused_variables)] stop_words_path: Option<std::path::PathBuf>,
 ) -> HookBuilder {
     #[cfg(not(feature = "embedding"))]
     use crate::hooks::HistoryRecallHook;
@@ -334,7 +335,7 @@ pub fn build_default_hooks_builder(
     // Add history recall hook if event store is available (keyword-based, without embedding feature)
     #[cfg(not(feature = "embedding"))]
     if let Some(store) = event_store {
-        builder = builder.with_hook(Arc::new(HistoryRecallHook::new(store)));
+        builder = builder.with_hook(Arc::new(HistoryRecallHook::new(store, stop_words_path)));
     }
 
     builder
@@ -428,5 +429,5 @@ pub async fn setup_embedding_recall(
 ///
 /// Convenience wrapper around `build_default_hooks_builder().build_shared()`.
 pub fn build_default_hooks() -> Arc<HookRegistry> {
-    build_default_hooks_builder(None).build_shared()
+    build_default_hooks_builder(None, None).build_shared()
 }

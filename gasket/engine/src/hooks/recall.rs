@@ -11,8 +11,8 @@
 
 #[cfg(not(feature = "embedding"))]
 mod keyword_impl {
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::collections::{HashMap, HashSet};
+    use std::path::Path;
 
     use async_trait::async_trait;
     use gasket_providers::ChatMessage;
@@ -22,150 +22,40 @@ mod keyword_impl {
     use crate::error::AgentError;
     use gasket_storage::EventStore;
     use gasket_types::SessionKey;
+    use unicode_segmentation::UnicodeSegmentation;
 
-    /// Returns true if the character is a CJK unified ideograph.
-    fn is_cjk(c: char) -> bool {
-        ('\u{4e00}'..='\u{9fff}').contains(&c)
+    /// Built-in bilingual stop-words dictionary (embedded at compile time).
+    const DEFAULT_STOP_WORDS: &str = include_str!("../../resources/stop_words.txt");
+
+    /// Parse raw stop-words text into a `HashSet`.
+    fn parse_stop_words(content: &str) -> HashSet<String> {
+        content
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or(line).trim())
+            .filter(|line| !line.is_empty())
+            .map(|word| word.to_lowercase())
+            .collect()
     }
 
-    /// Stop words filtered out during keyword extraction.
-    const STOP_WORDS: &[&str] = &[
-        "the",
-        "a",
-        "an",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "will",
-        "would",
-        "could",
-        "should",
-        "may",
-        "might",
-        "must",
-        "shall",
-        "can",
-        "need",
-        "dare",
-        "ought",
-        "used",
-        "to",
-        "of",
-        "in",
-        "for",
-        "on",
-        "with",
-        "at",
-        "by",
-        "from",
-        "as",
-        "into",
-        "through",
-        "during",
-        "before",
-        "after",
-        "above",
-        "below",
-        "between",
-        "under",
-        "again",
-        "further",
-        "then",
-        "once",
-        "here",
-        "there",
-        "when",
-        "where",
-        "why",
-        "how",
-        "all",
-        "each",
-        "few",
-        "more",
-        "most",
-        "other",
-        "some",
-        "such",
-        "no",
-        "nor",
-        "not",
-        "only",
-        "own",
-        "same",
-        "so",
-        "than",
-        "too",
-        "very",
-        "just",
-        "and",
-        "but",
-        "if",
-        "or",
-        "because",
-        "until",
-        "while",
-        "这",
-        "那",
-        "是",
-        "的",
-        "了",
-        "在",
-        "有",
-        "和",
-        "与",
-        "或",
-        "就",
-        "都",
-        "而",
-        "及",
-        "等",
-        "对",
-        "能",
-        "会",
-        "要",
-        "把",
-        "被",
-        "给",
-        "让",
-        "向",
-        "从",
-        "到",
-        "为",
-        "于",
-        "以",
-        "个",
-        "什么",
-        "怎么",
-        "为什么",
-        "哪里",
-        "谁",
-        "多少",
-        "吗",
-        "呢",
-        "吧",
-        "啊",
-        "哦",
-        "嗯",
-        "我",
-        "你",
-        "他",
-        "她",
-        "它",
-        "我们",
-        "你们",
-        "他们",
-        "自己",
-    ];
+    /// Load stop words from an external file, falling back to the built-in dictionary.
+    fn load_stop_words(path: Option<&Path>) -> HashSet<String> {
+        if let Some(p) = path {
+            match std::fs::read_to_string(p) {
+                Ok(content) => {
+                    tracing::info!("Loaded stop words from {}", p.display());
+                    return parse_stop_words(&content);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to read stop words from {} ({}), using built-in dictionary",
+                        p.display(),
+                        e
+                    );
+                }
+            }
+        }
+        parse_stop_words(DEFAULT_STOP_WORDS)
+    }
 
     /// Hook that recalls relevant historical messages from the current session
     /// using keyword matching.
@@ -179,16 +69,22 @@ mod keyword_impl {
         min_keyword_len: usize,
         /// Max events to fetch per keyword.
         per_keyword_limit: i64,
+        /// Loaded stop-word set.
+        stop_words: HashSet<String>,
     }
 
     impl HistoryRecallHook {
         /// Create a new recall hook with the given event store.
-        pub fn new(event_store: EventStore) -> Self {
+        ///
+        /// `stop_words_path` points to an optional external stop-words file.
+        /// When `None` or unreadable, the built-in dictionary is used.
+        pub fn new(event_store: EventStore, stop_words_path: Option<std::path::PathBuf>) -> Self {
             Self {
                 event_store,
                 top_k: 3,
                 min_keyword_len: 2,
                 per_keyword_limit: 20,
+                stop_words: load_stop_words(stop_words_path.as_deref()),
             }
         }
 
@@ -201,38 +97,24 @@ mod keyword_impl {
         /// Extract keywords from user input, filtering out stop words and short tokens.
         fn extract_keywords(&self, text: &str) -> Vec<String> {
             let mut keywords = Vec::new();
-            let chars: Vec<char> = text.chars().collect();
-            let mut i = 0;
 
-            while i < chars.len() {
-                if is_cjk(chars[i]) {
-                    let start = i;
-                    while i < chars.len() && is_cjk(chars[i]) {
-                        i += 1;
-                    }
-                    let seq: String = chars[start..i].iter().collect();
-                    if seq.len() >= self.min_keyword_len && !STOP_WORDS.contains(&seq.as_str()) {
-                        keywords.push(seq);
-                    }
+            for word in text.unicode_words() {
+                let w = word.to_lowercase();
+
+                if w.len() < self.min_keyword_len {
                     continue;
                 }
 
-                if chars[i].is_ascii_alphanumeric() {
-                    let start = i;
-                    while i < chars.len() && chars[i].is_ascii_alphanumeric() {
-                        i += 1;
-                    }
-                    let word: String = chars[start..i].iter().collect::<String>().to_lowercase();
-                    if word.len() >= self.min_keyword_len
-                        && word.chars().any(|c| c.is_ascii_alphabetic())
-                        && !STOP_WORDS.contains(&word.as_str())
-                    {
-                        keywords.push(word);
-                    }
+                // Skip pure numbers (keep words that contain at least one letter).
+                if !w.chars().any(|c| c.is_alphabetic()) {
                     continue;
                 }
 
-                i += 1;
+                if self.stop_words.contains(&w) {
+                    continue;
+                }
+
+                keywords.push(w);
             }
 
             let mut seen = std::collections::HashSet::new();
@@ -352,7 +234,7 @@ mod keyword_impl {
 
         fn make_hook() -> HistoryRecallHook {
             let pool = sqlx::SqlitePool::connect_lazy(":memory:").unwrap();
-            HistoryRecallHook::new(Arc::new(EventStore::new(pool)))
+            HistoryRecallHook::new(EventStore::new(pool), None)
         }
 
         #[tokio::test]

@@ -199,6 +199,8 @@ pub struct AgentConfig {
     pub evolution: Option<EvolutionConfig>,
     /// Wiki knowledge system configuration (replaces memory system).
     pub wiki: Option<WikiConfig>,
+    /// Optional path to an external stop-words file for keyword-based history recall.
+    pub stop_words_path: Option<std::path::PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -219,6 +221,7 @@ impl Default for AgentConfig {
             memory_budget: None,
             evolution: Some(EvolutionConfig::default()),
             wiki: None,
+            stop_words_path: None,
         }
     }
 }
