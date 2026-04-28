@@ -1,5 +1,4 @@
 use anyhow::Result;
-use gasket_broker::{get_broker, BrokerPayload, Envelope, Topic};
 use gasket_storage::fs::atomic_write;
 use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
@@ -14,6 +13,7 @@ use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,
+    wiki_changed_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl PageStore {
@@ -21,7 +21,16 @@ impl PageStore {
         Self {
             db: WikiPageStore::new(pool),
             wiki_root,
+            wiki_changed_tx: None,
         }
+    }
+
+    /// Attach a channel for publishing wiki-changed notifications.
+    /// When set, `write` and `delete` will send the affected path
+    /// over this channel instead of touching the global broker.
+    pub fn with_wiki_changed_tx(mut self, tx: tokio::sync::mpsc::Sender<String>) -> Self {
+        self.wiki_changed_tx = Some(tx);
+        self
     }
 
     /// Get the wiki root directory.
@@ -29,9 +38,40 @@ impl PageStore {
         &self.wiki_root
     }
 
-    /// Get a reference to the underlying `WikiPageStore`.
-    pub fn db(&self) -> &WikiPageStore {
-        &self.db
+    /// Run frequency decay batch on all stale pages.
+    pub async fn run_decay_batch(&self) -> anyhow::Result<crate::wiki::DecayReport> {
+        crate::wiki::FrequencyManager::run_decay_batch(&self.db).await
+    }
+
+    /// Get metadata for a page by path (lightweight, no content).
+    pub async fn get_metadata(&self, path: &str) -> anyhow::Result<Option<PageSummary>> {
+        match self.db.get(path).await? {
+            Some(row) => Ok(Some(PageSummary {
+                path: row.path,
+                title: row.title,
+                page_type: row.page_type.parse().unwrap_or(PageType::Topic),
+                category: row.category,
+                tags: row
+                    .tags
+                    .as_ref()
+                    .and_then(|t| serde_json::from_str(t).ok())
+                    .unwrap_or_default(),
+                updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_default(),
+                confidence: row.confidence,
+                frequency: Frequency::from_str_lossy(&row.frequency),
+                access_count: row.access_count as u64,
+                last_accessed: row
+                    .last_accessed
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                content_length: row.content.len() as u64,
+                file_mtime: row.file_mtime,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Ensure wiki directory structure exists.
@@ -126,6 +166,7 @@ impl PageStore {
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
                 content_length: r.content.len() as u64,
+                file_mtime: r.file_mtime,
             })
             .collect())
     }
@@ -157,6 +198,7 @@ impl PageStore {
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
                 content_length: r.content_length as u64,
+                file_mtime: r.file_mtime,
             })
             .collect())
     }
@@ -274,21 +316,12 @@ impl PageStore {
         Ok(())
     }
 
-    /// Publish a non-blocking `WikiChanged` event via the global broker.
+    /// Publish a non-blocking `WikiChanged` notification.
     async fn notify_wiki_changed(&self, path: &str) {
-        let broker = get_broker();
-        let envelope = Envelope::new(
-            Topic::WikiChanged,
-            BrokerPayload::WikiChanged {
-                path: path.to_string(),
-            },
-        );
-        if let Err(e) = broker.try_publish(envelope) {
-            tracing::debug!(
-                "PageStore: failed to publish WikiChanged for {}: {}",
-                path,
-                e
-            );
+        if let Some(ref tx) = self.wiki_changed_tx {
+            if let Err(e) = tx.try_send(path.to_string()) {
+                tracing::debug!("PageStore: failed to send WikiChanged for {}: {}", path, e);
+            }
         }
     }
 

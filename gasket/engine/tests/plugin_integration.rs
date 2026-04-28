@@ -89,14 +89,20 @@ async fn test_simple_echo_tool() {
 #[tokio::test]
 async fn test_jsonrpc_ping_tool() {
     let tools = discover_plugins_in_dir(&test_scripts_dir()).unwrap();
-    let ping_tool = tools
+    let ping_manifest = tools
         .into_iter()
         .find(|t| t.name() == "test_ping")
         .expect("test_ping not found")
-        .with_engine_refs(gasket_engine::plugin::EngineResources {
+        .manifest()
+        .clone();
+    let ping_tool = gasket_engine::plugin::PluginTool::new(
+        ping_manifest,
+        test_scripts_dir(),
+        Some(gasket_engine::plugin::EngineResources {
             tool_registry: Arc::new(ToolRegistry::new()),
             provider: Arc::new(FailingMockProvider),
-        });
+        }),
+    );
     let args = serde_json::json!({"name": "Alice"});
     let result = ping_tool.execute(args, &make_test_ctx()).await;
     assert!(result.is_ok(), "JsonRpc ping failed: {:?}", result);

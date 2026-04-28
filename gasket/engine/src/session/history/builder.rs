@@ -79,6 +79,26 @@ impl ContextBuilder {
         }
     }
 
+    /// Access the event store.
+    pub fn event_store(&self) -> &EventStore {
+        &self.event_store
+    }
+
+    /// Access the session store.
+    pub fn session_store(&self) -> &SessionStore {
+        &self.session_store
+    }
+
+    /// Access the hook registry.
+    pub fn hooks(&self) -> &Arc<HookRegistry> {
+        &self.hooks
+    }
+
+    /// Access the system prompt.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
     /// Build the complete chat request pipeline.
     ///
     /// Executes the full preparation sequence:

@@ -46,31 +46,38 @@ pub struct PluginTool {
 }
 
 impl PluginTool {
+    /// Get the underlying manifest.
+    pub fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
     /// Create a new PluginTool from a manifest.
     ///
-    /// Simple plugins are fully usable immediately. JSON-RPC plugins
-    /// must be converted via `with_engine_refs()` before execution.
-    pub fn new(manifest: PluginManifest, manifest_dir: PathBuf) -> Self {
+    /// Engine resources are injected at construction time. JSON-RPC plugins
+    /// are fully initialized if `resources` is provided; otherwise they
+    /// behave like Simple plugins (no callbacks).
+    pub fn new(
+        manifest: PluginManifest,
+        manifest_dir: PathBuf,
+        resources: Option<EngineResources>,
+    ) -> Self {
+        let (dispatcher, resources, daemon) =
+            if manifest.protocol == PluginProtocol::JsonRpc && resources.is_some() {
+                (
+                    Some(Arc::new(build_dispatcher())),
+                    resources,
+                    Some(Arc::new(tokio::sync::RwLock::new(None))),
+                )
+            } else {
+                (None, None, None)
+            };
         Self {
             manifest,
             manifest_dir,
-            dispatcher: None,
-            resources: None,
-            daemon: None,
+            dispatcher,
+            resources,
+            daemon,
         }
-    }
-
-    /// Inject engine resources for JSON-RPC mode.
-    ///
-    /// For Simple plugins this is a no-op. For JSON-RPC plugins this
-    /// installs the dispatcher and engine resources required for callbacks.
-    pub fn with_engine_refs(mut self, resources: EngineResources) -> Self {
-        if self.manifest.protocol == PluginProtocol::JsonRpc {
-            self.dispatcher = Some(Arc::new(build_dispatcher()));
-            self.resources = Some(resources);
-            self.daemon = Some(Arc::new(tokio::sync::RwLock::new(None)));
-        }
-        self
     }
 
     /// Build a dispatcher context from a tool context.
@@ -291,7 +298,7 @@ pub fn discover_plugins_in_dir(plugins_dir: &Path) -> anyhow::Result<Vec<PluginT
         match load_manifest(&path) {
             Ok(manifest) => {
                 info!("Discovered plugin '{}' from {:?}", manifest.name, path);
-                let tool = PluginTool::new(manifest, plugins_dir.to_path_buf());
+                let tool = PluginTool::new(manifest, plugins_dir.to_path_buf(), None);
                 tools.push(tool);
             }
             Err(e) => {
@@ -338,20 +345,13 @@ pub fn discover_plugins(
     // Discover tools
     let tools = discover_plugins_in_dir(&plugins_dir)?;
 
-    // Register each tool
+    // Register each tool — engine resources are injected at construction time.
     for tool in &tools {
-        let mut tool = tool.clone();
-
-        // JSON-RPC plugins are pre-configured with engine resources when
-        // available. Otherwise they are registered unlinked and will be
-        // configured later via `link_engine_refs()`.
-        if tool.manifest.protocol == PluginProtocol::JsonRpc {
-            if let Some(ref res) = engine {
-                tool = tool.with_engine_refs(res.clone());
-            }
-        }
-
-        // Register with registry
+        let tool = PluginTool::new(
+            tool.manifest.clone(),
+            tool.manifest_dir.clone(),
+            engine.clone(),
+        );
         registry.register(Box::new(tool));
     }
 
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn test_script_tool_new() {
         let (manifest, dir) = test_manifest("cat");
-        let tool = PluginTool::new(manifest, dir.path().to_path_buf());
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf(), None);
 
         assert_eq!(tool.name(), "test_tool");
         assert_eq!(tool.description(), "Test tool");
@@ -449,7 +449,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_tool_execute() {
         let (manifest, dir) = test_manifest("cat");
-        let tool = PluginTool::new(manifest, dir.path().to_path_buf());
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf(), None);
 
         let args = json!({"hello": "world", "number": 42});
         let ctx = ToolContext::default();
@@ -599,11 +599,14 @@ parameters:
             permissions: vec![],
         };
 
-        let tool =
-            PluginTool::new(manifest, dir.path().to_path_buf()).with_engine_refs(EngineResources {
+        let tool = PluginTool::new(
+            manifest,
+            dir.path().to_path_buf(),
+            Some(EngineResources {
                 tool_registry: Arc::new(ToolRegistry::new()),
                 provider: Arc::new(MockProvider),
-            });
+            }),
+        );
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
         let ctx = ToolContext::default()

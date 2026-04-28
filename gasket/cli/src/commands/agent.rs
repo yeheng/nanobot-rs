@@ -41,7 +41,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // ── Infrastructure initialization (explicit, once) ──
     gasket_engine::config::init_config(config.clone());
-    gasket_engine::broker::init_broker(MemoryBroker::new(256, 64));
+    let broker = Arc::new(MemoryBroker::new(256, 64));
     let sqlite_store = SqliteStore::new()
         .await
         .expect("Failed to open SqliteStore");
@@ -81,16 +81,25 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // Build tool registry (CLI mode: no bus/cron)
     let pool = sqlite_store.pool();
 
-    // Broker for wiki indexing events (auto-updates Tantivy on writes)
-    gasket_engine::broker::init_broker(MemoryBroker::new(256, 64));
-
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) =
         if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
             use gasket_engine::wiki::{PageIndex, PageStore};
             use gasket_storage::wiki::TantivyPageIndex;
-            let ps = PageStore::new(pool.clone(), wiki_root.clone());
+            let (wiki_changed_tx, mut wiki_changed_rx) = tokio::sync::mpsc::channel(64);
+            let ps = PageStore::new(pool.clone(), wiki_root.clone())
+                .with_wiki_changed_tx(wiki_changed_tx);
+            let broker2 = broker.clone();
+            tokio::spawn(async move {
+                while let Some(path) = wiki_changed_rx.recv().await {
+                    let envelope = gasket_engine::broker::Envelope::new(
+                        gasket_engine::broker::Topic::WikiChanged,
+                        gasket_engine::broker::BrokerPayload::WikiChanged { path },
+                    );
+                    let _ = broker2.try_publish(envelope);
+                }
+            });
             if let Err(e) = ps.init_dirs().await {
                 tracing::warn!("Failed to init wiki dirs: {}", e);
             }
@@ -112,8 +121,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Spawn wiki indexing service for auto Tantivy updates
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
-        let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
-        let _ = svc.spawn();
+        let relation_store = gasket_storage::wiki::WikiRelationStore::new(pool.clone());
+        let svc =
+            gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone(), relation_store);
+        if let Ok(sub) = broker
+            .subscribe(&gasket_engine::broker::Topic::WikiChanged)
+            .await
+        {
+            let _ = svc.spawn(sub);
+        }
     }
 
     // Build model registry and provider registry for switch_model tool
@@ -176,20 +192,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             history_search,
         });
 
-    let mut tools = common_tools.clone();
-    let tools_arc = Arc::new(tools.clone());
-    tools.link_engine_refs(tools_arc, provider_info.provider.clone());
-    let tools = Arc::new(tools);
+    let tools = Arc::new(common_tools.clone());
 
     // Create spawner for spawn/spawn_parallel tools
-    let (_dummy_tx, _dummy_rx): (
-        tokio::sync::mpsc::Sender<gasket_engine::channels::OutboundMessage>,
-        _,
-    ) = tokio::sync::mpsc::channel(16);
-    let mut subagent_tools = common_tools.clone();
-    let subagent_tools_arc = Arc::new(subagent_tools.clone());
-    subagent_tools.link_engine_refs(subagent_tools_arc, provider_info.provider.clone());
-    let subagent_tools = Arc::new(subagent_tools);
+    let subagent_tools = Arc::new(common_tools.clone());
 
     // Create model resolver for subagent spawner to support model_id switching in spawn tools
     let mut resolver_registry = ProviderRegistry::from_config(&config);

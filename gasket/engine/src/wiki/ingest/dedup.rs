@@ -127,6 +127,7 @@ mod tests {
             access_count: 0,
             last_accessed: None,
             content_length: 0,
+            file_mtime: 0,
         }
     }
 

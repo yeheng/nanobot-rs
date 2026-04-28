@@ -115,13 +115,15 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     // ── System/maintenance tools ─
     let session_store = Some(sqlite_store.session_store());
     let maintenance_store = Some(sqlite_store.maintenance_store());
+    let event_store = Some(gasket_storage::EventStore::new(sqlite_store.pool()));
     SystemToolProvider::new(
         session_store,
         maintenance_store,
         page_store,
-        provider,
+        provider.clone(),
         model,
         prompts.evolution.clone(),
+        event_store,
     )
     .register_tools(&mut tools);
 
@@ -143,8 +145,15 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         }
     }
 
-    // Discover external plugins from ~/.gasket/scripts/
-    if let Err(e) = crate::plugin::discover_plugins(&mut tools, None) {
+    // Discover external plugins — engine resources are injected at construction time.
+    let engine_resources = provider.map(|p| {
+        let tools_arc = Arc::new(tools.clone());
+        crate::plugin::EngineResources {
+            tool_registry: tools_arc,
+            provider: p,
+        }
+    });
+    if let Err(e) = crate::plugin::discover_plugins(&mut tools, engine_resources) {
         tracing::warn!("Failed to discover script tools: {}", e);
     }
 

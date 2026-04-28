@@ -211,7 +211,7 @@ impl WikiPageStore {
 
         let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT path, title, type, category, tags, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length \
+            "SELECT path, title, type, category, tags, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length, file_mtime \
              FROM wiki_pages \
              WHERE path IN ({})",
             placeholders
@@ -244,6 +244,7 @@ pub struct PageSummaryRow {
     /// Content length in bytes (for budget-aware selection without loading full content).
     #[sqlx(rename = "content_length")]
     pub content_length: i64,
+    pub file_mtime: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

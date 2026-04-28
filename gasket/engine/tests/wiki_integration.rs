@@ -9,9 +9,6 @@ use gasket_storage::wiki::TantivyPageIndex;
 use tempfile::TempDir;
 
 async fn setup_store() -> (PageStore, TempDir) {
-    // Ensure global broker is initialized (idempotent across parallel tests).
-    gasket_engine::broker::init_broker(gasket_engine::broker::MemoryBroker::default());
-
     let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
     gasket_engine::create_wiki_tables(&pool).await.unwrap();
 

@@ -7,7 +7,6 @@ use serde_json::Value;
 use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
-use gasket_providers::LlmProvider;
 use gasket_providers::ToolDefinition;
 
 /// A tool bundled with its optional metadata.
@@ -80,24 +79,6 @@ impl ToolRegistry {
                 metadata: Some(meta),
             },
         );
-    }
-
-    /// Inject engine references into all registered plugins.
-    pub fn link_engine_refs(&mut self, registry: Arc<Self>, provider: Arc<dyn LlmProvider>) {
-        let resources = crate::plugin::EngineResources {
-            tool_registry: registry,
-            provider,
-        };
-        for entry in self.items.values_mut() {
-            if let Some(plugin_tool) = entry
-                .tool
-                .as_any()
-                .downcast_ref::<crate::plugin::PluginTool>()
-            {
-                let updated = plugin_tool.clone().with_engine_refs(resources.clone());
-                entry.tool = Arc::new(updated);
-            }
-        }
     }
 
     /// Get a tool by name

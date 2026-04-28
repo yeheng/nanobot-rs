@@ -63,7 +63,7 @@ impl Tool for MessageTool {
         self
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> ToolResult {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
@@ -83,14 +83,10 @@ impl Tool for MessageTool {
             )
         };
 
-        let envelope = gasket_broker::Envelope::new(
-            gasket_broker::Topic::Outbound,
-            gasket_broker::BrokerPayload::Outbound(message),
-        );
-        gasket_broker::broker_arc()
-            .publish(envelope)
+        ctx.outbound_tx
+            .send(message)
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Broker publish failed: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Outbound channel closed: {}", e)))?;
 
         Ok(format!(
             "Message sent successfully to {}:{}",

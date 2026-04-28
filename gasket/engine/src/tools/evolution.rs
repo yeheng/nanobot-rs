@@ -17,7 +17,6 @@ use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::wiki::{slugify, PageFilter, PageStore, PageType, WikiPage};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_storage::EventStore;
 use gasket_types::{EventType, SessionKey};
 
 /// A single extracted memory item from the evolution LLM response.
@@ -62,6 +61,18 @@ const DEFAULT_EVOLUTION_TEMPLATE: &str =
      Output strict JSON array: [{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}].\n\n\
      {{conversation}}";
 
+/// Configuration for building an [`EvolutionTool`].
+pub struct EvolutionConfig {
+    pub session_store: gasket_storage::SessionStore,
+    pub maintenance_store: gasket_storage::MaintenanceStore,
+    pub provider: Arc<dyn LlmProvider>,
+    pub model: String,
+    pub page_store: Option<PageStore>,
+    pub event_store: gasket_storage::EventStore,
+    pub default_threshold: usize,
+    pub evolution_prompt: Option<String>,
+}
+
 /// Tool for performing background evolution (auto-learning) on conversation sessions.
 pub struct EvolutionTool {
     session_store: gasket_storage::SessionStore,
@@ -69,29 +80,23 @@ pub struct EvolutionTool {
     provider: Arc<dyn LlmProvider>,
     model: String,
     page_store: Option<PageStore>,
+    event_store: gasket_storage::EventStore,
     default_threshold: usize,
     evolution_prompt: Option<String>,
 }
 
 impl EvolutionTool {
     /// Create a new `EvolutionTool` with all required dependencies.
-    pub fn new(
-        session_store: gasket_storage::SessionStore,
-        maintenance_store: gasket_storage::MaintenanceStore,
-        provider: Arc<dyn LlmProvider>,
-        model: String,
-        page_store: Option<PageStore>,
-        default_threshold: usize,
-        evolution_prompt: Option<String>,
-    ) -> Self {
+    pub fn new(config: EvolutionConfig) -> Self {
         Self {
-            session_store,
-            maintenance_store,
-            provider,
-            model,
-            page_store,
-            default_threshold,
-            evolution_prompt,
+            session_store: config.session_store,
+            maintenance_store: config.maintenance_store,
+            provider: config.provider,
+            model: config.model,
+            page_store: config.page_store,
+            event_store: config.event_store,
+            default_threshold: config.default_threshold,
+            evolution_prompt: config.evolution_prompt,
         }
     }
 
@@ -132,10 +137,9 @@ impl EvolutionTool {
         let session_key_parsed = SessionKey::parse(session_key)
             .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, session_key));
 
-        let event_store = EventStore::new(self.session_store.pool());
-
         // Fetch events since the last watermark.
-        let events = event_store
+        let events = self
+            .event_store
             .get_events_after_sequence(&session_key_parsed, watermark)
             .await
             .map_err(|e| {
@@ -316,7 +320,8 @@ impl EvolutionTool {
         }
 
         // Update watermark to max sequence.
-        let max_sequence = event_store
+        let max_sequence = self
+            .event_store
             .get_max_sequence(&session_key_parsed)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to get max sequence: {}", e)))?;

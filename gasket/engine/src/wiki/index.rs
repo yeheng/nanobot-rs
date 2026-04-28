@@ -50,6 +50,7 @@ impl PageIndex {
                         access_count: page.access_count,
                         last_accessed: page.last_accessed,
                         content_length: page.content.len() as u64,
+                        file_mtime: page.file_mtime,
                     }),
                     Err(e) => {
                         tracing::debug!("PageIndex: could not load page '{}': {}", hit.path, e);

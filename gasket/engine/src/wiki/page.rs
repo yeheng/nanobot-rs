@@ -211,6 +211,8 @@ pub struct PageSummary {
     pub last_accessed: Option<DateTime<Utc>>,
     /// Content length in bytes (for budget-aware selection without loading full content).
     pub content_length: u64,
+    /// Disk file modification time in Unix epoch seconds.
+    pub file_mtime: i64,
 }
 
 /// Filter for listing pages

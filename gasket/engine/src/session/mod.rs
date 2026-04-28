@@ -233,11 +233,8 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 /// to avoid the indirection and dynamic dispatch of a plugin trait.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
-    event_store: gasket_storage::EventStore,
-    session_store: gasket_storage::SessionStore,
     config: AgentConfig,
-    system_prompt: String,
-    hooks: Arc<HookRegistry>,
+    context_builder: history::builder::ContextBuilder,
     compactor: Option<Arc<ContextCompactor>>,
     /// Pricing config for cost tracking. None when cost tracking is disabled.
     pricing: Option<ModelPricing>,
@@ -335,12 +332,17 @@ impl AgentSession {
 
     /// Get the hook registry.
     pub fn hooks(&self) -> &Arc<HookRegistry> {
-        &self.hooks
+        self.context_builder.hooks()
     }
 
     /// Clear session for the given key.
     pub async fn clear_session(&self, session_key: &SessionKey) {
-        match self.event_store.clear_session(session_key).await {
+        match self
+            .context_builder
+            .event_store()
+            .clear_session(session_key)
+            .await
+        {
             Ok(_) => info!("Session '{}' cleared", session_key),
             Err(e) => warn!("Failed to clear session '{}': {}", session_key, e),
         }
@@ -537,7 +539,7 @@ impl AgentSession {
             runtime_ctx.checkpoint_callback = Some(Arc::new(SessionCheckpointCallback {
                 session_key: fctx.session_key.clone(),
                 compactor: compactor.clone(),
-                event_store: self.event_store.clone(),
+                event_store: self.context_builder.event_store().clone(),
             }));
         }
 
@@ -580,23 +582,7 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<history::builder::BuildOutcome, AgentError> {
-        use history::builder::ContextBuilder;
-
-        let history_config = gasket_storage::HistoryConfig {
-            max_events: self.config.memory_window,
-            ..Default::default()
-        };
-
-        let builder = ContextBuilder::new(
-            self.event_store.clone(),
-            self.session_store.clone(),
-            self.system_prompt.clone(),
-            None,
-            self.hooks.clone(),
-            history_config,
-        );
-
-        builder.build(content, session_key).await
+        self.context_builder.build(content, session_key).await
     }
 }
 

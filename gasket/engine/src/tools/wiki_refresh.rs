@@ -113,8 +113,8 @@ impl WikiRefreshTool {
         let mut synced = 0usize;
         for (rel_path, disk_mtime, full_path) in disk_files {
             // mtime check: skip if DB already has the same mtime.
-            let needs_sync = match self.page_store.db().get(&rel_path).await {
-                Ok(Some(row)) => row.file_mtime != disk_mtime,
+            let needs_sync = match self.page_store.get_metadata(&rel_path).await {
+                Ok(Some(meta)) => meta.file_mtime != disk_mtime,
                 _ => true,
             };
 

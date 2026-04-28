@@ -54,7 +54,7 @@ pub use clear_session::ClearSessionTool;
 pub use context::ContextTool;
 pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
-pub use evolution::EvolutionTool;
+pub use evolution::{EvolutionConfig, EvolutionTool};
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use format::format_subagent_response;
 pub use history_query::HistoryQueryTool;

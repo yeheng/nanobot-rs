@@ -24,7 +24,6 @@ use crate::kernel;
 use crate::session::config::{AgentConfig, AgentConfigExt};
 use crate::session::prompt;
 use crate::tools::ToolRegistry;
-use gasket_broker::{broker_arc, BrokerPayload, Envelope, Topic};
 use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::StreamEvent;
 
@@ -107,26 +106,6 @@ pub fn spawn_subagent(
             "[Subagent {}] Starting task: {} (model: {:?})",
             subagent_id, task_desc, model
         );
-
-        // Publish SubagentStarted event via broker
-        {
-            let broker = broker_arc();
-            let envelope = Envelope::new(
-                Topic::SystemEvent,
-                BrokerPayload::SubagentStarted {
-                    id: subagent_id.clone(),
-                    task: task_desc.clone(),
-                    model: model.clone(),
-                },
-            );
-            if let Err(e) = broker.try_publish(envelope) {
-                tracing::debug!(
-                    "[Subagent {}] Failed to publish start event: {}",
-                    subagent_id,
-                    e
-                );
-            }
-        }
 
         // Load system prompt
         let system_prompt = match task.system_prompt {
@@ -217,28 +196,6 @@ pub fn spawn_subagent(
                 let token_usage =
                     gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
                 tracker.accumulate(&token_usage, 0.0);
-            }
-        }
-
-        // Publish SubagentCompleted event via broker
-        {
-            let broker = broker_arc();
-            let envelope = Envelope::new(
-                Topic::SystemEvent,
-                BrokerPayload::SubagentCompleted {
-                    id: subagent_id.clone(),
-                    task: task_desc.clone(),
-                    model: model.clone(),
-                    success: true,
-                    tool_count: response.tools_used.len(),
-                },
-            );
-            if let Err(e) = broker.try_publish(envelope) {
-                tracing::debug!(
-                    "[Subagent {}] Failed to publish completed event: {}",
-                    subagent_id,
-                    e
-                );
             }
         }
 

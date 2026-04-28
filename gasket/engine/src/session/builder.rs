@@ -222,11 +222,21 @@ impl SessionBuilder {
             hooks_builder.build_shared()
         };
 
+        // ── 9. ContextBuilder — encapsulates all pipeline dependencies ──
+        let context_builder = crate::session::history::builder::ContextBuilder::new(
+            event_store,
+            session_store,
+            system_prompt,
+            None,
+            hooks,
+            history_config,
+        );
+
         let pending_done = tokio_util::task::TaskTracker::new();
 
         let finalizer = ResponseFinalizer::new(
-            hooks.clone(),
-            event_store.clone(),
+            context_builder.hooks().clone(),
+            context_builder.event_store().clone(),
             compactor.clone(),
             None,
             self.config.max_tokens,
@@ -234,11 +244,8 @@ impl SessionBuilder {
 
         Ok(AgentSession {
             runtime_ctx,
-            event_store,
-            session_store,
             config: self.config,
-            system_prompt,
-            hooks,
+            context_builder,
             compactor,
             pricing: None,
             finalizer,

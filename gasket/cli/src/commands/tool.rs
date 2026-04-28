@@ -76,7 +76,7 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
     };
     // (non-embedding builds skip semantic recall initialization)
 
-    let mut tools = build_tool_registry(ToolRegistryConfig {
+    let tools = build_tool_registry(ToolRegistryConfig {
         subagent_spawner: None,
         extra_tools: vec![],
         page_store,
@@ -86,9 +86,6 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         #[cfg(feature = "embedding")]
         history_search,
     });
-
-    let tools_arc = Arc::new(tools.clone());
-    tools.link_engine_refs(tools_arc, provider_info.provider.clone());
 
     let args_json: serde_json::Value = serde_json::from_str(&args)
         .with_context(|| format!("Failed to parse tool arguments as JSON: {}", args))?;

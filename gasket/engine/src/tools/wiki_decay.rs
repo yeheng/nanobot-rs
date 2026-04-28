@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{lifecycle::FrequencyManager, PageStore};
+use crate::wiki::PageStore;
 
 /// Tool for running wiki frequency decay.
 pub struct WikiDecayTool {
@@ -46,7 +46,9 @@ impl Tool for WikiDecayTool {
     }
 
     async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
-        let report = FrequencyManager::run_decay_batch(self.page_store.db())
+        let report = self
+            .page_store
+            .run_decay_batch()
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Wiki decay failed: {}", e)))?;
 

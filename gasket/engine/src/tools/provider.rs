@@ -12,7 +12,8 @@ use crate::SubagentSpawner;
 use crate::{MaintenanceStore, SessionStore};
 
 use super::{
-    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionTool,
+    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
+    EvolutionTool,
     ExecTool, HistoryQueryTool, ListDirTool, ReadFileTool, SearchSopsTool, SpawnParallelTool,
     SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool, WikiDeleteTool,
     WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
@@ -314,6 +315,7 @@ pub struct SystemToolProvider {
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
     evolution_prompt: Option<String>,
+    event_store: Option<gasket_storage::EventStore>,
 }
 
 impl SystemToolProvider {
@@ -324,6 +326,7 @@ impl SystemToolProvider {
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
         evolution_prompt: Option<String>,
+        event_store: Option<gasket_storage::EventStore>,
     ) -> Self {
         Self {
             session_store,
@@ -332,29 +335,32 @@ impl SystemToolProvider {
             provider,
             model,
             evolution_prompt,
+            event_store,
         }
     }
 }
 
 impl ToolProvider for SystemToolProvider {
     fn register_tools(&self, registry: &mut ToolRegistry) {
-        if let (Some(ref ss), Some(ref ms), Some(ref prov), Some(ref mdl)) = (
+        if let (Some(ref ss), Some(ref ms), Some(ref prov), Some(ref mdl), Some(ref es)) = (
             &self.session_store,
             &self.maintenance_store,
             &self.provider,
             &self.model,
+            &self.event_store,
         ) {
             reg!(
                 registry,
-                EvolutionTool::new(
-                    ss.clone(),
-                    ms.clone(),
-                    prov.clone(),
-                    mdl.clone(),
-                    self.page_store.clone(),
-                    20,
-                    self.evolution_prompt.clone(),
-                ),
+                EvolutionTool::new(EvolutionConfig {
+                    session_store: ss.clone(),
+                    maintenance_store: ms.clone(),
+                    provider: prov.clone(),
+                    model: mdl.clone(),
+                    page_store: self.page_store.clone(),
+                    event_store: es.clone(),
+                    default_threshold: 20,
+                    evolution_prompt: self.evolution_prompt.clone(),
+                }),
                 "Evolution",
                 "system",
                 ["maintenance", "learning"],

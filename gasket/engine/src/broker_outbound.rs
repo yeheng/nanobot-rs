@@ -1,12 +1,12 @@
 //! OutboundDispatcher — replaces the Outbound Actor.
 //!
-//! Subscribes to `Topic::Outbound` via the global broker and dispatches each
+//! Subscribes to `Topic::Outbound` via the broker and dispatches each
 //! message to the appropriate IM provider. Each send is fire-and-forget
 //! (`tokio::spawn`) to avoid Head-of-Line Blocking.
 
 use std::sync::Arc;
 
-use gasket_broker::{BrokerPayload, Topic};
+use gasket_broker::{BrokerPayload, MemoryBroker, Topic};
 use gasket_channels::provider::ImProviders;
 
 /// Dispatches outbound messages from the broker to `ImProviders`.
@@ -15,20 +15,20 @@ use gasket_channels::provider::ImProviders;
 /// The broker's topic-based routing means this is a pure consumer —
 /// no inbound routing logic lives here.
 pub struct OutboundDispatcher {
+    broker: Arc<MemoryBroker>,
     providers: Arc<ImProviders>,
 }
 
 impl OutboundDispatcher {
     /// Create a new dispatcher.
-    pub fn new(providers: Arc<ImProviders>) -> Self {
-        Self { providers }
+    pub fn new(broker: Arc<MemoryBroker>, providers: Arc<ImProviders>) -> Self {
+        Self { broker, providers }
     }
 
     /// Main loop — subscribes to Outbound topic and dispatches.
     pub async fn run(self) {
         tracing::info!("OutboundDispatcher started");
-        let broker = gasket_broker::broker_arc();
-        let mut sub = match broker.subscribe(&Topic::Outbound).await {
+        let mut sub = match self.broker.subscribe(&Topic::Outbound).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("OutboundDispatcher: subscribe failed: {}", e);

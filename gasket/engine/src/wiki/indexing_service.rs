@@ -4,9 +4,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use gasket_broker::{get_broker, BrokerError, Topic};
+use gasket_broker::{BrokerError, Subscriber};
 use gasket_storage::wiki::WikiRelationStore;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use super::{PageIndex, PageStore};
 
@@ -19,8 +19,11 @@ pub struct WikiIndexingService {
 }
 
 impl WikiIndexingService {
-    pub fn new(page_store: PageStore, page_index: Arc<PageIndex>) -> Self {
-        let relation_store = WikiRelationStore::new(page_store.db().pool().clone());
+    pub fn new(
+        page_store: PageStore,
+        page_index: Arc<PageIndex>,
+        relation_store: WikiRelationStore,
+    ) -> Self {
         Self {
             page_store,
             page_index,
@@ -29,18 +32,9 @@ impl WikiIndexingService {
     }
 
     /// Spawn the service as a background Tokio task.
-    /// Uses the global broker singleton to subscribe to WikiChanged events.
-    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+    /// Consumes a broker `Subscriber` for WikiChanged events — no global singleton.
+    pub fn spawn(self, mut sub: Subscriber) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let broker = get_broker();
-            let mut sub = match broker.subscribe(&Topic::WikiChanged).await {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("WikiIndexingService: failed to subscribe: {}", e);
-                    return;
-                }
-            };
-
             info!("WikiIndexingService started");
 
             // Guard to prevent concurrent rebuild tasks from piling up
@@ -104,12 +98,18 @@ impl WikiIndexingService {
             Err(_) => {
                 // Page doesn't exist anymore — delete from index and relations.
                 if let Err(e) = self.page_index.delete(path).await {
-                    warn!("WikiIndexingService: failed to delete {} from index: {}", path, e);
+                    warn!(
+                        "WikiIndexingService: failed to delete {} from index: {}",
+                        path, e
+                    );
                 } else {
                     debug!("WikiIndexingService: deleted {} from index", path);
                 }
                 if let Err(e) = self.relation_store.delete_all_for_page(path).await {
-                    warn!("WikiIndexingService: failed to delete relations for {}: {}", path, e);
+                    warn!(
+                        "WikiIndexingService: failed to delete relations for {}: {}",
+                        path, e
+                    );
                 } else {
                     debug!("WikiIndexingService: deleted relations for {}", path);
                 }
