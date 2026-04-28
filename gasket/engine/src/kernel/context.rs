@@ -86,27 +86,6 @@ impl KernelConfig {
             thinking_enabled: false,
         }
     }
-
-    pub fn with_max_iterations(mut self, v: u32) -> Self {
-        self.max_iterations = v;
-        self
-    }
-    pub fn with_max_retries(mut self, v: u32) -> Self {
-        self.max_retries = v;
-        self
-    }
-    pub fn with_temperature(mut self, v: f32) -> Self {
-        self.temperature = v;
-        self
-    }
-    pub fn with_max_tokens(mut self, v: u32) -> Self {
-        self.max_tokens = v;
-        self
-    }
-    pub fn with_thinking(mut self, v: bool) -> Self {
-        self.thinking_enabled = v;
-        self
-    }
 }
 
 #[cfg(test)]
@@ -114,19 +93,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kernel_config_builder() {
-        let config = KernelConfig::new("test-model".to_string())
-            .with_max_iterations(10)
-            .with_max_retries(5)
-            .with_temperature(0.5)
-            .with_max_tokens(4096)
-            .with_thinking(true);
-
+    fn test_kernel_config_default() {
+        let config = KernelConfig::new("test-model".to_string());
         assert_eq!(config.model, "test-model");
-        assert_eq!(config.max_iterations, 10);
-        assert_eq!(config.max_retries, 5);
-        assert_eq!(config.temperature, 0.5);
-        assert_eq!(config.max_tokens, 4096);
-        assert!(config.thinking_enabled);
+        assert_eq!(config.max_iterations, 20);
+        assert_eq!(config.max_retries, 3);
     }
 }

@@ -172,8 +172,8 @@ async fn extract_core_content(url_str: &str, html: String) -> Result<String, any
     let url_clone = url_str.to_string();
 
     tokio::task::spawn_blocking(move || {
-        let parsed_url = Url::parse(&url_clone)
-            .map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
+        let parsed_url =
+            Url::parse(&url_clone).map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
 
         let mut cursor = Cursor::new(html.as_bytes());
 

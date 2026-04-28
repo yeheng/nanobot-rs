@@ -1,4 +1,8 @@
 //! Kernel executor — core LLM loop.
+//!
+//! Thin wrapper around `SteppableExecutor` providing high-level
+//! `execute_with_options` / `execute_stream_with_options` entry points.
+//! The multi-turn loop logic lives here; single-step logic is in `SteppableExecutor`.
 
 use std::sync::Arc;
 
@@ -43,7 +47,6 @@ pub struct ExecutionResult {
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
     pub token_usage: Option<TokenUsage>,
-    pub cost: Option<f64>,
 }
 
 /// Accumulated execution state — message history and tool tracking only.
@@ -72,7 +75,6 @@ impl ExecutionState {
             reasoning_content,
             tools_used: self.tools_used.clone(),
             token_usage: ledger.total_usage.clone(),
-            cost: None,
         }
     }
 }
@@ -109,7 +111,11 @@ impl TokenLedger {
     }
 }
 
-/// Kernel executor - core LLM loop
+/// Kernel executor — thin convenience wrapper.
+///
+/// Holds a `RuntimeContext` and provides `execute_with_options` /
+/// `execute_stream_with_options`. The actual loop logic is in
+/// `run_loop` at module scope.
 pub struct KernelExecutor {
     ctx: RuntimeContext,
 }
@@ -140,7 +146,7 @@ impl KernelExecutor {
         messages: Vec<ChatMessage>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        self.execute_internal(messages, None, options).await
+        run_loop(&self.ctx, messages, None, options).await
     }
 
     pub async fn execute_stream_with_options(
@@ -149,104 +155,96 @@ impl KernelExecutor {
         event_tx: mpsc::Sender<StreamEvent>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        self.execute_internal(messages, Some(event_tx), options)
-            .await
+        run_loop(&self.ctx, messages, Some(event_tx), options).await
     }
+}
 
-    async fn execute_internal(
-        &self,
-        messages: Vec<ChatMessage>,
-        event_tx: Option<mpsc::Sender<StreamEvent>>,
-        options: &ExecutorOptions<'_>,
-    ) -> Result<ExecutionResult, KernelError> {
-        let mut state = ExecutionState::new(messages);
-        let mut ledger = TokenLedger::new();
+/// Core multi-turn LLM loop.
+///
+/// Iterates up to `max_iterations`, calling `SteppableExecutor::step()` each turn.
+/// Sends `StreamEvent::done()` exactly once when finished.
+async fn run_loop(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: Option<mpsc::Sender<StreamEvent>>,
+    options: &ExecutorOptions<'_>,
+) -> Result<ExecutionResult, KernelError> {
+    let mut state = ExecutionState::new(messages);
+    let mut ledger = TokenLedger::new();
+    let steppable = SteppableExecutor::new(ctx.clone());
 
-        let result = self
-            .run_loop(&mut state, &mut ledger, event_tx.as_ref(), options)
-            .await;
+    for iteration in 1..=ctx.config.max_iterations {
+        debug!("[Kernel] iteration {}", iteration);
 
-        // Ensure Done is sent exactly once
-        if let Some(ref tx) = event_tx {
-            let _ = tx.send(StreamEvent::done()).await;
+        let result = steppable
+            .step(&mut state.messages, &mut ledger, event_tx.as_ref())
+            .await?;
+
+        for tr in &result.tool_results {
+            state.tools_used.push(tr.tool_name.clone());
         }
 
-        result
+        log_token_usage(&ledger, iteration);
+        log_response(&result.response, iteration, options.vault_values);
+
+        if !result.should_continue {
+            let content = result
+                .response
+                .content
+                .clone()
+                .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
+            let reasoning = result.response.reasoning_content.clone();
+
+            if let Some(ref tx) = event_tx {
+                let _ = tx.send(StreamEvent::done()).await;
+            }
+
+            return Ok(state.to_result(content, reasoning, &ledger));
+        }
     }
 
-    async fn run_loop(
-        &self,
-        state: &mut ExecutionState,
-        ledger: &mut TokenLedger,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
-        options: &ExecutorOptions<'_>,
-    ) -> Result<ExecutionResult, KernelError> {
-        let steppable = SteppableExecutor::new(self.ctx.clone());
+    info!(
+        "[Kernel] Max iterations ({}) reached",
+        ctx.config.max_iterations
+    );
 
-        for iteration in 1..=self.ctx.config.max_iterations {
-            debug!("[Kernel] iteration {}", iteration);
+    if let Some(ref tx) = event_tx {
+        let _ = tx.send(StreamEvent::done()).await;
+    }
 
-            let result = steppable
-                .step(&mut state.messages, ledger, event_tx)
-                .await?;
+    Err(KernelError::MaxIterations(ctx.config.max_iterations))
+}
 
-            // Track tools used from this step
-            for tr in &result.tool_results {
-                state.tools_used.push(tr.tool_name.clone());
-            }
-
-            Self::log_token_usage(ledger, iteration);
-            Self::log_response(&result.response, iteration, options.vault_values);
-
-            if !result.should_continue {
-                let content = result
-                    .response
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
-                let reasoning = result.response.reasoning_content.clone();
-                return Ok(state.to_result(content, reasoning, ledger));
-            }
-        }
-
+fn log_token_usage(ledger: &TokenLedger, iteration: u32) {
+    if let Some(ref usage) = ledger.total_usage {
         info!(
-            "[Kernel] Max iterations ({}) reached",
-            self.ctx.config.max_iterations
-        );
-        Err(KernelError::MaxIterations(self.ctx.config.max_iterations))
-    }
-
-    fn log_token_usage(ledger: &TokenLedger, iteration: u32) {
-        if let Some(ref usage) = ledger.total_usage {
-            info!(
-                "[Token] iter={} input={} output={} total={}",
-                iteration, usage.input_tokens, usage.output_tokens, usage.total_tokens
-            );
-        }
-    }
-
-    fn log_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
-        if let Some(ref reasoning) = response.reasoning_content {
-            if !reasoning.is_empty() {
-                let safe = redact_secrets(reasoning, vault_values);
-                debug!("[Kernel] Reasoning (iter {}): {}", iteration, safe);
-            }
-        }
-
-        if let Some(ref content) = response.content {
-            if !content.is_empty() {
-                let safe = redact_secrets(content, vault_values);
-                info!("[Kernel] Response (iter {}): {}", iteration, safe);
-            }
-        }
-
-        info!(
-            "[Kernel] iter {} has_tool_calls={}, tool_count={}",
-            iteration,
-            response.has_tool_calls(),
-            response.tool_calls.len()
+            "[Token] iter={} input={} output={} total={}",
+            iteration, usage.input_tokens, usage.output_tokens, usage.total_tokens
         );
     }
+}
+
+fn log_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
+    if let Some(ref reasoning) = response.reasoning_content {
+        if !reasoning.is_empty() {
+            let safe = redact_secrets(reasoning, vault_values);
+            debug!("[Kernel] Reasoning (iter {}): {}", iteration, safe);
+        }
+    }
+
+    if let Some(ref content) = response.content {
+        if !content.is_empty() {
+            let safe = redact_secrets(content, vault_values);
+            info!("[Kernel] Response (iter {}): {}", iteration, safe);
+        }
+    }
+
+    info!(
+        "[Kernel] iter {} has_tool_calls={}, tool_count={}",
+        iteration,
+        response.has_tool_calls(),
+        response.tool_calls.len()
+    );
 }
 
 #[cfg(test)]

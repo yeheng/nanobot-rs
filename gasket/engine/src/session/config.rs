@@ -168,27 +168,8 @@ impl Default for WikiLintConfig {
     }
 }
 
-/// Prompt templates and overrides for internal AI behaviors.
-#[derive(Clone, Debug, Default)]
-pub struct PromptsConfig {
-    /// Identity prefix injected before bootstrap files in the system prompt.
-    /// Falls back to a generic assistant header if not set.
-    pub identity_prefix: Option<String>,
-    /// System prompt used by ContextCompactor for summarization.
-    /// Falls back to a built-in default if not set.
-    pub summarization: Option<String>,
-    /// User prompt template used by ContextCompactor for checkpoint generation.
-    /// Falls back to a built-in default if not set.
-    pub checkpoint: Option<String>,
-    /// User prompt template used by EvolutionTool for memory extraction.
-    /// Must contain `{{conversation}}` which will be replaced with the transcript.
-    /// Falls back to a built-in default if not set.
-    pub evolution: Option<String>,
-    /// User prompt template used by CreatePlanTool for plan generation.
-    /// Must contain `{{goal}}` and `{{context}}` which will be replaced at runtime.
-    /// Falls back to a built-in default if not set.
-    pub planning: Option<String>,
-}
+/// Prompt templates — re-export from config layer (single source of truth).
+pub use crate::config::app_config::PromptsConfig;
 
 /// Agent loop configuration
 #[derive(Clone)]
@@ -249,11 +230,14 @@ pub trait AgentConfigExt {
 
 impl AgentConfigExt for AgentConfig {
     fn to_kernel_config(&self) -> KernelConfig {
-        KernelConfig::new(self.model.clone())
-            .with_max_iterations(self.max_iterations)
-            .with_max_retries(self.max_retries)
-            .with_temperature(self.temperature)
-            .with_max_tokens(self.max_tokens)
-            .with_thinking(self.thinking_enabled)
+        KernelConfig {
+            model: self.model.clone(),
+            max_iterations: self.max_iterations,
+            max_retries: self.max_retries,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            max_tool_result_chars: self.max_tool_result_chars,
+            thinking_enabled: self.thinking_enabled,
+        }
     }
 }

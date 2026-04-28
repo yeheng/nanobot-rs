@@ -24,6 +24,22 @@ pub trait ToolProvider: Send + Sync {
     fn register_tools(&self, registry: &mut ToolRegistry);
 }
 
+/// Register a tool with full metadata — used by all ToolProvider impls.
+macro_rules! reg {
+    ($registry:expr, $tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
+        $registry.register_with_metadata(
+            Box::new($tool),
+            ToolMetadata {
+                display_name: $display.to_string(),
+                category: $cat.to_string(),
+                tags: vec![$($tag.to_string()),*],
+                requires_approval: $approval,
+                is_mutating: $mutating,
+            },
+        );
+    };
+}
+
 // ---------------------------------------------------------------------------
 // CoreToolProvider — filesystem, web, exec, spawn
 // ---------------------------------------------------------------------------
@@ -64,23 +80,8 @@ impl CoreToolProvider {
 
 impl ToolProvider for CoreToolProvider {
     fn register_tools(&self, registry: &mut ToolRegistry) {
-        macro_rules! reg {
-            ($tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
-                registry.register_with_metadata(
-                    Box::new($tool),
-                    ToolMetadata {
-                        display_name: $display.to_string(),
-                        category: $cat.to_string(),
-                        tags: vec![$($tag.to_string()),*],
-                        requires_approval: $approval,
-                        is_mutating: $mutating,
-                    },
-                );
-            };
-        }
-
         // Safe read-only tools
-        reg!(
+        reg!(registry,
             ReadFileTool::new(self.allowed_dir.clone()),
             "Read File",
             "filesystem",
@@ -88,7 +89,7 @@ impl ToolProvider for CoreToolProvider {
             false,
             false
         );
-        reg!(
+        reg!(registry,
             ListDirTool::new(self.allowed_dir.clone()),
             "List Directory",
             "filesystem",
@@ -96,7 +97,7 @@ impl ToolProvider for CoreToolProvider {
             false,
             false
         );
-        reg!(
+        reg!(registry,
             WebFetchTool::with_config(Some(self.web_config.clone())).unwrap_or_else(|e| {
                 tracing::warn!(
                     "Failed to create WebFetchTool with proxy config: {}. Using default.",
@@ -110,7 +111,7 @@ impl ToolProvider for CoreToolProvider {
             false,
             false
         );
-        reg!(
+        reg!(registry,
             WebSearchTool::new(Some(self.web_config.clone())),
             "Web Search",
             "web",
@@ -120,7 +121,7 @@ impl ToolProvider for CoreToolProvider {
         );
 
         // Dangerous mutating tools
-        reg!(
+        reg!(registry,
             WriteFileTool::new(self.allowed_dir.clone()),
             "Write File",
             "filesystem",
@@ -128,7 +129,7 @@ impl ToolProvider for CoreToolProvider {
             true,
             true
         );
-        reg!(
+        reg!(registry,
             EditFileTool::new(self.allowed_dir.clone()),
             "Edit File",
             "filesystem",
@@ -136,7 +137,7 @@ impl ToolProvider for CoreToolProvider {
             true,
             true
         );
-        reg!(
+        reg!(registry,
             ExecTool::from_config(
                 self.exec_workspace.clone(),
                 &self.exec_config,
@@ -150,7 +151,7 @@ impl ToolProvider for CoreToolProvider {
         );
 
         // Spawn tools
-        reg!(
+        reg!(registry,
             SpawnTool::new(),
             "Spawn Subagent",
             "system",
@@ -158,7 +159,7 @@ impl ToolProvider for CoreToolProvider {
             false,
             false
         );
-        reg!(
+        reg!(registry,
             SpawnParallelTool::new(),
             "Spawn Parallel",
             "system",
@@ -202,27 +203,12 @@ impl WikiToolProvider {
 
 impl ToolProvider for WikiToolProvider {
     fn register_tools(&self, registry: &mut ToolRegistry) {
-        macro_rules! reg {
-            ($tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
-                registry.register_with_metadata(
-                    Box::new($tool),
-                    ToolMetadata {
-                        display_name: $display.to_string(),
-                        category: $cat.to_string(),
-                        tags: vec![$($tag.to_string()),*],
-                        requires_approval: $approval,
-                        is_mutating: $mutating,
-                    },
-                );
-            };
-        }
-
         let Some(ref store) = self.page_store else {
             return;
         };
 
         if let Some(ref index) = self.page_index {
-            reg!(
+            reg!(registry,
                 WikiSearchTool::new(store.clone(), index.clone()),
                 "Wiki Search",
                 "wiki",
@@ -230,7 +216,7 @@ impl ToolProvider for WikiToolProvider {
                 false,
                 false
             );
-            reg!(
+            reg!(registry,
                 WikiWriteTool::new(store.clone()),
                 "Wiki Write",
                 "wiki",
@@ -238,7 +224,7 @@ impl ToolProvider for WikiToolProvider {
                 false,
                 true
             );
-            reg!(
+            reg!(registry,
                 WikiRefreshTool::new(store.clone(), index.clone()),
                 "Wiki Refresh",
                 "wiki",
@@ -246,7 +232,7 @@ impl ToolProvider for WikiToolProvider {
                 false,
                 false
             );
-            reg!(
+            reg!(registry,
                 SearchSopsTool::new(index.clone()),
                 "Search SOPs",
                 "wiki",
@@ -256,7 +242,7 @@ impl ToolProvider for WikiToolProvider {
             );
         }
 
-        reg!(
+        reg!(registry,
             WikiReadTool::new(store.clone()),
             "Wiki Read",
             "wiki",
@@ -264,7 +250,7 @@ impl ToolProvider for WikiToolProvider {
             false,
             false
         );
-        reg!(
+        reg!(registry,
             WikiDecayTool::new(store.clone()),
             "Wiki Decay",
             "wiki",
@@ -274,7 +260,7 @@ impl ToolProvider for WikiToolProvider {
         );
 
         if let (Some(ref prov), Some(ref mdl)) = (&self.provider, &self.model) {
-            reg!(
+            reg!(registry,
                 CreatePlanTool::new(
                     prov.clone(),
                     mdl.clone(),
@@ -327,28 +313,13 @@ impl SystemToolProvider {
 
 impl ToolProvider for SystemToolProvider {
     fn register_tools(&self, registry: &mut ToolRegistry) {
-        macro_rules! reg {
-            ($tool:expr, $display:literal, $cat:literal, [$($tag:literal),*], $approval:literal, $mutating:literal) => {
-                registry.register_with_metadata(
-                    Box::new($tool),
-                    ToolMetadata {
-                        display_name: $display.to_string(),
-                        category: $cat.to_string(),
-                        tags: vec![$($tag.to_string()),*],
-                        requires_approval: $approval,
-                        is_mutating: $mutating,
-                    },
-                );
-            };
-        }
-
         if let (Some(ref ss), Some(ref ms), Some(ref prov), Some(ref mdl)) = (
             &self.session_store,
             &self.maintenance_store,
             &self.provider,
             &self.model,
         ) {
-            reg!(
+            reg!(registry,
                 EvolutionTool::new(
                     ss.clone(),
                     ms.clone(),
@@ -367,7 +338,7 @@ impl ToolProvider for SystemToolProvider {
         }
 
         if let Some(ref db) = self.session_store {
-            reg!(
+            reg!(registry,
                 HistoryQueryTool::new(db.pool().clone()),
                 "Query History",
                 "wiki",
@@ -375,7 +346,7 @@ impl ToolProvider for SystemToolProvider {
                 false,
                 false
             );
-            reg!(
+            reg!(registry,
                 ClearSessionTool::new(db.clone()),
                 "Clear Session History",
                 "system",

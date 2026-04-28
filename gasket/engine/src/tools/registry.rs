@@ -82,13 +82,6 @@ impl ToolRegistry {
         );
     }
 
-    /// Set metadata for an already-registered tool
-    pub fn set_metadata(&mut self, name: &str, meta: ToolMetadata) {
-        if let Some(entry) = self.items.get_mut(name) {
-            entry.metadata = Some(meta);
-        }
-    }
-
     /// Inject engine references into all registered plugins.
     pub fn link_engine_refs(&mut self, registry: Arc<Self>, provider: Arc<dyn LlmProvider>) {
         let resources = crate::plugin::EngineResources {
@@ -105,11 +98,6 @@ impl ToolRegistry {
                 entry.tool = Arc::new(updated);
             }
         }
-    }
-
-    /// Get metadata for a tool
-    pub fn get_metadata(&self, name: &str) -> Option<&ToolMetadata> {
-        self.items.get(name).and_then(|e| e.metadata.as_ref())
     }
 
     /// Get a tool by name
@@ -148,32 +136,6 @@ impl ToolRegistry {
         self.items.keys().map(|s| s.as_str()).collect()
     }
 
-    /// List tools by category (from metadata)
-    pub fn list_by_category(&self, category: &str) -> Vec<&str> {
-        self.items
-            .iter()
-            .filter(|(_, e)| e.metadata.as_ref().is_some_and(|m| m.category == category))
-            .map(|(name, _)| name.as_str())
-            .collect()
-    }
-
-    /// List tools that require approval (from metadata)
-    pub fn list_requiring_approval(&self) -> Vec<&str> {
-        self.items
-            .iter()
-            .filter(|(_, e)| e.metadata.as_ref().is_some_and(|m| m.requires_approval))
-            .map(|(name, _)| name.as_str())
-            .collect()
-    }
-
-    /// List tools that are mutating (from metadata)
-    pub fn list_mutating(&self) -> Vec<&str> {
-        self.items
-            .iter()
-            .filter(|(_, e)| e.metadata.as_ref().is_some_and(|m| m.is_mutating))
-            .map(|(name, _)| name.as_str())
-            .collect()
-    }
 }
 
 impl Default for ToolRegistry {

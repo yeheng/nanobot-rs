@@ -45,6 +45,22 @@ pub struct AgentResponse {
     pub cost: f64,
 }
 
+impl AgentResponse {
+    /// Create from a kernel `ExecutionResult` + resolved model name.
+    ///
+    /// Cost is initialized to 0 — the finalizer calculates actual cost from pricing.
+    pub(crate) fn from_execution(result: ExecutionResult, model: Option<String>) -> Self {
+        Self {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            model,
+            token_usage: result.token_usage,
+            cost: 0.0,
+        }
+    }
+}
+
 /// Owned snapshot for post-response finalization.
 pub(crate) struct FinalizeContext {
     session_key: SessionKey,
@@ -548,7 +564,6 @@ impl AgentSession {
                 reasoning_content: None,
                 tools_used: vec![],
                 token_usage: None,
-                cost: None,
             }),
             Err(e) => Err(e.into()),
         }

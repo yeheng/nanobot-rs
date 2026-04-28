@@ -93,38 +93,6 @@ pub enum ConfigValidationError {
     InvalidChannelConfig(String, String),
 }
 
-/// Errors from the multi-agent pipeline subsystem
-#[derive(Debug, Error)]
-pub enum PipelineError {
-    /// Pipeline is not enabled in config
-    #[error("Pipeline is not enabled")]
-    NotEnabled,
-
-    /// Task not found
-    #[error("Pipeline task not found: {0}")]
-    TaskNotFound(String),
-
-    /// Illegal state transition
-    #[error("Invalid state transition from {from} to {to}")]
-    InvalidTransition { from: String, to: String },
-
-    /// Caller not allowed to delegate to target
-    #[error("Permission denied: role '{caller}' cannot delegate to '{target}'")]
-    PermissionDenied { caller: String, target: String },
-
-    /// Too many review round-trips
-    #[error("Review limit exceeded for task {0} (max {1})")]
-    ReviewLimitExceeded(String, u32),
-
-    /// Task stalled (no heartbeat within timeout)
-    #[error("Stall detected for task {0}")]
-    StallDetected(String),
-
-    /// Persistence layer error
-    #[error("Pipeline store error: {0}")]
-    StoreError(String),
-}
-
 // ============================================================================
 // From<anyhow::Error> — preserve full error chain via Internal variant
 // ============================================================================

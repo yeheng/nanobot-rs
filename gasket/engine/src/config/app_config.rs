@@ -133,8 +133,6 @@ pub struct Config {
     pub channels: ChannelsConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
-    #[serde(default)]
-    pub state_machine: Option<serde_json::Value>,
     #[cfg(feature = "embedding")]
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,

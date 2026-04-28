@@ -82,7 +82,7 @@ pub use config::{
 pub use cron::{CronJob, CronService};
 
 // ── Error ──────────────────────────────────────────────────
-pub use error::{AgentError, ChannelError, ConfigValidationError, PipelineError, ProviderError};
+pub use error::{AgentError, ChannelError, ConfigValidationError, ProviderError};
 
 // ── Hooks ──────────────────────────────────────────────────
 pub use hooks::{
