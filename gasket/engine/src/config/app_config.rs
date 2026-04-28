@@ -117,9 +117,12 @@ pub struct EmbeddingConfig {
     #[serde(default)]
     pub recall: gasket_embedding::RecallConfig,
     /// Maximum number of recent embeddings to keep in the in-memory hot index.
-    /// 0 = disable memory index entirely (pure SQLite streaming).
+    /// 0 = disable memory index entirely (pure cold store).
     #[serde(default = "default_hot_limit")]
     pub hot_limit: usize,
+    /// Vector store backend selection. Defaults to SQLite brute-force.
+    #[serde(default)]
+    pub vector_store: gasket_embedding::VectorStoreConfig,
 }
 
 /// Root configuration structure — maps directly to `~/.gasket/config.yaml`.

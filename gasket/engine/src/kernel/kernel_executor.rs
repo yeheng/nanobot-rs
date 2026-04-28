@@ -8,9 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::kernel::{
-    context::RuntimeContext,
-    error::KernelError,
-    steppable_executor::SteppableExecutor,
+    context::RuntimeContext, error::KernelError, steppable_executor::SteppableExecutor,
     stream::StreamEvent,
 };
 use crate::token_tracker::TokenUsage;

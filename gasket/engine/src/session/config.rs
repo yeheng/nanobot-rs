@@ -60,6 +60,8 @@ pub const DEFAULT_MEMORY_WINDOW: usize = 50;
 pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 16000;
 /// Default maximum retries for transient provider errors
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
+/// Default tool execution timeout in seconds (2 minutes)
+pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 120;
 /// Default subagent execution timeout in seconds (10 minutes)
 pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 /// Default session idle timeout in seconds (1 hour)
@@ -187,6 +189,8 @@ pub struct AgentConfig {
     pub thinking_enabled: bool,
     /// Enable streaming mode for progressive output
     pub streaming: bool,
+    /// Tool execution timeout in seconds
+    pub tool_timeout_secs: u64,
     /// Subagent execution timeout in seconds
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
@@ -215,6 +219,7 @@ impl Default for AgentConfig {
             max_retries: DEFAULT_MAX_RETRIES,
             thinking_enabled: false,
             streaming: true,
+            tool_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             prompts: PromptsConfig::default(),
@@ -241,6 +246,7 @@ impl AgentConfigExt for AgentConfig {
             max_tokens: self.max_tokens,
             max_tool_result_chars: self.max_tool_result_chars,
             thinking_enabled: self.thinking_enabled,
+            tool_timeout_secs: self.tool_timeout_secs,
         }
     }
 }

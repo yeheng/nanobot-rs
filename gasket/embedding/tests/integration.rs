@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use gasket_embedding::{
     EmbeddingIndexer, EmbeddingProvider, EmbeddingStore, HnswIndex, RecallConfig, RecallSearcher,
+    VectorRecord, VectorStore,
 };
 use gasket_storage::{EventStore, EventStoreTrait};
 use gasket_types::{EventMetadata, EventType, SessionEvent};
@@ -54,14 +55,14 @@ impl EmbeddingProvider for DeterministicMockProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn make_embedding_store() -> EmbeddingStore {
+async fn make_embedding_store(dim: usize) -> Arc<dyn VectorStore> {
     let pool = SqlitePoolOptions::new()
         .connect(":memory:")
         .await
         .expect("in-memory pool");
-    let store = EmbeddingStore::new(pool);
+    let store = EmbeddingStore::with_dim(pool, dim);
     store.run_migration().await.expect("embedding migration");
-    store
+    Arc::new(store)
 }
 
 /// Create the sessions_v2 + session_events schema needed by EventStore.
@@ -155,7 +156,7 @@ fn make_event(event_type: EventType, content: &str) -> SessionEvent {
 #[tokio::test]
 async fn test_full_recall_flow() {
     let dim = 4;
-    let store = make_embedding_store().await;
+    let store = make_embedding_store(dim).await;
     let provider = Arc::new(DeterministicMockProvider::new(dim));
     let index = Arc::new(HnswIndex::new(dim));
 
@@ -168,32 +169,29 @@ async fn test_full_recall_flow() {
         "Memory safety is a core feature of the Rust language",
     ];
 
+    let mut records = Vec::new();
     for (i, content) in contents.iter().enumerate() {
         let event_id = format!("evt-{i}");
         let embedding = provider.embed(content).await.unwrap();
-        store
-            .save(
-                &event_id,
-                "test:session",
-                "",
-                "",
-                &embedding,
-                if i % 2 == 0 {
-                    "user_message"
-                } else {
-                    "assistant_message"
-                },
-                &format!("hash-{i}"),
-            )
-            .await
-            .unwrap();
+        records.push(VectorRecord {
+            id: event_id.clone(),
+            vector: embedding.clone(),
+            session_key: "test:session".to_string(),
+            event_type: if i % 2 == 0 {
+                "user_message".to_string()
+            } else {
+                "assistant_message".to_string()
+            },
+            content_hash: format!("hash-{i}"),
+        });
         index.insert(event_id, embedding);
     }
+    store.upsert(records).await.unwrap();
 
     assert_eq!(index.len(), 5);
 
     // Rebuild from store to verify cold-start path works.
-    let rebuilt = EmbeddingIndexer::rebuild_index(&store, &index, None)
+    let rebuilt = EmbeddingIndexer::rebuild_index(store.as_ref(), &index, None)
         .await
         .unwrap();
     assert_eq!(rebuilt, 5);
@@ -270,7 +268,7 @@ async fn test_full_recall_flow() {
 #[tokio::test]
 async fn test_cold_start_rebuild() {
     let dim = 4;
-    let store = make_embedding_store().await;
+    let store = make_embedding_store(dim).await;
     let provider = DeterministicMockProvider::new(dim);
 
     // Save 3 embeddings directly into the store.
@@ -280,19 +278,24 @@ async fn test_cold_start_rebuild() {
         ("evt-c", "embeddings are cool"),
     ];
 
+    let mut records = Vec::new();
     for (id, text) in &items {
         let embedding = provider.embed(text).await.unwrap();
-        store
-            .save(id, "sess-rebuild", "", "", &embedding, "user_message", "h")
-            .await
-            .unwrap();
+        records.push(VectorRecord {
+            id: id.to_string(),
+            vector: embedding,
+            session_key: "sess-rebuild".to_string(),
+            event_type: "user_message".to_string(),
+            content_hash: "h".to_string(),
+        });
     }
+    store.upsert(records).await.unwrap();
 
     // Create an empty index and rebuild from store.
     let index = HnswIndex::new(dim);
     assert_eq!(index.len(), 0, "index should start empty");
 
-    let count = EmbeddingIndexer::rebuild_index(&store, &index, None)
+    let count = EmbeddingIndexer::rebuild_index(store.as_ref(), &index, None)
         .await
         .unwrap();
 
@@ -334,8 +337,11 @@ async fn test_indexer_broadcast_processing() {
 
     // Create both stores sharing the same pool.
     let event_store = EventStore::new(pool.clone());
-    let embedding_store = EmbeddingStore::new(pool);
-    embedding_store.run_migration().await.unwrap();
+    let embedding_store: Arc<dyn VectorStore> = {
+        let store = EmbeddingStore::with_dim(pool, 4);
+        store.run_migration().await.unwrap();
+        Arc::new(store)
+    };
 
     let provider = Arc::new(DeterministicMockProvider::new(4));
     let index = Arc::new(HnswIndex::new(4));
@@ -400,8 +406,11 @@ async fn test_indexer_dedup() {
     let pool = setup_event_db().await;
 
     let event_store = EventStore::new(pool.clone());
-    let embedding_store = EmbeddingStore::new(pool);
-    embedding_store.run_migration().await.unwrap();
+    let embedding_store: Arc<dyn VectorStore> = {
+        let store = EmbeddingStore::with_dim(pool, 4);
+        store.run_migration().await.unwrap();
+        Arc::new(store)
+    };
 
     let provider = Arc::new(DeterministicMockProvider::new(4));
     let index = Arc::new(HnswIndex::new(4));
@@ -412,15 +421,13 @@ async fn test_indexer_dedup() {
 
     let embedding = provider.embed(&event.content).await.unwrap();
     embedding_store
-        .save(
-            &event_id_str,
-            &event.session_key,
-            "",
-            "",
-            &embedding,
-            "user_message",
-            "pre-existing-hash",
-        )
+        .upsert(vec![VectorRecord {
+            id: event_id_str.clone(),
+            vector: embedding,
+            session_key: event.session_key.clone(),
+            event_type: "user_message".to_string(),
+            content_hash: "pre-existing-hash".to_string(),
+        }])
         .await
         .unwrap();
 

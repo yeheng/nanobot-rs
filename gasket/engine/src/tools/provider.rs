@@ -7,16 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::Config;
-use gasket_wiki::{PageIndex, PageStore};
 use crate::SubagentSpawner;
 use crate::{MaintenanceStore, SessionStore};
+use gasket_wiki::{PageIndex, PageStore};
 
 use super::{
     registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
-    EvolutionTool,
-    ExecTool, HistoryQueryTool, ListDirTool, ReadFileTool, SearchSopsTool, SpawnParallelTool,
-    SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool, WikiDeleteTool,
-    WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
+    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, ReadFileTool, SearchSopsTool,
+    SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool,
+    WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.

@@ -72,6 +72,7 @@ pub struct KernelConfig {
     pub max_tokens: u32,
     pub max_tool_result_chars: usize,
     pub thinking_enabled: bool,
+    pub tool_timeout_secs: u64,
 }
 
 impl KernelConfig {
@@ -84,6 +85,7 @@ impl KernelConfig {
             max_tokens: 65536,
             max_tool_result_chars: 16000,
             thinking_enabled: false,
+            tool_timeout_secs: 120,
         }
     }
 }

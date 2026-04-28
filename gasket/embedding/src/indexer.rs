@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::index::HnswIndex;
 use crate::provider::EmbeddingProvider;
-use crate::store::EmbeddingStore;
+use crate::vector_store::{VectorRecord, VectorStore};
 use gasket_types::{EventType, SessionEvent};
 
 const _COLD_START_BATCH_SIZE: usize = 1000;
@@ -25,7 +25,7 @@ impl EmbeddingIndexer {
     /// Spawn a background task that listens on the broadcast channel for events.
     pub fn start(
         provider: Arc<dyn EmbeddingProvider>,
-        store: EmbeddingStore,
+        store: Arc<dyn VectorStore>,
         index: Arc<HnswIndex>,
         mut rx: broadcast::Receiver<SessionEvent>,
     ) -> Result<Self> {
@@ -44,7 +44,7 @@ impl EmbeddingIndexer {
                             Ok(event) => {
                                 if let Err(e) = Self::process_event(
                                     provider.as_ref(),
-                                    &store,
+                                    store.as_ref(),
                                     &index,
                                     event,
                                 )
@@ -89,7 +89,7 @@ impl EmbeddingIndexer {
     /// When `limit` is `Some(n)`, only the most recent `n` embeddings are loaded
     /// (keeps memory bounded). `None` means load everything.
     pub async fn rebuild_index(
-        store: &EmbeddingStore,
+        store: &dyn VectorStore,
         index: &HnswIndex,
         limit: Option<usize>,
     ) -> Result<usize> {
@@ -110,7 +110,7 @@ impl EmbeddingIndexer {
     /// Process a single event: filter, dedup, embed, persist.
     pub async fn process_event(
         provider: &dyn EmbeddingProvider,
-        store: &EmbeddingStore,
+        store: &dyn VectorStore,
         index: &HnswIndex,
         event: SessionEvent,
     ) -> Result<()> {
@@ -144,15 +144,13 @@ impl EmbeddingIndexer {
         };
 
         store
-            .save(
-                &event.id.to_string(),
-                &event.session_key,
-                "",
-                "",
-                &embedding,
-                event_type_str,
-                &content_hash,
-            )
+            .upsert(vec![VectorRecord {
+                id: event.id.to_string(),
+                vector: embedding.clone(),
+                session_key: event.session_key.clone(),
+                event_type: event_type_str.to_string(),
+                content_hash,
+            }])
             .await?;
 
         // Insert into in-memory index.
@@ -166,18 +164,20 @@ impl EmbeddingIndexer {
 mod tests {
     use super::*;
     use crate::provider::MockProvider;
+    use crate::store::EmbeddingStore;
+    use crate::vector_store::VectorStore;
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
-    async fn test_store() -> EmbeddingStore {
+    async fn test_store() -> Arc<dyn VectorStore> {
         let pool = SqlitePoolOptions::new()
             .connect(":memory:")
             .await
             .expect("in-memory pool");
-        let store = EmbeddingStore::new(pool);
+        let store = EmbeddingStore::with_dim(pool, 3);
         store.run_migration().await.expect("migration");
-        store
+        Arc::new(store)
     }
 
     fn make_event(event_type: EventType, content: &str) -> SessionEvent {
@@ -199,44 +199,34 @@ mod tests {
 
         // Save some embeddings directly.
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &[1.0, 0.0, 0.0],
-                "user_message",
-                "h1",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                "evt-2",
-                "sess-a",
-                "",
-                "",
-                &[0.0, 1.0, 0.0],
-                "assistant_message",
-                "h2",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                "evt-3",
-                "sess-a",
-                "",
-                "",
-                &[0.0, 0.0, 1.0],
-                "user_message",
-                "h3",
-            )
+            .upsert(vec![
+                VectorRecord {
+                    id: "evt-1".to_string(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "user_message".to_string(),
+                    content_hash: "h1".to_string(),
+                },
+                VectorRecord {
+                    id: "evt-2".to_string(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "assistant_message".to_string(),
+                    content_hash: "h2".to_string(),
+                },
+                VectorRecord {
+                    id: "evt-3".to_string(),
+                    vector: vec![0.0, 0.0, 1.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "user_message".to_string(),
+                    content_hash: "h3".to_string(),
+                },
+            ])
             .await
             .unwrap();
 
         // Rebuild into an empty index.
-        let count = EmbeddingIndexer::rebuild_index(&store, &index, None)
+        let count = EmbeddingIndexer::rebuild_index(store.as_ref(), &index, None)
             .await
             .unwrap();
         assert_eq!(count, 3);
@@ -257,12 +247,11 @@ mod tests {
 
         let event = make_event(EventType::UserMessage, "Hello, this is a test message");
 
-        EmbeddingIndexer::process_event(&provider, &store, &index, event)
+        EmbeddingIndexer::process_event(&provider, store.as_ref(), &index, event)
             .await
             .unwrap();
 
         assert_eq!(index.len(), 1);
-        assert!(store.exists("placeholder").await.is_ok());
     }
 
     #[tokio::test]
@@ -279,7 +268,7 @@ mod tests {
             "tool call content here",
         );
 
-        EmbeddingIndexer::process_event(&provider, &store, &index, event)
+        EmbeddingIndexer::process_event(&provider, store.as_ref(), &index, event)
             .await
             .unwrap();
 
@@ -294,7 +283,7 @@ mod tests {
 
         let event = make_event(EventType::UserMessage, "Hi");
 
-        EmbeddingIndexer::process_event(&provider, &store, &index, event)
+        EmbeddingIndexer::process_event(&provider, store.as_ref(), &index, event)
             .await
             .unwrap();
 
@@ -310,7 +299,7 @@ mod tests {
         let event = make_event(EventType::UserMessage, "Hello, this is a test message");
         let event_id = event.id.to_string();
 
-        EmbeddingIndexer::process_event(&provider, &store, &index, event)
+        EmbeddingIndexer::process_event(&provider, store.as_ref(), &index, event)
             .await
             .unwrap();
         assert_eq!(index.len(), 1);
@@ -321,7 +310,7 @@ mod tests {
             ..make_event(EventType::UserMessage, "Different content but same ID")
         };
 
-        EmbeddingIndexer::process_event(&provider, &store, &index, event2)
+        EmbeddingIndexer::process_event(&provider, store.as_ref(), &index, event2)
             .await
             .unwrap();
 

@@ -43,8 +43,8 @@ pub use kernel::{
 };
 
 // ── Subagents ──────────────────────────────────────────────
-pub use subagents::{run_subagent, ModelResolver, SimpleSpawner, SubagentTracker, TrackerError};
 pub use gasket_types::SubagentSpawner;
+pub use subagents::{run_subagent, ModelResolver, SimpleSpawner, SubagentTracker, TrackerError};
 
 // ── Storage (top-level re-exports) ─────────────────────────
 pub use gasket_storage::{

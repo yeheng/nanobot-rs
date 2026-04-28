@@ -15,11 +15,16 @@ pub struct StoredEmbedding {
 /// Store for persisting embeddings in SQLite.
 pub struct EmbeddingStore {
     pool: SqlitePool,
+    dim: usize,
 }
 
 impl EmbeddingStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self { pool, dim: 0 }
+    }
+
+    pub fn with_dim(pool: SqlitePool, dim: usize) -> Self {
+        Self { pool, dim }
     }
 
     /// Creates the event_embeddings table and indexes if they do not exist.
@@ -319,6 +324,94 @@ fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
             f32::from_le_bytes(arr)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// VectorStore trait implementation
+// ---------------------------------------------------------------------------
+#[async_trait::async_trait]
+impl crate::vector_store::VectorStore for EmbeddingStore {
+    async fn upsert(&self, records: Vec<crate::vector_store::VectorRecord>) -> anyhow::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let items: Vec<EmbeddingInput<'_>> = records
+            .iter()
+            .map(|r| EmbeddingInput {
+                event_id: &r.id,
+                session_key: &r.session_key,
+                channel: "",
+                chat_id: "",
+                embedding: &r.vector,
+                event_type: &r.event_type,
+                content_hash: &r.content_hash,
+            })
+            .collect();
+        self.save_batch(&items).await
+    }
+
+    async fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: f32,
+        exclude: &std::collections::HashSet<String>,
+    ) -> anyhow::Result<Vec<crate::vector_store::SearchResult>> {
+        let raw = self
+            .search_similar(query, top_k, min_score, exclude)
+            .await?;
+        Ok(raw
+            .into_iter()
+            .map(|(id, score)| crate::vector_store::SearchResult { id, score })
+            .collect())
+    }
+
+    async fn delete(&self, ids: &[String]) -> anyhow::Result<u64> {
+        self.delete_by_event_ids(ids).await
+    }
+
+    async fn exists(&self, id: &str) -> anyhow::Result<bool> {
+        self.exists(id).await
+    }
+
+    async fn count(&self) -> anyhow::Result<i64> {
+        self.count().await
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    async fn load_all(&self) -> anyhow::Result<Vec<crate::vector_store::StoredEmbedding>> {
+        let raw = self.load_all().await?;
+        Ok(raw
+            .into_iter()
+            .map(|e| crate::vector_store::StoredEmbedding {
+                event_id: e.event_id,
+                session_key: e.session_key,
+                embedding: e.embedding,
+                event_type: e.event_type,
+                created_at: e.created_at,
+            })
+            .collect())
+    }
+
+    async fn load_recent(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<crate::vector_store::StoredEmbedding>> {
+        let raw = self.load_recent(limit).await?;
+        Ok(raw
+            .into_iter()
+            .map(|e| crate::vector_store::StoredEmbedding {
+                event_id: e.event_id,
+                session_key: e.session_key,
+                embedding: e.embedding,
+                event_type: e.event_type,
+                created_at: e.created_at,
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]

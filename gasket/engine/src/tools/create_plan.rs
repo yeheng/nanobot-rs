@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use gasket_wiki::{slugify, PageStore, PageType, WikiPage};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
+use gasket_wiki::{slugify, PageStore, PageType, WikiPage};
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
@@ -217,4 +217,3 @@ impl Tool for CreatePlanTool {
         ))
     }
 }
-

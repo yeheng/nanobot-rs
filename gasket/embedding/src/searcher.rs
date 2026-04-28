@@ -7,7 +7,7 @@ use tracing::info;
 
 use crate::index::HnswIndex;
 use crate::provider::EmbeddingProvider;
-use crate::store::EmbeddingStore;
+use crate::vector_store::VectorStore;
 
 fn default_top_k() -> usize {
     5
@@ -54,18 +54,18 @@ pub struct RecallHit {
 ///
 /// Two-tier architecture:
 /// - **Hot index** (memory): recent embeddings for fast queries.
-/// - **Cold store** (SQLite): full historical embeddings streamed on-demand.
+/// - **Cold store** (LanceDB / SQLite): full historical embeddings with ANN search.
 pub struct RecallSearcher {
     provider: Arc<dyn EmbeddingProvider>,
     index: Arc<HnswIndex>,
-    store: EmbeddingStore,
+    store: Arc<dyn VectorStore>,
 }
 
 impl RecallSearcher {
     pub fn new(
         provider: Arc<dyn EmbeddingProvider>,
         index: Arc<HnswIndex>,
-        store: EmbeddingStore,
+        store: Arc<dyn VectorStore>,
     ) -> Self {
         Self {
             provider,
@@ -78,8 +78,8 @@ impl RecallSearcher {
     ///
     /// Query path:
     /// 1. Search the in-memory hot index (fast).
-    /// 2. If the hot index has fewer than `top_k` live entries, stream from SQLite
-    ///    to fill the gap and ensure full historical recall.
+    /// 2. If the hot index has fewer than `top_k` live entries, search the
+    ///    cold store (LanceDB ANN or SQLite brute-force) to fill the gap.
     pub async fn recall(&self, query: &str, config: &RecallConfig) -> Result<Vec<(String, f32)>> {
         info!("Recalling with query: {:?}, config: {:?}", query, config);
         let query_vec = self.provider.embed(query).await?;
@@ -98,7 +98,7 @@ impl RecallSearcher {
             return Ok(hot_results);
         }
 
-        // ── Tier 2: SQLite cold store (streaming) ───────────────────
+        // ── Tier 2: cold store (LanceDB ANN or SQLite scan) ────────
         // Build exclusion set so we don't double-count hot results.
         let hot_ids: std::collections::HashSet<String> =
             hot_results.iter().map(|(id, _)| id.clone()).collect();
@@ -106,12 +106,13 @@ impl RecallSearcher {
         let needed = config.top_k - hot_results.len();
         let cold = self
             .store
-            .search_similar(&query_vec, needed, config.min_score, &hot_ids)
+            .search(&query_vec, needed, config.min_score, &hot_ids)
             .await?;
+        let cold_tuples: Vec<(String, f32)> = cold.into_iter().map(|r| (r.id, r.score)).collect();
 
         // Merge hot + cold and re-sort.
         let mut merged = hot_results;
-        merged.extend(cold);
+        merged.extend(cold_tuples);
         merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         merged.truncate(config.top_k);
 
@@ -124,16 +125,17 @@ mod tests {
     use super::*;
     use crate::provider::MockProvider;
     use crate::store::EmbeddingStore;
+    use crate::vector_store::VectorStore;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    async fn test_store() -> EmbeddingStore {
+    async fn test_store() -> Arc<dyn VectorStore> {
         let pool = SqlitePoolOptions::new()
             .connect(":memory:")
             .await
             .expect("in-memory pool");
-        let store = EmbeddingStore::new(pool);
+        let store = EmbeddingStore::with_dim(pool, 3);
         store.run_migration().await.expect("migration");
-        store
+        Arc::new(store)
     }
 
     #[test]
@@ -184,40 +186,31 @@ mod tests {
         index.insert("evt-3".into(), vec![0.9, 0.1, 0.0]);
 
         // Save to store so it's consistent.
+        use crate::vector_store::VectorRecord;
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &[1.0, 0.0, 0.0],
-                "user_message",
-                "h1",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                "evt-2",
-                "sess-a",
-                "",
-                "",
-                &[0.0, 1.0, 0.0],
-                "assistant_message",
-                "h2",
-            )
-            .await
-            .unwrap();
-        store
-            .save(
-                "evt-3",
-                "sess-a",
-                "",
-                "",
-                &[0.9, 0.1, 0.0],
-                "user_message",
-                "h3",
-            )
+            .upsert(vec![
+                VectorRecord {
+                    id: "evt-1".to_string(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "user_message".to_string(),
+                    content_hash: "h1".to_string(),
+                },
+                VectorRecord {
+                    id: "evt-2".to_string(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "assistant_message".to_string(),
+                    content_hash: "h2".to_string(),
+                },
+                VectorRecord {
+                    id: "evt-3".to_string(),
+                    vector: vec![0.9, 0.1, 0.0],
+                    session_key: "sess-a".to_string(),
+                    event_type: "user_message".to_string(),
+                    content_hash: "h3".to_string(),
+                },
+            ])
             .await
             .unwrap();
 

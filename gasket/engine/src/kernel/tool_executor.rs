@@ -1,6 +1,6 @@
 //! Tool execution for the kernel.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, warn};
 
@@ -19,13 +19,19 @@ pub struct ToolCallResult {
 pub struct ToolExecutor<'a> {
     registry: &'a ToolRegistry,
     max_result_chars: usize,
+    tool_timeout: Duration,
 }
 
 impl<'a> ToolExecutor<'a> {
-    pub fn new(registry: &'a ToolRegistry, max_result_chars: usize) -> Self {
+    pub fn new(
+        registry: &'a ToolRegistry,
+        max_result_chars: usize,
+        tool_timeout: Duration,
+    ) -> Self {
         Self {
             registry,
             max_result_chars,
+            tool_timeout,
         }
     }
 
@@ -37,15 +43,17 @@ impl<'a> ToolExecutor<'a> {
         );
 
         let start = Instant::now();
-        let result = self
-            .registry
-            .execute(
+        let result = tokio::time::timeout(
+            self.tool_timeout,
+            self.registry.execute(
                 &tool_call.function.name,
                 tool_call.function.arguments.clone(),
                 ctx,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e));
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Tool execution timed out after {:?}", self.tool_timeout))
+        .and_then(|r| r.map_err(|e| anyhow::anyhow!("{}", e)));
         let elapsed = start.elapsed();
 
         match &result {
@@ -74,10 +82,7 @@ impl<'a> ToolExecutor<'a> {
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
             let original_len = result_str.len();
-            let mut end = self.max_result_chars;
-            while !result_str.is_char_boundary(end) {
-                end -= 1;
-            }
+            let end = result_str.floor_char_boundary(self.max_result_chars);
             result_str.truncate(end);
             result_str.push_str(&format!(
                 "\n\n[OUTPUT TRUNCATED: original {} chars exceeded limit of {} chars]",
@@ -154,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_one_success() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new(&reg, 0, std::time::Duration::from_secs(60));
 
         let tc = ToolCall::new("call_1", "echo", serde_json::json!({"msg": "hi"}));
         let result = executor.execute_one(&tc, &ToolContext::default()).await;
@@ -167,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_one_failure() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new(&reg, 0, std::time::Duration::from_secs(60));
 
         let tc = ToolCall::new("call_2", "fail", serde_json::json!({}));
         let result = executor.execute_one(&tc, &ToolContext::default()).await;
@@ -178,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn test_truncation() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 10);
+        let executor = ToolExecutor::new(&reg, 10, std::time::Duration::from_secs(60));
 
         let tc = ToolCall::new(
             "c1",
@@ -196,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn test_not_found_tool() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new(&reg, 0, std::time::Duration::from_secs(60));
 
         let tc = ToolCall::new("c1", "nonexistent", serde_json::json!({}));
         let result = executor.execute_one(&tc, &ToolContext::default()).await;
@@ -207,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn test_truncation_multibyte_utf8() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 10);
+        let executor = ToolExecutor::new(&reg, 10, std::time::Duration::from_secs(60));
 
         let tc = ToolCall::new(
             "c1",

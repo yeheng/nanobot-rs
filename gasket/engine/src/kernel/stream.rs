@@ -6,6 +6,7 @@
 use anyhow::Result;
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
+use std::collections::BTreeMap;
 use tracing::{debug, trace};
 
 use gasket_providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};
@@ -13,7 +14,7 @@ pub use gasket_types::StreamEvent;
 
 /// Accumulates streamed tool-call deltas into complete `ToolCall` objects.
 pub struct ToolCallAccumulator {
-    pending: Vec<Option<PartialToolCall>>,
+    pending: BTreeMap<usize, PartialToolCall>,
 }
 
 struct PartialToolCall {
@@ -25,20 +26,19 @@ struct PartialToolCall {
 impl ToolCallAccumulator {
     pub fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            pending: BTreeMap::new(),
         }
     }
 
     pub fn feed(&mut self, delta: &ToolCallDelta) {
-        if delta.index >= self.pending.len() {
-            self.pending.resize_with(delta.index + 1, || None);
-        }
-
-        let entry = self.pending[delta.index].get_or_insert_with(|| PartialToolCall {
-            id: String::new(),
-            name: String::new(),
-            arguments: String::new(),
-        });
+        let entry = self
+            .pending
+            .entry(delta.index)
+            .or_insert_with(|| PartialToolCall {
+                id: String::new(),
+                name: String::new(),
+                arguments: String::new(),
+            });
 
         if let Some(ref id) = delta.id {
             entry.id = id.clone();
@@ -53,8 +53,7 @@ impl ToolCallAccumulator {
 
     pub fn finalize(self) -> Vec<ToolCall> {
         self.pending
-            .into_iter()
-            .flatten()
+            .into_values()
             .map(|partial| {
                 let arguments = parse_json_args(&partial.arguments);
                 ToolCall::new(partial.id, partial.name, arguments)

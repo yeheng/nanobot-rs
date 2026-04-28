@@ -370,23 +370,21 @@ pub async fn setup_embedding_recall(
     Arc<gasket_embedding::RecallSearcher>,
     gasket_embedding::EmbeddingIndexer,
 )> {
-    use gasket_embedding::{EmbeddingIndexer, EmbeddingStore, HnswIndex, RecallSearcher};
+    use gasket_embedding::{EmbeddingIndexer, HnswIndex, RecallSearcher};
     use gasket_storage::EventStoreTrait;
 
     // Build provider from config.
     let provider = config.provider.build()?;
+    let dim = provider.dim();
 
-    // Create embedding stores sharing the same SQLite pool.
-    // One for RecallSearcher (holds ownership), one for EmbeddingIndexer.
-    let pool = event_store.pool();
-    let emb_store_for_searcher = EmbeddingStore::new(pool.clone());
-    let emb_store_for_indexer = EmbeddingStore::new(pool);
-
-    // Run migration on one (idempotent).
-    emb_store_for_indexer.run_migration().await?;
+    // Build the vector store from config (SQLite or LanceDB).
+    let store: Arc<dyn gasket_embedding::VectorStore> = {
+        let pool = event_store.pool();
+        gasket_embedding::vector_store::build_vector_store(&config.vector_store, dim, Some(&pool))
+            .await?
+    };
 
     // Create in-memory index.
-    let dim = provider.dim();
     let index = Arc::new(HnswIndex::new(dim));
 
     // Build provider arc early so it can be reused for backfill.
@@ -395,11 +393,11 @@ pub async fn setup_embedding_recall(
     // Cold-start: load recent embeddings into the hot index (bounded by hot_limit).
     let hot_limit = config.hot_limit;
     if hot_limit > 0 {
-        EmbeddingIndexer::rebuild_index(&emb_store_for_indexer, &index, Some(hot_limit)).await?;
+        EmbeddingIndexer::rebuild_index(store.as_ref(), &index, Some(hot_limit)).await?;
     }
 
     // Backfill: if embedding store is empty, index recent historical events up to hot_limit.
-    let total_in_store = emb_store_for_indexer.count().await.unwrap_or(0);
+    let total_in_store = store.count().await.unwrap_or(0);
     if total_in_store == 0 && hot_limit > 0 {
         tracing::info!(
             "Embedding store is empty — backfilling up to {} recent historical events",
@@ -413,7 +411,7 @@ pub async fn setup_embedding_recall(
         for event in events {
             if let Err(e) = EmbeddingIndexer::process_event(
                 provider_arc.as_ref(),
-                &emb_store_for_indexer,
+                store.as_ref(),
                 &index,
                 event,
             )
@@ -435,12 +433,12 @@ pub async fn setup_embedding_recall(
     let searcher = Arc::new(RecallSearcher::new(
         provider_arc.clone(),
         index.clone(),
-        emb_store_for_searcher,
+        store.clone(),
     ));
 
     // Subscribe to new events and start background indexer.
     let rx = event_store.subscribe();
-    let idx = EmbeddingIndexer::start(provider_arc, emb_store_for_indexer, index, rx)?;
+    let idx = EmbeddingIndexer::start(provider_arc, store, index, rx)?;
 
     Ok((searcher, idx))
 }

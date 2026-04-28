@@ -9,6 +9,7 @@ description = "Embedding-based semantic search for gasket history recall"
 [features]
 default = []
 local-onnx = ["fastembed"]
+lancedb = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 [dependencies]
 tokio.workspace = true
@@ -28,6 +29,10 @@ tiktoken-rs.workspace = true
 gasket-types = { path = "../types" }
 gasket-storage = { path = "../storage" }
 fastembed = { version = "5", optional = true }
+lancedb = { version = "0.27", optional = true }
+arrow-array = { version = "57", optional = true }
+arrow-schema = { version = "57", optional = true }
+futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

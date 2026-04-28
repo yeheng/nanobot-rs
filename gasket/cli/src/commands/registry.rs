@@ -92,6 +92,7 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         max_retries: defaults.max_retries,
         thinking_enabled: config.agents.defaults.thinking_enabled,
         streaming: config.agents.defaults.streaming,
+        tool_timeout_secs: defaults.tool_timeout_secs,
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
         prompts: {

@@ -59,7 +59,11 @@ impl SteppableExecutor {
 
         let request_handler =
             RequestHandler::new(&self.ctx.provider, &self.ctx.tools, &self.ctx.config);
-        let executor = ToolExecutor::new(&self.ctx.tools, self.ctx.config.max_tool_result_chars);
+        let executor = ToolExecutor::new(
+            &self.ctx.tools,
+            self.ctx.config.max_tool_result_chars,
+            std::time::Duration::from_secs(self.ctx.config.tool_timeout_secs),
+        );
 
         let request = request_handler.build_chat_request(messages);
         let stream_result = request_handler
@@ -160,49 +164,48 @@ impl SteppableExecutor {
             ctx = ctx.token_tracker(tracker.clone());
         }
 
-        let futures: Vec<_> = response
-            .tool_calls
-            .iter()
-            .enumerate()
-            .map(|(idx, tc)| {
-                let tool_call = tc.clone();
-                let ctx = ctx.clone();
-                let tx = event_tx.cloned();
-                async move {
-                    let tool_name = tool_call.function.name.clone();
-                    let tool_args = tool_call.function.arguments.to_string();
+        let results: Vec<_> =
+            futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())
+                .map(|(idx, tool_call)| {
+                    let ctx = ctx.clone();
+                    let tx = event_tx.cloned();
+                    async move {
+                        let tool_name = tool_call.function.name.clone();
+                        let tool_args = tool_call.function.arguments.to_string();
 
-                    if let Some(ref sender) = tx {
-                        let _ = sender
-                            .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
-                            .await;
+                        if let Some(ref sender) = tx {
+                            let _ = sender
+                                .send(StreamEvent::tool_start(&tool_name, Some(tool_args)))
+                                .await;
+                        }
+
+                        let start = std::time::Instant::now();
+                        let result = executor.execute_one(&tool_call, &ctx).await;
+                        let duration = start.elapsed();
+
+                        debug!(
+                            "[Steppable] Tool {} -> done ({}ms)",
+                            tool_name,
+                            duration.as_millis()
+                        );
+
+                        if let Some(ref sender) = tx {
+                            let _ = sender
+                                .send(StreamEvent::tool_end(
+                                    &tool_name,
+                                    Some(result.output.clone()),
+                                ))
+                                .await;
+                        }
+
+                        (idx, tool_call.id, tool_name, result.output)
                     }
+                })
+                .buffer_unordered(5)
+                .collect()
+                .await;
 
-                    let start = std::time::Instant::now();
-                    let result = executor.execute_one(&tool_call, &ctx).await;
-                    let duration = start.elapsed();
-
-                    debug!(
-                        "[Steppable] Tool {} -> done ({}ms)",
-                        tool_name,
-                        duration.as_millis()
-                    );
-
-                    if let Some(ref sender) = tx {
-                        let _ = sender
-                            .send(StreamEvent::tool_end(
-                                &tool_name,
-                                Some(result.output.clone()),
-                            ))
-                            .await;
-                    }
-
-                    (idx, tool_call.id, tool_name, result.output)
-                }
-            })
-            .collect();
-
-        let mut results = futures_util::future::join_all(futures).await;
+        let mut results = results;
         results.sort_by_key(|(idx, _, _, _)| *idx);
 
         let mut tool_results = Vec::new();
