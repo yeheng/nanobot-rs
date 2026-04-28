@@ -1,17 +1,15 @@
 //! SQLite state persistence for cron jobs.
 
-use std::sync::Arc;
-
 use chrono::{DateTime, Utc};
 use gasket_storage::CronStore;
 use tracing::{debug, warn};
 
 pub(super) struct CronPersistence {
-    db: Arc<CronStore>,
+    db: CronStore,
 }
 
 impl CronPersistence {
-    pub fn new(db: Arc<CronStore>) -> Self {
+    pub fn new(db: CronStore) -> Self {
         Self { db }
     }
 

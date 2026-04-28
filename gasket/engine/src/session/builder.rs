@@ -121,15 +121,15 @@ impl SessionBuilder {
     pub async fn build(self) -> Result<AgentSession, AgentError> {
         // ── 1. Storage layer ─────────────────────────────────────────
         let pool = self.sqlite_store.pool();
-        let session_store = Arc::new(SessionStore::new(pool.clone()));
+        let session_store = SessionStore::new(pool.clone());
         #[cfg(feature = "embedding")]
         let event_store = if let Some(tx) = self.event_store_tx {
-            Arc::new(EventStore::with_pool_and_sender(pool, tx))
+            EventStore::with_pool_and_sender(pool, tx)
         } else {
-            Arc::new(EventStore::new(pool))
+            EventStore::new(pool)
         };
         #[cfg(not(feature = "embedding"))]
-        let event_store = Arc::new(EventStore::new(pool));
+        let event_store = EventStore::new(pool);
 
         // ── 2. Kernel runtime context ────────────────────────────────
         let kernel_config = self.config.to_kernel_config();

@@ -75,7 +75,7 @@ impl FinalizeContext {
 struct SessionCheckpointCallback {
     session_key: SessionKey,
     compactor: Arc<ContextCompactor>,
-    event_store: Arc<gasket_storage::EventStore>,
+    event_store: gasket_storage::EventStore,
 }
 
 #[async_trait]
@@ -217,8 +217,8 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 /// to avoid the indirection and dynamic dispatch of a plugin trait.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
-    event_store: Arc<gasket_storage::EventStore>,
-    session_store: Arc<gasket_storage::SessionStore>,
+    event_store: gasket_storage::EventStore,
+    session_store: gasket_storage::SessionStore,
     config: AgentConfig,
     system_prompt: String,
     hooks: Arc<HookRegistry>,

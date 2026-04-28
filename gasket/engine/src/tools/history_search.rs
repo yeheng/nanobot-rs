@@ -20,7 +20,7 @@ mod impl_ {
     pub struct HistorySearchTool {
         searcher: Arc<RecallSearcher>,
         config: RecallConfig,
-        event_store: Arc<EventStore>,
+        event_store: EventStore,
     }
 
     impl HistorySearchTool {
@@ -28,7 +28,7 @@ mod impl_ {
         pub fn new(
             searcher: Arc<RecallSearcher>,
             config: RecallConfig,
-            event_store: Arc<EventStore>,
+            event_store: EventStore,
         ) -> Self {
             Self {
                 searcher,

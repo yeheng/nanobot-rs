@@ -16,12 +16,12 @@ use crate::wiki::{PageFilter, PageIndex, PageStore, PageType, WikiPage};
 
 /// Tool for refreshing wiki page index and syncing from disk.
 pub struct WikiRefreshTool {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
     page_index: Arc<PageIndex>,
 }
 
 impl WikiRefreshTool {
-    pub fn new(page_store: Arc<PageStore>, page_index: Arc<PageIndex>) -> Self {
+    pub fn new(page_store: PageStore, page_index: Arc<PageIndex>) -> Self {
         Self {
             page_store,
             page_index,

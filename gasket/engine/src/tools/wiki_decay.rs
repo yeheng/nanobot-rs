@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
@@ -13,11 +12,11 @@ use crate::wiki::{lifecycle::FrequencyManager, PageStore};
 
 /// Tool for running wiki frequency decay.
 pub struct WikiDecayTool {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
 }
 
 impl WikiDecayTool {
-    pub fn new(page_store: Arc<PageStore>) -> Self {
+    pub fn new(page_store: PageStore) -> Self {
         Self { page_store }
     }
 }

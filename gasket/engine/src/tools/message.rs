@@ -1,47 +1,18 @@
 //! Message tool for sending messages to specific channels
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
 use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
 use crate::channels::ChannelType;
 use crate::channels::OutboundMessage;
 
-/// Internal dispatch mode for outbound messages.
-enum MessageToolMode {
-    Direct(mpsc::Sender<OutboundMessage>),
-    Broker(Arc<gasket_broker::MemoryBroker>),
-}
-
 /// Message tool for sending messages to specific channels.
 ///
-/// Routes through either the Outbound Actor (via mpsc) or the broker
-/// (via Topic::Outbound). This decouples the tool from blocking network I/O —
-/// the message is enqueued instantly and delivery happens concurrently.
-pub struct MessageTool {
-    mode: MessageToolMode,
-}
-
-impl MessageTool {
-    /// Create a new message tool that routes through the outbound mpsc channel.
-    pub fn new(outbound_tx: mpsc::Sender<OutboundMessage>) -> Self {
-        Self {
-            mode: MessageToolMode::Direct(outbound_tx),
-        }
-    }
-
-    /// Create a new message tool backed by the message broker.
-    pub fn new_broker(broker: Arc<gasket_broker::MemoryBroker>) -> Self {
-        Self {
-            mode: MessageToolMode::Broker(broker),
-        }
-    }
-}
+/// Uses the global broker to route messages. Zero-size type — no state needed.
+pub struct MessageTool;
 
 #[derive(Debug, Deserialize)]
 struct MessageParams {
@@ -101,7 +72,6 @@ impl Tool for MessageTool {
             params.channel, params.chat_id
         );
 
-        // Create outbound message (broadcast if chat_id is "*")
         let channel_name = params.channel.to_string();
         let message = if params.chat_id == "*" {
             OutboundMessage::broadcast(params.channel, params.content.clone())
@@ -113,23 +83,14 @@ impl Tool for MessageTool {
             )
         };
 
-        // Route through Outbound Actor or broker — enqueue instantly, no network wait.
-        match &self.mode {
-            MessageToolMode::Direct(tx) => {
-                tx.send(message).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Outbound channel closed: {}", e))
-                })?;
-            }
-            MessageToolMode::Broker(broker) => {
-                let envelope = gasket_broker::Envelope::new(
-                    gasket_broker::Topic::Outbound,
-                    gasket_broker::BrokerPayload::Outbound(message),
-                );
-                broker.publish(envelope).await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Broker publish failed: {}", e))
-                })?;
-            }
-        }
+        let envelope = gasket_broker::Envelope::new(
+            gasket_broker::Topic::Outbound,
+            gasket_broker::BrokerPayload::Outbound(message),
+        );
+        gasket_broker::broker_arc()
+            .publish(envelope)
+            .await
+            .map_err(|e| ToolError::ExecutionError(format!("Broker publish failed: {}", e)))?;
 
         Ok(format!(
             "Message sent successfully to {}:{}",
@@ -142,21 +103,16 @@ impl Tool for MessageTool {
 mod tests {
     use super::*;
 
-    fn make_test_tool() -> (MessageTool, mpsc::Receiver<OutboundMessage>) {
-        let (tx, rx) = mpsc::channel(16);
-        (MessageTool::new(tx), rx)
-    }
-
     #[tokio::test]
     async fn test_message_tool_creation() {
-        let (tool, _rx) = make_test_tool();
+        let tool = MessageTool;
         assert_eq!(tool.name(), "send_message");
         assert!(tool.description().contains("Send a message"));
     }
 
     #[tokio::test]
     async fn test_message_tool_parameters() {
-        let (tool, _rx) = make_test_tool();
+        let tool = MessageTool;
         let params = tool.parameters();
         assert!(params["properties"]["channel"].is_object());
         assert!(params["properties"]["chat_id"].is_object());
@@ -165,31 +121,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_parameters() {
-        let (tool, _rx) = make_test_tool();
+        let tool = MessageTool;
         let params = serde_json::json!({
             "channel": "telegram"
             // Missing chat_id and content
         });
         let result = tool.execute(params, &ToolContext::default()).await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_send_routes_to_outbound_channel() {
-        let (tool, mut rx) = make_test_tool();
-        let params = serde_json::json!({
-            "channel": "telegram",
-            "chat_id": "12345",
-            "content": "Hello!"
-        });
-        let result = tool.execute(params, &ToolContext::default()).await;
-        assert!(result.is_ok());
-
-        // Verify the message was routed to the outbound channel
-        let msg = rx
-            .try_recv()
-            .expect("should have received outbound message");
-        assert_eq!(msg.chat_id(), "12345");
-        assert_eq!(msg.content(), "Hello!");
     }
 }

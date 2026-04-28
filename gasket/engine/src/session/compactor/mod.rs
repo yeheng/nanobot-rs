@@ -103,9 +103,9 @@ pub struct ContextCompactor {
     /// LLM provider for generating summaries.
     provider: Arc<dyn LlmProvider>,
     /// Event store for loading events and garbage collection.
-    event_store: Arc<EventStore>,
+    event_store: EventStore,
     /// SQLite store for summary persistence (session_summaries table).
-    session_store: Arc<SessionStore>,
+    session_store: SessionStore,
     /// Model to use for summarization.
     model: String,
     /// Token budget for context window.
@@ -134,8 +134,8 @@ impl ContextCompactor {
     /// Create a new compactor.
     pub fn new(
         provider: Arc<dyn LlmProvider>,
-        event_store: Arc<EventStore>,
-        session_store: Arc<SessionStore>,
+        event_store: EventStore,
+        session_store: SessionStore,
         model: String,
         token_budget: usize,
     ) -> Self {

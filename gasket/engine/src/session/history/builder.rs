@@ -51,8 +51,8 @@ pub struct ChatRequest {
 /// Decouples the complex pipeline preparation logic from `AgentLoop`,
 /// following the Single Responsibility Principle.
 pub struct ContextBuilder {
-    event_store: Arc<EventStore>,
-    session_store: Arc<SessionStore>,
+    event_store: EventStore,
+    session_store: SessionStore,
     system_prompt: String,
     skills_context: Option<String>,
     hooks: Arc<HookRegistry>,
@@ -62,8 +62,8 @@ pub struct ContextBuilder {
 impl ContextBuilder {
     /// Create a new context builder.
     pub fn new(
-        event_store: Arc<EventStore>,
-        session_store: Arc<SessionStore>,
+        event_store: EventStore,
+        session_store: SessionStore,
         system_prompt: String,
         skills_context: Option<String>,
         hooks: Arc<HookRegistry>,
@@ -296,7 +296,7 @@ impl ContextBuilder {
 ///
 /// Callers can append additional hooks before calling `.build_shared()`.
 pub fn build_default_hooks_builder(
-    #[allow(unused_variables)] event_store: Option<Arc<EventStore>>,
+    #[allow(unused_variables)] event_store: Option<EventStore>,
 ) -> HookBuilder {
     #[cfg(not(feature = "embedding"))]
     use crate::hooks::HistoryRecallHook;
@@ -343,7 +343,7 @@ pub fn build_default_hooks_builder(
 /// Set up the embedding recall pipeline: provider → store → index → searcher → indexer.
 #[cfg(feature = "embedding")]
 pub async fn setup_embedding_recall(
-    event_store: &Arc<EventStore>,
+    event_store: &EventStore,
     config: &crate::config::EmbeddingConfig,
 ) -> anyhow::Result<(
     Arc<gasket_embedding::RecallSearcher>,
@@ -418,7 +418,7 @@ pub async fn setup_embedding_recall(
     ));
 
     // Subscribe to new events and start background indexer.
-    let rx = event_store.as_ref().subscribe();
+    let rx = event_store.subscribe();
     let idx = EmbeddingIndexer::start(provider_arc, emb_store_for_indexer, index, rx)?;
 
     Ok((searcher, idx))

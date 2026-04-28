@@ -175,7 +175,7 @@ impl ToolProvider for CoreToolProvider {
 
 /// Provides wiki and memory tools (conditional on page_store).
 pub struct WikiToolProvider {
-    page_store: Option<Arc<PageStore>>,
+    page_store: Option<PageStore>,
     page_index: Option<Arc<PageIndex>>,
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
@@ -184,7 +184,7 @@ pub struct WikiToolProvider {
 
 impl WikiToolProvider {
     pub fn new(
-        page_store: Option<Arc<PageStore>>,
+        page_store: Option<PageStore>,
         page_index: Option<Arc<PageIndex>>,
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
@@ -299,7 +299,7 @@ impl ToolProvider for WikiToolProvider {
 pub struct SystemToolProvider {
     session_store: Option<SessionStore>,
     maintenance_store: Option<MaintenanceStore>,
-    page_store: Option<Arc<PageStore>>,
+    page_store: Option<PageStore>,
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
     evolution_prompt: Option<String>,
@@ -309,7 +309,7 @@ impl SystemToolProvider {
     pub fn new(
         session_store: Option<SessionStore>,
         maintenance_store: Option<MaintenanceStore>,
-        page_store: Option<Arc<PageStore>>,
+        page_store: Option<PageStore>,
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
         evolution_prompt: Option<String>,

@@ -90,7 +90,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
             use gasket_engine::wiki::{PageIndex, PageStore};
             use gasket_storage::wiki::TantivyPageIndex;
-            let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
+            let ps = PageStore::new(pool.clone(), wiki_root.clone());
             if let Err(e) = ps.init_dirs().await {
                 tracing::warn!("Failed to init wiki dirs: {}", e);
             }
@@ -137,7 +137,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     #[cfg(feature = "embedding")]
     let (history_search, embedding_recall, event_store_tx) =
         if let Some(ref emb_cfg) = config.embedding {
-            let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
+            let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
             let tx = Some(event_store.sender());
             match gasket_engine::session::history::builder::setup_embedding_recall(
                 &event_store,
@@ -166,11 +166,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // Build common tool registry once and share it between agent and subagent
     let common_tools =
         gasket_engine::tools::build_tool_registry(gasket_engine::tools::ToolRegistryConfig {
-            config: config.clone(),
-            workspace: workspace.clone(),
             subagent_spawner: None,
             extra_tools: vec![],
-            sqlite_store: Some(sqlite_store.as_ref().clone()),
             page_store,
             page_index,
             provider: Some(provider_info.provider.clone()),

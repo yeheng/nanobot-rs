@@ -7,8 +7,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::config::Config;
-use crate::SqliteStore;
 use crate::SubagentSpawner;
 
 use super::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
@@ -17,7 +15,7 @@ use super::{Tool, ToolMetadata, ToolRegistry};
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
 ///
 /// Creates the directory if it doesn't exist.
-pub fn resolve_exec_workspace(config: &Config, fallback: &Path) -> std::path::PathBuf {
+pub fn resolve_exec_workspace(config: &crate::config::Config, fallback: &Path) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
         std::path::PathBuf::from(ws)
     } else {
@@ -43,19 +41,17 @@ pub fn resolve_exec_workspace(config: &Config, fallback: &Path) -> std::path::Pa
 }
 
 /// Configuration for building a [`ToolRegistry`].
+///
+/// Only dynamic / mode-specific dependencies are kept as fields.
+/// Infra singletons (config, database) are fetched from globals inside
+/// [`build_tool_registry`].
 pub struct ToolRegistryConfig {
-    /// Application configuration reference.
-    pub config: Config,
-    /// Workspace path.
-    pub workspace: std::path::PathBuf,
     /// Optional subagent spawner for the spawn tools.
     pub subagent_spawner: Option<Arc<dyn SubagentSpawner>>,
     /// Extra tools to register (e.g. gateway-specific `MessageTool`, `CronTool`).
     pub extra_tools: Vec<(Box<dyn Tool>, ToolMetadata)>,
-    /// SQLite store for history search (optional).
-    pub sqlite_store: Option<SqliteStore>,
     /// Optional wiki PageStore for unified knowledge management.
-    pub page_store: Option<Arc<crate::wiki::PageStore>>,
+    pub page_store: Option<crate::wiki::PageStore>,
     /// Optional wiki PageIndex for semantic search.
     pub page_index: Option<Arc<crate::wiki::PageIndex>>,
     /// Optional LLM provider for plan-generation tools.
@@ -72,20 +68,19 @@ pub struct ToolRegistryConfig {
 pub struct HistorySearchParams {
     pub searcher: std::sync::Arc<gasket_embedding::RecallSearcher>,
     pub config: gasket_embedding::RecallConfig,
-    pub event_store: std::sync::Arc<gasket_storage::EventStore>,
+    pub event_store: gasket_storage::EventStore,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
 ///
 /// This function registers all common tools (filesystem, web, memory, etc.) and
 /// accepts extra tools via the `extra_tools` field for mode-specific additions.
+/// Infra singletons (config, database) are read from globals — they must be
+/// initialized by the caller before invoking this function.
 pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry {
     let ToolRegistryConfig {
-        config,
-        workspace,
         subagent_spawner,
         extra_tools,
-        sqlite_store,
         page_store,
         page_index,
         provider,
@@ -94,10 +89,14 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         history_search,
     } = registry_config;
 
+    let config = crate::config::get_config();
+    let workspace = resolve_exec_workspace(config, std::path::Path::new("."));
+    let sqlite_store = gasket_storage::get_db();
+
     let mut tools = ToolRegistry::new();
 
     // ── Core tools (filesystem, web, exec, spawn) ─────────────
-    CoreToolProvider::new(&config, &workspace, subagent_spawner).register_tools(&mut tools);
+    CoreToolProvider::new(config, &workspace, subagent_spawner).register_tools(&mut tools);
 
     // ── Wiki + memory tools (conditional on page_store) ───────
     let prompts = &config.agents.defaults.prompts;
@@ -110,10 +109,9 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     )
     .register_tools(&mut tools);
 
-    // ── System/maintenance tools (conditional on sqlite_store) ─
-    let (session_store, maintenance_store) = sqlite_store
-        .map(|s| (Some(s.session_store()), Some(s.maintenance_store())))
-        .unwrap_or((None, None));
+    // ── System/maintenance tools ─
+    let session_store = Some(sqlite_store.session_store());
+    let maintenance_store = Some(sqlite_store.maintenance_store());
     SystemToolProvider::new(
         session_store,
         maintenance_store,

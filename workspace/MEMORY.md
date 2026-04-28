@@ -1,84 +1,98 @@
 ---
-summary: "Long-term Memory Management"
+summary: "Wiki Knowledge Management"
 read_when:
   - Bootstrapping a workspace manually
 ---
 
-# Long-term Memory Management (Memory Management ABI)
+# Wiki Knowledge Management
 
-You can persist important state to disk using the `memorize` tool, and perform vector and tag-based retrieval via `memory_search`.
+Gasket uses a **wiki-first knowledge system** for long-term memory. You persist important state via `wiki_write` and retrieve it via `wiki_search` or `wiki_read`.
 Storage space is precious. Do not write garbage to disk.
 
-## Memory vs Skill — Know the Boundary
+## Wiki vs Skill — Know the Boundary
 
-| | **Memory** | **Skill** |
+| | **Wiki** | **Skill** |
 |---|---|---|
 | Answers | "What" (facts, preferences, events) | "How" (procedures, workflows, SOPs) |
-| Stored in | `~/.gasket/memory/<scenario>/` | `workspace/skills/<name>.md` |
-| Format | YAML frontmatter + Markdown | YAML frontmatter + Markdown |
-| Type field | `note` (default) | `skill` |
-| Trigger | Always loaded if relevant | Loaded on demand via `read_file` or `skill_view` |
+| Stored in | `~/.gasket/wiki/` (SQLite + Tantivy) | `workspace/skills/<name>.md` |
+| Format | Markdown with YAML frontmatter | YAML frontmatter + Markdown |
+| Access | Queried on-demand via tools | Loaded on demand via `read_file` |
 
-**Rule of thumb**: If it's a fact about the user or the world → Memory. If it's a reusable procedure with steps and pitfalls → Skill.
+**Rule of thumb**: If it's a fact about the user or the world → Wiki. If it's a reusable procedure with steps and pitfalls → Skill.
 
-When writing a Skill-level procedure to memory, pass `"memory_type": "skill"` to the `memorize` tool. The system prioritizes skill-type memories during context loading — they are treated as actionable procedural knowledge and ranked above plain facts.
+## Available Wiki Tools
 
-## Memory Partitions (Scenarios)
+### `wiki_search(query, limit?)`
 
-When calling `memorize`, you must accurately use one of the following lowercase enum values as the `scenario` parameter:
+Full-text search over the wiki knowledge base using Tantivy BM25.
+- `query`: Search text (required)
+- `limit`: Max results, default 10 (optional)
 
-1. `profile`: User's persistent preferences, contact information, fixed environment variables. **Never decays.**
-2. `active`: Current ongoing projects, context, unfinished tasks. Decays by default.
-3. `knowledge`: New knowledge you've learned, code snippets, facts. Decays by default.
-4. `decisions`: Architecture Decision Records (ADR), trade-off analysis. **Never decays.**
-5. `episodes`: Specific past events, troubleshooting processes. Decays by default.
-6. `reference`: External links, API documentation indexes. **Never decays.**
+Returns matching pages with title, path, type, confidence score, and tags.
 
-## Memory Writing Rules
+### `wiki_read(path)`
 
-- Each time you use `memorize`, you must provide at least 2 high signal-to-noise `tags`.
-- Use `memory_type: "skill"` when the content is a reusable procedure (steps, pitfalls, verification). Default is `"note"` for facts.
-- If the user tells you "remember this", default to writing to `knowledge` or `profile`.
-- The `title` must be brief and descriptive (similar to a Git commit message).
-- **Always read before writing** — use `memory_search` or `read_file` first to avoid duplicates.
+Read a specific wiki page by its path.
+- `path`: Wiki page path, e.g. `topics/rust-async`, `entities/projects/gasket` (required)
 
-## Three-Layer Architecture
+Returns the full Markdown content and metadata (title, type, updated time, tags).
+
+### `wiki_write(path, title, content, page_type?, tags?)`
+
+Create or overwrite a wiki page.
+- `path`: Wiki page path (required). Use directory-style naming: `topics/xxx`, `entities/xxx`, `sops/xxx`, `sources/xxx`
+- `title`: Human-readable title (required)
+- `content`: Markdown body (required)
+- `page_type`: One of `topic` (default), `entity`, `source`, `sop`
+- `tags`: Array of tags, e.g. `["rust", "async"]` (optional)
+
+Pages are persisted to SQLite and indexed in Tantivy immediately.
+
+## Page Types & Directory Conventions
+
+| Type | Directory | Purpose | Example |
+|------|-----------|---------|---------|
+| `entity` | `entities/` | People, projects, concepts | `entities/projects/gasket` |
+| `topic` | `topics/` | Concepts, guides, discussions | `topics/rust-async-patterns` |
+| `source` | `sources/` | Reference materials | `sources/api-docs-openai` |
+| `sop` | `sops/` | Standard operating procedures | `sops/deployment-checklist` |
+
+## Wiki Writing Rules
+
+- **Always search before writing** — use `wiki_search` first to avoid duplicates.
+- Use meaningful paths with directory prefixes (`topics/`, `entities/`, etc.).
+- Provide at least 2 descriptive `tags` for discoverability.
+- Keep `title` brief and descriptive (like a commit message).
+- If the user says "remember this", write to `topics/` or `entities/` by default.
+- Use `sops/` for procedures with steps, pitfalls, and verification criteria.
+
+## Storage Architecture
+
+```
+~/.gasket/wiki/            ← SQLite (SSOT) + optional .md cache
+├── .tantivy/              ← Tantivy BM25 full-text search index
+└── (pages stored in SQLite tables: wiki_pages, wiki_relations, wiki_log)
+```
 
 | Layer | Storage | Purpose |
 |-------|---------|---------|
-| Session Events | SQLite (`~/.gasket/gasket.db`) | Ephemeral conversation state, auto-compacted |
-| Working Memory | In-memory + SQLite | Three-phase context injection per request |
-| Long-Term Memory | Markdown files (`~/.gasket/memory/`) + SQLite index | Persistent user-curated knowledge |
-
-## Long-Term Memory Storage
-
-```
-~/.gasket/memory/          ← Markdown files (SSOT, human-readable)
-├── profile/               # NEVER decays
-├── active/                # Decays if unused
-├── knowledge/             # Decays if unused
-├── decisions/             # NEVER decays
-├── episodes/              # Decays if unused
-├── reference/             # NEVER decays
-└── .history/              # Versioned backups
-```
+| Session History | SQLite (`~/.gasket/gasket.db`) | Ephemeral conversation state, auto-compacted |
+| Working Memory | In-memory context window | Recent messages within token budget |
+| Long-Term Knowledge | Wiki (SQLite + Tantivy) | Persistent knowledge, queried on-demand |
 
 ## Frequency Lifecycle
 
-Memories have access-frequency tiers affecting retention priority:
+Wiki pages have access-frequency tiers. The system auto-adjusts priority based on access patterns:
 
-- **Hot** → **Warm** (no access 7d) → **Cold** (no access 30d) → **Archived** (no access 90d)
-- Exempt scenarios (`profile`, `decisions`, `reference`) never decay.
-- `frequency`, `access_count`, `last_accessed` are runtime state stored only in SQLite, never in Markdown files.
+- **Hot** (3+ accesses / 7 days) → highest priority
+- **Warm** (no access 7 days) → standard priority
+- **Cold** (no access 30 days) → may be cleaned up
+- **Archived** (no access 90 days) → awaiting cleanup
+
+**Exempt paths** (never decay): `profile/*`, `entities/people/*`, `sops/*`, `sources/*`, `*/decisions/*`
 
 ## Context Loading
 
-Memory is injected into agent context via three phases (total cap: 4000 tokens):
+Wiki knowledge is **not automatically injected** into the system prompt. The agent must proactively call `wiki_search` to retrieve relevant knowledge before responding. This is intentional — it keeps the system prompt stable for prompt caching and reduces token waste.
 
-1. **Bootstrap** (~1500 tokens): All `profile` + `active` hot/warm memories
-2. **Scenario** (~1500 tokens): Current scenario hot + tag-matched warm memories
-3. **On-demand** (~1000 tokens): Semantic/tag search to fill remaining budget
-
-**Architecture Note**: Loaded memories are injected as a **User Message** (not appended to the System Prompt). This preserves Prompt Cache on Anthropic and similar providers, because the System Prompt stays static across turns while dynamic memory content varies per request. For long sessions, this reduces API costs by 90%+.
-
-Sort priority: exempt scenarios first → skill-type memories → higher frequency → higher similarity.
+**Preparation Protocol**: Before responding to any user query, always use `wiki_search` to check if relevant knowledge already exists in the wiki.

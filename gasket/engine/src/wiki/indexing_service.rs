@@ -11,12 +11,12 @@ use super::{PageIndex, PageStore};
 /// Background actor that subscribes to `Topic::WikiChanged` and syncs
 /// the Tantivy index.
 pub struct WikiIndexingService {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
     page_index: Arc<PageIndex>,
 }
 
 impl WikiIndexingService {
-    pub fn new(page_store: Arc<PageStore>, page_index: Arc<PageIndex>) -> Self {
+    pub fn new(page_store: PageStore, page_index: Arc<PageIndex>) -> Self {
         Self {
             page_store,
             page_index,

@@ -172,7 +172,7 @@ mod keyword_impl {
     ///
     /// Runs at `AfterHistory` and injects matching past events as context.
     pub struct HistoryRecallHook {
-        event_store: Arc<EventStore>,
+        event_store: EventStore,
         /// Maximum number of historical messages to inject.
         top_k: usize,
         /// Minimum keyword length (in bytes) to be considered.
@@ -183,7 +183,7 @@ mod keyword_impl {
 
     impl HistoryRecallHook {
         /// Create a new recall hook with the given event store.
-        pub fn new(event_store: Arc<EventStore>) -> Self {
+        pub fn new(event_store: EventStore) -> Self {
             Self {
                 event_store,
                 top_k: 3,
@@ -409,7 +409,7 @@ mod embedding_impl {
     pub struct HistoryRecallHook {
         searcher: Arc<RecallSearcher>,
         config: RecallConfig,
-        event_store: Arc<EventStore>,
+        event_store: EventStore,
     }
 
     impl HistoryRecallHook {
@@ -417,7 +417,7 @@ mod embedding_impl {
         pub fn new(
             searcher: Arc<RecallSearcher>,
             config: RecallConfig,
-            event_store: Arc<EventStore>,
+            event_store: EventStore,
         ) -> Self {
             Self {
                 searcher,

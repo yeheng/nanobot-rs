@@ -1,7 +1,5 @@
 //! Cron commands implementation
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use chrono::Utc;
 use colored::Colorize;
@@ -14,7 +12,7 @@ use gasket_engine::cron::{CronJob, CronService};
 async fn create_cron_service() -> Result<CronService> {
     let workspace = config_dir();
     let sqlite_store = gasket_engine::SqliteStore::new().await?;
-    let cron_store = Arc::new(sqlite_store.cron_store());
+    let cron_store = sqlite_store.cron_store();
     Ok(CronService::new(workspace, cron_store).await)
 }
 

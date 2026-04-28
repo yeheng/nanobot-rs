@@ -16,12 +16,12 @@ use crate::wiki::{PageIndex, PageStore, PageType, WikiPage};
 
 /// Search wiki pages using Tantivy BM25.
 pub struct WikiSearchTool {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
     page_index: Arc<PageIndex>,
 }
 
 impl WikiSearchTool {
-    pub fn new(page_store: Arc<PageStore>, page_index: Arc<PageIndex>) -> Self {
+    pub fn new(page_store: PageStore, page_index: Arc<PageIndex>) -> Self {
         Self {
             page_store,
             page_index,
@@ -123,11 +123,11 @@ impl Tool for WikiSearchTool {
 
 /// Write or update a wiki page.
 pub struct WikiWriteTool {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
 }
 
 impl WikiWriteTool {
-    pub fn new(page_store: Arc<PageStore>) -> Self {
+    pub fn new(page_store: PageStore) -> Self {
         Self { page_store }
     }
 }
@@ -233,11 +233,11 @@ impl Tool for WikiWriteTool {
 
 /// Read a wiki page from SQLite.
 pub struct WikiReadTool {
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
 }
 
 impl WikiReadTool {
-    pub fn new(page_store: Arc<PageStore>) -> Self {
+    pub fn new(page_store: PageStore) -> Self {
         Self { page_store }
     }
 }

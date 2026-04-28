@@ -4,8 +4,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use chrono::Utc;
 use parking_lot::RwLock;
 use tracing::{debug, info, instrument, warn};
@@ -29,7 +27,7 @@ pub struct CronService {
 
 impl CronService {
     /// Create a new cron service.
-    pub async fn new(workspace: PathBuf, db: Arc<gasket_storage::CronStore>) -> Self {
+    pub async fn new(workspace: PathBuf, db: gasket_storage::CronStore) -> Self {
         let registry = RwLock::new(CronRegistry::new());
         let persistence = CronPersistence::new(db);
         let service = Self {

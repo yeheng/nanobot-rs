@@ -10,6 +10,7 @@ use super::page::{PageFilter, PageSummary, PageType, WikiPage};
 
 /// PageStore: CRUD operations on wiki pages.
 /// Markdown files on disk are the SSOT. SQLite is a derived index (cache + query projection).
+#[derive(Clone)]
 pub struct PageStore {
     db: WikiPageStore,
     wiki_root: PathBuf,

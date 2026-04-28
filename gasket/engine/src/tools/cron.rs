@@ -244,7 +244,7 @@ mod tests {
         let sqlite_store = gasket_storage::SqliteStore::with_path(db_path)
             .await
             .expect("Failed to create test SQLite store");
-        let cron_store = Arc::new(sqlite_store.cron_store());
+        let cron_store = sqlite_store.cron_store();
         Arc::new(CronService::new(temp_dir.to_path_buf(), cron_store).await)
     }
 

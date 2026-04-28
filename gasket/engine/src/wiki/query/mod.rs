@@ -65,11 +65,11 @@ impl QueryResult {
 /// Wiki query engine — two-phase retrieval over wiki pages.
 pub struct WikiQueryEngine {
     search: Arc<dyn PageSearchIndex>,
-    store: Arc<PageStore>,
+    store: PageStore,
 }
 
 impl WikiQueryEngine {
-    pub fn new(search: Arc<dyn PageSearchIndex>, store: Arc<PageStore>) -> Self {
+    pub fn new(search: Arc<dyn PageSearchIndex>, store: PageStore) -> Self {
         Self { search, store }
     }
 
@@ -181,7 +181,7 @@ impl WikiQueryEngine {
         &self.search
     }
 
-    pub fn store(&self) -> &Arc<PageStore> {
+    pub fn store(&self) -> &PageStore {
         &self.store
     }
 }

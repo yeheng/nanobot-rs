@@ -26,7 +26,7 @@ use gasket_types::{EventMetadata, EventType, SessionEvent};
 #[derive(Clone)]
 pub struct ResponseFinalizer {
     hooks: Arc<HookRegistry>,
-    event_store: Arc<EventStore>,
+    event_store: EventStore,
     compactor: Option<Arc<ContextCompactor>>,
     pricing: Option<ModelPricing>,
     max_tokens: u32,
@@ -35,7 +35,7 @@ pub struct ResponseFinalizer {
 impl ResponseFinalizer {
     pub fn new(
         hooks: Arc<HookRegistry>,
-        event_store: Arc<EventStore>,
+        event_store: EventStore,
         compactor: Option<Arc<ContextCompactor>>,
         pricing: Option<ModelPricing>,
         max_tokens: u32,

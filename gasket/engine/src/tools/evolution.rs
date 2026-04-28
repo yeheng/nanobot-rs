@@ -68,7 +68,7 @@ pub struct EvolutionTool {
     maintenance_store: gasket_storage::MaintenanceStore,
     provider: Arc<dyn LlmProvider>,
     model: String,
-    page_store: Option<Arc<PageStore>>,
+    page_store: Option<PageStore>,
     default_threshold: usize,
     evolution_prompt: Option<String>,
 }
@@ -80,7 +80,7 @@ impl EvolutionTool {
         maintenance_store: gasket_storage::MaintenanceStore,
         provider: Arc<dyn LlmProvider>,
         model: String,
-        page_store: Option<Arc<PageStore>>,
+        page_store: Option<PageStore>,
         default_threshold: usize,
         evolution_prompt: Option<String>,
     ) -> Self {

@@ -76,7 +76,7 @@ async fn test_full_ingest_query_lint_cycle() {
     assert_eq!(hits[0].path, "topics/async");
 
     // Run lint
-    let linter = WikiLinter::new(Arc::new(store));
+    let linter = WikiLinter::new(store);
     let report = linter.lint().await.unwrap();
 
     // Should find: stub page (short content), and at least one structural issue

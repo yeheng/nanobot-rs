@@ -70,6 +70,7 @@ pub trait EventStoreTrait: Send + Sync {
     ) -> Result<Option<SessionEvent>, StoreError>;
 }
 
+#[derive(Clone)]
 pub struct EventStore {
     pool: SqlitePool,
     tx: broadcast::Sender<SessionEvent>,

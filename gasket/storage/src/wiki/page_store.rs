@@ -31,6 +31,7 @@ pub struct WikiPageInput<'a> {
 
 /// SQLite-backed wiki page store. Single source of truth.
 /// Content lives here. Disk files are optional cache.
+#[derive(Clone)]
 pub struct WikiPageStore {
     pool: SqlitePool,
 }

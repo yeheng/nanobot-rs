@@ -34,7 +34,7 @@ const DEFAULT_PLANNING_TEMPLATE: &str = "Goal: {{goal}}\n\n\
 pub struct CreatePlanTool {
     provider: Arc<dyn LlmProvider>,
     model: String,
-    page_store: Arc<PageStore>,
+    page_store: PageStore,
     planning_prompt: Option<String>,
 }
 
@@ -42,7 +42,7 @@ impl CreatePlanTool {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         model: String,
-        page_store: Arc<PageStore>,
+        page_store: PageStore,
         planning_prompt: Option<String>,
     ) -> Self {
         Self {

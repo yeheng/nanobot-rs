@@ -24,11 +24,16 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         .await
         .expect("Failed to open SqliteStore");
 
+    let pool = sqlite_store.pool();
+
+    gasket_engine::config::init_config(config.clone());
+    gasket_storage::init_db(sqlite_store);
+
     // Initialize wiki stores if wiki directory exists
     let wiki_root = workspace.join("wiki");
     let (page_store, page_index) = if wiki_root.exists() {
-        let ps = Arc::new(PageStore::new(sqlite_store.pool(), wiki_root.clone()));
-        if let Err(e) = gasket_engine::create_wiki_tables(&sqlite_store.pool()).await {
+        let ps = PageStore::new(pool.clone(), wiki_root.clone());
+        if let Err(e) = gasket_engine::create_wiki_tables(&pool).await {
             tracing::warn!("Failed to create wiki tables: {}", e);
         }
         let pi = match gasket_storage::wiki::TantivyPageIndex::open(wiki_root.join(".tantivy")) {
@@ -46,7 +51,7 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
     // Initialize embedding recall if configured
     #[cfg(feature = "embedding")]
     let (history_search, _embedding_indexer) = if let Some(ref emb_cfg) = config.embedding {
-        let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
+        let event_store = gasket_engine::EventStore::new(pool.clone());
         match gasket_engine::session::history::builder::setup_embedding_recall(
             &event_store,
             emb_cfg,
@@ -72,11 +77,8 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
     // (non-embedding builds skip semantic recall initialization)
 
     let mut tools = build_tool_registry(ToolRegistryConfig {
-        config: config.clone(),
-        workspace: workspace.clone(),
         subagent_spawner: None,
         extra_tools: vec![],
-        sqlite_store: Some(sqlite_store),
         page_store,
         page_index,
         provider: Some(provider_info.provider.clone()),

@@ -359,7 +359,7 @@ pub async fn cmd_wiki_lint(auto_fix: bool) -> Result<()> {
     }
 
     let store = gasket_engine::SqliteStore::new().await?;
-    let ps = std::sync::Arc::new(PageStore::new(store.pool(), wiki_root));
+    let ps = PageStore::new(store.pool(), wiki_root);
 
     let linter = WikiLinter::new(ps);
 

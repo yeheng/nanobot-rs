@@ -63,13 +63,11 @@ pub async fn cmd_gateway() -> Result<()> {
     let workspace = resolve_workspace()?;
     let broker = gasket_engine::broker::broker_arc();
     let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace).await;
-    let cron_sqlite_store = Arc::new(
-        SqliteStore::new()
-            .await
-            .expect("Failed to open SQLite store for cron persistence"),
-    );
+    let cron_sqlite_store = SqliteStore::new()
+        .await
+        .expect("Failed to open SQLite store for cron persistence");
     let cron_service = Arc::new(
-        CronService::new(workspace.clone(), Arc::new(cron_sqlite_store.cron_store())).await,
+        CronService::new(workspace.clone(), cron_sqlite_store.cron_store()).await,
     );
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
@@ -79,7 +77,6 @@ pub async fn cmd_gateway() -> Result<()> {
         &sqlite_store,
         page_store.clone(),
         page_index.clone(),
-        &broker,
         &cron_service,
     )
     .await?;
@@ -92,15 +89,15 @@ pub async fn cmd_gateway() -> Result<()> {
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     setup_http_server(&providers, &agent, &mut tasks).await;
-    setup_broker_pipeline(&broker, &providers, &agent, &mut tasks);
-    start_heartbeat_service(&broker, &workspace, &mut tasks);
+    setup_broker_pipeline(&providers, &agent, &mut tasks);
+    start_heartbeat_service(&workspace, &mut tasks);
     // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
         let svc = gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone());
         tasks.push(svc.spawn());
     }
     cron_service.ensure_system_cron_jobs().await;
-    start_cron_checker(&cron_service, &broker, tools, subagent_spawner, &mut tasks);
+    start_cron_checker(&cron_service, tools, subagent_spawner, &mut tasks);
     tasks.extend(providers.spawn_all(&inbound_sender));
 
     println!("\n🐈 Gateway running. Press Ctrl+C to stop.\n");
@@ -196,7 +193,7 @@ async fn setup_wiki(
     sqlite_store: &Arc<SqliteStore>,
     workspace: &std::path::PathBuf,
 ) -> (
-    Option<Arc<gasket_engine::wiki::PageStore>>,
+    Option<gasket_engine::wiki::PageStore>,
     Option<Arc<gasket_engine::wiki::PageIndex>>,
 ) {
     let pool = sqlite_store.pool();
@@ -204,10 +201,10 @@ async fn setup_wiki(
     if !wiki_root.exists() {
         return (None, None);
     }
-    let ps = Arc::new(gasket_engine::wiki::PageStore::new(
+    let ps = gasket_engine::wiki::PageStore::new(
         pool.clone(),
         wiki_root.clone(),
-    ));
+    );
     if let Err(e) = ps.init_dirs().await {
         tracing::warn!("Failed to init wiki dirs: {}", e);
     }
@@ -230,9 +227,8 @@ async fn setup_agent_pipeline(
     vault: Option<Arc<gasket_engine::vault::VaultStore>>,
     workspace: &std::path::PathBuf,
     sqlite_store: &Arc<SqliteStore>,
-    page_store: Option<Arc<gasket_engine::wiki::PageStore>>,
+    page_store: Option<gasket_engine::wiki::PageStore>,
     page_index: Option<Arc<gasket_engine::wiki::PageIndex>>,
-    broker: &Arc<MemoryBroker>,
     cron_service: &Arc<CronService>,
 ) -> Result<(
     Arc<AgentSession>,
@@ -264,7 +260,7 @@ async fn setup_agent_pipeline(
     #[cfg(feature = "embedding")]
     let (history_search, embedding_recall, event_store_tx) =
         if let Some(ref emb_cfg) = config.embedding {
-            let event_store = Arc::new(gasket_engine::EventStore::new(sqlite_store.pool()));
+            let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
             let tx = Some(event_store.sender());
             match gasket_engine::session::history::builder::setup_embedding_recall(
                 &event_store,
@@ -291,11 +287,8 @@ async fn setup_agent_pipeline(
     // (non-embedding builds skip semantic recall initialization)
 
     let common_tools = build_tool_registry(ToolRegistryConfig {
-        config: config.clone(),
-        workspace: workspace.clone(),
         subagent_spawner: None,
         extra_tools: vec![],
-        sqlite_store: Some(sqlite_store.as_ref().clone()),
         page_store: page_store.clone(),
         page_index: page_index.clone(),
         provider: Some(provider_info.provider.clone()),
@@ -328,7 +321,6 @@ async fn setup_agent_pipeline(
     );
 
     let extra_tools = build_extra_tools(
-        broker,
         cron_service,
         &provider_info,
         &agent_config,
@@ -401,14 +393,13 @@ async fn setup_agent_pipeline(
 }
 
 fn build_extra_tools(
-    broker: &Arc<MemoryBroker>,
     cron_service: &Arc<CronService>,
     provider_info: &crate::provider::ProviderInfo,
     agent_config: &gasket_engine::session::AgentConfig,
     sqlite_store: &Arc<SqliteStore>,
 ) -> Vec<(Box<dyn Tool>, ToolMetadata)> {
     let mut ext = vec![(
-        Box::new(MessageTool::new_broker(broker.clone())) as Box<dyn Tool>,
+        Box::new(MessageTool) as Box<dyn Tool>,
         ToolMetadata {
             display_name: "Send Message".to_string(),
             category: "communication".to_string(),
@@ -430,8 +421,8 @@ fn build_extra_tools(
     ));
 
     let ctx_pool = sqlite_store.pool();
-    let ctx_event_store = Arc::new(EventStore::new(ctx_pool.clone()));
-    let ctx_session_store = Arc::new(gasket_engine::SessionStore::new(ctx_pool));
+    let ctx_event_store = EventStore::new(ctx_pool.clone());
+    let ctx_session_store = gasket_engine::SessionStore::new(ctx_pool);
     let mut ctx_compactor = ContextCompactor::new(
         provider_info.provider.clone(),
         ctx_event_store,
@@ -628,17 +619,16 @@ async fn handle_context_compact(
 }
 
 fn setup_broker_pipeline(
-    broker: &Arc<MemoryBroker>,
     providers: &Arc<gasket_engine::channels::ImProviders>,
     agent: &Arc<AgentSession>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
-    let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), providers.clone());
+    let outbound_dispatcher = OutboundDispatcher::new(providers.clone());
     tasks.push(tokio::spawn(outbound_dispatcher.run()));
 
     let handler = Arc::new(EngineHandler::new(agent.clone()));
     let session_mgr = SessionManager::new(
-        broker.clone(),
+        gasket_engine::broker::broker_arc(),
         handler,
         std::time::Duration::from_secs(3600),
     );
@@ -657,16 +647,13 @@ async fn shutdown_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
 
 /// Start heartbeat service that periodically sends heartbeat tasks through the bus.
 fn start_heartbeat_service(
-    broker: &Arc<MemoryBroker>,
     workspace: &Path,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let heartbeat = gasket_engine::heartbeat::HeartbeatService::new(workspace.to_path_buf());
-    let broker_for_heartbeat = broker.clone();
     tasks.push(tokio::spawn(async move {
         heartbeat
             .run(|task_text| {
-                let broker_inner = broker_for_heartbeat.clone();
                 async move {
                     let inbound = gasket_engine::channels::InboundMessage {
                         channel: gasket_engine::channels::ChannelType::Cli,
@@ -682,7 +669,7 @@ fn start_heartbeat_service(
                         gasket_engine::broker::Topic::Inbound,
                         BrokerPayload::Inbound(inbound),
                     );
-                    let _ = broker_inner.publish(envelope).await;
+                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                 }
             })
             .await;
@@ -693,13 +680,11 @@ fn start_heartbeat_service(
 /// Supports direct tool execution (bypassing LLM) for zero-token system tasks.
 fn start_cron_checker(
     cron_service: &Arc<CronService>,
-    broker: &Arc<MemoryBroker>,
     tools: Arc<ToolRegistry>,
     spawner: Arc<dyn SubagentSpawner>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let cron_svc = cron_service.clone();
-    let broker_for_cron = broker.clone();
     tasks.push(tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -734,14 +719,13 @@ fn start_cron_checker(
                             let (tx, mut rx) = tokio::sync::mpsc::channel::<
                                 gasket_engine::channels::OutboundMessage,
                             >(16);
-                            let b = broker_for_cron.clone();
                             tokio::spawn(async move {
                                 while let Some(msg) = rx.recv().await {
                                     let envelope = gasket_engine::broker::Envelope::new(
                                         gasket_engine::broker::Topic::Outbound,
                                         BrokerPayload::Outbound(msg),
                                     );
-                                    let _ = b.publish(envelope).await;
+                                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                                 }
                             });
                             tx
@@ -767,7 +751,7 @@ fn start_cron_checker(
                                 gasket_engine::broker::Topic::Outbound,
                                 BrokerPayload::Outbound(out_msg),
                             );
-                            let _ = broker_for_cron.publish(envelope).await;
+                            let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                         }
                         Err(e) => {
                             tracing::error!("Cron job '{}' failed: {}", job.name, e);
@@ -786,7 +770,7 @@ fn start_cron_checker(
                                 gasket_engine::broker::Topic::Outbound,
                                 BrokerPayload::Outbound(out_msg),
                             );
-                            let _ = broker_for_cron.publish(envelope).await;
+                            let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                         }
                     }
                 } else if is_broadcast {
@@ -799,7 +783,7 @@ fn start_cron_checker(
                         gasket_engine::broker::Topic::Outbound,
                         BrokerPayload::Outbound(out_msg),
                     );
-                    let _ = broker_for_cron.publish(envelope).await;
+                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                 } else {
                     // Traditional LLM-based path
                     let inbound = gasket_engine::channels::InboundMessage {
@@ -816,7 +800,7 @@ fn start_cron_checker(
                         gasket_engine::broker::Topic::Inbound,
                         BrokerPayload::Inbound(inbound),
                     );
-                    let _ = broker_for_cron.publish(envelope).await;
+                    let _ = gasket_engine::broker::broker_arc().publish(envelope).await;
                 }
 
                 // Advance job tick and persist state to database

@@ -10,8 +10,6 @@ pub mod structural;
 
 pub use structural::{Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig};
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -87,13 +85,13 @@ impl FixReport {
 
 /// Wiki linter — runs structural checks only.
 pub struct WikiLinter {
-    store: Arc<PageStore>,
+    store: PageStore,
     structural_config: StructuralLintConfig,
 }
 
 impl WikiLinter {
     /// Create a new linter with structural checks only.
-    pub fn new(store: Arc<PageStore>) -> Self {
+    pub fn new(store: PageStore) -> Self {
         Self {
             store,
             structural_config: StructuralLintConfig::default(),
