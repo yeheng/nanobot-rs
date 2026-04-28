@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
-use crate::index::HnswIndex;
+use crate::index::MemoryIndex;
 use crate::provider::EmbeddingProvider;
 use crate::vector_store::VectorStore;
 
@@ -57,14 +57,14 @@ pub struct RecallHit {
 /// - **Cold store** (LanceDB / SQLite): full historical embeddings with ANN search.
 pub struct RecallSearcher {
     provider: Arc<dyn EmbeddingProvider>,
-    index: Arc<HnswIndex>,
+    index: Arc<MemoryIndex>,
     store: Arc<dyn VectorStore>,
 }
 
 impl RecallSearcher {
     pub fn new(
         provider: Arc<dyn EmbeddingProvider>,
-        index: Arc<HnswIndex>,
+        index: Arc<MemoryIndex>,
         store: Arc<dyn VectorStore>,
     ) -> Self {
         Self {
@@ -177,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_returns_results() {
         let provider = Arc::new(MockProvider::new(3));
-        let index = Arc::new(HnswIndex::new(3));
+        let index = Arc::new(MemoryIndex::new(3));
         let store = test_store().await;
 
         // Pre-populate index with some entries.
@@ -234,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_filters_by_min_score() {
         let provider = Arc::new(MockProvider::new(3));
-        let index = Arc::new(HnswIndex::new(3));
+        let index = Arc::new(MemoryIndex::new(3));
         let store = test_store().await;
 
         index.insert("evt-1".into(), vec![1.0, 0.0, 0.0]);
@@ -257,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_respects_top_k() {
         let provider = Arc::new(MockProvider::new(3));
-        let index = Arc::new(HnswIndex::new(3));
+        let index = Arc::new(MemoryIndex::new(3));
         let store = test_store().await;
 
         for i in 0..20 {

@@ -28,6 +28,11 @@ jobs:
         with:
           components: rustfmt, clippy
       
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -57,6 +62,11 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Cache cargo registry
         uses: actions/cache@v4

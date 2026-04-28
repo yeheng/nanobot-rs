@@ -370,7 +370,7 @@ pub async fn setup_embedding_recall(
     Arc<gasket_embedding::RecallSearcher>,
     gasket_embedding::EmbeddingIndexer,
 )> {
-    use gasket_embedding::{EmbeddingIndexer, HnswIndex, RecallSearcher};
+    use gasket_embedding::{EmbeddingIndexer, MemoryIndex, RecallSearcher};
     use gasket_storage::EventStoreTrait;
 
     // Build provider from config.
@@ -385,7 +385,7 @@ pub async fn setup_embedding_recall(
     };
 
     // Create in-memory index.
-    let index = Arc::new(HnswIndex::new(dim));
+    let index = Arc::new(MemoryIndex::new(dim));
 
     // Build provider arc early so it can be reused for backfill.
     let provider_arc: Arc<dyn gasket_embedding::EmbeddingProvider> = Arc::from(provider);

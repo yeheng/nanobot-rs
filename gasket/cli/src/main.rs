@@ -20,8 +20,8 @@ mod provider;
 mod workspace_downloader;
 
 use cli::{
-    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, ToolCommands, VaultCommands,
-    WikiCommands,
+    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, EmbeddingCommands, ToolCommands,
+    VaultCommands, WikiCommands,
 };
 
 #[tokio::main]
@@ -114,6 +114,10 @@ async fn main() -> Result<()> {
         Some(Commands::Tool { command }) => match command {
             ToolCommands::Execute { name, args } => commands::cmd_tool_execute(name, args).await,
         },
+        Some(Commands::Embedding { command }) => match command {
+            EmbeddingCommands::Rebuild { limit } => commands::cmd_embedding_rebuild(limit).await,
+            EmbeddingCommands::Stats => commands::cmd_embedding_stats().await,
+        },
         None => {
             // No command - show help
             println!("🐈 gasket v2.0.0 - A lightweight AI assistant\n");
@@ -127,9 +131,10 @@ async fn main() -> Result<()> {
             println!("  auth      Authentication commands");
             println!("  cron      Manage scheduled tasks");
             println!("  stats     Show session token usage and cost statistics");
-            println!("  tool      Execute tools directly");
-            println!("  vault     Manage vault secrets");
-            println!("  wiki      Wiki knowledge system\n");
+            println!("  tool       Execute tools directly");
+            println!("  vault      Manage vault secrets");
+            println!("  wiki       Wiki knowledge system");
+            println!("  embedding  Manage embedding index and history recall\n");
             println!("Run 'gasket --help' for more information.");
             Ok(())
         }

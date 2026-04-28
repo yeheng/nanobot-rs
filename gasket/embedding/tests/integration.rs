@@ -9,7 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use gasket_embedding::{
-    EmbeddingIndexer, EmbeddingProvider, EmbeddingStore, HnswIndex, RecallConfig, RecallSearcher,
+    EmbeddingIndexer, EmbeddingProvider, EmbeddingStore, MemoryIndex, RecallConfig, RecallSearcher,
     VectorRecord, VectorStore,
 };
 use gasket_storage::{EventStore, EventStoreTrait};
@@ -158,7 +158,7 @@ async fn test_full_recall_flow() {
     let dim = 4;
     let store = make_embedding_store(dim).await;
     let provider = Arc::new(DeterministicMockProvider::new(dim));
-    let index = Arc::new(HnswIndex::new(dim));
+    let index = Arc::new(MemoryIndex::new(dim));
 
     // Insert 5 events with pre-computed embeddings.
     let contents = [
@@ -292,7 +292,7 @@ async fn test_cold_start_rebuild() {
     store.upsert(records).await.unwrap();
 
     // Create an empty index and rebuild from store.
-    let index = HnswIndex::new(dim);
+    let index = MemoryIndex::new(dim);
     assert_eq!(index.len(), 0, "index should start empty");
 
     let count = EmbeddingIndexer::rebuild_index(store.as_ref(), &index, None)
@@ -344,7 +344,7 @@ async fn test_indexer_broadcast_processing() {
     };
 
     let provider = Arc::new(DeterministicMockProvider::new(4));
-    let index = Arc::new(HnswIndex::new(4));
+    let index = Arc::new(MemoryIndex::new(4));
 
     // Subscribe to broadcast BEFORE starting indexer so no events are missed.
     let rx = event_store.subscribe();
@@ -413,7 +413,7 @@ async fn test_indexer_dedup() {
     };
 
     let provider = Arc::new(DeterministicMockProvider::new(4));
-    let index = Arc::new(HnswIndex::new(4));
+    let index = Arc::new(MemoryIndex::new(4));
 
     // Create an event and pre-save its embedding manually.
     let event = make_event(EventType::UserMessage, "Duplicate detection test message");

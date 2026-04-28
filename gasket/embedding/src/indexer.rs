@@ -7,12 +7,11 @@ use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::index::HnswIndex;
+use crate::index::MemoryIndex;
 use crate::provider::EmbeddingProvider;
 use crate::vector_store::{VectorRecord, VectorStore};
 use gasket_types::{EventType, SessionEvent};
 
-const _COLD_START_BATCH_SIZE: usize = 1000;
 const MIN_CONTENT_LEN: usize = 5;
 
 /// Indexer that computes embeddings and maintains the HNSW index.
@@ -26,7 +25,7 @@ impl EmbeddingIndexer {
     pub fn start(
         provider: Arc<dyn EmbeddingProvider>,
         store: Arc<dyn VectorStore>,
-        index: Arc<HnswIndex>,
+        index: Arc<MemoryIndex>,
         mut rx: broadcast::Receiver<SessionEvent>,
     ) -> Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -90,7 +89,7 @@ impl EmbeddingIndexer {
     /// (keeps memory bounded). `None` means load everything.
     pub async fn rebuild_index(
         store: &dyn VectorStore,
-        index: &HnswIndex,
+        index: &MemoryIndex,
         limit: Option<usize>,
     ) -> Result<usize> {
         let embeddings = match limit {
@@ -111,7 +110,7 @@ impl EmbeddingIndexer {
     pub async fn process_event(
         provider: &dyn EmbeddingProvider,
         store: &dyn VectorStore,
-        index: &HnswIndex,
+        index: &MemoryIndex,
         event: SessionEvent,
     ) -> Result<()> {
         // Only process UserMessage and AssistantMessage.
@@ -195,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn test_rebuild_index() {
         let store = test_store().await;
-        let index = HnswIndex::new(3);
+        let index = MemoryIndex::new(3);
 
         // Save some embeddings directly.
         store
@@ -243,7 +242,7 @@ mod tests {
     async fn test_process_event_user_message() {
         let provider = MockProvider::new(3);
         let store = test_store().await;
-        let index = HnswIndex::new(3);
+        let index = MemoryIndex::new(3);
 
         let event = make_event(EventType::UserMessage, "Hello, this is a test message");
 
@@ -258,7 +257,7 @@ mod tests {
     async fn test_process_event_skips_tool_call() {
         let provider = MockProvider::new(3);
         let store = test_store().await;
-        let index = HnswIndex::new(3);
+        let index = MemoryIndex::new(3);
 
         let event = make_event(
             EventType::ToolCall {
@@ -279,7 +278,7 @@ mod tests {
     async fn test_process_event_skips_short_content() {
         let provider = MockProvider::new(3);
         let store = test_store().await;
-        let index = HnswIndex::new(3);
+        let index = MemoryIndex::new(3);
 
         let event = make_event(EventType::UserMessage, "Hi");
 
@@ -294,7 +293,7 @@ mod tests {
     async fn test_process_event_dedup() {
         let provider = MockProvider::new(3);
         let store = test_store().await;
-        let index = HnswIndex::new(3);
+        let index = MemoryIndex::new(3);
 
         let event = make_event(EventType::UserMessage, "Hello, this is a test message");
         let event_id = event.id.to_string();
@@ -322,7 +321,7 @@ mod tests {
     async fn test_start_and_shutdown() {
         let provider = Arc::new(MockProvider::new(3));
         let store = test_store().await;
-        let index = Arc::new(HnswIndex::new(3));
+        let index = Arc::new(MemoryIndex::new(3));
         let (_tx, rx) = broadcast::channel::<SessionEvent>(16);
 
         let mut indexer =
@@ -336,7 +335,7 @@ mod tests {
     async fn test_start_processes_events() {
         let provider = Arc::new(MockProvider::new(3));
         let store = test_store().await;
-        let index = Arc::new(HnswIndex::new(3));
+        let index = Arc::new(MemoryIndex::new(3));
         let (tx, rx) = broadcast::channel::<SessionEvent>(16);
 
         let mut indexer =

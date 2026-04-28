@@ -1,6 +1,6 @@
 //! SQLite-backed embedding persistence.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use sqlx::{Row, SqlitePool};
 
 /// An embedding record stored in SQLite.
@@ -145,11 +145,24 @@ impl EmbeddingStore {
 
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
+            let event_id: String = row.get("event_id");
+            let session_key: String = row.get("session_key");
             let blob: Vec<u8> = row.get("embedding");
+            let embedding = match bytes_to_embedding(&blob) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "skipping corrupted embedding for event_id={}: {}",
+                        event_id,
+                        e
+                    );
+                    continue;
+                }
+            };
             results.push(StoredEmbedding {
-                event_id: row.get("event_id"),
-                session_key: row.get("session_key"),
-                embedding: bytes_to_embedding(&blob),
+                event_id,
+                session_key,
+                embedding,
                 event_type: row.get("event_type"),
                 created_at: row.get("created_at"),
             });
@@ -219,11 +232,24 @@ impl EmbeddingStore {
 
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
+            let event_id: String = row.get("event_id");
+            let session_key: String = row.get("session_key");
             let blob: Vec<u8> = row.get("embedding");
+            let embedding = match bytes_to_embedding(&blob) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "skipping corrupted embedding for event_id={}: {}",
+                        event_id,
+                        e
+                    );
+                    continue;
+                }
+            };
             results.push(StoredEmbedding {
-                event_id: row.get("event_id"),
-                session_key: row.get("session_key"),
-                embedding: bytes_to_embedding(&blob),
+                event_id,
+                session_key,
+                embedding,
                 event_type: row.get("event_type"),
                 created_at: row.get("created_at"),
             });
@@ -263,7 +289,17 @@ impl EmbeddingStore {
                     continue;
                 }
                 let blob: Vec<u8> = row.get("embedding");
-                let embedding = bytes_to_embedding(&blob);
+                let embedding = match bytes_to_embedding(&blob) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            "skipping corrupted embedding for event_id={}: {}",
+                            event_id,
+                            e
+                        );
+                        continue;
+                    }
+                };
                 let sim = crate::index::cosine_similarity(query, &embedding);
                 if sim >= min_score {
                     if results.len() < top_k {
@@ -312,18 +348,21 @@ fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 /// Deserialize raw bytes back to Vec<f32>.
-fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
-    assert!(
-        bytes.len().is_multiple_of(4),
-        "embedding blob length must be a multiple of 4"
-    );
-    bytes
-        .chunks_exact(4)
-        .map(|chunk| {
-            let arr: [u8; 4] = chunk.try_into().expect("chunk is exactly 4 bytes");
-            f32::from_le_bytes(arr)
-        })
-        .collect()
+fn bytes_to_embedding(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(anyhow!(
+            "embedding blob length {} is not a multiple of 4",
+            bytes.len()
+        ));
+    }
+    let mut result = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        let arr: [u8; 4] = chunk
+            .try_into()
+            .map_err(|_| anyhow!("unexpected chunk size in embedding blob"))?;
+        result.push(f32::from_le_bytes(arr));
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -589,5 +628,43 @@ mod tests {
 
         let all = store.load_all().await.unwrap();
         assert_eq!(all.len(), 1, "duplicate insert should produce only 1 row");
+    }
+
+    #[tokio::test]
+    async fn test_load_all_skips_corrupted_embedding() {
+        let store = test_store().await;
+
+        let good = vec![0.1f32, 0.2f32];
+        let bad: Vec<u8> = vec![0x01, 0x02, 0x03]; // length 3, not multiple of 4
+
+        store
+            .save("evt-good", "sess-a", "", "", &good, "user_message", "h1")
+            .await
+            .unwrap();
+
+        // Directly insert corrupted blob
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO event_embeddings
+                (event_id, session_key, channel, chat_id, embedding, dim, event_type, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("evt-bad")
+        .bind("sess-a")
+        .bind("")
+        .bind("")
+        .bind(&bad[..])
+        .bind(0i32)
+        .bind("user_message")
+        .bind("h2")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let all = store.load_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].event_id, "evt-good");
     }
 }

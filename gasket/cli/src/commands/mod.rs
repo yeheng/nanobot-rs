@@ -4,6 +4,7 @@ mod agent;
 mod auth;
 mod channels;
 mod cron;
+mod embedding;
 mod gateway;
 mod onboard;
 pub mod registry;
@@ -19,6 +20,7 @@ pub use cron::{
     cmd_cron_add, cmd_cron_disable, cmd_cron_enable, cmd_cron_list, cmd_cron_refresh,
     cmd_cron_remove, cmd_cron_show,
 };
+pub use embedding::{cmd_embedding_rebuild, cmd_embedding_stats};
 pub use gateway::cmd_gateway;
 pub use onboard::cmd_onboard;
 pub use status::{cmd_auth_status, cmd_status};

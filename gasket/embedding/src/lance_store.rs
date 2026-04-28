@@ -156,41 +156,6 @@ impl LanceVectorStore {
 
         Ok(results)
     }
-
-    /// Ensure the ANN index exists. Called lazily after enough data is inserted.
-    async fn ensure_index(&self) -> Result<()> {
-        let indices = self
-            .table
-            .list_indices()
-            .await
-            .map_err(|e| anyhow!("failed to list indices: {e}"))?;
-
-        // If there's already an index on "vector", skip.
-        if indices
-            .iter()
-            .any(|idx| idx.columns.contains(&"vector".to_string()))
-        {
-            return Ok(());
-        }
-
-        // Only create index if we have enough rows (IVF-PQ needs data).
-        let count = self
-            .table
-            .count_rows(None)
-            .await
-            .map_err(|e| anyhow!("failed to count rows: {e}"))?;
-        if count < 256 {
-            return Ok(());
-        }
-
-        self.table
-            .create_index(&["vector"], lancedb::index::Index::Auto)
-            .execute()
-            .await
-            .map_err(|e| anyhow!("failed to create ANN index: {e}"))?;
-
-        Ok(())
-    }
 }
 
 #[async_trait::async_trait]
@@ -224,9 +189,6 @@ impl VectorStore for LanceVectorStore {
         min_score: f32,
         exclude: &HashSet<String>,
     ) -> Result<Vec<SearchResult>> {
-        // Ensure ANN index is built (no-op if already exists or too few rows).
-        self.ensure_index().await?;
-
         let overfetch = top_k + exclude.len();
         let stream = self
             .table

@@ -10,7 +10,7 @@ pub mod vector_store;
 #[cfg(feature = "lancedb")]
 pub mod lance_store;
 
-pub use index::HnswIndex;
+pub use index::MemoryIndex;
 pub use indexer::EmbeddingIndexer;
 pub use provider::{ApiProvider, EmbeddingProvider, ProviderConfig};
 pub use searcher::{RecallConfig, RecallHit, RecallSearcher};

@@ -64,6 +64,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: ToolCommands,
     },
+
+    /// Manage embedding index and history recall
+    Embedding {
+        #[command(subcommand)]
+        command: EmbeddingCommands,
+    },
 }
 
 /// Options for the `agent` command.
@@ -235,6 +241,19 @@ pub enum ToolCommands {
         /// JSON arguments (e.g., '{"threshold": 20}')
         args: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum EmbeddingCommands {
+    /// Rebuild the embedding index from persistent store
+    Rebuild {
+        /// Maximum number of embeddings to load (default: all)
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+
+    /// Show embedding store statistics
+    Stats,
 }
 
 #[derive(Subcommand)]
