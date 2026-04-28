@@ -48,7 +48,9 @@ pub async fn cmd_gateway() -> Result<()> {
     // ── Infrastructure initialization (explicit, once) ──
     gasket_engine::config::init_config(config.clone());
     gasket_engine::broker::init_broker(MemoryBroker::new(1024, 256));
-    let sqlite_store = SqliteStore::new().await.expect("Failed to open SqliteStore");
+    let sqlite_store = SqliteStore::new()
+        .await
+        .expect("Failed to open SqliteStore");
     gasket_storage::init_db(sqlite_store);
     let sqlite_store = Arc::new(gasket_storage::get_db().clone());
 
@@ -202,9 +204,10 @@ async fn setup_wiki(
     if !wiki_root.exists() {
         return (None, None);
     }
-    let ps = Arc::new(
-        gasket_engine::wiki::PageStore::new(pool.clone(), wiki_root.clone()),
-    );
+    let ps = Arc::new(gasket_engine::wiki::PageStore::new(
+        pool.clone(),
+        wiki_root.clone(),
+    ));
     if let Err(e) = ps.init_dirs().await {
         tracing::warn!("Failed to init wiki dirs: {}", e);
     }

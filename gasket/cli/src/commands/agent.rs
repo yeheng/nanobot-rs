@@ -42,7 +42,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // ── Infrastructure initialization (explicit, once) ──
     gasket_engine::config::init_config(config.clone());
     gasket_engine::broker::init_broker(MemoryBroker::new(256, 64));
-    let sqlite_store = SqliteStore::new().await.expect("Failed to open SqliteStore");
+    let sqlite_store = SqliteStore::new()
+        .await
+        .expect("Failed to open SqliteStore");
     gasket_storage::init_db(sqlite_store);
     let sqlite_store = Arc::new(gasket_storage::get_db().clone());
 
@@ -84,31 +86,29 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Initialize wiki stores if wiki config is enabled or wiki directory exists
     let wiki_root = workspace.join("wiki");
-    let (page_store, page_index) = if wiki_root.exists()
-        || agent_config.wiki.as_ref().map_or(false, |w| w.enabled)
-    {
-        use gasket_engine::wiki::{PageIndex, PageStore};
-        use gasket_storage::wiki::TantivyPageIndex;
-        let ps =
-            Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
-        if let Err(e) = ps.init_dirs().await {
-            tracing::warn!("Failed to init wiki dirs: {}", e);
-        }
-        if let Err(e) = gasket_engine::create_wiki_tables(&pool).await {
-            tracing::warn!("Failed to create wiki tables: {}", e);
-        }
-        let tantivy_dir = wiki_root.join(".tantivy");
-        let pi = match TantivyPageIndex::open(tantivy_dir) {
-            Ok(idx) => Some(Arc::new(PageIndex::new(Arc::new(idx)))),
-            Err(e) => {
-                tracing::warn!("Tantivy index open failed, search disabled: {}", e);
-                None
+    let (page_store, page_index) =
+        if wiki_root.exists() || agent_config.wiki.as_ref().map_or(false, |w| w.enabled) {
+            use gasket_engine::wiki::{PageIndex, PageStore};
+            use gasket_storage::wiki::TantivyPageIndex;
+            let ps = Arc::new(PageStore::new(pool.clone(), wiki_root.clone()));
+            if let Err(e) = ps.init_dirs().await {
+                tracing::warn!("Failed to init wiki dirs: {}", e);
             }
+            if let Err(e) = gasket_engine::create_wiki_tables(&pool).await {
+                tracing::warn!("Failed to create wiki tables: {}", e);
+            }
+            let tantivy_dir = wiki_root.join(".tantivy");
+            let pi = match TantivyPageIndex::open(tantivy_dir) {
+                Ok(idx) => Some(Arc::new(PageIndex::new(Arc::new(idx)))),
+                Err(e) => {
+                    tracing::warn!("Tantivy index open failed, search disabled: {}", e);
+                    None
+                }
+            };
+            (Some(ps), pi)
+        } else {
+            (None, None)
         };
-        (Some(ps), pi)
-    } else {
-        (None, None)
-    };
 
     // Spawn wiki indexing service for auto Tantivy updates
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {

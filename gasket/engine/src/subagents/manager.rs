@@ -120,7 +120,11 @@ pub fn spawn_subagent(
                 },
             );
             if let Err(e) = broker.try_publish(envelope) {
-                tracing::debug!("[Subagent {}] Failed to publish start event: {}", subagent_id, e);
+                tracing::debug!(
+                    "[Subagent {}] Failed to publish start event: {}",
+                    subagent_id,
+                    e
+                );
             }
         }
 
@@ -230,7 +234,11 @@ pub fn spawn_subagent(
                 },
             );
             if let Err(e) = broker.try_publish(envelope) {
-                tracing::debug!("[Subagent {}] Failed to publish completed event: {}", subagent_id, e);
+                tracing::debug!(
+                    "[Subagent {}] Failed to publish completed event: {}",
+                    subagent_id,
+                    e
+                );
             }
         }
 

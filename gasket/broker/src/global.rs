@@ -16,7 +16,7 @@ pub fn get_broker() -> &'static MemoryBroker {
     let arc = GLOBAL_BROKER
         .get()
         .expect("get_broker called before init_broker");
-    &**arc
+    arc
 }
 
 /// Get an `Arc` handle to the global broker. Panics if not initialized.
