@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
             WikiCommands::Search { query, limit } => commands::cmd_wiki_search(&query, limit).await,
             WikiCommands::List { page_type } => commands::cmd_wiki_list(page_type.as_deref()).await,
             WikiCommands::Lint { fix } => commands::cmd_wiki_lint(fix).await,
+            WikiCommands::Delete { path, force } => commands::cmd_wiki_delete(&path, force).await,
         },
         Some(Commands::Tool { command }) => match command {
             ToolCommands::Execute { name, args } => commands::cmd_tool_execute(name, args).await,

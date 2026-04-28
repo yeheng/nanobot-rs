@@ -229,6 +229,67 @@ impl Tool for WikiWriteTool {
     }
 }
 
+// ── WikiDeleteTool ───────────────────────────────────────────────
+
+/// Delete a wiki page.
+pub struct WikiDeleteTool {
+    page_store: PageStore,
+}
+
+impl WikiDeleteTool {
+    pub fn new(page_store: PageStore) -> Self {
+        Self { page_store }
+    }
+}
+
+#[derive(Deserialize)]
+struct DeleteArgs {
+    path: String,
+}
+
+#[async_trait]
+impl Tool for WikiDeleteTool {
+    fn name(&self) -> &str {
+        "wiki_delete"
+    }
+
+    fn description(&self) -> &str {
+        "Delete a wiki page by path. Removes both the disk file and the SQLite record."
+    }
+
+    fn parameters(&self) -> Value {
+        simple_schema(&[(
+            "path",
+            "string",
+            true,
+            "Wiki page path to delete (e.g. 'topics/rust-async')",
+        )])
+    }
+
+    #[instrument(name = "tool.wiki_delete", skip_all)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
+        let parsed: DeleteArgs = serde_json::from_value(args)
+            .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
+
+        let path = parsed.path.trim();
+        if path.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "path must not be empty".to_string(),
+            ));
+        }
+
+        self.page_store.delete(path).await.map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to delete wiki page '{}': {}", path, e))
+        })?;
+
+        Ok(format!("Wiki page deleted: {}", path))
+    }
+}
+
 // ── WikiReadTool ─────────────────────────────────────────────────
 
 /// Read a wiki page from SQLite.

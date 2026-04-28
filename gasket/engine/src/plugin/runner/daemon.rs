@@ -216,11 +216,15 @@ impl JsonRpcDaemon {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
                 self.pending.remove(&id);
-                return Err(PluginError::Io("Daemon response channel closed".to_string()));
+                return Err(PluginError::Io(
+                    "Daemon response channel closed".to_string(),
+                ));
             }
             Err(_) => {
                 self.pending.remove(&id);
-                return Err(PluginError::Timeout(self.idle_timeout_ms.max(5000) as u64 / 1000));
+                return Err(PluginError::Timeout(
+                    self.idle_timeout_ms.max(5000) as u64 / 1000,
+                ));
             }
         };
 

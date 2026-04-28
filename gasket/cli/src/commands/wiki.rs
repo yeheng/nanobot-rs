@@ -350,6 +350,63 @@ pub async fn cmd_wiki_list(page_type: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Delete a wiki page.
+pub async fn cmd_wiki_delete(path: &str, force: bool) -> Result<()> {
+    let wiki_root = wiki_base_dir();
+    if !wiki_root.exists() {
+        println!("Wiki not initialized. Run 'gasket wiki init' first.");
+        return Ok(());
+    }
+
+    if !force {
+        print!("Are you sure you want to delete '{}'? [y/N] ", path);
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    let store = gasket_engine::SqliteStore::new().await?;
+    let ps = PageStore::new(store.pool(), wiki_root.clone());
+
+    match ps.delete(path).await {
+        Ok(_) => {
+            println!("Deleted wiki page: {}", path);
+        }
+        Err(e) => {
+            println!("Failed to delete '{}': {}", path, e);
+            return Ok(());
+        }
+    }
+
+    // CLI has no background WikiIndexingService, so do synchronous cleanup here.
+    let relation_store = gasket_storage::wiki::WikiRelationStore::new(store.pool().clone());
+    if let Err(e) = relation_store.delete_all_for_page(path).await {
+        tracing::warn!("Failed to clean up wiki relations for '{}': {}", path, e);
+    }
+
+    let tantivy_dir = wiki_root.join(".tantivy");
+    if tantivy_dir.exists() {
+        match gasket_storage::wiki::TantivyPageIndex::open(tantivy_dir) {
+            Ok(tantivy_idx) => {
+                let index = gasket_engine::wiki::PageIndex::new(Arc::new(tantivy_idx));
+                if let Err(e) = index.delete(path).await {
+                    tracing::warn!("Failed to remove page from Tantivy index: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Tantivy index not available for cleanup: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Run wiki lint checks.
 pub async fn cmd_wiki_lint(auto_fix: bool) -> Result<()> {
     let wiki_root = wiki_base_dir();

@@ -72,4 +72,4 @@ pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 pub use wiki_decay::WikiDecayTool;
 pub use wiki_refresh::WikiRefreshTool;
-pub use wiki_tools::{WikiReadTool, WikiSearchTool, WikiWriteTool};
+pub use wiki_tools::{WikiDeleteTool, WikiReadTool, WikiSearchTool, WikiWriteTool};

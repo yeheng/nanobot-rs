@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
+#[derive(Clone)]
 pub struct WikiRelationStore {
     pool: SqlitePool,
 }

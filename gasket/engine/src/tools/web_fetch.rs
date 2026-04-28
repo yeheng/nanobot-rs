@@ -197,8 +197,10 @@ async fn extract_core_content(url_str: &str, html: String) -> Result<String, any
 
 /// Brute-force fallback: strip scripts/styles/HTML tags via regex.
 fn fallback_extract(html: &str) -> String {
-    let re_script = Regex::new(r"(?is)<(script|style).*?>.*?</\1>").unwrap();
+    let re_script = Regex::new(r"(?is)<script.*?>.*?</script>").unwrap();
     let no_scripts = re_script.replace_all(html, " ");
+    let re_style = Regex::new(r"(?is)<style.*?>.*?</style>").unwrap();
+    let no_scripts = re_style.replace_all(&no_scripts, " ");
 
     let re_tags = Regex::new(r"(?is)<.*?>").unwrap();
     let raw_text = re_tags.replace_all(&no_scripts, " ");

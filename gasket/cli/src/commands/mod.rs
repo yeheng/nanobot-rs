@@ -28,7 +28,7 @@ pub use vault::{
     cmd_vault_rekey, cmd_vault_set, cmd_vault_show,
 };
 pub use wiki::{
-    cmd_wiki_ingest, cmd_wiki_init, cmd_wiki_lint, cmd_wiki_list, cmd_wiki_migrate,
+    cmd_wiki_delete, cmd_wiki_ingest, cmd_wiki_init, cmd_wiki_lint, cmd_wiki_list, cmd_wiki_migrate,
     cmd_wiki_search, cmd_wiki_stats,
 };
 

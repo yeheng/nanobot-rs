@@ -135,7 +135,6 @@ impl ToolRegistry {
     pub fn list(&self) -> Vec<&str> {
         self.items.keys().map(|s| s.as_str()).collect()
     }
-
 }
 
 impl Default for ToolRegistry {

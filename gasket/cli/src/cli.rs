@@ -279,4 +279,14 @@ pub enum WikiCommands {
         #[arg(long)]
         fix: bool,
     },
+
+    /// Delete a wiki page
+    Delete {
+        /// Wiki page path to delete (e.g. 'topics/rust-async')
+        path: String,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
 }

@@ -41,6 +41,10 @@ impl WikiPageStore {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Atomic UPSERT. SQLite WAL handles concurrency.
     pub async fn upsert(&self, page: &WikiPageInput<'_>) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();

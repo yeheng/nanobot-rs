@@ -1,26 +1,30 @@
 //! Background indexing service — consumes `Topic::WikiChanged` events and
 //! asynchronously updates the Tantivy search index.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gasket_broker::{get_broker, BrokerError, Topic};
+use gasket_storage::wiki::WikiRelationStore;
 use tracing::{debug, error, info, warn};
 
 use super::{PageIndex, PageStore};
 
 /// Background actor that subscribes to `Topic::WikiChanged` and syncs
-/// the Tantivy index.
+/// the Tantivy index and relation store.
 pub struct WikiIndexingService {
     page_store: PageStore,
     page_index: Arc<PageIndex>,
+    relation_store: WikiRelationStore,
 }
 
 impl WikiIndexingService {
     pub fn new(page_store: PageStore, page_index: Arc<PageIndex>) -> Self {
+        let relation_store = WikiRelationStore::new(page_store.db().pool().clone());
         Self {
             page_store,
             page_index,
+            relation_store,
         }
     }
 
@@ -98,11 +102,16 @@ impl WikiIndexingService {
                 }
             }
             Err(_) => {
-                // Page doesn't exist anymore — delete from index.
+                // Page doesn't exist anymore — delete from index and relations.
                 if let Err(e) = self.page_index.delete(path).await {
-                    warn!("WikiIndexingService: failed to delete {}: {}", path, e);
+                    warn!("WikiIndexingService: failed to delete {} from index: {}", path, e);
                 } else {
-                    debug!("WikiIndexingService: deleted {}", path);
+                    debug!("WikiIndexingService: deleted {} from index", path);
+                }
+                if let Err(e) = self.relation_store.delete_all_for_page(path).await {
+                    warn!("WikiIndexingService: failed to delete relations for {}: {}", path, e);
+                } else {
+                    debug!("WikiIndexingService: deleted relations for {}", path);
                 }
             }
         }
