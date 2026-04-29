@@ -86,7 +86,6 @@ pub struct ToolRegistryConfig {
 pub struct HistorySearchParams {
     pub searcher: std::sync::Arc<gasket_embedding::RecallSearcher>,
     pub config: gasket_embedding::RecallConfig,
-    pub event_store: gasket_storage::EventStore,
 }
 
 /// Build a [`ToolRegistry`] with common tools shared across all modes.
@@ -155,7 +154,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             tools.register(Box::new(HistorySearchTool::new(
                 params.searcher,
                 params.config,
-                params.event_store,
             )));
         }
     }

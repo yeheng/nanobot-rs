@@ -62,7 +62,6 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
                 let params = gasket_engine::tools::HistorySearchParams {
                     searcher: searcher.clone(),
                     config: emb_cfg.recall.clone(),
-                    event_store: event_store.clone(),
                 };
                 (Some(params), Some(indexer))
             }

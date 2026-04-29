@@ -1,11 +1,11 @@
 //! Embedding indexer that builds and maintains the search index.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::index::MemoryIndex;
 use crate::provider::EmbeddingProvider;
@@ -14,9 +14,9 @@ use gasket_types::{EventType, SessionEvent};
 
 const MIN_CONTENT_LEN: usize = 5;
 
-/// Indexer that computes embeddings and maintains the HNSW index.
+/// Indexer that computes embeddings and maintains the in-memory search index.
 pub struct EmbeddingIndexer {
-    shutdown: Arc<AtomicBool>,
+    cancel: CancellationToken,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -28,16 +28,14 @@ impl EmbeddingIndexer {
         index: Arc<MemoryIndex>,
         mut rx: broadcast::Receiver<SessionEvent>,
     ) -> Result<Self> {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = shutdown.clone();
+        let cancel = CancellationToken::new();
+        let cancel_child = cancel.clone();
 
         let handle = tokio::spawn(async move {
             loop {
-                if shutdown_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-
                 tokio::select! {
+                    biased;
+                    _ = cancel_child.cancelled() => break,
                     result = rx.recv() => {
                         match result {
                             Ok(event) => {
@@ -55,14 +53,7 @@ impl EmbeddingIndexer {
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 tracing::warn!("embedding indexer lagged {n} events");
                             }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                break;
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                        if shutdown_clone.load(Ordering::Relaxed) {
-                            break;
+                            Err(broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
@@ -70,14 +61,14 @@ impl EmbeddingIndexer {
         });
 
         Ok(Self {
-            shutdown,
+            cancel,
             handle: Some(handle),
         })
     }
 
     /// Shut down the background task and wait for it to finish.
     pub async fn shutdown(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
         if let Some(handle) = self.handle.take() {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
@@ -98,8 +89,8 @@ impl EmbeddingIndexer {
         };
         let total = embeddings.len();
 
-        for stored in &embeddings {
-            index.insert(stored.event_id.clone(), stored.embedding.clone());
+        for stored in embeddings {
+            index.insert(stored.event_id, stored.embedding);
         }
 
         tracing::info!("rebuild_index: loaded {total} embeddings into index (limit={limit:?})");
@@ -114,10 +105,11 @@ impl EmbeddingIndexer {
         event: SessionEvent,
     ) -> Result<()> {
         // Only process UserMessage and AssistantMessage.
-        match &event.event_type {
-            EventType::UserMessage | EventType::AssistantMessage => {}
+        let event_type_str = match &event.event_type {
+            EventType::UserMessage => "user_message",
+            EventType::AssistantMessage => "assistant_message",
             _ => return Ok(()),
-        }
+        };
 
         // Skip short content.
         if event.content.len() < MIN_CONTENT_LEN {
@@ -125,26 +117,19 @@ impl EmbeddingIndexer {
         }
 
         // Dedup.
-        if store.exists(&event.id.to_string()).await? {
+        let event_id = event.id.to_string();
+        if store.exists(&event_id).await? {
             return Ok(());
         }
 
-        // Compute content hash.
+        // Compute content hash + embedding.
         let content_hash = xxhash_rust::xxh3::xxh3_64(event.content.as_bytes()).to_string();
-
-        // Embed.
         let embedding = provider.embed(&event.content).await?;
 
-        // Persist to store.
-        let event_type_str = match &event.event_type {
-            EventType::UserMessage => "user_message",
-            EventType::AssistantMessage => "assistant_message",
-            _ => unreachable!("already filtered above"),
-        };
-
+        // Persist to store, then update the hot index.
         store
             .upsert(vec![VectorRecord {
-                id: event.id.to_string(),
+                id: event_id.clone(),
                 vector: embedding.clone(),
                 session_key: event.session_key.clone(),
                 event_type: event_type_str.to_string(),
@@ -152,8 +137,7 @@ impl EmbeddingIndexer {
             }])
             .await?;
 
-        // Insert into in-memory index.
-        index.insert(event.id.to_string(), embedding);
+        index.insert(event_id, embedding);
 
         Ok(())
     }
@@ -174,7 +158,7 @@ mod tests {
             .connect(":memory:")
             .await
             .expect("in-memory pool");
-        let store = EmbeddingStore::with_dim(pool, 3);
+        let store = EmbeddingStore::new(pool, 3);
         store.run_migration().await.expect("migration");
         Arc::new(store)
     }
@@ -196,7 +180,6 @@ mod tests {
         let store = test_store().await;
         let index = MemoryIndex::new(3);
 
-        // Save some embeddings directly.
         store
             .upsert(vec![
                 VectorRecord {
@@ -224,14 +207,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Rebuild into an empty index.
         let count = EmbeddingIndexer::rebuild_index(store.as_ref(), &index, None)
             .await
             .unwrap();
         assert_eq!(count, 3);
         assert_eq!(index.len(), 3);
 
-        // Verify search works.
         let results = index.search(&[1.0, 0.0, 0.0], 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "evt-1");
@@ -303,7 +284,6 @@ mod tests {
             .unwrap();
         assert_eq!(index.len(), 1);
 
-        // Create a second event with the same ID — should be deduplicated.
         let event2 = SessionEvent {
             id: uuid::Uuid::parse_str(&event_id).unwrap(),
             ..make_event(EventType::UserMessage, "Different content but same ID")
@@ -313,7 +293,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Only 1 entry — the second was deduped.
         assert_eq!(index.len(), 1);
     }
 
@@ -344,7 +323,6 @@ mod tests {
         let event = make_event(EventType::UserMessage, "Hello from broadcast channel");
         tx.send(event).unwrap();
 
-        // Give the background task time to process.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         assert_eq!(

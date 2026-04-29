@@ -203,7 +203,6 @@ impl SessionBuilder {
             builder = builder.with_hook(Arc::new(crate::hooks::HistoryRecallHook::new(
                 searcher,
                 recall_config,
-                event_store.clone(),
             )));
             (builder.build_shared(), Some(indexer))
         } else {

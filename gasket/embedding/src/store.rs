@@ -1,6 +1,7 @@
 //! SQLite-backed embedding persistence.
 
 use anyhow::{anyhow, Result};
+use futures::TryStreamExt;
 use sqlx::{Row, SqlitePool};
 
 /// An embedding record stored in SQLite.
@@ -19,15 +20,22 @@ pub struct EmbeddingStore {
 }
 
 impl EmbeddingStore {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool, dim: 0 }
-    }
-
-    pub fn with_dim(pool: SqlitePool, dim: usize) -> Self {
+    /// Create a store. `dim` must match the embedding provider's dimension.
+    pub fn new(pool: SqlitePool, dim: usize) -> Self {
+        assert!(dim > 0, "EmbeddingStore dim must be > 0");
         Self { pool, dim }
     }
 
+    /// Backward-compatible alias for [`EmbeddingStore::new`].
+    pub fn with_dim(pool: SqlitePool, dim: usize) -> Self {
+        Self::new(pool, dim)
+    }
+
     /// Creates the event_embeddings table and indexes if they do not exist.
+    ///
+    /// `channel`/`chat_id` are kept in the schema for backward compatibility
+    /// with already-deployed databases, but new inserts let them default to
+    /// `''` and the unused composite index is dropped.
     pub async fn run_migration(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -51,27 +59,30 @@ impl EmbeddingStore {
             .execute(&self.pool)
             .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_emb_channel_chat ON event_embeddings(channel, chat_id)",
-        )
-        .execute(&self.pool)
-        .await?;
+        // Drop the legacy index that was never populated with non-empty values.
+        sqlx::query("DROP INDEX IF EXISTS idx_emb_channel_chat")
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
 
     /// Insert a single embedding. Uses INSERT OR IGNORE for idempotency.
-    #[allow(clippy::too_many_arguments)]
     pub async fn save(
         &self,
         event_id: &str,
         session_key: &str,
-        channel: &str,
-        chat_id: &str,
         embedding: &[f32],
         event_type: &str,
         content_hash: &str,
     ) -> Result<()> {
+        if embedding.len() != self.dim {
+            return Err(anyhow!(
+                "embedding length {} does not match store dim {}",
+                embedding.len(),
+                self.dim
+            ));
+        }
         let blob = embedding_to_bytes(embedding);
         let dim = embedding.len() as i32;
         let now = chrono::Utc::now().to_rfc3339();
@@ -79,14 +90,12 @@ impl EmbeddingStore {
         sqlx::query(
             r#"
             INSERT OR IGNORE INTO event_embeddings
-                (event_id, session_key, channel, chat_id, embedding, dim, event_type, content_hash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (event_id, session_key, embedding, dim, event_type, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(event_id)
         .bind(session_key)
-        .bind(channel)
-        .bind(chat_id)
         .bind(&blob[..])
         .bind(dim)
         .bind(event_type)
@@ -108,20 +117,25 @@ impl EmbeddingStore {
         let now = chrono::Utc::now().to_rfc3339();
 
         for item in items {
+            if item.embedding.len() != self.dim {
+                return Err(anyhow!(
+                    "embedding length {} does not match store dim {}",
+                    item.embedding.len(),
+                    self.dim
+                ));
+            }
             let blob = embedding_to_bytes(item.embedding);
             let dim = item.embedding.len() as i32;
 
             sqlx::query(
                 r#"
                 INSERT OR IGNORE INTO event_embeddings
-                    (event_id, session_key, channel, chat_id, embedding, dim, event_type, content_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (event_id, session_key, embedding, dim, event_type, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(item.event_id)
             .bind(item.session_key)
-            .bind(item.channel)
-            .bind(item.chat_id)
             .bind(&blob[..])
             .bind(dim)
             .bind(item.event_type)
@@ -171,25 +185,30 @@ impl EmbeddingStore {
         Ok(results)
     }
 
-    /// Delete embeddings by event IDs. Returns number of deleted rows.
+    /// Delete embeddings by event IDs in chunks of 500 to stay below
+    /// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` (default 999). Returns total
+    /// number of deleted rows.
     pub async fn delete_by_event_ids(&self, ids: &[String]) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
+        const CHUNK: usize = 500;
+        let mut total: u64 = 0;
+        for chunk in ids.chunks(CHUNK) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "DELETE FROM event_embeddings WHERE event_id IN ({})",
+                placeholders.join(",")
+            );
 
-        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
-        let sql = format!(
-            "DELETE FROM event_embeddings WHERE event_id IN ({})",
-            placeholders.join(",")
-        );
-
-        let mut query = sqlx::query(&sql);
-        for id in ids {
-            query = query.bind(id);
+            let mut query = sqlx::query(&sql);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            let result = query.execute(&self.pool).await?;
+            total += result.rows_affected();
         }
-
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected())
+        Ok(total)
     }
 
     /// Delete all embeddings for a session. Returns number of deleted rows.
@@ -258,8 +277,12 @@ impl EmbeddingStore {
         Ok(results)
     }
 
-    /// Scan all embeddings from SQLite in batches and compute similarity on-the-fly.
-    /// Returns top-k results with score >= min_score, excluding given ids.
+    /// Stream all embeddings from SQLite and compute similarity on-the-fly.
+    /// Returns top-k results with `score >= min_score`, excluding `exclude` ids.
+    ///
+    /// Uses a streaming `fetch` (not `LIMIT/OFFSET` paging) so cost is O(n)
+    /// regardless of table size, and a fixed-size top-k buffer to avoid
+    /// allocating a Vec per row.
     pub async fn search_similar(
         &self,
         query: &[f32],
@@ -267,65 +290,57 @@ impl EmbeddingStore {
         min_score: f32,
         exclude: &std::collections::HashSet<String>,
     ) -> Result<Vec<(String, f32)>> {
-        const BATCH_SIZE: i64 = 1000;
-        let mut results: Vec<(String, f32)> = Vec::with_capacity(top_k);
-        let mut offset: i64 = 0;
-
-        loop {
-            let rows =
-                sqlx::query("SELECT event_id, embedding FROM event_embeddings LIMIT ? OFFSET ?")
-                    .bind(BATCH_SIZE)
-                    .bind(offset)
-                    .fetch_all(&self.pool)
-                    .await?;
-
-            if rows.is_empty() {
-                break;
-            }
-
-            for row in rows {
-                let event_id: String = row.get("event_id");
-                if exclude.contains(&event_id) {
-                    continue;
-                }
-                let blob: Vec<u8> = row.get("embedding");
-                let embedding = match bytes_to_embedding(&blob) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            "skipping corrupted embedding for event_id={}: {}",
-                            event_id,
-                            e
-                        );
-                        continue;
-                    }
-                };
-                let sim = crate::index::cosine_similarity(query, &embedding);
-                if sim >= min_score {
-                    if results.len() < top_k {
-                        results.push((event_id, sim));
-                    } else {
-                        // Replace the weakest candidate if this one is better.
-                        let min_idx = results
-                            .iter()
-                            .enumerate()
-                            .min_by(|(_, a), (_, b)| {
-                                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .map(|(i, _)| i)
-                            .unwrap();
-                        if sim > results[min_idx].1 {
-                            results[min_idx] = (event_id, sim);
-                        }
-                    }
-                }
-            }
-
-            offset += BATCH_SIZE;
+        if top_k == 0 || query.is_empty() {
+            return Ok(Vec::new());
         }
 
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(results)
+        let mut top: Vec<(String, f32)> = Vec::with_capacity(top_k);
+        let mut buf: Vec<f32> = Vec::with_capacity(query.len());
+
+        let mut stream = sqlx::query("SELECT event_id, embedding FROM event_embeddings")
+            .fetch(&self.pool);
+
+        while let Some(row) = stream.try_next().await? {
+            let event_id: String = row.get("event_id");
+            if exclude.contains(&event_id) {
+                continue;
+            }
+            let blob: Vec<u8> = row.get("embedding");
+            buf.clear();
+            if let Err(e) = bytes_to_embedding_into(&blob, &mut buf) {
+                tracing::warn!(
+                    "skipping corrupted embedding for event_id={}: {}",
+                    event_id,
+                    e
+                );
+                continue;
+            }
+            let sim = crate::index::cosine_similarity(query, &buf);
+            if sim < min_score {
+                continue;
+            }
+            push_topk(&mut top, top_k, event_id, sim);
+        }
+
+        top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(top)
+    }
+}
+
+/// Maintain a top-k vector by dropping the weakest candidate when full.
+fn push_topk(top: &mut Vec<(String, f32)>, k: usize, id: String, score: f32) {
+    if top.len() < k {
+        top.push((id, score));
+        return;
+    }
+    let (min_idx, min_score) = top
+        .iter()
+        .enumerate()
+        .map(|(i, (_, s))| (i, *s))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap();
+    if score > min_score {
+        top[min_idx] = (id, score);
     }
 }
 
@@ -333,36 +348,44 @@ impl EmbeddingStore {
 pub struct EmbeddingInput<'a> {
     pub event_id: &'a str,
     pub session_key: &'a str,
-    pub channel: &'a str,
-    pub chat_id: &'a str,
     pub embedding: &'a [f32],
     pub event_type: &'a str,
     pub content_hash: &'a str,
 }
 
-/// Serialize f32 slice to raw bytes (little-endian on all platforms since f32 is IEEE 754).
+/// Serialize f32 slice to little-endian raw bytes.
 fn embedding_to_bytes(v: &[f32]) -> Vec<u8> {
-    let byte_count = v.len() * 4;
-    let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, byte_count) };
-    bytes.to_vec()
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
 }
 
 /// Deserialize raw bytes back to Vec<f32>.
 fn bytes_to_embedding(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    bytes_to_embedding_into(bytes, &mut out)?;
+    Ok(out)
+}
+
+/// Deserialize raw bytes into a caller-provided buffer (cleared first).
+fn bytes_to_embedding_into(bytes: &[u8], out: &mut Vec<f32>) -> anyhow::Result<()> {
     if !bytes.len().is_multiple_of(4) {
         return Err(anyhow!(
             "embedding blob length {} is not a multiple of 4",
             bytes.len()
         ));
     }
-    let mut result = Vec::with_capacity(bytes.len() / 4);
+    out.clear();
+    out.reserve(bytes.len() / 4);
     for chunk in bytes.chunks_exact(4) {
         let arr: [u8; 4] = chunk
             .try_into()
             .map_err(|_| anyhow!("unexpected chunk size in embedding blob"))?;
-        result.push(f32::from_le_bytes(arr));
+        out.push(f32::from_le_bytes(arr));
     }
-    Ok(result)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -379,8 +402,6 @@ impl crate::vector_store::VectorStore for EmbeddingStore {
             .map(|r| EmbeddingInput {
                 event_id: &r.id,
                 session_key: &r.session_key,
-                channel: "",
-                chat_id: "",
                 embedding: &r.vector,
                 event_type: &r.event_type,
                 content_hash: &r.content_hash,
@@ -463,7 +484,7 @@ mod tests {
             .connect(":memory:")
             .await
             .expect("in-memory pool");
-        let store = EmbeddingStore::new(pool);
+        let store = EmbeddingStore::new(pool, 4);
         store.run_migration().await.expect("migration");
         store
     }
@@ -481,8 +502,6 @@ mod tests {
             .save(
                 "evt-1",
                 "sess-a",
-                "tg",
-                "chat-1",
                 &sample_embedding(),
                 "user_message",
                 "hash1",
@@ -494,27 +513,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_save_rejects_wrong_dim() {
+        let store = test_store().await;
+        let err = store
+            .save("evt-x", "sess-a", &[0.1, 0.2], "user_message", "h")
+            .await;
+        assert!(err.is_err(), "wrong-dim insert must fail");
+    }
+
+    #[tokio::test]
     async fn test_load_all() {
         let store = test_store().await;
 
-        let emb1 = vec![0.1, 0.2];
-        let emb2 = vec![0.3, 0.4];
+        let emb1 = vec![0.1, 0.2, 0.3, 0.4];
+        let emb2 = vec![0.5, 0.6, 0.7, 0.8];
 
         store
-            .save("evt-1", "sess-a", "", "", &emb1, "user_message", "h1")
+            .save("evt-1", "sess-a", &emb1, "user_message", "h1")
             .await
             .unwrap();
         store
-            .save("evt-2", "sess-a", "", "", &emb2, "assistant_message", "h2")
+            .save("evt-2", "sess-a", &emb2, "assistant_message", "h2")
             .await
             .unwrap();
 
         let all = store.load_all().await.unwrap();
         assert_eq!(all.len(), 2);
 
-        // Verify embedding round-trip accuracy.
         let e1 = all.iter().find(|e| e.event_id == "evt-1").unwrap();
-        assert_eq!(e1.embedding.len(), 2);
+        assert_eq!(e1.embedding.len(), 4);
         assert!((e1.embedding[0] - 0.1f32).abs() < f32::EPSILON);
         assert!((e1.embedding[1] - 0.2f32).abs() < f32::EPSILON);
 
@@ -527,27 +554,11 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h1",
-            )
+            .save("evt-1", "sess-a", &sample_embedding(), "user_message", "h1")
             .await
             .unwrap();
         store
-            .save(
-                "evt-2",
-                "sess-a",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h2",
-            )
+            .save("evt-2", "sess-a", &sample_embedding(), "user_message", "h2")
             .await
             .unwrap();
 
@@ -566,27 +577,11 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h1",
-            )
+            .save("evt-1", "sess-a", &sample_embedding(), "user_message", "h1")
             .await
             .unwrap();
         store
-            .save(
-                "evt-2",
-                "sess-b",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h2",
-            )
+            .save("evt-2", "sess-b", &sample_embedding(), "user_message", "h2")
             .await
             .unwrap();
 
@@ -602,27 +597,11 @@ mod tests {
         let store = test_store().await;
 
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h1",
-            )
+            .save("evt-1", "sess-a", &sample_embedding(), "user_message", "h1")
             .await
             .unwrap();
         store
-            .save(
-                "evt-1",
-                "sess-a",
-                "",
-                "",
-                &sample_embedding(),
-                "user_message",
-                "h1",
-            )
+            .save("evt-1", "sess-a", &sample_embedding(), "user_message", "h1")
             .await
             .unwrap();
 
@@ -634,15 +613,15 @@ mod tests {
     async fn test_load_all_skips_corrupted_embedding() {
         let store = test_store().await;
 
-        let good = vec![0.1f32, 0.2f32];
+        let good = vec![0.1f32, 0.2f32, 0.3f32, 0.4f32];
         let bad: Vec<u8> = vec![0x01, 0x02, 0x03]; // length 3, not multiple of 4
 
         store
-            .save("evt-good", "sess-a", "", "", &good, "user_message", "h1")
+            .save("evt-good", "sess-a", &good, "user_message", "h1")
             .await
             .unwrap();
 
-        // Directly insert corrupted blob
+        // Directly insert corrupted blob (bypassing dim check).
         sqlx::query(
             r#"
             INSERT OR REPLACE INTO event_embeddings
@@ -666,5 +645,36 @@ mod tests {
         let all = store.load_all().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].event_id, "evt-good");
+    }
+
+    #[tokio::test]
+    async fn test_search_similar_streaming() {
+        let store = test_store().await;
+        store
+            .save("e1", "s", &[1.0, 0.0, 0.0, 0.0], "user_message", "h1")
+            .await
+            .unwrap();
+        store
+            .save("e2", "s", &[0.9, 0.1, 0.0, 0.0], "user_message", "h2")
+            .await
+            .unwrap();
+        store
+            .save("e3", "s", &[0.0, 0.0, 1.0, 0.0], "user_message", "h3")
+            .await
+            .unwrap();
+
+        let results = store
+            .search_similar(
+                &[1.0, 0.0, 0.0, 0.0],
+                2,
+                0.5,
+                &std::collections::HashSet::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "e1");
+        assert!(results[0].1 >= results[1].1);
     }
 }

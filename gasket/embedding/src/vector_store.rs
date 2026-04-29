@@ -130,7 +130,7 @@ pub async fn build_vector_store(
         VectorStoreConfig::SQLite => {
             let pool = sqlite_pool
                 .ok_or_else(|| anyhow::anyhow!("SQLite pool required for SQLite backend"))?;
-            let store = crate::store::EmbeddingStore::with_dim(pool.clone(), dim);
+            let store = crate::store::EmbeddingStore::new(pool.clone(), dim);
             store.run_migration().await?;
             Ok(std::sync::Arc::new(store))
         }
