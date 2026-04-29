@@ -246,11 +246,25 @@ impl RpcHandler for ToolDelegateHandler {
     }
 
     async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
-        let tool_ctx = ToolContext::default()
+        let mut tool_ctx = ToolContext::default()
             .session_key(ctx.engine.session_key.clone())
             .outbound_tx(ctx.engine.outbound_tx.clone())
             .spawner(ctx.engine.spawner.clone())
             .token_tracker(ctx.engine.token_tracker.clone());
+
+        // Inject SynthesisCallback for streaming channels
+        if ctx.engine.session_key.channel.supports_streaming() {
+            let model = ctx.engine.provider.default_model().to_string();
+            let callback = std::sync::Arc::new(
+                crate::kernel::synthesis::WebSocketSynthesizer::new(
+                    ctx.engine.provider.clone(),
+                    model,
+                    ctx.engine.outbound_tx.clone(),
+                    ctx.engine.session_key.clone(),
+                ),
+            );
+            tool_ctx = tool_ctx.synthesis_callback(callback);
+        }
 
         let output = ctx
             .engine

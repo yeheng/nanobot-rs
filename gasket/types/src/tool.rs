@@ -113,6 +113,17 @@ pub struct TokenUsage {
     pub total_tokens: u32,
 }
 
+/// Callback for synthesizing subagent results into a final response.
+///
+/// The concrete implementation holds provider, outbound_tx, session_key etc.
+/// Returned Future is 'static so it can be safely moved into a tokio::spawn task.
+pub trait SynthesisCallback: Send + Sync {
+    fn synthesize(
+        &self,
+        results: Vec<SubagentResult>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>>;
+}
+
 /// Context passed to tool execution, providing request-scoped data.
 ///
 /// This replaces the old pattern of storing session_key in SubagentManager
@@ -132,6 +143,9 @@ pub struct ToolContext {
     pub token_tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
+    /// Callback for triggering synthesis after all subagents complete.
+    /// When None (CLI/Telegram/non-WebSocket mode), spawn tools use blocking mode.
+    pub synthesis_callback: Option<std::sync::Arc<dyn SynthesisCallback>>,
 }
 
 impl Default for ToolContext {
@@ -143,6 +157,7 @@ impl Default for ToolContext {
             spawner: std::sync::Arc::new(NoopSpawner),
             token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
             ws_summary_limit: 0,
+            synthesis_callback: None,
         }
     }
 }
@@ -155,6 +170,7 @@ impl std::fmt::Debug for ToolContext {
             .field("spawner", &"SubagentSpawner")
             .field("token_tracker", &"TokenTracker")
             .field("ws_summary_limit", &self.ws_summary_limit)
+            .field("synthesis_callback", &self.synthesis_callback.is_some())
             .finish()
     }
 }
@@ -185,6 +201,11 @@ impl ToolContext {
 
     pub fn ws_summary_limit(mut self, limit: usize) -> Self {
         self.ws_summary_limit = limit;
+        self
+    }
+
+    pub fn synthesis_callback(mut self, cb: std::sync::Arc<dyn SynthesisCallback>) -> Self {
+        self.synthesis_callback = Some(cb);
         self
     }
 }

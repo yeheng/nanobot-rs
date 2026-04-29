@@ -14,6 +14,7 @@ export function useChatSession(chatId: { value: string }) {
   const toolStartTimes = ref<Record<string, number>>({});
   const activeSubagents = ref<Map<string, SubagentState>>(new Map());
   const hasActiveSubagents = computed(() => activeSubagents.value.size > 0);
+  const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('idle');
 
   const pendingApprovals = ref<Map<string, ApprovalRequest>>(new Map());
 
@@ -133,7 +134,7 @@ export function useChatSession(chatId: { value: string }) {
   const checkAndFinalizeSubagents = () => {
     const allCompleted = [...activeSubagents.value.values()].every(s => s.status !== 'running');
     if (allCompleted && activeSubagents.value.size > 0) {
-      activeSubagents.value.clear();
+      // Phase transition handled by subagent_synthesizing event
     }
   };
 
@@ -222,8 +223,12 @@ export function useChatSession(chatId: { value: string }) {
         break;
       case 'done':
         isThinking.value = false;
+        if (activeSubagents.value.size > 0) break;
         isReceiving.value = false;
         fetchContext();
+        break;
+      case 'subagent_all_started':
+        subagentPhase.value = 'running';
         break;
       case 'subagent_started':
         handleSubagentStarted(msg, botMsg);
@@ -245,6 +250,10 @@ export function useChatSession(chatId: { value: string }) {
         break;
       case 'subagent_error':
         handleSubagentError(msg, botMsg);
+        break;
+      case 'subagent_synthesizing':
+        subagentPhase.value = 'synthesizing';
+        setTimeout(() => { subagentPhase.value = 'completed' }, 300);
         break;
       case 'approval_request':
         pendingApprovals.value.set(msg.id, {
@@ -371,7 +380,7 @@ export function useChatSession(chatId: { value: string }) {
   };
 
   const sendMessage = (text: string) => {
-    if (!text.trim() || !isConnected.value || isSending.value || isReceiving.value) return false;
+    if (!text.trim() || !isConnected.value || isSending.value || (isReceiving.value && subagentPhase.value !== 'running')) return false;
 
     const msgId = Date.now().toString();
     chatStore.appendMessage(chatId.value, {
@@ -381,6 +390,11 @@ export function useChatSession(chatId: { value: string }) {
       timestamp: Date.now(),
       status: 'sending'
     });
+
+    if (subagentPhase.value === 'running') {
+      activeSubagents.value.clear()
+      subagentPhase.value = 'idle'
+    }
 
     isSending.value = true;
     try {
@@ -422,6 +436,7 @@ export function useChatSession(chatId: { value: string }) {
     // Subagents
     activeSubagents,
     hasActiveSubagents,
+    subagentPhase,
     // Approvals
     pendingApprovals,
     // Error

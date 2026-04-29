@@ -3,13 +3,17 @@
 //! This tool spawns a subagent and blocks until completion, streaming events
 //! to the WebSocket/channel in real-time. This ensures the main agent waits
 //! for results instead of using fire-and-forget semantics.
+//!
+//! When a `synthesis_callback` is present in the context, the tool operates in
+//! non-blocking mode: it spawns the subagent, starts background event forwarding
+//! and aggregation, then returns immediately.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, instrument};
 
-use super::{format_subagent_response, Tool, ToolContext, ToolError, ToolResult};
+use super::{format_subagent_response, spawn_common, Tool, ToolContext, ToolError, ToolResult};
 
 pub struct SpawnTool;
 
@@ -81,14 +85,55 @@ impl Tool for SpawnTool {
         info!("[Spawn] Starting subagent for task: {}", args.task);
 
         // Spawn subagent via the trait with streaming events
-        let (subagent_id, mut event_rx, result_rx) = spawner
+        let (subagent_id, event_rx, result_rx) = spawner
             .spawn_with_stream(args.task.clone(), args.model_id.clone())
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
-        // Notify frontend that subagent has started
+        // ── Non-blocking mode: synthesis_callback present ──────────────
+        if let Some(callback) = ctx.synthesis_callback.clone() {
+            let session_key = ctx.session_key.clone();
+            let outbound_tx = ctx.outbound_tx.clone();
+
+            // Start background event forwarding
+            let _forward_handle = spawn_common::spawn_event_forwarder(
+                subagent_id.clone(),
+                event_rx,
+                session_key.clone(),
+                outbound_tx.clone(),
+            );
+
+            // Send startup events synchronously (before kernel sends Done)
+            spawn_common::send_startup_events(
+                &session_key,
+                &outbound_tx,
+                1,
+                &[(subagent_id.clone(), args.task.clone(), 0)],
+            )
+            .await;
+
+            // Launch background aggregation
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            spawn_common::spawn_aggregator(
+                vec![result_rx],
+                vec![subagent_id],
+                vec![0],
+                callback,
+                cancel_token,
+                session_key,
+                outbound_tx,
+                ctx.ws_summary_limit,
+            );
+
+            return Ok("Subagent task dispatched. Results will stream in real-time.".to_string());
+        }
+
+        // ── Blocking mode: no synthesis_callback ───────────────────────
+        let mut event_rx = event_rx; // mutable for blocking recv loop
         let session_key = ctx.session_key.clone();
         let outbound_tx = ctx.outbound_tx.clone();
+
+        // Notify frontend that subagent has started
         let _ = outbound_tx
             .send(gasket_types::events::OutboundMessage::with_ws_message(
                 session_key.channel.clone(),

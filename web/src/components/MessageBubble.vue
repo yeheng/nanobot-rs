@@ -10,6 +10,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import type { Message } from '../types';
 import MessageThoughtsPanel from './MessageThoughtsPanel.vue';
 import SubagentThoughtsPanel from './SubagentThoughtsPanel.vue';
+import SubagentGridPanel from './SubagentGridPanel.vue';
 
 // Module-level marked setup — runs once, shared by all instances
 const customRenderer = new marked.Renderer();
@@ -35,6 +36,7 @@ const props = defineProps<{
   isLastBotMessage: boolean;
   isThinking: boolean;
   isReceiving: boolean;
+  subagentPhase: 'idle' | 'running' | 'synthesizing' | 'completed';
 }>();
 
 const emit = defineEmits<{
@@ -198,8 +200,14 @@ const isStreaming = computed(() => props.isLastBotMessage && props.isReceiving);
           :is-last-bot-message="isLastBotMessage"
         />
 
+        <SubagentGridPanel
+          v-if="message.subagents && message.subagents.length > 0 && ['running', 'synthesizing'].includes(subagentPhase)"
+          :subagents="message.subagents"
+          :phase="subagentPhase as 'running' | 'synthesizing'"
+        />
+
         <SubagentThoughtsPanel
-          v-if="message.subagents && message.subagents.length > 0"
+          v-if="message.subagents && message.subagents.length > 0 && !['running', 'synthesizing'].includes(subagentPhase)"
           :subagents="message.subagents"
         />
 
