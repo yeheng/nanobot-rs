@@ -11,7 +11,7 @@ use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
-use crate::config::{ResourceLimits, SandboxConfig};
+use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
 /// macOS sandbox-exec (Seatbelt) based sandbox.
@@ -88,9 +88,11 @@ impl MacOsSandboxBackend {
   (literal "/dev/zero")
 )
 (allow process-exec)
+(allow process-fork)
 (allow network-outbound)
 (allow signal (target self))
 (allow file-read-metadata)
+(allow sysctl-read)
 "#
         )
     }
@@ -102,15 +104,10 @@ impl MacOsSandboxBackend {
         config: &SandboxConfig,
     ) -> Command {
         let profile = self.generate_profile(working_dir);
-        let limits = ResourceLimits::from(&config.limits);
 
-        // Resource limits via ulimit (sandbox-exec doesn't handle this)
-        let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
+        let prefixed_cmd = format!("{}{}", config.limits.to_ulimit_prefix(), cmd);
 
         let mut command = Command::new("sandbox-exec");
-        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
-        // and check_dangerous_patterns() in the CommandBuilder.
-        // The sandbox-exec isolation provides additional defense-in-depth.
         command
             .arg("-p")
             .arg(profile)
@@ -165,10 +162,8 @@ impl SandboxBackend for MacOsSandboxBackend {
     ) -> Result<ExecutionResult> {
         // Build async command with kill_on_drop to ensure process termination on timeout
         let profile = self.generate_profile(working_dir);
-        let limits = ResourceLimits::from(&config.limits);
 
-        // Resource limits via ulimit (sandbox-exec doesn't handle this)
-        let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
+        let prefixed_cmd = format!("{}{}", config.limits.to_ulimit_prefix(), cmd);
 
         let mut command = AsyncCommand::new("sandbox-exec");
         command
@@ -191,8 +186,8 @@ impl SandboxBackend for MacOsSandboxBackend {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Truncate output if needed
-        let stdout = limits.truncate_output(&stdout);
-        let stderr = limits.truncate_output(&stderr);
+        let stdout = config.limits.truncate_output(&stdout);
+        let stderr = config.limits.truncate_output(&stderr);
 
         Ok(ExecutionResult {
             exit_code: output.status.code(),

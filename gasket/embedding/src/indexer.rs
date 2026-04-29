@@ -1,5 +1,6 @@
 //! Embedding indexer that builds and maintains the search index.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -13,6 +14,8 @@ use crate::vector_store::{VectorRecord, VectorStore};
 use gasket_types::{EventType, SessionEvent};
 
 const MIN_CONTENT_LEN: usize = 5;
+const BATCH_SIZE: usize = 16;
+const FLUSH_INTERVAL_MS: u64 = 500;
 
 /// Indexer that computes embeddings and maintains the in-memory search index.
 pub struct EmbeddingIndexer {
@@ -32,28 +35,67 @@ impl EmbeddingIndexer {
         let cancel_child = cancel.clone();
 
         let handle = tokio::spawn(async move {
+            let mut buffer: Vec<SessionEvent> = Vec::with_capacity(BATCH_SIZE);
+            let mut flush_interval = tokio::time::interval(std::time::Duration::from_millis(FLUSH_INTERVAL_MS));
+            flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
                 tokio::select! {
                     biased;
-                    _ = cancel_child.cancelled() => break,
+                    _ = cancel_child.cancelled() => {
+                        if !buffer.is_empty() {
+                            if let Err(e) = Self::process_batch(
+                                provider.as_ref(),
+                                store.as_ref(),
+                                &index,
+                                std::mem::take(&mut buffer),
+                            ).await {
+                                tracing::warn!("embedding indexer flush on cancel error: {e}");
+                            }
+                        }
+                        break;
+                    }
                     result = rx.recv() => {
                         match result {
                             Ok(event) => {
-                                if let Err(e) = Self::process_event(
-                                    provider.as_ref(),
-                                    store.as_ref(),
-                                    &index,
-                                    event,
-                                )
-                                .await
-                                {
-                                    tracing::warn!("embedding indexer process error: {e}");
+                                buffer.push(event);
+                                if buffer.len() >= BATCH_SIZE {
+                                    if let Err(e) = Self::process_batch(
+                                        provider.as_ref(),
+                                        store.as_ref(),
+                                        &index,
+                                        std::mem::take(&mut buffer),
+                                    ).await {
+                                        tracing::warn!("embedding indexer batch process error: {e}");
+                                    }
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 tracing::warn!("embedding indexer lagged {n} events");
                             }
-                            Err(broadcast::error::RecvError::Closed) => break,
+                            Err(broadcast::error::RecvError::Closed) => {
+                                if !buffer.is_empty() {
+                                    if let Err(e) = Self::process_batch(
+                                        provider.as_ref(),
+                                        store.as_ref(),
+                                        &index,
+                                        std::mem::take(&mut buffer),
+                                    ).await {
+                                        tracing::warn!("embedding indexer flush on close error: {e}");
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ = flush_interval.tick(), if !buffer.is_empty() => {
+                        if let Err(e) = Self::process_batch(
+                            provider.as_ref(),
+                            store.as_ref(),
+                            &index,
+                            std::mem::take(&mut buffer),
+                        ).await {
+                            tracing::warn!("embedding indexer batch process error: {e}");
                         }
                     }
                 }
@@ -104,40 +146,81 @@ impl EmbeddingIndexer {
         index: &MemoryIndex,
         event: SessionEvent,
     ) -> Result<()> {
-        // Only process UserMessage and AssistantMessage.
-        let event_type_str = match &event.event_type {
-            EventType::UserMessage => "user_message",
-            EventType::AssistantMessage => "assistant_message",
-            _ => return Ok(()),
-        };
+        Self::process_batch(provider, store, index, vec![event]).await
+    }
 
-        // Skip short content.
-        if event.content.len() < MIN_CONTENT_LEN {
+    /// Process a batch of events: filter, dedup, batch embed, bulk upsert.
+    pub async fn process_batch(
+        provider: &dyn EmbeddingProvider,
+        store: &dyn VectorStore,
+        index: &MemoryIndex,
+        events: Vec<SessionEvent>,
+    ) -> Result<()> {
+        // Step 1: Filter event types and short content, dedup within batch.
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+
+        for event in events {
+            let event_type_str = match &event.event_type {
+                EventType::UserMessage => "user_message",
+                EventType::AssistantMessage => "assistant_message",
+                _ => continue,
+            };
+            if event.content.len() < MIN_CONTENT_LEN {
+                continue;
+            }
+            let event_id = event.id.to_string();
+            if !seen.insert(event_id.clone()) {
+                continue;
+            }
+            candidates.push((event, event_type_str));
+        }
+
+        if candidates.is_empty() {
             return Ok(());
         }
 
-        // Dedup.
-        let event_id = event.id.to_string();
-        if store.exists(&event_id).await? {
+        // Step 2: Skip events already persisted.
+        let mut to_embed = Vec::new();
+        for (event, event_type_str) in candidates {
+            let event_id = event.id.to_string();
+            if store.exists(&event_id).await? {
+                continue;
+            }
+            to_embed.push((event, event_type_str));
+        }
+
+        if to_embed.is_empty() {
             return Ok(());
         }
 
-        // Compute content hash + embedding.
-        let content_hash = xxhash_rust::xxh3::xxh3_64(event.content.as_bytes()).to_string();
-        let embedding = provider.embed(&event.content).await?;
+        // Step 3: Batch compute embeddings.
+        let texts: Vec<&str> = to_embed.iter().map(|(e, _)| e.content.as_str()).collect();
+        let embeddings = provider.embed_batch(&texts).await?;
 
-        // Persist to store, then update the hot index.
-        store
-            .upsert(vec![VectorRecord {
-                id: event_id.clone(),
+        // Step 4: Build records and bulk upsert.
+        let mut records = Vec::with_capacity(to_embed.len());
+        let mut ids_and_embeddings = Vec::with_capacity(to_embed.len());
+
+        for (idx, (event, event_type_str)) in to_embed.iter().enumerate() {
+            let embedding = embeddings[idx].clone();
+            let content_hash = xxhash_rust::xxh3::xxh3_64(event.content.as_bytes()).to_string();
+            records.push(VectorRecord {
+                id: event.id.to_string(),
                 vector: embedding.clone(),
                 session_key: event.session_key.clone(),
                 event_type: event_type_str.to_string(),
                 content_hash,
-            }])
-            .await?;
+            });
+            ids_and_embeddings.push((event.id.to_string(), embedding));
+        }
 
-        index.insert(event_id, embedding);
+        store.upsert(records).await?;
+
+        // Step 5: Update in-memory index.
+        for (id, embedding) in ids_and_embeddings {
+            index.insert(id, embedding);
+        }
 
         Ok(())
     }

@@ -7,6 +7,6 @@ mod limits;
 mod policy;
 mod sandbox;
 
-pub use limits::*;
+pub use limits::ResourceLimits;
 pub use policy::*;
 pub use sandbox::*;

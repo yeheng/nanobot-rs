@@ -1,25 +1,32 @@
 //! Process manager for command execution
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tracing::instrument;
 
-use super::{CommandBuilder, ExecutionResult};
+use super::ExecutionResult;
 use crate::backend::{create_backend, SandboxBackend};
-use crate::config::{CommandPolicy, ResourceLimits, SandboxConfig};
+use crate::config::{CommandPolicy, PolicyVerdict, SandboxConfig};
 use crate::error::{Result, SandboxError};
+
+#[cfg(feature = "approval")]
+use crate::approval::{ApprovalManager, ExecutionContext, OperationType};
+
+#[cfg(feature = "audit")]
+use crate::audit::AuditLog;
 
 /// Process manager for executing commands
 pub struct ProcessManager {
-    /// Sandbox configuration
     config: SandboxConfig,
-    /// Command policy
     policy: CommandPolicy,
-    /// Sandbox backend
     backend: Box<dyn SandboxBackend>,
-    /// Default timeout
     timeout: Duration,
+    #[cfg(feature = "approval")]
+    approval: Option<Arc<ApprovalManager>>,
+    #[cfg(feature = "audit")]
+    audit: Option<Arc<AuditLog>>,
 }
 
 impl ProcessManager {
@@ -27,13 +34,17 @@ impl ProcessManager {
     pub fn new(config: SandboxConfig) -> Self {
         let backend = create_backend(&config);
         let policy = CommandPolicy::from_config(&config.policy);
-        let timeout = Duration::from_secs(120); // Default 2 minutes
+        let timeout = Duration::from_secs(120);
 
         Self {
             config,
             policy,
             backend,
             timeout,
+            #[cfg(feature = "approval")]
+            approval: None,
+            #[cfg(feature = "audit")]
+            audit: None,
         }
     }
 
@@ -43,18 +54,51 @@ impl ProcessManager {
         self
     }
 
+    /// Set an approval manager for permission checks before execution.
+    #[cfg(feature = "approval")]
+    pub fn with_approval(mut self, approval: Arc<ApprovalManager>) -> Self {
+        self.approval = Some(approval);
+        self
+    }
+
+    /// Set an audit log for recording command executions.
+    #[cfg(feature = "audit")]
+    pub fn with_audit(mut self, audit: Arc<AuditLog>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
     /// Execute a command
     #[instrument(name = "process.execute", skip(self))]
     pub async fn execute(&self, command: &str, working_dir: &Path) -> Result<ExecutionResult> {
-        // Create command builder
-        let builder = CommandBuilder::new(command)
-            .working_dir(working_dir)
-            .limits(ResourceLimits::from(&self.config.limits));
+        // Step 1: Policy check
+        if let PolicyVerdict::Deny(reason) = self.policy.check(command) {
+            return Err(SandboxError::PolicyDenied(reason));
+        }
 
-        // Check policy
-        builder.validate_policy(&self.policy)?;
+        // Step 2: Approval check (if configured)
+        #[cfg(feature = "approval")]
+        {
+            if let Some(ref approval) = self.approval {
+                let operation = OperationType::command_with_args(
+                    command.split_whitespace().next().unwrap_or(""),
+                    command,
+                );
+                let context = ExecutionContext::new().with_working_dir(working_dir);
 
-        // Execute with backend
+                approval.request_approval(&operation, &context).await?;
+            }
+        }
+
+        // Step 3: Audit — command start
+        #[cfg(feature = "audit")]
+        {
+            if let Some(ref audit) = self.audit {
+                let _ = audit.log_command(command, working_dir, None).await;
+            }
+        }
+
+        // Step 4: Execute
         let start = Instant::now();
         let result = self
             .backend
@@ -62,15 +106,32 @@ impl ProcessManager {
             .await?;
         let duration = start.elapsed();
 
-        // Convert backend result to executor result
-        Ok(ExecutionResult {
+        let exec_result = ExecutionResult {
             exit_code: result.exit_code,
             stdout: result.stdout,
             stderr: result.stderr,
             timed_out: result.timed_out,
             resource_exceeded: result.resource_exceeded,
             duration_ms: duration.as_millis() as u64,
-        })
+        };
+
+        // Step 5: Audit — command end
+        #[cfg(feature = "audit")]
+        {
+            if let Some(ref audit) = self.audit {
+                let _ = audit
+                    .log_command_end(
+                        command,
+                        exec_result.exit_code,
+                        exec_result.duration_ms,
+                        exec_result.timed_out,
+                        None,
+                    )
+                    .await;
+            }
+        }
+
+        Ok(exec_result)
     }
 
     /// Execute with timeout
@@ -80,58 +141,29 @@ impl ProcessManager {
         working_dir: &Path,
         timeout: Duration,
     ) -> Result<ExecutionResult> {
-        let result = tokio::time::timeout(timeout, self.execute(command, working_dir))
+        tokio::time::timeout(timeout, self.execute(command, working_dir))
             .await
             .map_err(|_| SandboxError::Timeout {
                 timeout_secs: timeout.as_secs(),
-            })??;
-
-        Ok(result)
+            })?
     }
 
-    /// Execute a command builder
-    pub async fn execute_builder(&self, builder: &CommandBuilder) -> Result<ExecutionResult> {
-        // Validate policy
-        builder.validate_policy(&self.policy)?;
-
-        let start = Instant::now();
-        let result = self
-            .backend
-            .execute(builder.command(), builder.get_working_dir(), &self.config)
-            .await?;
-        let duration = start.elapsed();
-
-        Ok(ExecutionResult {
-            exit_code: result.exit_code,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            timed_out: result.timed_out,
-            resource_exceeded: result.resource_exceeded,
-            duration_ms: duration.as_millis() as u64,
-        })
-    }
-
-    /// Get the backend name
     pub fn backend_name(&self) -> &str {
         self.backend.name()
     }
 
-    /// Check if sandbox is enabled
     pub fn is_sandboxed(&self) -> bool {
         self.config.enabled
     }
 
-    /// Check if the backend provides true filesystem isolation.
     pub fn provides_filesystem_isolation(&self) -> bool {
         self.backend.provides_filesystem_isolation()
     }
 
-    /// Get the command policy
     pub fn policy(&self) -> &CommandPolicy {
         &self.policy
     }
 
-    /// Get the configuration
     pub fn config(&self) -> &SandboxConfig {
         &self.config
     }
@@ -145,7 +177,6 @@ mod tests {
     async fn test_process_manager_fallback() {
         let config = SandboxConfig::fallback();
         let manager = ProcessManager::new(config);
-
         assert_eq!(manager.backend_name(), "fallback");
         assert!(!manager.is_sandboxed());
     }
@@ -154,10 +185,8 @@ mod tests {
     async fn test_execute_simple_command() {
         let config = SandboxConfig::fallback();
         let manager = ProcessManager::new(config);
-
         let result = manager.execute("echo hello", Path::new("/tmp")).await;
         assert!(result.is_ok());
-
         let result = result.unwrap();
         assert!(result.is_success());
         assert!(result.stdout.contains("hello"));
@@ -167,13 +196,10 @@ mod tests {
     async fn test_execute_with_timeout() {
         let config = SandboxConfig::fallback();
         let manager = ProcessManager::new(config);
-
         let result = manager
             .execute_with_timeout("sleep 10", Path::new("/tmp"), Duration::from_millis(100))
             .await;
-
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, SandboxError::Timeout { .. }));
+        assert!(matches!(result.unwrap_err(), SandboxError::Timeout { .. }));
     }
 }

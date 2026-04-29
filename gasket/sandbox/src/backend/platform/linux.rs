@@ -11,7 +11,7 @@ use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
-use crate::config::{ResourceLimits, SandboxConfig};
+use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
 /// Bubblewrap-based sandbox (Linux only).
@@ -80,7 +80,6 @@ impl LinuxBwrapBackend {
         config: &SandboxConfig,
     ) -> Command {
         let mut command = Command::new(&self.bwrap_path);
-        let limits = ResourceLimits::from(&config.limits);
         let tmp_size_mb = config.tmp_size_mb;
 
         // Namespace isolation
@@ -112,7 +111,7 @@ impl LinuxBwrapBackend {
             .arg(format!("{}", u64::from(tmp_size_mb) * 1024 * 1024));
 
         // Resource limits
-        for arg in limits.to_bwrap_args() {
+        for arg in config.limits.to_bwrap_args() {
             command.arg(arg);
         }
 
@@ -171,7 +170,6 @@ impl SandboxBackend for LinuxBwrapBackend {
     ) -> Result<ExecutionResult> {
         // Build async command with kill_on_drop to ensure process termination on timeout
         let mut command = AsyncCommand::new(&self.bwrap_path);
-        let limits = ResourceLimits::from(&config.limits);
         let tmp_size_mb = config.tmp_size_mb;
 
         // Namespace isolation
@@ -203,7 +201,7 @@ impl SandboxBackend for LinuxBwrapBackend {
             .arg(format!("{}", u64::from(tmp_size_mb) * 1024 * 1024));
 
         // Resource limits
-        for arg in limits.to_bwrap_args() {
+        for arg in config.limits.to_bwrap_args() {
             command.arg(arg);
         }
 
@@ -227,8 +225,8 @@ impl SandboxBackend for LinuxBwrapBackend {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Truncate output if needed
-        let stdout = limits.truncate_output(&stdout);
-        let stderr = limits.truncate_output(&stderr);
+        let stdout = config.limits.truncate_output(&stdout);
+        let stderr = config.limits.truncate_output(&stderr);
 
         Ok(ExecutionResult {
             exit_code: output.status.code(),
