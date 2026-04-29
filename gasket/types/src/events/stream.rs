@@ -274,6 +274,14 @@ pub enum ChatEvent {
         error: Arc<str>,
     },
 
+    /// All subagents have been spawned, main agent turn ends
+    SubagentAllStarted {
+        count: u32,
+    },
+
+    /// All subagents completed, main agent begins synthesis
+    SubagentSynthesizing {},
+
     /// Approval request sent to the user for a sensitive tool operation
     ApprovalRequest {
         id: Arc<str>,
@@ -414,6 +422,16 @@ impl ChatEvent {
             index,
             error: Arc::from(error.into()),
         }
+    }
+
+    /// Create a subagent_all_started message
+    pub fn subagent_all_started(count: u32) -> Self {
+        Self::SubagentAllStarted { count }
+    }
+
+    /// Create a subagent_synthesizing message
+    pub fn subagent_synthesizing() -> Self {
+        Self::SubagentSynthesizing {}
     }
 
     /// Create an approval_request message
@@ -760,5 +778,28 @@ mod tests {
     fn test_websocket_message_is_chat_event() {
         let msg: WebSocketMessage = ChatEvent::thinking("test");
         assert!(matches!(msg, ChatEvent::Thinking { .. }));
+    }
+
+    #[test]
+    fn test_subagent_all_started() {
+        let event = ChatEvent::subagent_all_started(5);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"subagent_all_started"#));
+        assert!(json.contains(r#""count":5"#));
+
+        // Round-trip
+        let de: ChatEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
+    }
+
+    #[test]
+    fn test_subagent_synthesizing() {
+        let event = ChatEvent::subagent_synthesizing();
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"subagent_synthesizing""#));
+
+        // Round-trip
+        let de: ChatEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
     }
 }
