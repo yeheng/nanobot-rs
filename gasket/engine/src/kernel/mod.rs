@@ -10,6 +10,7 @@ pub(crate) mod kernel_executor;
 pub(crate) mod request_handler;
 pub(crate) mod steppable_executor;
 pub mod stream;
+pub(crate) mod synthesis;
 pub(crate) mod tool_executor;
 
 pub use context::{CheckpointCallback, KernelConfig, RuntimeContext};
