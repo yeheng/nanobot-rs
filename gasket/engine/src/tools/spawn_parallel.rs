@@ -1,4 +1,8 @@
 //! Parallel spawn tool for concurrent subagent execution with result aggregation
+//!
+//! When a `synthesis_callback` is present in the context, the tool operates in
+//! non-blocking mode: it spawns all subagents, starts background event forwarding
+//! and aggregation, then returns immediately.
 
 use std::sync::Arc;
 
@@ -7,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, instrument};
 
-use super::{format_subagent_response, Tool, ToolContext, ToolError, ToolResult};
+use super::{format_subagent_response, spawn_common, Tool, ToolContext, ToolError, ToolResult};
 
 pub struct SpawnParallelTool;
 
@@ -160,6 +164,80 @@ impl Tool for SpawnParallelTool {
 
         info!("Spawning {} parallel subagent tasks", task_specs.len());
 
+        // ── Non-blocking mode: synthesis_callback present ──────────────
+        if let Some(callback) = ctx.synthesis_callback.clone() {
+            let session_key = ctx.session_key.clone();
+            let outbound_tx = ctx.outbound_tx.clone();
+
+            // Spawn tasks with bounded concurrency
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
+            let mut spawned = Vec::with_capacity(task_specs.len());
+
+            for (idx, spec) in task_specs.into_iter().enumerate() {
+                let spawner_clone = spawner.clone();
+                let sem = semaphore.clone();
+
+                let _permit = sem.acquire().await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Semaphore acquire error: {}", e))
+                })?;
+
+                let (subagent_id, event_rx, result_rx) = spawner_clone
+                    .spawn_with_stream(spec.task.clone(), spec.model_id)
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
+                    })?;
+
+                // Start background event forwarding
+                let _forward_handle = spawn_common::spawn_event_forwarder(
+                    subagent_id.clone(),
+                    event_rx,
+                    session_key.clone(),
+                    outbound_tx.clone(),
+                );
+
+                spawned.push((subagent_id, spec.task.clone(), idx as u32, result_rx));
+            }
+
+            // Collect info for startup events and aggregation
+            let count = spawned.len();
+            let tasks_info: Vec<(String, String, u32)> = spawned
+                .iter()
+                .map(|(id, task, idx, _)| (id.clone(), task.clone(), *idx))
+                .collect();
+            let subagent_ids: Vec<String> =
+                spawned.iter().map(|(id, _, _, _)| id.clone()).collect();
+            let subagent_indices: Vec<u32> =
+                spawned.iter().map(|(_, _, idx, _)| *idx).collect();
+            let result_receivers: Vec<_> =
+                spawned.into_iter().map(|(_, _, _, rx)| rx).collect();
+
+            // Send startup events synchronously (before kernel sends Done)
+            spawn_common::send_startup_events(
+                &session_key,
+                &outbound_tx,
+                count,
+                &tasks_info,
+            )
+            .await;
+
+            // Launch background aggregation
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            spawn_common::spawn_aggregator(
+                result_receivers,
+                subagent_ids,
+                subagent_indices,
+                callback,
+                cancel_token,
+                session_key,
+                outbound_tx,
+                ctx.ws_summary_limit,
+            );
+
+            return Ok(format!("已启动 {} 个并行任务，执行中...", count));
+        }
+
+        // ── Blocking mode: no synthesis_callback ───────────────────────
         // Spawn tasks with bounded concurrency to avoid API rate limits (429).
         // Max 5 concurrent LLM calls is a safe default across most providers.
         let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
