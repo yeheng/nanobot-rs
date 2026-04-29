@@ -14,6 +14,23 @@ use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
+/// Escape a string for inclusion inside a Seatbelt SBPL `"..."` literal.
+///
+/// Without escaping, a workspace path containing `"` or `\` could break out
+/// of the literal and inject arbitrary policy directives, e.g. an attacker-
+/// controlled path could grant `(allow file-write* (subpath "/"))`.
+fn sbpl_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// macOS sandbox-exec (Seatbelt) based sandbox.
 ///
 /// Uses Apple's built-in `sandbox-exec` tool with a custom Seatbelt profile.
@@ -75,13 +92,13 @@ impl MacOsSandboxBackend {
     /// - /tmp and /private/tmp
     /// - /dev/null and /dev/zero
     fn generate_profile(&self, workspace: &Path) -> String {
-        let workspace = workspace.display();
+        let escaped = sbpl_escape(&workspace.display().to_string());
         format!(
             r#"(version 1)
 (deny default)
 (allow file-read*)
 (allow file-write*
-  (subpath "{workspace}")
+  (subpath "{escaped}")
   (subpath "/tmp")
   (subpath "/private/tmp")
   (literal "/dev/null")
@@ -224,6 +241,29 @@ mod tests {
         assert!(profile.contains("(subpath \"/private/tmp\")"));
         assert!(profile.contains("(literal \"/dev/null\")"));
         assert!(profile.contains("(literal \"/dev/zero\")"));
+    }
+
+    #[test]
+    fn test_sbpl_escape_quotes_and_backslashes() {
+        assert_eq!(sbpl_escape("/normal/path"), "/normal/path");
+        assert_eq!(sbpl_escape("/a\"b"), "/a\\\"b");
+        assert_eq!(sbpl_escape("/a\\b"), "/a\\\\b");
+    }
+
+    #[test]
+    fn test_profile_resists_path_injection() {
+        let backend = MacOsSandboxBackend::new();
+        // Hostile path attempting to close the subpath literal and inject a
+        // new directive granting world-writable access.
+        let injected =
+            "/tmp/x\")(allow file-write* (subpath \"/";
+        let profile = backend.generate_profile(Path::new(injected));
+
+        // The escaped quote must survive intact; no unescaped `")` should
+        // appear that would terminate the subpath literal early.
+        assert!(profile.contains("\\\""));
+        // The injected directive must not appear as a real directive.
+        assert!(!profile.contains("(allow file-write* (subpath \"/\")"));
     }
 
     #[tokio::test]

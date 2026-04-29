@@ -34,8 +34,8 @@ pub struct AuditLog {
     path: PathBuf,
     /// Maximum file size in bytes
     max_size_bytes: u64,
-    /// Whether to log command output
-    _log_output: bool,
+    /// Whether logging is enabled (mirrors `AuditConfig::enabled`).
+    enabled: bool,
     /// Combined state protected by a single mutex to prevent TOCTOU races
     state: Arc<Mutex<LogState>>,
 }
@@ -55,7 +55,7 @@ impl AuditLog {
         Ok(Self {
             path,
             max_size_bytes,
-            _log_output: config.log_output,
+            enabled: config.enabled,
             state: Arc::new(Mutex::new(LogState {
                 writer: None,
                 current_size: 0,
@@ -68,7 +68,7 @@ impl AuditLog {
         Self {
             path: path.into(),
             max_size_bytes: 100 * 1024 * 1024, // 100 MB default
-            _log_output: false,
+            enabled: true,
             state: Arc::new(Mutex::new(LogState {
                 writer: None,
                 current_size: 0,
@@ -116,6 +116,10 @@ impl AuditLog {
     /// All operations (size check, rotation, write, size update) happen
     /// within a single lock guard to prevent TOCTOU race conditions.
     pub async fn write(&self, event: &AuditEvent) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
         // Serialize event
         let mut line = serde_json::to_string(event)
             .map_err(|e| SandboxError::AuditError(format!("Failed to serialize event: {}", e)))?;
@@ -184,8 +188,12 @@ impl AuditLog {
         working_dir: &std::path::Path,
         session_id: Option<uuid::Uuid>,
     ) -> Result<()> {
-        let event = AuditEvent::command_start(command, working_dir.display().to_string())
-            .with_session_id(session_id.unwrap_or_else(uuid::Uuid::new_v4));
+        let event = AuditEvent::command_start(command, working_dir.display().to_string());
+        let event = if let Some(id) = session_id {
+            event.with_session_id(id)
+        } else {
+            event
+        };
 
         self.write(&event).await
     }
@@ -199,8 +207,12 @@ impl AuditLog {
         timed_out: bool,
         session_id: Option<uuid::Uuid>,
     ) -> Result<()> {
-        let event = AuditEvent::command_end(command, exit_code, duration_ms, timed_out)
-            .with_session_id(session_id.unwrap_or_else(uuid::Uuid::new_v4));
+        let event = AuditEvent::command_end(command, exit_code, duration_ms, timed_out);
+        let event = if let Some(id) = session_id {
+            event.with_session_id(id)
+        } else {
+            event
+        };
 
         self.write(&event).await
     }
@@ -241,7 +253,7 @@ impl AuditLog {
 
     /// Check if logging is enabled
     pub fn is_enabled(&self) -> bool {
-        true
+        self.enabled
     }
 }
 

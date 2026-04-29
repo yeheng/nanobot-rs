@@ -118,11 +118,11 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
             Platform::Linux => "bwrap",
             Platform::MacOS => "sandbox-exec",
             Platform::Windows => {
-                panic!(
-                    "Windows does not have a built-in sandbox backend. \
-                     Please explicitly set `backend = \"unsafe-direct\"` (or \"host-executor\") \
-                     in your sandbox configuration to run commands without isolation."
-                )
+                tracing::warn!(
+                    "Windows has no true sandbox backend; falling back to host-executor with \
+                     Job Object resource limits only. For real isolation, run gasket inside WSL2."
+                );
+                "host-executor"
             }
         }
     } else {
@@ -186,7 +186,7 @@ pub fn available_backends() -> Vec<&'static str> {
     backends.push("sandbox-exec");
 
     #[cfg(target_os = "windows")]
-    backends.push("unsafe-direct"); // NOT a real sandbox, just cmd.exe
+    backends.push("host-executor"); // NOT a real sandbox, just cmd.exe with Job Objects
 
     backends
 }

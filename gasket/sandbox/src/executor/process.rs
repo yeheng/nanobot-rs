@@ -68,9 +68,32 @@ impl ProcessManager {
         self
     }
 
-    /// Execute a command
+    /// Execute a command, applying the manager's configured wall-clock timeout.
     #[instrument(name = "process.execute", skip(self))]
     pub async fn execute(&self, command: &str, working_dir: &Path) -> Result<ExecutionResult> {
+        self.execute_with_timeout(command, working_dir, self.timeout)
+            .await
+    }
+
+    /// Execute a command with a caller-supplied wall-clock timeout.
+    pub async fn execute_with_timeout(
+        &self,
+        command: &str,
+        working_dir: &Path,
+        timeout: Duration,
+    ) -> Result<ExecutionResult> {
+        tokio::time::timeout(timeout, self.execute_inner(command, working_dir))
+            .await
+            .map_err(|_| SandboxError::Timeout {
+                timeout_secs: timeout.as_secs(),
+            })?
+    }
+
+    async fn execute_inner(
+        &self,
+        command: &str,
+        working_dir: &Path,
+    ) -> Result<ExecutionResult> {
         // Step 1: Policy check
         if let PolicyVerdict::Deny(reason) = self.policy.check(command) {
             return Err(SandboxError::PolicyDenied(reason));
@@ -86,7 +109,12 @@ impl ProcessManager {
                 );
                 let context = ExecutionContext::new().with_working_dir(working_dir);
 
-                approval.request_approval(&operation, &context).await?;
+                let level = approval.request_approval(&operation, &context).await?;
+                if level == crate::approval::PermissionLevel::Denied {
+                    return Err(SandboxError::PermissionDenied(
+                        "operation denied by approval system".into(),
+                    ));
+                }
             }
         }
 
@@ -132,20 +160,6 @@ impl ProcessManager {
         }
 
         Ok(exec_result)
-    }
-
-    /// Execute with timeout
-    pub async fn execute_with_timeout(
-        &self,
-        command: &str,
-        working_dir: &Path,
-        timeout: Duration,
-    ) -> Result<ExecutionResult> {
-        tokio::time::timeout(timeout, self.execute(command, working_dir))
-            .await
-            .map_err(|_| SandboxError::Timeout {
-                timeout_secs: timeout.as_secs(),
-            })?
     }
 
     pub fn backend_name(&self) -> &str {
