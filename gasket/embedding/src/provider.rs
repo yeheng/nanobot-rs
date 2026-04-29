@@ -25,6 +25,10 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dim(&self) -> usize;
 }
 
+fn default_timeout_secs() -> u64 {
+    30
+}
+
 /// Configuration for constructing an embedding provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -35,8 +39,11 @@ pub enum ProviderConfig {
         model: String,
         api_key: String,
         dim: usize,
+        /// HTTP request timeout in seconds (default: 30).
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u64,
     },
-    /// Local ONNX embedding provider (not yet implemented).
+    /// Local ONNX embedding provider (powered by `fastembed`).
     #[cfg(feature = "local-onnx")]
     LocalOnnx {
         model: String,
@@ -61,9 +68,15 @@ impl ProviderConfig {
                 model,
                 api_key,
                 dim,
+                timeout_secs,
             } => {
-                let provider =
-                    ApiProvider::new(endpoint.clone(), model.clone(), api_key.clone(), *dim)?;
+                let provider = ApiProvider::new(
+                    endpoint.clone(),
+                    model.clone(),
+                    api_key.clone(),
+                    *dim,
+                    Duration::from_secs(*timeout_secs),
+                )?;
                 Ok(Box::new(provider))
             }
             #[cfg(feature = "local-onnx")]
@@ -87,21 +100,33 @@ pub struct ApiProvider {
     model: String,
     api_key: String,
     dim: usize,
+    /// True iff the endpoint path ends with `/api/embed` (Ollama native).
+    /// Ollama's native endpoint does not accept array `input`, so batch
+    /// requests fall back to sequential single-text calls.
+    is_ollama_native: bool,
     client: reqwest::Client,
 }
 
 impl ApiProvider {
     /// Create a new API provider.
-    pub fn new(endpoint: String, model: String, api_key: String, dim: usize) -> Result<Self> {
+    pub fn new(
+        endpoint: String,
+        model: String,
+        api_key: String,
+        dim: usize,
+        timeout: Duration,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .build()
             .map_err(|e| anyhow!("failed to build HTTP client: {e}"))?;
+        let is_ollama_native = is_ollama_native_endpoint(&endpoint);
         Ok(Self {
             endpoint,
             model,
             api_key,
             dim,
+            is_ollama_native,
             client,
         })
     }
@@ -114,14 +139,35 @@ impl ApiProvider {
         dim: usize,
         client: reqwest::Client,
     ) -> Self {
+        let is_ollama_native = is_ollama_native_endpoint(&endpoint);
         Self {
             endpoint,
             model,
             api_key,
             dim,
+            is_ollama_native,
             client,
         }
     }
+
+    fn validate_dim(&self, vec: &[f32]) -> Result<()> {
+        if vec.len() != self.dim {
+            return Err(anyhow!(
+                "embedding API returned {} dims, expected {}",
+                vec.len(),
+                self.dim
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the endpoint is the Ollama native `/api/embed[dings]` path,
+/// which does not accept array input. We strip any trailing slash and
+/// require an exact suffix match.
+fn is_ollama_native_endpoint(endpoint: &str) -> bool {
+    let trimmed = endpoint.trim_end_matches('/');
+    trimmed.ends_with("/api/embed") || trimmed.ends_with("/api/embeddings")
 }
 
 #[async_trait]
@@ -171,10 +217,15 @@ impl EmbeddingProvider for ApiProvider {
             })
             .collect::<Result<Vec<f32>>>()?;
 
+        self.validate_dim(&vec)?;
         Ok(vec)
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let body = serde_json::json!({
             "model": self.model,
             "input": texts,
@@ -192,10 +243,13 @@ impl EmbeddingProvider for ApiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
-            // Ollama /api/embeddings does not support batch input — fall back to sequential calls.
-            if status.as_u16() == 400 && self.endpoint.contains("/api/embed") {
+            // Ollama native /api/embed does not support batch input — fall
+            // back to sequential calls. Only do this for a confirmed Ollama
+            // endpoint (path ends with /api/embed[dings]) and a 400-class
+            // status, to avoid mis-routing genuine errors.
+            if status.as_u16() == 400 && self.is_ollama_native {
                 tracing::debug!(
-                    "Batch not supported by provider, falling back to sequential embed calls"
+                    "Batch not supported by Ollama, falling back to sequential embed calls"
                 );
                 let mut results = Vec::with_capacity(texts.len());
                 for text in texts {
@@ -230,6 +284,7 @@ impl EmbeddingProvider for ApiProvider {
                         .ok_or_else(|| anyhow!("non-numeric embedding value"))
                 })
                 .collect::<Result<Vec<f32>>>()?;
+            self.validate_dim(&vec)?;
             results.push(vec);
         }
 
@@ -286,6 +341,17 @@ impl LocalOnnxProvider {
             dim,
         })
     }
+
+    fn validate_dim(&self, vec: &[f32]) -> Result<()> {
+        if vec.len() != self.dim {
+            return Err(anyhow!(
+                "local embedding returned {} dims, expected {}",
+                vec.len(),
+                self.dim
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "local-onnx")]
@@ -302,10 +368,12 @@ impl EmbeddingProvider for LocalOnnxProvider {
         .map_err(|e| anyhow!("embedding task failed: {e}"))?
         .map_err(|e| anyhow!("local embedding failed: {e}"))?;
 
-        embeddings
+        let v = embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("local embedding returned no results"))
+            .ok_or_else(|| anyhow!("local embedding returned no results"))?;
+        self.validate_dim(&v)?;
+        Ok(v)
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -324,6 +392,9 @@ impl EmbeddingProvider for LocalOnnxProvider {
         .map_err(|e| anyhow!("batch embedding task failed: {e}"))?
         .map_err(|e| anyhow!("local batch embedding failed: {e}"))?;
 
+        for v in &embeddings {
+            self.validate_dim(v)?;
+        }
         Ok(embeddings)
     }
 
@@ -402,11 +473,13 @@ dim: 1536
                 model,
                 api_key,
                 dim,
+                timeout_secs,
             } => {
                 assert_eq!(endpoint, "https://api.openai.com/v1/embeddings");
                 assert_eq!(model, "text-embedding-3-small");
                 assert_eq!(api_key, "sk-test-key");
                 assert_eq!(dim, 1536);
+                assert_eq!(timeout_secs, 30, "default timeout should be 30s");
             }
             #[allow(unreachable_patterns)]
             _ => panic!("expected Api variant"),
@@ -420,6 +493,7 @@ dim: 1536
             model: "text-embedding-3-small".to_string(),
             api_key: "sk-test".to_string(),
             dim: 1536,
+            timeout_secs: 30,
         };
         let provider = config.build().unwrap();
         assert_eq!(provider.dim(), 1536);
@@ -432,6 +506,7 @@ dim: 1536
             model: "model-x".to_string(),
             api_key: "key-123".to_string(),
             dim: 768,
+            timeout_secs: 60,
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
@@ -441,15 +516,34 @@ dim: 1536
                 model,
                 api_key,
                 dim,
+                timeout_secs,
             } => {
                 assert_eq!(endpoint, "https://api.example.com/embeddings");
                 assert_eq!(model, "model-x");
                 assert_eq!(api_key, "key-123");
                 assert_eq!(dim, 768);
+                assert_eq!(timeout_secs, 60);
             }
             #[allow(unreachable_patterns)]
             _ => panic!("expected Api variant"),
         }
+    }
+
+    #[test]
+    fn test_ollama_native_endpoint_detection() {
+        assert!(is_ollama_native_endpoint("http://localhost:11434/api/embed"));
+        assert!(is_ollama_native_endpoint(
+            "http://localhost:11434/api/embed/"
+        ));
+        assert!(is_ollama_native_endpoint(
+            "http://localhost:11434/api/embeddings"
+        ));
+        assert!(!is_ollama_native_endpoint(
+            "https://api.openai.com/v1/embeddings"
+        ));
+        assert!(!is_ollama_native_endpoint(
+            "https://api.example.com/v1/api/embeddings/extra"
+        ));
     }
 
     #[cfg(feature = "local-onnx")]
@@ -525,7 +619,6 @@ cache_dir: "/tmp/gasket-models"
 
     #[tokio::test]
     async fn test_api_provider_embed_parse_response() {
-        // Test that ApiProvider correctly parses a JSON embedding response.
         let mut server = mockito::Server::new_async().await;
         let response_body = serde_json::json!({
             "data": [
@@ -559,6 +652,33 @@ cache_dir: "/tmp/gasket-models"
         assert_eq!(embedding, vec![0.1, 0.2, 0.3]);
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_api_provider_embed_rejects_wrong_dim() {
+        let mut server = mockito::Server::new_async().await;
+        // Server returns 5 dims but we configure provider for 3.
+        let response_body = serde_json::json!({
+            "data": [{ "embedding": [0.1, 0.2, 0.3, 0.4, 0.5], "index": 0 }],
+            "model": "x"
+        });
+        let _mock = server
+            .mock("POST", "/embeddings")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&response_body).unwrap())
+            .create_async()
+            .await;
+
+        let provider = ApiProvider::with_client(
+            format!("{}/embeddings", server.url()),
+            "test-model".to_string(),
+            "sk-test".to_string(),
+            3,
+            reqwest::Client::new(),
+        );
+        let err = provider.embed("hi").await;
+        assert!(err.is_err(), "wrong-dim response must fail");
     }
 
     #[tokio::test]

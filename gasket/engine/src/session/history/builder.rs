@@ -434,6 +434,7 @@ pub async fn setup_embedding_recall(
         provider_arc.clone(),
         index.clone(),
         store.clone(),
+        event_store.clone(),
     ));
 
     // Subscribe to new events and start background indexer.
