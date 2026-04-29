@@ -19,6 +19,7 @@
 | 文件 | 职责 |
 |------|------|
 | `gasket/engine/src/tools/spawn_common.rs` | 共享逻辑：Aggregator task、event forwarding、非阻塞/阻塞模式分支 |
+| `gasket/engine/src/kernel/synthesis.rs` | WebSocketSynthesizer 实现 |
 
 ### 后端 - 修改文件
 
@@ -26,10 +27,12 @@
 |------|------|
 | `gasket/types/src/events/stream.rs` | 新增 `SubagentAllStarted`, `SubagentSynthesizing` ChatEvent variants + 构造函数 |
 | `gasket/types/src/tool.rs` | 新增 `SynthesisCallback` trait + `ToolContext.synthesis_callback` 字段 + builder 方法 |
-| `gasket/engine/src/tools/mod.rs` | 新增 `pub mod spawn_common` + re-export |
+| `gasket/types/src/lib.rs:29-33` | 导出 `SynthesisCallback` |
+| `gasket/engine/src/tools/mod.rs` | 新增 `pub mod spawn_common` |
 | `gasket/engine/src/tools/spawn.rs` | 重构为使用 spawn_common，支持非阻塞模式 |
 | `gasket/engine/src/tools/spawn_parallel.rs` | 重构为使用 spawn_common，支持非阻塞模式 |
-| `gasket/engine/src/kernel/steppable_executor.rs` | 构建 ToolContext 时注入 SynthesisCallback |
+| `gasket/engine/src/kernel/mod.rs` | 新增 `pub(crate) mod synthesis` |
+| `gasket/engine/src/plugin/dispatcher/mod.rs:249-253` | 构建 ToolContext 时注入 SynthesisCallback（**此文件有 outbound_tx**） |
 
 ### 前端 - 新增文件
 
@@ -44,7 +47,7 @@
 | `web/src/types/index.ts` | 新增 `subagent_all_started`, `subagent_synthesizing` 类型 |
 | `web/src/composables/useChatSession.ts` | 新增 `subagentPhase` 状态 + 事件处理 + sendMessage 守卫调整 |
 | `web/src/components/MessageBubble.vue` | 集成 SubagentGridPanel（通过 props） |
-| `web/src/components/ChatArea.vue` | 移除 SubagentPanel 引用 |
+| `web/src/components/ChatArea.vue` | 移除 SubagentPanel 引用，传递 subagentPhase prop |
 
 ### 前端 - 删除文件
 
@@ -57,12 +60,12 @@
 ## Task 1: 新增 ChatEvent variants
 
 **Files:**
-- Modify: `gasket/types/src/events/stream.rs:278` (在 `SubagentError` 之后、`ApprovalRequest` 之前插入)
+- Modify: `gasket/types/src/events/stream.rs` (在 `SubagentError` 之后、`ApprovalRequest` 之前插入新 variants)
 - Test: `gasket/types/src/events/stream.rs` (新增 tests)
 
 - [ ] **Step 1: 在 ChatEvent enum 中添加两个新 variant**
 
-在 `stream.rs` 的 `ChatEvent` enum 中，`SubagentError` (line ~275) 之后、`ApprovalRequest` (line ~278) 之前插入：
+在 `stream.rs` 的 `ChatEvent` enum 中，`SubagentError` 之后、`ApprovalRequest` 之前插入：
 
 ```rust
     /// All subagents have been spawned, main agent turn ends
@@ -123,15 +126,15 @@ git commit -m "feat(types): add SubagentAllStarted and SubagentSynthesizing Chat
 
 ---
 
-## Task 2: 新增 SynthesisCallback trait + 扩展 ToolContext
+## Task 2: 新增 SynthesisCallback trait + 扩展 ToolContext + 导出
 
 **Files:**
-- Modify: `gasket/types/src/tool.rs:122-190` (ToolContext struct + impl)
-- Test: `gasket/types/src/tool.rs` (新增 tests)
+- Modify: `gasket/types/src/tool.rs` (trait + struct + builder)
+- Modify: `gasket/types/src/lib.rs:29-33` (re-export)
 
 - [ ] **Step 1: 在 tool.rs 中添加 SynthesisCallback trait**
 
-在 `ToolContext` struct 定义之前（约 line 120）插入：
+在 `ToolContext` struct 定义之前插入：
 
 ```rust
 /// Callback for synthesizing subagent results into a final response.
@@ -148,7 +151,7 @@ pub trait SynthesisCallback: Send + Sync {
 
 - [ ] **Step 2: 在 ToolContext struct 中添加字段**
 
-在 `ws_summary_limit` 字段之后（约 line 135）添加：
+在 `ws_summary_limit` 字段之后添加：
 
 ```rust
     /// Callback for triggering synthesis after all subagents complete.
@@ -159,11 +162,7 @@ pub trait SynthesisCallback: Send + Sync {
 
 - [ ] **Step 3: 更新 ToolContext::default()**
 
-在 `default()` 实现中添加：
-
-```rust
-            synthesis_callback: None,
-```
+在 `default()` 实现中添加 `synthesis_callback: None,`
 
 - [ ] **Step 4: 添加 builder 方法**
 
@@ -179,21 +178,32 @@ pub trait SynthesisCallback: Send + Sync {
 - [ ] **Step 5: 更新 Debug impl**
 
 在 Debug impl 的 `.field()` 链中添加：
-
 ```rust
             .field("synthesis_callback", &self.synthesis_callback.is_some())
 ```
 
-- [ ] **Step 6: 运行编译检查**
+- [ ] **Step 6: 在 lib.rs 中导出 SynthesisCallback**
+
+在 `gasket/types/src/lib.rs` 的 `pub use tool::{...}` 块中添加 `SynthesisCallback`：
+
+```rust
+pub use tool::{
+    simple_schema, ApprovalCallback, NoopSpawner, SubagentResponse, SubagentResult,
+    SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
+    ToolContext, ToolError, ToolMetadata, ToolResult,
+};
+```
+
+- [ ] **Step 7: 运行编译检查**
 
 Run: `cargo build --package gasket-types`
 Expected: 编译通过
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add gasket/types/src/tool.rs
-git commit -m "feat(types): add SynthesisCallback trait and ToolContext.synthesis_callback field"
+git add gasket/types/src/tool.rs gasket/types/src/lib.rs
+git commit -m "feat(types): add SynthesisCallback trait, ToolContext field, and re-export"
 ```
 
 ---
@@ -210,20 +220,17 @@ git commit -m "feat(types): add SynthesisCallback trait and ToolContext.synthesi
 //! Shared logic for spawn and spawn_parallel tools:
 //! - Event forwarding from subagent event_rx → WebSocket outbound_tx
 //! - Aggregator background task (wait for results → synthesize)
-//! - Blocking vs non-blocking mode branching
 
 use std::sync::Arc;
 
 use gasket_types::{
-    events::{ChatEvent, OutboundMessage},
+    events::{ChatEvent, OutboundMessage, SessionKey},
     SubagentResult, SynthesisCallback,
 };
-use gasket_types::events::SessionKey;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Forward subagent StreamEvents to WebSocket as ChatEvents.
-/// Spawned as a background task for each subagent.
 pub fn spawn_event_forwarder(
     subagent_id: String,
     mut event_rx: mpsc::Receiver<gasket_types::StreamEvent>,
@@ -235,12 +242,10 @@ pub fn spawn_event_forwarder(
 
         while let Some(event) = event_rx.recv().await {
             let chat_event = match &event.kind {
-                StreamEventKind::Thinking { content } => {
-                    Some(ChatEvent::subagent_thinking(
-                        &subagent_id,
-                        content.as_ref(),
-                    ))
-                }
+                StreamEventKind::Thinking { content } => Some(ChatEvent::subagent_thinking(
+                    &subagent_id,
+                    content.as_ref(),
+                )),
                 StreamEventKind::ToolStart { name, arguments } => {
                     Some(ChatEvent::subagent_tool_start(
                         &subagent_id,
@@ -248,13 +253,11 @@ pub fn spawn_event_forwarder(
                         arguments.as_ref().map(|s| s.to_string()),
                     ))
                 }
-                StreamEventKind::ToolEnd { name, output } => {
-                    Some(ChatEvent::subagent_tool_end(
-                        &subagent_id,
-                        name.as_ref(),
-                        output.as_ref().map(|s| s.to_string()),
-                    ))
-                }
+                StreamEventKind::ToolEnd { name, output } => Some(ChatEvent::subagent_tool_end(
+                    &subagent_id,
+                    name.as_ref(),
+                    output.as_ref().map(|s| s.to_string()),
+                )),
                 StreamEventKind::Content { content } => Some(ChatEvent::subagent_content(
                     &subagent_id,
                     content.as_ref(),
@@ -288,15 +291,6 @@ pub async fn send_ws_event(
     let _ = outbound_tx.send(msg).await;
 }
 
-/// Result of spawning a single subagent task.
-pub struct SpawnedTask {
-    pub subagent_id: String,
-    pub task_desc: String,
-    pub index: u32,
-    pub event_forward_handle: tokio::task::JoinHandle<()>,
-    pub result_rx: tokio::sync::oneshot::Receiver<gasket_types::SubagentResult>,
-}
-
 /// Send startup events synchronously for all spawned tasks.
 /// Must be called before returning from execute() to guarantee ordering.
 pub async fn send_startup_events(
@@ -305,47 +299,19 @@ pub async fn send_startup_events(
     count: usize,
     tasks: &[(String, String, u32)], // (id, task, index)
 ) {
-    send_ws_event(
-        session_key,
-        outbound_tx,
-        ChatEvent::subagent_all_started(count as u32),
-    )
-    .await;
+    send_ws_event(session_key, outbound_tx, ChatEvent::subagent_all_started(count as u32)).await;
 
     for (id, task, index) in tasks {
-        send_ws_event(
-            session_key,
-            outbound_tx,
-            ChatEvent::subagent_started(id, task, *index),
-        )
-        .await;
+        send_ws_event(session_key, outbound_tx, ChatEvent::subagent_started(id, task, *index))
+            .await;
     }
 }
 
-/// Send completion event for a single subagent.
-pub async fn send_completion_event(
-    session_key: &SessionKey,
-    outbound_tx: &mpsc::Sender<OutboundMessage>,
-    subagent_id: &str,
-    index: u32,
-    summary: &str,
-    tool_count: u32,
-) {
-    send_ws_event(
-        session_key,
-        outbound_tx,
-        ChatEvent::subagent_completed(subagent_id, index, summary, tool_count),
-    )
-    .await;
-}
-
 /// Spawn the Aggregator background task.
-///
-/// Waits for all subagent results, then invokes synthesis_callback to produce
-/// the final aggregated response. Events are sent directly as ChatEvent
-/// through outbound_tx, bypassing the kernel StreamEvent pipeline.
 pub fn spawn_aggregator(
     result_receivers: Vec<tokio::sync::oneshot::Receiver<SubagentResult>>,
+    subagent_ids: Vec<String>,
+    subagent_indices: Vec<u32>,
     synthesis_callback: Arc<dyn SynthesisCallback>,
     cancellation_token: tokio_util::sync::CancellationToken,
     session_key: SessionKey,
@@ -353,30 +319,35 @@ pub fn spawn_aggregator(
     ws_summary_limit: usize,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Wait for all results with a total timeout of 15 minutes
         let timeout = std::time::Duration::from_secs(900);
         let results = tokio::select! {
-            result = tokio::time::timeout(timeout, collect_all_results(result_receivers, &session_key, &outbound_tx, ws_summary_limit)) => {
-                match result {
-                    Ok(results) => results,
-                    Err(_) => {
-                        warn!("[Aggregator] Timed out waiting for subagent results");
-                        send_ws_event(&session_key, &outbound_tx, ChatEvent::error("Subagent aggregation timed out")).await;
-                        send_ws_event(&session_key, &outbound_tx, ChatEvent::done()).await;
-                        return;
-                    }
+            result = tokio::time::timeout(
+                timeout,
+                collect_all_results(
+                    result_receivers,
+                    subagent_ids,
+                    subagent_indices,
+                    &session_key,
+                    &outbound_tx,
+                    ws_summary_limit,
+                ),
+            ) => match result {
+                Ok(results) => results,
+                Err(_) => {
+                    warn!("[Aggregator] Timed out waiting for subagent results");
+                    send_ws_event(&session_key, &outbound_tx, ChatEvent::error("Subagent aggregation timed out")).await;
+                    send_ws_event(&session_key, &outbound_tx, ChatEvent::done()).await;
+                    return;
                 }
-            }
+            },
             _ = cancellation_token.cancelled() => {
                 info!("[Aggregator] Cancelled");
                 return;
             }
         };
 
-        // Send synthesizing transition event
         send_ws_event(&session_key, &outbound_tx, ChatEvent::subagent_synthesizing()).await;
 
-        // Invoke synthesis
         match synthesis_callback.synthesize(results).await {
             Ok(()) => {}
             Err(e) => {
@@ -390,12 +361,16 @@ pub fn spawn_aggregator(
 
 async fn collect_all_results(
     receivers: Vec<tokio::sync::oneshot::Receiver<SubagentResult>>,
+    subagent_ids: Vec<String>,
+    subagent_indices: Vec<u32>,
     session_key: &SessionKey,
     outbound_tx: &mpsc::Sender<OutboundMessage>,
     ws_summary_limit: usize,
 ) -> Vec<SubagentResult> {
     let mut results = Vec::with_capacity(receivers.len());
-    for rx in receivers {
+    for (i, rx) in receivers.into_iter().enumerate() {
+        let id = subagent_ids.get(i).map(|s| s.as_str()).unwrap_or("unknown");
+        let index = subagent_indices.get(i).copied().unwrap_or(0);
         match rx.await {
             Ok(result) => {
                 let summary = if ws_summary_limit == 0 {
@@ -403,19 +378,16 @@ async fn collect_all_results(
                 } else {
                     result.response.content.chars().take(ws_summary_limit).collect()
                 };
-                send_completion_event(
+                send_ws_event(
                     session_key,
                     outbound_tx,
-                    &result.id,
-                    0, // index tracked elsewhere
-                    &summary,
-                    result.response.tools_used.len() as u32,
+                    ChatEvent::subagent_completed(id, index, &summary, result.response.tools_used.len() as u32),
                 )
                 .await;
                 results.push(result);
             }
             Err(e) => {
-                warn!("[Aggregator] Subagent result channel closed: {}", e);
+                warn!("[Aggregator] Subagent {} result channel closed: {}", id, e);
             }
         }
     }
@@ -434,7 +406,7 @@ pub mod spawn_common;
 - [ ] **Step 3: 运行编译检查**
 
 Run: `cargo build --package gasket-engine`
-Expected: 编译通过（可能有未使用的 import warnings，这些是正常的）
+Expected: 编译通过
 
 - [ ] **Step 4: Commit**
 
@@ -449,216 +421,21 @@ git commit -m "feat(engine): add spawn_common module with event forwarding and a
 
 **Files:**
 - Modify: `gasket/engine/src/tools/spawn.rs`
-- Test: `gasket/engine/src/tools/spawn.rs` (修改现有 tests)
 
 - [ ] **Step 1: 重写 spawn.rs**
 
-将 `spawn.rs` 重写为使用 `spawn_common` 模块。核心变化：
-- `execute()` 中检查 `ctx.synthesis_callback`
-- 若 `Some`: 发送 startup events → 启动 Aggregator → 立即返回
+核心变化：`execute()` 中检查 `ctx.synthesis_callback`：
+- 若 `Some(callback)`: 非阻塞模式 — 发送 startup events → 启动 Aggregator → 立即返回
 - 若 `None`: 保持现有阻塞行为
 
-```rust
-//! Spawn tool for subagent execution
-//!
-//! Non-blocking mode: sends startup events + Done, returns immediately.
-//! Aggregator background task waits for results and triggers synthesis.
-//! Blocking mode (CLI/Telegram): waits for result synchronously.
+非阻塞模式关键步骤：
+1. `spawner.spawn_with_stream()` 获取 `(id, event_rx, result_rx)`
+2. `spawn_common::spawn_event_forwarder()` 启动事件转发
+3. `spawn_common::send_startup_events()` **同步**发送启动事件（保证在 Done 之前）
+4. `spawn_common::spawn_aggregator()` 启动后台聚合
+5. 返回 `Ok("Subagent task dispatched...")`
 
-use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::Value;
-use tracing::{info, instrument};
-
-use super::spawn_common;
-use super::{format_subagent_response, Tool, ToolContext, ToolError, ToolResult};
-
-pub struct SpawnTool;
-
-impl SpawnTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for SpawnTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Deserialize)]
-struct SpawnArgs {
-    task: String,
-    model_id: Option<String>,
-}
-
-#[async_trait]
-impl Tool for SpawnTool {
-    fn name(&self) -> &str {
-        "spawn"
-    }
-
-    fn description(&self) -> &str {
-        "Spawn a subagent to execute a task. \
-         In WebSocket mode, returns immediately with progress shown in real-time. \
-         In CLI mode, blocks until completion."
-    }
-
-    fn parameters(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "Task description / prompt to execute"
-                },
-                "model_id": {
-                    "type": "string",
-                    "description": "Optional model profile ID to use for this subagent."
-                }
-            },
-            "required": ["task"]
-        })
-    }
-
-    #[instrument(name = "tool.spawn", skip_all)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
-        let args: SpawnArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
-
-        if args.task.trim().is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "Task description cannot be empty".to_string(),
-            ));
-        }
-
-        let spawner = &ctx.spawner;
-
-        info!("[Spawn] Starting subagent for task: {}", args.task);
-
-        let (subagent_id, event_rx, result_rx) = spawner
-            .spawn_with_stream(args.task.clone(), args.model_id.clone())
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
-
-        if let Some(ref callback) = ctx.synthesis_callback {
-            // === Non-blocking mode (WebSocket) ===
-
-            // Start event forwarding
-            let forward_handle = spawn_common::spawn_event_forwarder(
-                subagent_id.clone(),
-                event_rx,
-                ctx.session_key.clone(),
-                ctx.outbound_tx.clone(),
-            );
-
-            // Send startup events synchronously (before kernel sends Done)
-            spawn_common::send_startup_events(
-                &ctx.session_key,
-                &ctx.outbound_tx,
-                1,
-                &[(subagent_id.clone(), args.task.clone(), 0)],
-            )
-            .await;
-
-            // Launch aggregator
-            spawn_common::spawn_aggregator(
-                vec![result_rx],
-                callback.clone(),
-                tokio_util::sync::CancellationToken::new(),
-                ctx.session_key.clone(),
-                ctx.outbound_tx.clone(),
-                ctx.ws_summary_limit,
-            );
-
-            let _ = forward_handle.await;
-
-            Ok("Subagent task dispatched. Results will stream in real-time.".to_string())
-        } else {
-            // === Blocking mode (CLI/Telegram) ===
-
-            // Send started event
-            let session_key = ctx.session_key.clone();
-            let outbound_tx = ctx.outbound_tx.clone();
-            let _ = outbound_tx
-                .send(gasket_types::events::OutboundMessage::with_ws_message(
-                    session_key.channel.clone(),
-                    session_key.chat_id.clone(),
-                    gasket_types::events::ChatEvent::subagent_started(
-                        subagent_id.clone(),
-                        args.task.clone(),
-                        0,
-                    ),
-                ))
-                .await;
-
-            // Forward events
-            let fwd_id = subagent_id.clone();
-            let fwd_sk = session_key.clone();
-            let fwd_tx = outbound_tx.clone();
-            let forward_handle = tokio::spawn(async move {
-                use gasket_types::StreamEventKind;
-                while let Some(event) = event_rx.recv().await {
-                    let chat_event = match &event.kind {
-                        StreamEventKind::Thinking { content } => {
-                            Some(gasket_types::events::ChatEvent::subagent_thinking(&fwd_id, content.as_ref()))
-                        }
-                        StreamEventKind::ToolStart { name, arguments } => {
-                            Some(gasket_types::events::ChatEvent::subagent_tool_start(
-                                &fwd_id, name.as_ref(), arguments.as_ref().map(|s| s.to_string()),
-                            ))
-                        }
-                        StreamEventKind::ToolEnd { name, output } => {
-                            Some(gasket_types::events::ChatEvent::subagent_tool_end(
-                                &fwd_id, name.as_ref(), output.as_ref().map(|s| s.to_string()),
-                            ))
-                        }
-                        StreamEventKind::Content { content } => {
-                            Some(gasket_types::events::ChatEvent::subagent_content(&fwd_id, content.as_ref()))
-                        }
-                        _ => None,
-                    };
-                    if let Some(ce) = chat_event {
-                        let msg = gasket_types::events::OutboundMessage::with_ws_message(
-                            fwd_sk.channel.clone(), fwd_sk.chat_id.clone(), ce,
-                        );
-                        let _ = fwd_tx.send(msg).await;
-                    }
-                }
-            });
-
-            let result = result_rx.await.map_err(|e| {
-                ToolError::ExecutionError(format!("Subagent result channel closed: {}", e))
-            })?;
-
-            // Send completed event
-            let summary = if ctx.ws_summary_limit == 0 {
-                result.response.content.clone()
-            } else {
-                result.response.content.chars().take(ctx.ws_summary_limit).collect::<String>()
-            };
-            let _ = ctx
-                .outbound_tx
-                .send(gasket_types::events::OutboundMessage::with_ws_message(
-                    ctx.session_key.channel.clone(),
-                    ctx.session_key.chat_id.clone(),
-                    gasket_types::events::ChatEvent::subagent_completed(
-                        subagent_id, 0, summary, result.response.tools_used.len() as u32,
-                    ),
-                ))
-                .await;
-
-            let _ = forward_handle.await;
-            Ok(format_subagent_response(&result))
-        }
-    }
-}
-```
+阻塞模式保持与现有代码完全一致。
 
 - [ ] **Step 2: 运行现有测试确保通过**
 
@@ -678,25 +455,19 @@ git commit -m "feat(engine): refactor spawn tool to support non-blocking mode vi
 
 **Files:**
 - Modify: `gasket/engine/src/tools/spawn_parallel.rs`
-- Test: `gasket/engine/src/tools/spawn_parallel.rs` (保留现有 tests)
 
 - [ ] **Step 1: 重写 spawn_parallel.rs**
 
 核心变化与 spawn.rs 相同：检查 `ctx.synthesis_callback`，分非阻塞/阻塞两条路径。
-非阻塞路径使用 `spawn_common::send_startup_events` 和 `spawn_common::spawn_aggregator`。
 
-在 `execute()` 方法中：
+非阻塞路径：
+1. 解析 tasks，spawn 所有 subagent（与现有逻辑相同），收集所有 `(id, event_rx, result_rx)`
+2. 对每个 subagent 启动 `spawn_common::spawn_event_forwarder`
+3. 调用 `spawn_common::send_startup_events` 同步发送启动事件
+4. 调用 `spawn_common::spawn_aggregator` 启动后台聚合
+5. 返回 `Ok("已启动 N 个并行任务，执行中...")`
 
-1. 解析 tasks，spawn 所有 subagent（与现有逻辑相同）
-2. 检查 `ctx.synthesis_callback`:
-   - `Some(callback)`: 
-     - 对每个 subagent 启动 `spawn_common::spawn_event_forwarder`
-     - 调用 `spawn_common::send_startup_events` 同步发送启动事件
-     - 调用 `spawn_common::spawn_aggregator` 启动后台聚合
-     - 返回 `Ok("已启动 N 个并行任务，执行中...")`
-   - `None`: 保持现有阻塞逻辑（collect results → aggregate → return）
-
-阻塞模式代码保持与当前完全一致，不需要修改。
+阻塞模式代码保持与当前完全一致。
 
 - [ ] **Step 2: 运行现有测试确保通过**
 
@@ -712,12 +483,16 @@ git commit -m "feat(engine): refactor spawn_parallel to support non-blocking mod
 
 ---
 
-## Task 6: 实现 SynthesisCallback + 注入到 ToolContext
+## Task 6: 实现 WebSocketSynthesizer + 注入 SynthesisCallback
 
 **Files:**
-- Create: `gasket/engine/src/kernel/synthesis.rs` (SynthesisCallback 实现)
-- Modify: `gasket/engine/src/kernel/mod.rs` (添加 `pub mod synthesis`)
-- Modify: `gasket/engine/src/kernel/steppable_executor.rs:160-169` (注入 callback)
+- Create: `gasket/engine/src/kernel/synthesis.rs`
+- Modify: `gasket/engine/src/kernel/mod.rs` (添加 `pub(crate) mod synthesis`)
+- Modify: `gasket/engine/src/plugin/dispatcher/mod.rs:249-253` (**注入 callback**)
+
+> **重要**：SynthesisCallback 必须在 `plugin/dispatcher/mod.rs` 中注入，而不是 `steppable_executor.rs`。
+> 原因：`steppable_executor.rs` 不持有 `outbound_tx`（ToolContext 的 outbound_tx 在那里是 default dummy channel）。
+> 只有 `plugin/dispatcher/mod.rs` 的 `ToolRunner` handler（line 248-253）才设置了真实的 `outbound_tx`。
 
 - [ ] **Step 1: 创建 synthesis.rs**
 
@@ -726,7 +501,7 @@ git commit -m "feat(engine): refactor spawn_parallel to support non-blocking mod
 
 use std::sync::Arc;
 
-use gasket_providers::{ChatMessage, LlmProvider};
+use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_types::{
     events::{ChatEvent, OutboundMessage, SessionKey},
     SubagentResult, SynthesisCallback,
@@ -734,9 +509,10 @@ use gasket_types::{
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-/// Concrete SynthesisCallback that holds provider + outbound channel.
+/// Concrete SynthesisCallback that holds provider + outbound channel + model.
 pub struct WebSocketSynthesizer {
     provider: Arc<dyn LlmProvider>,
+    model: String,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     session_key: SessionKey,
 }
@@ -744,23 +520,16 @@ pub struct WebSocketSynthesizer {
 impl WebSocketSynthesizer {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
+        model: String,
         outbound_tx: mpsc::Sender<OutboundMessage>,
         session_key: SessionKey,
     ) -> Self {
         Self {
             provider,
+            model,
             outbound_tx,
             session_key,
         }
-    }
-
-    async fn send_event(&self, event: ChatEvent) {
-        let msg = OutboundMessage::with_ws_message(
-            self.session_key.channel.clone(),
-            self.session_key.chat_id.clone(),
-            event,
-        );
-        let _ = self.outbound_tx.send(msg).await;
     }
 }
 
@@ -770,14 +539,12 @@ impl SynthesisCallback for WebSocketSynthesizer {
         results: Vec<SubagentResult>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> {
         let provider = self.provider.clone();
+        let model = self.model.clone();
         let outbound_tx = self.outbound_tx.clone();
         let session_key = self.session_key.clone();
 
         Box::pin(async move {
-            info!(
-                "[Synthesizer] Synthesizing {} subagent results",
-                results.len()
-            );
+            info!("[Synthesizer] Synthesizing {} subagent results", results.len());
 
             // Build synthesis prompt
             let mut prompt = format!(
@@ -795,42 +562,43 @@ impl SynthesisCallback for WebSocketSynthesizer {
             }
             prompt.push_str("请基于以上结果，给出综合性的最终回复。");
 
-            // Call LLM
-            let messages = vec![ChatMessage::user(&prompt)];
+            // Build ChatRequest (provider.chat() takes ChatRequest, NOT (Vec<ChatMessage>, None))
+            let request = ChatRequest {
+                model: model.clone(),
+                messages: vec![ChatMessage::user(&prompt)],
+                ..Default::default()
+            };
+
             let response = provider
-                .chat(messages, None)
+                .chat(request)
                 .await
                 .map_err(|e| anyhow::anyhow!("Synthesis LLM call failed: {}", e))?;
-
-            // Stream the response as a single content event
-            let sk = session_key;
-            let tx = outbound_tx;
 
             // Send thinking if reasoning content exists
             if let Some(ref reasoning) = response.reasoning_content {
                 let msg = OutboundMessage::with_ws_message(
-                    sk.channel.clone(),
-                    sk.chat_id.clone(),
+                    session_key.channel.clone(),
+                    session_key.chat_id.clone(),
                     ChatEvent::thinking(reasoning),
                 );
-                let _ = tx.send(msg).await;
+                let _ = outbound_tx.send(msg).await;
             }
 
             // Send content
             let msg = OutboundMessage::with_ws_message(
-                sk.channel.clone(),
-                sk.chat_id.clone(),
+                session_key.channel.clone(),
+                session_key.chat_id.clone(),
                 ChatEvent::content(&response.content),
             );
-            let _ = tx.send(msg).await;
+            let _ = outbound_tx.send(msg).await;
 
             // Send done
             let msg = OutboundMessage::with_ws_message(
-                sk.channel,
-                sk.chat_id,
+                session_key.channel,
+                session_key.chat_id,
                 ChatEvent::done(),
             );
-            let _ = tx.send(msg).await;
+            let _ = outbound_tx.send(msg).await;
 
             Ok(())
         })
@@ -838,32 +606,46 @@ impl SynthesisCallback for WebSocketSynthesizer {
 }
 ```
 
+**注意**：`ChatRequest` 使用 `Default::default()` 填充其余字段。确认 `ChatRequest` 实现了 `Default`——如果没有，需要手动构造所有必要字段。查看 `gasket/providers/src/base.rs:59` 的 `ChatRequest` struct 确认。
+
 - [ ] **Step 2: 在 kernel/mod.rs 中注册**
 
-添加 `pub mod synthesis;`
+添加 `pub(crate) mod synthesis;`（注意用 `pub(crate)`，不是 `pub`）
 
-- [ ] **Step 3: 在 steppable_executor.rs 中注入 callback**
+- [ ] **Step 3: 在 plugin/dispatcher/mod.rs 中注入 callback**
 
-在构建 `ToolContext` 的位置（约 line 160-169），在 `session_key` 设置之后添加：
+在 `ToolRunner` handler 的 `handle()` 方法中（约 line 248-253），构建 `ToolContext` 的地方添加：
 
 ```rust
-        if let Some(ref session_key) = self.ctx.session_key {
-            ctx = ctx.session_key(session_key.clone());
-            // Inject SynthesisCallback for WebSocket sessions
-            if matches!(session_key.channel, gasket_types::events::ChannelType::Websocket) {
-                let callback = std::sync::Arc::new(
-                    crate::kernel::synthesis::WebSocketSynthesizer::new(
-                        self.ctx.provider.clone(),
-                        ctx.outbound_tx.clone(),
-                        session_key.clone(),
-                    ),
-                );
-                ctx = ctx.synthesis_callback(callback);
-            }
+    async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
+        let mut tool_ctx = ToolContext::default()
+            .session_key(ctx.engine.session_key.clone())
+            .outbound_tx(ctx.engine.outbound_tx.clone())
+            .spawner(ctx.engine.spawner.clone())
+            .token_tracker(ctx.engine.token_tracker.clone());
+
+        // Inject SynthesisCallback for WebSocket channels
+        if ctx.engine.session_key.channel.supports_streaming() {
+            let model = ctx.engine.provider.default_model().to_string();
+            let callback = std::sync::Arc::new(
+                crate::kernel::synthesis::WebSocketSynthesizer::new(
+                    ctx.engine.provider.clone(),
+                    model,
+                    ctx.engine.outbound_tx.clone(),
+                    ctx.engine.session_key.clone(),
+                ),
+            );
+            tool_ctx = tool_ctx.synthesis_callback(callback);
         }
+
+        let output = ctx
+            .engine
+            // ... rest unchanged
 ```
 
-注意：需要确认 `ChannelType::Websocket` variant 是否存在。如果不存在，需要用其他方式判断（如检查 `session_key.channel` 的值）。
+**关键**：使用 `session_key.channel.supports_streaming()` 判断（ChannelType 已有此方法，返回 true 仅当 WebSocket）。这比 `matches!` 更符合现有模式。
+
+同时需要确认 `EngineHandle` 持有 `provider`。检查 `EngineHandle` struct（约 line 70）是否已有 `provider` 字段。如果没有，需要新增。
 
 - [ ] **Step 4: 运行编译检查**
 
@@ -873,8 +655,8 @@ Expected: 编译通过
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gasket/engine/src/kernel/synthesis.rs gasket/engine/src/kernel/mod.rs gasket/engine/src/kernel/steppable_executor.rs
-git commit -m "feat(engine): implement WebSocketSynthesizer and inject SynthesisCallback into ToolContext"
+git add gasket/engine/src/kernel/synthesis.rs gasket/engine/src/kernel/mod.rs gasket/engine/src/plugin/dispatcher/mod.rs
+git commit -m "feat(engine): implement WebSocketSynthesizer and inject SynthesisCallback in dispatcher"
 ```
 
 ---
@@ -882,11 +664,11 @@ git commit -m "feat(engine): implement WebSocketSynthesizer and inject Synthesis
 ## Task 7: 前端类型更新
 
 **Files:**
-- Modify: `web/src/types/index.ts:50-64`
+- Modify: `web/src/types/index.ts:50-57`
 
 - [ ] **Step 1: 更新 SubagentWsMessage 联合类型**
 
-在 `SubagentWsMessage` 类型中添加两个新成员：
+在 `SubagentWsMessage` 类型头部添加两个新成员：
 
 ```ts
 export type SubagentWsMessage =
@@ -917,7 +699,7 @@ git commit -m "feat(web): add subagent_all_started and subagent_synthesizing to 
 
 - [ ] **Step 1: 添加 subagentPhase ref**
 
-在 `const activeSubagents` 声明之后添加：
+在 `const activeSubagents` 声明之后（约 line 15）添加：
 
 ```ts
 const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('idle')
@@ -925,7 +707,9 @@ const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('id
 
 - [ ] **Step 2: 添加事件处理**
 
-在 `processWebSocketMessageInner` 的 switch 中添加两个新 case（在 `subagent_started` 之前）：
+在 `processWebSocketMessageInner` 的 switch 中添加新 case。
+
+在 `subagent_started` case 之前添加：
 
 ```ts
       case 'subagent_all_started':
@@ -933,13 +717,12 @@ const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('id
         break
 ```
 
-修改 `done` case：
+修改 `done` case（约 line 224-227）：
 
 ```ts
       case 'done':
         isThinking.value = false
-        // Don't end receiving if subagents are active
-        if (activeSubagents.value.size > 0) break
+        if (activeSubagents.value.size > 0) break  // 不结束接收状态
         isReceiving.value = false
         fetchContext()
         break
@@ -962,10 +745,9 @@ const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('id
     if (!text.trim() || !isConnected.value || isSending.value || (isReceiving.value && subagentPhase.value !== 'running')) return false;
 ```
 
-在 `sendMessage` 中，发送新消息时清理 subagent 状态。在 `isSending.value = true` 之前添加：
+在 `isSending.value = true` 之前添加：
 
 ```ts
-    // Clear subagent state when user sends during running phase
     if (subagentPhase.value === 'running') {
       activeSubagents.value.clear()
       subagentPhase.value = 'idle'
@@ -974,21 +756,20 @@ const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('id
 
 - [ ] **Step 4: 更新 checkAndFinalizeSubagents**
 
-修改 `checkAndFinalizeSubagents` 方法，在全部完成时重置 phase：
+修改不再清理 activeSubagents（等待 synthesizing 事件处理 phase 转换）：
 
 ```ts
   const checkAndFinalizeSubagents = () => {
     const allCompleted = [...activeSubagents.value.values()].every(s => s.status !== 'running')
     if (allCompleted && activeSubagents.value.size > 0) {
-      // Don't clear yet - wait for synthesizing event
-      // phase transition handled by subagent_synthesizing event
+      // Phase transition handled by subagent_synthesizing event
     }
   }
 ```
 
 - [ ] **Step 5: 导出 subagentPhase**
 
-在 `return reactive({...})` 的 `// Subagents` 部分添加：
+在 `return reactive({...})` 的 `// Subagents` 部分（约 line 422-424）添加：
 
 ```ts
     subagentPhase,
@@ -1020,16 +801,14 @@ git commit -m "feat(web): add subagentPhase state and handle new subagent events
 - `synthesizing`: 折叠动画 + "正在综合结果..." 提示
 - `completed`: 不渲染（由 SubagentThoughtsPanel 接替）
 
-组件接收 `subagents: SubagentState[]` 和 `phase` props。
-每列包含：Header（Task 编号 + 描述 + 状态）+ Thinking + Tool Calls（可折叠）+ Content。
-使用 Tailwind CSS grid 布局，`grid-cols-N` 根据 subagent 数量动态设置（最多 4 列，超过 4 则换行）。
+Props: `subagents: SubagentState[]` + `phase: 'running' | 'synthesizing'`
 
-每列的 content 区域使用 `max-h-64 overflow-y-auto` 保持独立滚动。
-Tool call 复用现有 `Collapsible` 组件模式（参考 `SubagentThoughtsPanel.vue` 的实现）。
-
-`synthesizing` phase 时：
-1. 网格区域渐隐（`opacity-0` transition）
-2. 显示居中提示 "正在综合结果..." + Loader2 动画图标
+布局要点：
+- Tailwind CSS grid：`grid-cols-N` 根据 subagent 数量动态设置（1-4 列）
+- 每列：Header（Task 编号 + 描述 + 状态徽标）+ Thinking + Tool Calls（可折叠）+ Content
+- 每列 content 区域 `max-h-64 overflow-y-auto` 独立滚动
+- Tool call 复用现有 `Collapsible` 组件（参考 `SubagentThoughtsPanel.vue`）
+- `synthesizing` phase：网格渐隐 + 居中 "正在综合结果..." + Loader2 动画
 
 - [ ] **Step 2: 验证编译**
 
@@ -1054,9 +833,9 @@ git commit -m "feat(web): add SubagentGridPanel component for multi-column subag
 
 - [ ] **Step 1: 修改 MessageBubble.vue**
 
-在 `SubagentThoughtsPanel` 之前添加 `SubagentGridPanel`：
+添加 import：
 
-```vue
+```ts
 import SubagentGridPanel from './SubagentGridPanel.vue'
 ```
 
@@ -1082,7 +861,7 @@ const props = defineProps<{
         />
 ```
 
-调整 `SubagentThoughtsPanel` 显示条件——仅在 `completed` 或 `idle` 且有 subagents 时显示：
+调整 `SubagentThoughtsPanel` 显示条件：
 
 ```vue
         <SubagentThoughtsPanel
@@ -1093,23 +872,13 @@ const props = defineProps<{
 
 - [ ] **Step 2: 修改 ChatArea.vue**
 
-移除 `SubagentPanel` import 和使用。
+移除 SubagentPanel import 和模板使用。
 
-删除：
-```ts
-import SubagentPanel from './SubagentPanel.vue'
-```
+删除：`import SubagentPanel from './SubagentPanel.vue'`
 
-删除模板中的：
-```vue
-          <SubagentPanel
-            v-if="session.hasActiveSubagents"
-            :subagents="session.activeSubagents"
-            class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full mt-2"
-          />
-```
+删除模板中的 `<SubagentPanel ... />` 块。
 
-传递 `subagentPhase` 到 `MessageBubble`：
+为 `MessageBubble` 添加 `subagent-phase` prop：
 
 ```vue
             <MessageBubble
