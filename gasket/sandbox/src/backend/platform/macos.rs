@@ -136,7 +136,6 @@ impl MacOsSandboxBackend {
     ) -> Result<Command> {
         let validated = validate_workspace(working_dir, config)?;
         let profile = self.generate_profile(&validated)?;
-        let limits = ResourceLimits::from(&config.limits);
 
         let prefixed_cmd = format!("{}{}", config.limits.to_ulimit_prefix(), cmd);
 
@@ -197,7 +196,6 @@ impl SandboxBackend for MacOsSandboxBackend {
     ) -> Result<ExecutionResult> {
         let validated = validate_workspace(working_dir, config)?;
         let profile = self.generate_profile(&validated)?;
-        let limits = ResourceLimits::from(&config.limits);
 
         let prefixed_cmd = format!("{}{}", config.limits.to_ulimit_prefix(), cmd);
 

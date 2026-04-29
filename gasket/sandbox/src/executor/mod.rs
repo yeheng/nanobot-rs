@@ -1,5 +1,6 @@
 //! Command execution module
 
+mod command;
 mod process;
 mod result;
 

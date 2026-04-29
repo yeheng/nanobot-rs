@@ -240,10 +240,7 @@ mod tests {
         let config = SandboxConfig::enabled();
         let args = backend.bwrap_args(Path::new("/tmp"), &config);
         let size_idx = args.iter().position(|a| a == "--size").expect("--size");
-        let tmpfs_idx = args
-            .iter()
-            .position(|a| a == "--tmpfs")
-            .expect("--tmpfs");
+        let tmpfs_idx = args.iter().position(|a| a == "--tmpfs").expect("--tmpfs");
         assert!(
             size_idx < tmpfs_idx,
             "--size must precede --tmpfs to take effect (got size={size_idx}, tmpfs={tmpfs_idx})"

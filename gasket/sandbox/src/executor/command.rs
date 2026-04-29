@@ -120,7 +120,7 @@ mod tests {
         let cmd = CommandBuilder::new("ls -la")
             .working_dir("/tmp")
             .env("FOO", "bar")
-            .limits(ResourceLimits::from_mb(512, 60, 1_048_576));
+            .limits(ResourceLimits::default());
 
         assert_eq!(cmd.command(), "ls -la");
         assert_eq!(cmd.get_working_dir(), Path::new("/tmp"));

@@ -75,9 +75,9 @@ impl JsonPermissionStore {
         fs::write(&tmp, content).await.map_err(|e| {
             SandboxError::StoreError(format!("Failed to write temp rules file: {}", e))
         })?;
-        fs::rename(&tmp, &self.path).await.map_err(|e| {
-            SandboxError::StoreError(format!("Failed to rename rules file: {}", e))
-        })?;
+        fs::rename(&tmp, &self.path)
+            .await
+            .map_err(|e| SandboxError::StoreError(format!("Failed to rename rules file: {}", e)))?;
 
         debug!("Saved {} rules to {:?}", rules.len(), self.path);
         Ok(())

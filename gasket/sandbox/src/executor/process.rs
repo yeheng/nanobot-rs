@@ -8,14 +8,15 @@ use tracing::instrument;
 
 use super::ExecutionResult;
 use crate::backend::{create_backend, SandboxBackend};
-use crate::config::{CommandPolicy, PolicyVerdict, SandboxConfig};
+use crate::config::{CommandPolicy, SandboxConfig};
 use crate::error::{Result, SandboxError};
 
 #[cfg(feature = "approval")]
-use crate::approval::{ApprovalManager, ExecutionContext, OperationType};
+use crate::approval::ApprovalManager;
 
 #[cfg(feature = "audit")]
 use crate::audit::AuditLog;
+use crate::executor::command::CommandBuilder;
 
 /// Process manager for executing commands
 pub struct ProcessManager {
@@ -72,7 +73,7 @@ impl ProcessManager {
     ) -> Result<ExecutionResult> {
         let builder = CommandBuilder::new(command)
             .working_dir(working_dir)
-            .limits(ResourceLimits::from(&self.config.limits));
+            .limits(self.config.limits.clone());
         builder.validate_policy(&self.policy)?;
 
         let start = Instant::now();
@@ -86,7 +87,7 @@ impl ProcessManager {
         })??;
         let duration = start.elapsed();
 
-        Ok(ExecutionResult {
+        let exec_result = ExecutionResult {
             exit_code: result.exit_code,
             stdout: result.stdout,
             stderr: result.stderr,
