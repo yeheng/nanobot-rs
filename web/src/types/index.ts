@@ -48,6 +48,8 @@ export interface SubagentState {
  * These correspond to the Rust WebSocketMessage enum variants
  */
 export type SubagentWsMessage =
+  | { type: 'subagent_all_started'; count: number }
+  | { type: 'subagent_synthesizing' }
   | { type: 'subagent_started'; id: string; task: string; index: number }
   | { type: 'subagent_thinking'; id: string; content: string }
   | { type: 'subagent_content'; id: string; content: string }
