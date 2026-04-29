@@ -4,21 +4,32 @@
 
 use async_trait::async_trait;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::fs;
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use super::{ApprovalRule, PermissionStore};
 use crate::error::{Result, SandboxError};
 
-/// JSON file-based permission store
+/// JSON file-based permission store.
+///
+/// Mutations are serialized through an internal `Mutex` and written
+/// atomically (write-to-tempfile + rename) so concurrent `add_rule` /
+/// `remove_rule` / `update_rule` calls cannot lose updates or leave the
+/// store in a half-written state.
 pub struct JsonPermissionStore {
     path: PathBuf,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl JsonPermissionStore {
     /// Create a new JSON store at the given path
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            write_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Create a store in the default location
@@ -48,6 +59,27 @@ impl JsonPermissionStore {
                 })?;
             }
         }
+        Ok(())
+    }
+
+    /// Save rules atomically. Caller must hold `write_lock`.
+    /// Writes to a sibling tempfile, then renames over the destination so
+    /// readers never see a partially written file.
+    async fn save_rules_locked(&self, rules: &[ApprovalRule]) -> Result<()> {
+        self.ensure_parent_dir().await?;
+
+        let content = serde_json::to_string_pretty(rules)
+            .map_err(|e| SandboxError::StoreError(format!("Failed to serialize rules: {}", e)))?;
+
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, content).await.map_err(|e| {
+            SandboxError::StoreError(format!("Failed to write temp rules file: {}", e))
+        })?;
+        fs::rename(&tmp, &self.path).await.map_err(|e| {
+            SandboxError::StoreError(format!("Failed to rename rules file: {}", e))
+        })?;
+
+        debug!("Saved {} rules to {:?}", rules.len(), self.path);
         Ok(())
     }
 }
@@ -83,26 +115,19 @@ impl PermissionStore for JsonPermissionStore {
     }
 
     async fn save_rules(&self, rules: &[ApprovalRule]) -> Result<()> {
-        self.ensure_parent_dir().await?;
-
-        let content = serde_json::to_string_pretty(rules)
-            .map_err(|e| SandboxError::StoreError(format!("Failed to serialize rules: {}", e)))?;
-
-        fs::write(&self.path, content)
-            .await
-            .map_err(|e| SandboxError::StoreError(format!("Failed to write rules file: {}", e)))?;
-
-        debug!("Saved {} rules to {:?}", rules.len(), self.path);
-        Ok(())
+        let _guard = self.write_lock.lock().await;
+        self.save_rules_locked(rules).await
     }
 
     async fn add_rule(&self, rule: &ApprovalRule) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut rules = self.load_rules().await?;
         rules.push(rule.clone());
-        self.save_rules(&rules).await
+        self.save_rules_locked(&rules).await
     }
 
     async fn remove_rule(&self, rule_id: uuid::Uuid) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut rules = self.load_rules().await?;
         let initial_len = rules.len();
         rules.retain(|r| r.id != rule_id);
@@ -111,19 +136,21 @@ impl PermissionStore for JsonPermissionStore {
             warn!("Rule {} not found for removal", rule_id);
         }
 
-        self.save_rules(&rules).await
+        self.save_rules_locked(&rules).await
     }
 
     async fn update_rule(&self, rule: &ApprovalRule) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut rules = self.load_rules().await?;
         let found = rules.iter_mut().find(|r| r.id == rule.id);
 
         if let Some(existing) = found {
             *existing = rule.clone();
-            self.save_rules(&rules).await
+            self.save_rules_locked(&rules).await
         } else {
             warn!("Rule {} not found for update, adding as new", rule.id);
-            self.add_rule(rule).await
+            rules.push(rule.clone());
+            self.save_rules_locked(&rules).await
         }
     }
 

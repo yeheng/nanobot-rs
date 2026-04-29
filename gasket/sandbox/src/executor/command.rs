@@ -38,8 +38,6 @@ pub struct CommandBuilder {
     env: Vec<(String, String)>,
     /// Resource limits
     limits: ResourceLimits,
-    /// Whether to use sandbox
-    use_sandbox: bool,
 }
 
 impl CommandBuilder {
@@ -50,7 +48,6 @@ impl CommandBuilder {
             working_dir: PathBuf::from("."),
             env: Vec::new(),
             limits: ResourceLimits::default(),
-            use_sandbox: false,
         }
     }
 
@@ -69,12 +66,6 @@ impl CommandBuilder {
     /// Set resource limits
     pub fn limits(mut self, limits: ResourceLimits) -> Self {
         self.limits = limits;
-        self
-    }
-
-    /// Enable sandbox
-    pub fn with_sandbox(mut self, enabled: bool) -> Self {
-        self.use_sandbox = enabled;
         self
     }
 

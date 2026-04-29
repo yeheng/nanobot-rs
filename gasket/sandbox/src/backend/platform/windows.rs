@@ -237,6 +237,13 @@ impl SandboxBackend for HostExecutor {
 
             debug!("Windows command: {:?}", command);
 
+            // KNOWN LIMITATION: there is a small window between `spawn()` and
+            // `AssignProcessToJobObject` during which the child runs without
+            // job-object limits applied. The correct fix is to spawn with
+            // `CREATE_SUSPENDED`, assign to the job, then resume the primary
+            // thread (requires tlhelp32 to locate the thread handle from a
+            // `std::process::Child`). Until that is implemented, treat the
+            // job-object limits as best-effort.
             let mut child = command
                 .spawn()
                 .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;

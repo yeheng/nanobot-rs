@@ -188,19 +188,22 @@ impl ApprovalManager {
         operation: &OperationType,
         context: &ExecutionContext,
     ) -> PermissionVerdict {
-        // 1. Check session cache for "ask_once" permissions
+        // 1. Check session cache for "ask_once" permissions.
+        // `check_cache` only returns concrete `Allowed`/`Denied` decisions —
+        // anything else means "no cached decision, ask again".
         if let Some(level) = self.session.check_cache(operation, context) {
             debug!("Permission found in session cache: {:?}", level);
-            return match level {
-                PermissionLevel::Allowed => PermissionVerdict::Allowed,
-                PermissionLevel::Denied => PermissionVerdict::Denied {
-                    reason: "Previously denied in this session".into(),
-                },
-                _ => PermissionVerdict::NeedsConfirmation {
-                    request_id: uuid::Uuid::new_v4(),
-                    suggested_level: level,
-                },
-            };
+            match level {
+                PermissionLevel::Allowed => return PermissionVerdict::Allowed,
+                PermissionLevel::Denied => {
+                    return PermissionVerdict::Denied {
+                        reason: "Previously denied in this session".into(),
+                    }
+                }
+                PermissionLevel::AskAlways | PermissionLevel::AskOnce => {
+                    // Unreachable in practice; fall through to rule lookup.
+                }
+            }
         }
 
         // 2. Check rules
@@ -266,22 +269,43 @@ impl ApprovalManager {
                     .with_suggested_level(suggested_level);
 
                 // Get user confirmation
-                if let Some(interaction) = &self.interaction {
-                    let level = interaction.confirm(&request).await?;
+                let Some(interaction) = &self.interaction else {
+                    // Fail closed: with no handler available we cannot get
+                    // user consent, so the operation must be denied.
+                    warn!("No interaction handler configured; denying operation");
+                    return Err(SandboxError::PermissionDenied(
+                        "No approval interaction handler configured".into(),
+                    ));
+                };
 
-                    // Cache if ask_once - store the actual decision (approved/denied)
-                    if level == PermissionLevel::AskOnce {
-                        // For AskOnce, we cache the user's decision
-                        // The user approved by returning AskOnce, so cache as approved
-                        self.session.cache_decision(operation, context, true);
-                    }
-
-                    Ok(level)
+                let level = if self.config.interaction_timeout > 0 {
+                    let timeout = std::time::Duration::from_secs(self.config.interaction_timeout);
+                    tokio::time::timeout(timeout, interaction.confirm(&request))
+                        .await
+                        .map_err(|_| SandboxError::ApprovalTimeout {
+                            timeout_secs: self.config.interaction_timeout,
+                        })??
                 } else {
-                    // No interaction handler, use suggested level or deny
-                    warn!("No interaction handler configured, using suggested level");
-                    Ok(suggested_level)
+                    interaction.confirm(&request).await?
+                };
+
+                // For AskOnce-suggested operations, cache the user's actual
+                // decision (Allowed or Denied) so we don't re-prompt for the
+                // remainder of the session. AskAlways is intentionally never
+                // cached.
+                if suggested_level == PermissionLevel::AskOnce {
+                    match level {
+                        PermissionLevel::Allowed => {
+                            self.session.cache_decision(operation, context, true);
+                        }
+                        PermissionLevel::Denied => {
+                            self.session.cache_decision(operation, context, false);
+                        }
+                        _ => {}
+                    }
                 }
+
+                Ok(level)
             }
         }
     }

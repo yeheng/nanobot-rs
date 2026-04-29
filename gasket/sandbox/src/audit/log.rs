@@ -34,8 +34,8 @@ pub struct AuditLog {
     path: PathBuf,
     /// Maximum file size in bytes
     max_size_bytes: u64,
-    /// Whether to log command output
-    _log_output: bool,
+    /// Whether to attach captured stdout/stderr to command-end events
+    log_output: bool,
     /// Combined state protected by a single mutex to prevent TOCTOU races
     state: Arc<Mutex<LogState>>,
 }
@@ -55,7 +55,7 @@ impl AuditLog {
         Ok(Self {
             path,
             max_size_bytes,
-            _log_output: config.log_output,
+            log_output: config.log_output,
             state: Arc::new(Mutex::new(LogState {
                 writer: None,
                 current_size: 0,
@@ -68,12 +68,17 @@ impl AuditLog {
         Self {
             path: path.into(),
             max_size_bytes: 100 * 1024 * 1024, // 100 MB default
-            _log_output: false,
+            log_output: false,
             state: Arc::new(Mutex::new(LogState {
                 writer: None,
                 current_size: 0,
             })),
         }
+    }
+
+    /// Whether captured command output should be attached to audit events.
+    pub fn log_output(&self) -> bool {
+        self.log_output
     }
 
     /// Initialize the audit log
@@ -161,32 +166,63 @@ impl AuditLog {
         Ok(())
     }
 
-    /// Rotate the log file
+    /// Rotate the log file using a numeric suffix so previous rotations are
+    /// preserved (`audit.log.1` is the most recent rotation, `audit.log.2`
+    /// the next, etc., up to `MAX_KEEP`).
     async fn rotate(&self) -> Result<()> {
         info!("Rotating audit log: {:?}", self.path);
 
-        // Simple rotation: rename current file to .old
-        let old_path = self.path.with_extension("log.old");
-
-        if self.path.exists() {
-            fs::rename(&self.path, &old_path)
-                .await
-                .map_err(|e| SandboxError::AuditError(format!("Failed to rotate log: {}", e)))?;
+        if !self.path.exists() {
+            return Ok(());
         }
+
+        const MAX_KEEP: u32 = 5;
+        let stem = self.path.to_string_lossy();
+
+        // Drop the oldest if it would exceed our retention.
+        let oldest = PathBuf::from(format!("{}.{}", stem, MAX_KEEP));
+        if oldest.exists() {
+            fs::remove_file(&oldest).await.map_err(|e| {
+                SandboxError::AuditError(format!("Failed to delete old log: {}", e))
+            })?;
+        }
+
+        // Shift .N → .N+1, descending so we don't overwrite ourselves.
+        for i in (1..MAX_KEEP).rev() {
+            let from = PathBuf::from(format!("{}.{}", stem, i));
+            let to = PathBuf::from(format!("{}.{}", stem, i + 1));
+            if from.exists() {
+                fs::rename(&from, &to).await.map_err(|e| {
+                    SandboxError::AuditError(format!("Failed to shift rotated log: {}", e))
+                })?;
+            }
+        }
+
+        // Move the active log into slot .1.
+        let first = PathBuf::from(format!("{}.1", stem));
+        fs::rename(&self.path, &first)
+            .await
+            .map_err(|e| SandboxError::AuditError(format!("Failed to rotate log: {}", e)))?;
 
         Ok(())
     }
 
     /// Log a command execution
+    ///
+    /// `session_id` is propagated as-is — if `None`, the event is logged
+    /// without a session correlator. (Previously, `None` was replaced with a
+    /// fresh random UUID, which made `command_start` and `command_end`
+    /// pairs impossible to correlate across calls.)
     pub async fn log_command(
         &self,
         command: &str,
         working_dir: &std::path::Path,
         session_id: Option<uuid::Uuid>,
     ) -> Result<()> {
-        let event = AuditEvent::command_start(command, working_dir.display().to_string())
-            .with_session_id(session_id.unwrap_or_else(uuid::Uuid::new_v4));
-
+        let mut event = AuditEvent::command_start(command, working_dir.display().to_string());
+        if let Some(id) = session_id {
+            event = event.with_session_id(id);
+        }
         self.write(&event).await
     }
 
@@ -199,9 +235,10 @@ impl AuditLog {
         timed_out: bool,
         session_id: Option<uuid::Uuid>,
     ) -> Result<()> {
-        let event = AuditEvent::command_end(command, exit_code, duration_ms, timed_out)
-            .with_session_id(session_id.unwrap_or_else(uuid::Uuid::new_v4));
-
+        let mut event = AuditEvent::command_end(command, exit_code, duration_ms, timed_out);
+        if let Some(id) = session_id {
+            event = event.with_session_id(id);
+        }
         self.write(&event).await
     }
 

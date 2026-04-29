@@ -29,7 +29,10 @@ pub enum Platform {
 }
 
 impl Platform {
-    /// Get the current platform
+    /// Get the current platform. On unsupported targets this returns
+    /// `Platform::Linux` as a best-effort default — combined with the
+    /// `FallbackBackend` selection in `create_backend`, that lets the crate
+    /// still compile and load on BSDs/illumos without crashing the host.
     pub fn current() -> Self {
         #[cfg(target_os = "linux")]
         {
@@ -45,7 +48,7 @@ impl Platform {
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
-            panic!("Unsupported platform")
+            Platform::Linux
         }
     }
 
@@ -103,7 +106,44 @@ pub trait SandboxBackend: Send + Sync {
     ) -> Result<ExecutionResult>;
 }
 
+/// Build the platform-default sandbox backend, falling back to
+/// `FallbackBackend` when the native backend isn't installed (so misconfigured
+/// hosts surface a warning instead of crashing at execution time).
+fn platform_default_backend() -> Box<dyn SandboxBackend> {
+    #[cfg(target_os = "linux")]
+    {
+        let backend = LinuxBwrapBackend::new();
+        if backend.is_installed() {
+            return Box::new(backend);
+        }
+        tracing::warn!("bwrap not installed; using fallback (unsandboxed) backend");
+        Box::new(FallbackBackend::new())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let backend = MacOsSandboxBackend::new();
+        if backend.is_installed() {
+            return Box::new(backend);
+        }
+        tracing::warn!("sandbox-exec not found; using fallback (unsandboxed) backend");
+        Box::new(FallbackBackend::new())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(HostExecutor::new())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Box::new(FallbackBackend::new())
+    }
+}
+
 /// Create the appropriate sandbox backend based on configuration and platform.
+///
+/// This function is infallible: unknown backend names, unavailable native
+/// backends, and misconfigured platform/backend combinations all degrade to
+/// `FallbackBackend` with a warning. (Previously, Windows + `backend = "auto"`
+/// would `panic!` at startup.)
 pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
     if !config.enabled {
         return Box::new(FallbackBackend::new());
@@ -112,22 +152,10 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
     let platform = Platform::current();
     let backend_name = config.backend.to_lowercase();
 
-    // Handle "auto" backend selection
-    let backend_name = if backend_name == "auto" {
-        match platform {
-            Platform::Linux => "bwrap",
-            Platform::MacOS => "sandbox-exec",
-            Platform::Windows => {
-                panic!(
-                    "Windows does not have a built-in sandbox backend. \
-                     Please explicitly set `backend = \"unsafe-direct\"` (or \"host-executor\") \
-                     in your sandbox configuration to run commands without isolation."
-                )
-            }
-        }
-    } else {
-        &backend_name
-    };
+    // "auto" → platform default (fallback if native backend isn't installed).
+    if backend_name == "auto" {
+        return platform_default_backend();
+    }
 
     // All known backend names across platforms
     const KNOWN_BACKENDS: &[&str] = &[
@@ -136,38 +164,47 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         "sandbox-exec",
         "job-objects",
         "windows-fallback",
+        "host-executor",
         "unsafe-direct",
     ];
 
-    match backend_name {
+    match backend_name.as_str() {
         "fallback" => Box::new(FallbackBackend::new()),
         #[cfg(target_os = "linux")]
-        "bwrap" => Box::new(LinuxBwrapBackend::new()),
+        "bwrap" => {
+            let backend = LinuxBwrapBackend::new();
+            if backend.is_installed() {
+                Box::new(backend)
+            } else {
+                tracing::warn!("bwrap not installed; using fallback backend");
+                Box::new(FallbackBackend::new())
+            }
+        }
         #[cfg(target_os = "macos")]
-        "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
+        "sandbox-exec" => {
+            let backend = MacOsSandboxBackend::new();
+            if backend.is_installed() {
+                Box::new(backend)
+            } else {
+                tracing::warn!("sandbox-exec not found; using fallback backend");
+                Box::new(FallbackBackend::new())
+            }
+        }
         #[cfg(target_os = "windows")]
         "job-objects" | "windows-fallback" | "host-executor" | "unsafe-direct" => {
             Box::new(HostExecutor::new())
         }
         name if KNOWN_BACKENDS.contains(&name) => {
             tracing::warn!(
-                "Backend '{}' is not available on {}, using platform default instead",
+                "Backend '{}' is not available on {}; using platform default instead",
                 backend_name,
                 platform.as_str()
             );
-            match platform {
-                #[cfg(target_os = "linux")]
-                Platform::Linux => Box::new(LinuxBwrapBackend::new()),
-                #[cfg(target_os = "macos")]
-                Platform::MacOS => Box::new(MacOsSandboxBackend::new()),
-                #[cfg(target_os = "windows")]
-                Platform::Windows => Box::new(HostExecutor::new()),
-                _ => Box::new(FallbackBackend::new()),
-            }
+            platform_default_backend()
         }
         _ => {
             tracing::warn!(
-                "Unknown backend '{}', falling back to unsandboxed execution",
+                "Unknown backend '{}'; falling back to unsandboxed execution",
                 backend_name
             );
             Box::new(FallbackBackend::new())

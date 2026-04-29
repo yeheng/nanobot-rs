@@ -43,26 +43,38 @@ impl ProcessManager {
         self
     }
 
-    /// Execute a command
+    /// Execute a command. The configured wall-clock `timeout` is always
+    /// enforced; the backend future is dropped on expiry and `kill_on_drop`
+    /// terminates the child.
     #[instrument(name = "process.execute", skip(self))]
     pub async fn execute(&self, command: &str, working_dir: &Path) -> Result<ExecutionResult> {
-        // Create command builder
+        self.execute_with_timeout(command, working_dir, self.timeout)
+            .await
+    }
+
+    /// Execute with an explicit timeout, overriding the manager default.
+    pub async fn execute_with_timeout(
+        &self,
+        command: &str,
+        working_dir: &Path,
+        timeout: Duration,
+    ) -> Result<ExecutionResult> {
         let builder = CommandBuilder::new(command)
             .working_dir(working_dir)
             .limits(ResourceLimits::from(&self.config.limits));
-
-        // Check policy
         builder.validate_policy(&self.policy)?;
 
-        // Execute with backend
         let start = Instant::now();
-        let result = self
-            .backend
-            .execute(command, working_dir, &self.config)
-            .await?;
+        let result = tokio::time::timeout(
+            timeout,
+            self.backend.execute(command, working_dir, &self.config),
+        )
+        .await
+        .map_err(|_| SandboxError::Timeout {
+            timeout_secs: timeout.as_secs(),
+        })??;
         let duration = start.elapsed();
 
-        // Convert backend result to executor result
         Ok(ExecutionResult {
             exit_code: result.exit_code,
             stdout: result.stdout,
@@ -73,32 +85,20 @@ impl ProcessManager {
         })
     }
 
-    /// Execute with timeout
-    pub async fn execute_with_timeout(
-        &self,
-        command: &str,
-        working_dir: &Path,
-        timeout: Duration,
-    ) -> Result<ExecutionResult> {
-        let result = tokio::time::timeout(timeout, self.execute(command, working_dir))
-            .await
-            .map_err(|_| SandboxError::Timeout {
-                timeout_secs: timeout.as_secs(),
-            })??;
-
-        Ok(result)
-    }
-
-    /// Execute a command builder
+    /// Execute a command builder. The configured wall-clock timeout is enforced.
     pub async fn execute_builder(&self, builder: &CommandBuilder) -> Result<ExecutionResult> {
-        // Validate policy
         builder.validate_policy(&self.policy)?;
 
         let start = Instant::now();
-        let result = self
-            .backend
-            .execute(builder.command(), builder.get_working_dir(), &self.config)
-            .await?;
+        let result = tokio::time::timeout(
+            self.timeout,
+            self.backend
+                .execute(builder.command(), builder.get_working_dir(), &self.config),
+        )
+        .await
+        .map_err(|_| SandboxError::Timeout {
+            timeout_secs: self.timeout.as_secs(),
+        })??;
         let duration = start.elapsed();
 
         Ok(ExecutionResult {

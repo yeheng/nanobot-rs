@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
+use super::validate_workspace;
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::{ResourceLimits, SandboxConfig};
 use crate::error::{Result, SandboxError};
@@ -45,6 +46,11 @@ impl MacOsSandboxBackend {
         }
     }
 
+    /// Whether `sandbox-exec` is available on this host.
+    pub(crate) fn is_installed(&self) -> bool {
+        Self::detect_sandbox_exec().is_some()
+    }
+
     /// Detect sandbox-exec binary on macOS
     fn detect_sandbox_exec() -> Option<PathBuf> {
         // sandbox-exec is typically at /usr/bin/sandbox-exec on macOS
@@ -74,14 +80,32 @@ impl MacOsSandboxBackend {
     /// - The workspace directory
     /// - /tmp and /private/tmp
     /// - /dev/null and /dev/zero
-    fn generate_profile(&self, workspace: &Path) -> String {
-        let workspace = workspace.display();
-        format!(
+    fn generate_profile(&self, workspace: &Path) -> Result<String> {
+        // Reject paths that cannot be safely embedded in an SBPL string
+        // literal. SBPL has no documented escape syntax, so we refuse anything
+        // containing a quote, backslash, or control character. Without this,
+        // a crafted workspace path could close the (subpath "...") form and
+        // inject arbitrary `(allow ...)` rules, escaping the sandbox.
+        let workspace_str = workspace
+            .to_str()
+            .ok_or_else(|| SandboxError::PathNotAllowed {
+                path: workspace.to_path_buf(),
+            })?;
+        if workspace_str
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_control())
+        {
+            return Err(SandboxError::PathNotAllowed {
+                path: workspace.to_path_buf(),
+            });
+        }
+
+        Ok(format!(
             r#"(version 1)
 (deny default)
 (allow file-read*)
 (allow file-write*
-  (subpath "{workspace}")
+  (subpath "{workspace_str}")
   (subpath "/tmp")
   (subpath "/private/tmp")
   (literal "/dev/null")
@@ -92,7 +116,7 @@ impl MacOsSandboxBackend {
 (allow signal (target self))
 (allow file-read-metadata)
 "#
-        )
+        ))
     }
 
     fn build_command_internal(
@@ -100,16 +124,16 @@ impl MacOsSandboxBackend {
         cmd: &str,
         working_dir: &Path,
         config: &SandboxConfig,
-    ) -> Command {
-        let profile = self.generate_profile(working_dir);
+    ) -> Result<Command> {
+        let validated = validate_workspace(working_dir, config)?;
+        let profile = self.generate_profile(&validated)?;
         let limits = ResourceLimits::from(&config.limits);
 
         // Resource limits via ulimit (sandbox-exec doesn't handle this)
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
         let mut command = Command::new("sandbox-exec");
-        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
-        // and check_dangerous_patterns() in the CommandBuilder.
+        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy.
         // The sandbox-exec isolation provides additional defense-in-depth.
         command
             .arg("-p")
@@ -117,10 +141,10 @@ impl MacOsSandboxBackend {
             .arg("sh")
             .arg("-c")
             .arg(prefixed_cmd)
-            .current_dir(working_dir);
+            .current_dir(&validated);
 
         debug!("sandbox-exec command: {:?}", command);
-        command
+        Ok(command)
     }
 }
 
@@ -154,7 +178,7 @@ impl SandboxBackend for MacOsSandboxBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<Command> {
-        Ok(self.build_command_internal(cmd, working_dir, config))
+        self.build_command_internal(cmd, working_dir, config)
     }
 
     async fn execute(
@@ -163,8 +187,8 @@ impl SandboxBackend for MacOsSandboxBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        // Build async command with kill_on_drop to ensure process termination on timeout
-        let profile = self.generate_profile(working_dir);
+        let validated = validate_workspace(working_dir, config)?;
+        let profile = self.generate_profile(&validated)?;
         let limits = ResourceLimits::from(&config.limits);
 
         // Resource limits via ulimit (sandbox-exec doesn't handle this)
@@ -177,7 +201,7 @@ impl SandboxBackend for MacOsSandboxBackend {
             .arg("sh")
             .arg("-c")
             .arg(&prefixed_cmd)
-            .current_dir(working_dir)
+            .current_dir(&validated)
             .kill_on_drop(true);
 
         debug!("sandbox-exec async command: {:?}", command);
@@ -212,7 +236,9 @@ mod tests {
     #[test]
     fn test_profile_generation() {
         let backend = MacOsSandboxBackend::new();
-        let profile = backend.generate_profile(Path::new("/Users/test/.gasket"));
+        let profile = backend
+            .generate_profile(Path::new("/Users/test/.gasket"))
+            .unwrap();
 
         assert!(profile.contains("(version 1)"));
         assert!(profile.contains("(deny default)"));
@@ -222,6 +248,26 @@ mod tests {
         assert!(profile.contains("(subpath \"/private/tmp\")"));
         assert!(profile.contains("(literal \"/dev/null\")"));
         assert!(profile.contains("(literal \"/dev/zero\")"));
+    }
+
+    #[test]
+    fn test_profile_rejects_quote_injection() {
+        let backend = MacOsSandboxBackend::new();
+        // A path containing a `"` would let a caller close the (subpath ...) form.
+        let evil = Path::new("/tmp/foo\")(allow file-write* (subpath \"/");
+        let err = backend.generate_profile(evil).unwrap_err();
+        assert!(matches!(err, SandboxError::PathNotAllowed { .. }));
+    }
+
+    #[test]
+    fn test_profile_rejects_backslash_and_control() {
+        let backend = MacOsSandboxBackend::new();
+        assert!(backend
+            .generate_profile(Path::new("/tmp/foo\\bar"))
+            .is_err());
+        assert!(backend
+            .generate_profile(Path::new("/tmp/foo\nbar"))
+            .is_err());
     }
 
     #[tokio::test]

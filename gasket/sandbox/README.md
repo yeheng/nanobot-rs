@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gasket-sandbox = { path = "gasket-sandbox" }
+gasket-sandbox = { path = "sandbox" }
 ```
 
 ## Feature Flags
@@ -25,8 +25,7 @@ gasket-sandbox = { path = "gasket-sandbox" }
 - `platform-native` - Platform-native sandbox (bwrap, sandbox-exec, Job Objects)
 - `approval` - Permission confirmation system
 - `audit` - Audit logging
-- `sqlite` - SQLite storage for approval rules (optional, default uses JSON files)
-- `full` - All features including SQLite
+- `full` - All features above
 
 ## Quick Start
 

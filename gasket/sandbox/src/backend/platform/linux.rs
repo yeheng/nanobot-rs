@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
+use super::validate_workspace;
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::{ResourceLimits, SandboxConfig};
 use crate::error::{Result, SandboxError};
@@ -17,33 +18,31 @@ use crate::error::{Result, SandboxError};
 /// Bubblewrap-based sandbox (Linux only).
 ///
 /// Mount layout:
-/// - `/`         → bind-ro from host
-/// - `workspace` → bind-rw from configured workspace
-/// - `/tmp`      → tmpfs (size-limited)
-/// - `/dev`      → minimal devtmpfs
-/// - `/proc`     → new proc namespace
-#[allow(dead_code)]
+/// - `/`: bind-ro from host
+/// - `working_dir`: bind-rw, validated to live within
+///   `SandboxConfig.workspace` when configured
+/// - `/tmp`: tmpfs, size-limited via `--size` placed *before* `--tmpfs /tmp`
+///   (bwrap applies `--size` to the *next* tmpfs mount)
+/// - `/dev`: minimal devtmpfs
+/// - `/proc`: new proc namespace
+///
+/// Note: `--ro-bind / /` exposes the host's read-only filesystem inside the
+/// sandbox. Anything readable to the calling user (e.g. `~/.ssh/`) is also
+/// readable here. Combine with a tighter mount layout if that matters.
 pub struct LinuxBwrapBackend {
     bwrap_path: PathBuf,
-    tmp_size_mb: u32,
 }
 
 impl LinuxBwrapBackend {
     /// Create a new bwrap backend, detecting the bwrap binary
     pub fn new() -> Self {
         let bwrap_path = Self::detect_bwrap().unwrap_or_else(|| PathBuf::from("bwrap"));
-        Self {
-            bwrap_path,
-            tmp_size_mb: 64,
-        }
+        Self { bwrap_path }
     }
 
     /// Create with specific bwrap path
     pub fn with_path(bwrap_path: PathBuf) -> Self {
-        Self {
-            bwrap_path,
-            tmp_size_mb: 64,
-        }
+        Self { bwrap_path }
     }
 
     /// Detect bwrap binary on the system
@@ -73,60 +72,70 @@ impl LinuxBwrapBackend {
         None
     }
 
+    /// Whether `bwrap` is installed at the resolved path. Used by the
+    /// backend factory to fall back when the binary is missing instead of
+    /// failing at execution time with a confusing "No such file" error.
+    pub(crate) fn is_installed(&self) -> bool {
+        self.bwrap_path.exists()
+    }
+
+    /// Build the bwrap argument list for either the sync or async command.
+    /// The argument order is significant: bwrap's `--size BYTES` flag modifies
+    /// the *next* `--tmpfs` mount, so it must immediately precede `--tmpfs /tmp`.
+    fn bwrap_args(&self, validated_dir: &Path, config: &SandboxConfig) -> Vec<String> {
+        let limits = ResourceLimits::from(&config.limits);
+        let tmp_size_bytes = u64::from(config.tmp_size_mb) * 1024 * 1024;
+        let dir = validated_dir.display().to_string();
+
+        let mut args: Vec<String> = vec![
+            // Namespace isolation
+            "--unshare-pid".into(),
+            "--unshare-ipc".into(),
+            // Read-only root
+            "--ro-bind".into(),
+            "/".into(),
+            "/".into(),
+            // Read-write working dir
+            "--bind".into(),
+            dir.clone(),
+            dir.clone(),
+            // Size for the next tmpfs (must precede `--tmpfs /tmp`)
+            "--size".into(),
+            tmp_size_bytes.to_string(),
+            "--tmpfs".into(),
+            "/tmp".into(),
+            // Minimal /dev
+            "--dev".into(),
+            "/dev".into(),
+            // New /proc
+            "--proc".into(),
+            "/proc".into(),
+        ];
+
+        args.extend(limits.to_bwrap_args());
+        args.push("--chdir".into());
+        args.push(dir);
+        // SECURITY: Shell injection prevention is handled by CommandPolicy.
+        // bwrap isolation provides additional defense-in-depth.
+        args.push("sh".into());
+        args.push("-c".into());
+        args
+    }
+
     fn build_command_internal(
         &self,
         cmd: &str,
         working_dir: &Path,
         config: &SandboxConfig,
-    ) -> Command {
+    ) -> Result<Command> {
+        let validated = validate_workspace(working_dir, config)?;
         let mut command = Command::new(&self.bwrap_path);
-        let limits = ResourceLimits::from(&config.limits);
-        let tmp_size_mb = config.tmp_size_mb;
-
-        // Namespace isolation
-        command.arg("--unshare-pid").arg("--unshare-ipc");
-
-        // Filesystem mounts
-        command
-            // Read-only root
-            .arg("--ro-bind")
-            .arg("/")
-            .arg("/")
-            // Read-write workspace
-            .arg("--bind")
-            .arg(working_dir)
-            .arg(working_dir)
-            // Tmpfs for /tmp
-            .arg("--tmpfs")
-            .arg("/tmp")
-            // Minimal /dev
-            .arg("--dev")
-            .arg("/dev")
-            // New /proc
-            .arg("--proc")
-            .arg("/proc");
-
-        // Tmpfs size limit
-        command
-            .arg("--size")
-            .arg(format!("{}", u64::from(tmp_size_mb) * 1024 * 1024));
-
-        // Resource limits
-        for arg in limits.to_bwrap_args() {
+        for arg in self.bwrap_args(&validated, config) {
             command.arg(arg);
         }
-
-        // Working directory inside sandbox
-        command.arg("--chdir").arg(working_dir);
-
-        // The actual command - execute via sh
-        // SECURITY NOTE: Shell injection prevention is handled by CommandPolicy
-        // and check_dangerous_patterns() in the CommandBuilder.
-        // The bwrap sandbox isolation provides additional defense-in-depth.
-        command.arg("sh").arg("-c").arg(cmd);
-
+        command.arg(cmd);
         debug!("bwrap command: {:?}", command);
-        command
+        Ok(command)
     }
 }
 
@@ -143,7 +152,7 @@ impl SandboxBackend for LinuxBwrapBackend {
     }
 
     async fn is_available(&self) -> bool {
-        self.bwrap_path.exists()
+        self.is_installed()
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -160,7 +169,7 @@ impl SandboxBackend for LinuxBwrapBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<Command> {
-        Ok(self.build_command_internal(cmd, working_dir, config))
+        self.build_command_internal(cmd, working_dir, config)
     }
 
     async fn execute(
@@ -169,52 +178,14 @@ impl SandboxBackend for LinuxBwrapBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        // Build async command with kill_on_drop to ensure process termination on timeout
-        let mut command = AsyncCommand::new(&self.bwrap_path);
+        let validated = validate_workspace(working_dir, config)?;
         let limits = ResourceLimits::from(&config.limits);
-        let tmp_size_mb = config.tmp_size_mb;
 
-        // Namespace isolation
-        command.arg("--unshare-pid").arg("--unshare-ipc");
-
-        // Filesystem mounts
-        command
-            // Read-only root
-            .arg("--ro-bind")
-            .arg("/")
-            .arg("/")
-            // Read-write workspace
-            .arg("--bind")
-            .arg(working_dir)
-            .arg(working_dir)
-            // Tmpfs for /tmp
-            .arg("--tmpfs")
-            .arg("/tmp")
-            // Minimal /dev
-            .arg("--dev")
-            .arg("/dev")
-            // New /proc
-            .arg("--proc")
-            .arg("/proc");
-
-        // Tmpfs size limit
-        command
-            .arg("--size")
-            .arg(format!("{}", u64::from(tmp_size_mb) * 1024 * 1024));
-
-        // Resource limits
-        for arg in limits.to_bwrap_args() {
+        let mut command = AsyncCommand::new(&self.bwrap_path);
+        for arg in self.bwrap_args(&validated, config) {
             command.arg(arg);
         }
-
-        // Working directory inside sandbox
-        command.arg("--chdir").arg(working_dir);
-
-        // The actual command - execute via sh
-        command.arg("sh").arg("-c").arg(cmd);
-
-        // Kill process when the handle is dropped (critical for timeout handling)
-        command.kill_on_drop(true);
+        command.arg(cmd).kill_on_drop(true);
 
         debug!("bwrap async command: {:?}", command);
 
@@ -226,7 +197,6 @@ impl SandboxBackend for LinuxBwrapBackend {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        // Truncate output if needed
         let stdout = limits.truncate_output(&stdout);
         let stderr = limits.truncate_output(&stderr);
 
@@ -259,5 +229,40 @@ mod tests {
         let config = SandboxConfig::enabled();
         let result = backend.build_command("echo test", Path::new("/tmp"), &config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_size_precedes_tmpfs() {
+        // Regression test: bwrap's `--size N` flag modifies the *next* tmpfs
+        // mount. If `--size` lands after `--tmpfs /tmp`, the size limit is
+        // silently dropped.
+        let backend = LinuxBwrapBackend::new();
+        let config = SandboxConfig::enabled();
+        let args = backend.bwrap_args(Path::new("/tmp"), &config);
+        let size_idx = args.iter().position(|a| a == "--size").expect("--size");
+        let tmpfs_idx = args
+            .iter()
+            .position(|a| a == "--tmpfs")
+            .expect("--tmpfs");
+        assert!(
+            size_idx < tmpfs_idx,
+            "--size must precede --tmpfs to take effect (got size={size_idx}, tmpfs={tmpfs_idx})"
+        );
+        // And `--tmpfs` must be followed by `/tmp` so the size applies to it.
+        assert_eq!(args.get(tmpfs_idx + 1).map(String::as_str), Some("/tmp"));
+    }
+
+    #[test]
+    fn test_workspace_enforcement_blocks_outside_paths() {
+        let backend = LinuxBwrapBackend::new();
+        let workspace = std::env::temp_dir().join("gasket-workspace-test");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let config = SandboxConfig::enabled().with_workspace(&workspace);
+        // /etc isn't inside the workspace, must be rejected.
+        let err = backend
+            .build_command("echo test", Path::new("/etc"), &config)
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::PathNotAllowed { .. }));
+        std::fs::remove_dir_all(&workspace).ok();
     }
 }
