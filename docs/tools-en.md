@@ -58,10 +58,10 @@ mindmap
     Communication
       ::icon(💬)
       Send messages
-    Memory
+    History
       ::icon(🧠)
-      Search memories
-      Create memories
+      Query history
+      Search history
     Wiki
       ::icon(📚)
       Search wiki
@@ -141,7 +141,11 @@ flowchart TB
 | Tool | Purpose | Safety |
 |------|---------|--------|
 | `exec` | Run shell commands | Configurable policy |
-| `spawn` | Create subagent | Isolated execution |
+| `spawn` | Create subagent | Isolated execution, supports model selection |
+| `spawn_parallel` | Create multiple subagents | Max 10 tasks, 5 concurrent |
+| `new_session` | Start fresh session | Clears history, new session key |
+| `clear_session` | Clear current session | Keeps session key |
+| `message` | Send message to user | For cron/background tasks |
 
 ### 4. Communication Tools
 
@@ -161,39 +165,20 @@ sequenceDiagram
 |------|---------|---------|
 | `send_message` (`MessageTool`) | Send to channel | "Notify user on Telegram" |
 
-### 5. Memory Tools
+### 5. History Query Tools
 
 ```mermaid
 flowchart LR
-    Query["User query"] --> Search["memory_search"]
-    Search --> DB[(SQLite + Vectors)]
-    DB --> Results["Relevant memories"]
+    Query["User query"] --> Search["history_query"]
+    Search --> DB[(SQLite)]
+    DB --> Results["Matching messages"]
     Results --> AI["AI with context"]
 ```
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| `memory_search` | Search long-term memory | "What did I learn about DB?" |
-| `memorize` | Create new memory | "Remember my API key is..." |
-
-The `memorize` tool accepts a `memory_type` parameter:
-- `"note"` (default) - Facts, observations, learned knowledge
-- `"skill"` - Procedures, workflows, reusable patterns (prioritized during loading)
-
-```mermaid
-sequenceDiagram
-    participant AI
-    participant Tool as memorize Tool
-    participant Store as MemoryStore
-
-    AI->>Tool: memorize(content, memory_type)
-    Note over Tool: Determine type:
-    Note over Tool: "how to..." / "steps..." → skill
-    Note over Tool: "user likes..." / "learned..." → note
-    Tool->>Store: Save with type tag
-    Store-->>Tool: OK
-    Tool-->>AI: Memory created
-```
+| `history_query` | Query conversation history by keywords | "What did I say yesterday?" |
+| `history_search` | Semantic search through history (requires `embedding` feature) | "Find discussions about DB design" |
 
 ### 5.1 Wiki Tools
 
@@ -281,8 +266,9 @@ flowchart TB
     Which -->|File| FileTool["Read/Write File"]
     Which -->|Info| WebTool["Web Search"]
     Which -->|Command| ExecTool["Execute Command"]
-    Which -->|Memory| MemTool["Search Memory"]
+    Which -->|History| HistTool["Query History"]
     Which -->|Knowledge| WikiTool["Search Wiki"]
+    Which -->|Restart| SessTool["New Session"]
 
     FileTool --> Result["Tool Result"]
     WebTool --> Result
@@ -339,6 +325,7 @@ struct ToolContext {
     session_key: SessionKey,     // Who is asking
     outbound_tx: Sender<OutboundMessage>, // Real-time message channel
     spawner: Arc<dyn SubagentSpawner>,    // Subagent spawner
+    ws_summary_limit: usize,     // Subagent summary length limit (WebSocket)
     token_tracker: Arc<TokenTracker>,     // Token budget tracker
 }
 ```
@@ -362,14 +349,17 @@ flowchart TB
         T3["web_search"]
         T4["exec"]
         T5["spawn"]
-        T6["memory_search"]
-        T7["wiki_search"]
-        T8["wiki_write"]
-        T9["wiki_read"]
-        T10["wiki_decay"]
-        T11["wiki_refresh"]
-        T12["history_query"]
-        T13["script"]
+        T6["history_query"]
+        T7["history_search"]
+        T8["wiki_search"]
+        T9["wiki_write"]
+        T10["wiki_read"]
+        T11["wiki_decay"]
+        T12["wiki_refresh"]
+        T13["new_session"]
+        T14["clear_session"]
+        T15["message"]
+        T16["script"]
         TN["...more"]
     end
 
@@ -411,6 +401,57 @@ This is the **JSON Schema** that tells AI how to use the tool.
 
 ---
 
+## Tool Approval System
+
+Gasket includes a **tool execution approval** mechanism to prevent AI from executing dangerous operations without confirmation.
+
+### Approval Flow
+
+```mermaid
+sequenceDiagram
+    participant AI as AI Brain
+    participant R as ToolRegistry
+    participant CB as ApprovalCallback
+    participant U as User/Frontend
+
+    AI->>R: Execute write_file
+    R->>R: requires_approval = true
+    R->>CB: request_approval
+    CB->>U: Show confirmation dialog
+    U-->>CB: Approve / Deny / Remember
+    CB-->>R: approved?
+    alt Approved
+        R->>R: Continue execution
+    else Denied
+        R-->>AI: PermissionDenied
+    end
+```
+
+### Tools Requiring Approval
+
+The following tools require user confirmation by default:
+
+| Tool | Category | Description |
+|------|----------|-------------|
+| `write_file` | Filesystem | Create or overwrite files |
+| `edit_file` | Filesystem | Modify existing files |
+| `exec` | System | Execute shell commands |
+| `new_session` | Session | Clear history and create new session |
+| `clear_session` | Session | Clear current session history |
+| `wiki_delete` | Wiki | Delete wiki pages |
+
+**Remember Decision**: In WebSocket frontend, users can check "Remember this decision" to auto-approve/deny future calls of the same tool in the same session.
+
+### No-Approval Tools
+
+The following read-only tools execute without confirmation:
+
+- `read_file`, `list_dir`, `web_search`, `web_fetch`
+- `wiki_search`, `wiki_read`, `history_query`
+- `spawn`, `spawn_parallel`
+
+---
+
 ## Safety Design
 
 ### Command Policy
@@ -425,21 +466,17 @@ tools:
 
 | Policy | Description | Risk Level |
 |--------|-------------|------------|
-| `allow_list` | Only allow specific commands | 🟢 Low |
-| `deny_list` | Block dangerous commands | 🟡 Medium |
+| `allowlist` | Only allow specific commands | 🟢 Low |
+| `denylist` | Block dangerous commands | 🟡 Medium |
 | `allow_all` | Allow everything | 🔴 High |
 
 ### Path Restrictions
 
+Enable `restrict_to_workspace` to limit file operations to the workspace directory:
+
 ```yaml
 tools:
-  filesystem:
-    allowed_paths:
-      - "~/projects/"
-      - "~/.gasket/"
-    blocked_paths:
-      - "~/.ssh/"
-      - "/etc/"
+  restrict_to_workspace: true
 ```
 
 ---

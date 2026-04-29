@@ -427,11 +427,11 @@ http:
 
 ### 5.1 日志配置
 
-```yaml
-# config.yaml
-logging:
-  level: info
-  format: json  # 生产环境使用 JSON 格式便于解析
+```bash
+# 通过环境变量控制日志级别和格式
+RUST_LOG=info gasket gateway                    # info 级别
+RUST_LOG=debug,gasket_engine=trace gasket gateway  # debug 级别
+RUST_LOG=info gasket gateway 2>&1 | jq -R '. as $line | try fromjson catch $line'  # JSON 格式解析
 ```
 
 ### 5.2 日志收集 (Fluent Bit)

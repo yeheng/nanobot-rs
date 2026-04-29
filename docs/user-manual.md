@@ -567,13 +567,15 @@ EOF
 🤖 Gasket: 好的，我已经把项目信息保存到 Wiki 中了。
 ```
 
-AI 会自动调用 `memorize` 工具创建 Wiki 页面。
+AI 会自动调用 `wiki_write` 工具创建 Wiki 页面。
 
 ### 6.6 同步到数据库和搜索索引
 
 ```bash
-# 修改了 Markdown 文件后，运行同步
-gasket memory refresh
+# 修改了 Markdown 文件后，运行同步（通过 Wiki 工具）
+# AI 会在对话中自动调用 wiki_refresh 工具同步
+# 或手动导入文件：
+gasket wiki ingest <文件路径>
 ```
 
 ### 6.7 搜索 Wiki
@@ -655,8 +657,8 @@ Wiki 页面会根据访问频率自动调整"温度"：
 | Archived（归档） | 90 天未访问 | 已归档 |
 
 ```bash
-# 手动触发频率衰减
-gasket memory decay
+# 手动触发频率衰减（通过 Wiki 工具）
+# AI 会在对话中自动调用 wiki_decay 工具
 ```
 
 > **特殊豁免**：用户配置文件、人物信息、SOP 流程、决策记录永远不会被归档。
@@ -1021,6 +1023,9 @@ AI: 文件内容如下：...
 | `list_dir` | 列出目录内容 | "看看这个文件夹里有什么文件" |
 | `web_fetch` | 获取网页内容 | "帮我读一下这个网页的内容" |
 | `web_search` | 搜索网页 | "搜索一下 Rust 语言的最新版本" |
+| `wiki_search` | 全文搜索 Wiki | "查一下 Wiki 里关于 Rust 的内容" |
+| `wiki_read` | 读取 Wiki 页面 | "读一下 Wiki 里的 rust/ownership 页面" |
+| `history_query` | 查询对话历史 | "我昨天说了什么？" |
 
 #### 需要确认的写入工具
 
@@ -1029,23 +1034,26 @@ AI: 文件内容如下：...
 | `write_file` | 创建或覆盖文件 | "帮我创建一个配置文件" |
 | `edit_file` | 编辑现有文件 | "把第 5 行改成 xxx" |
 | `exec` | 执行系统命令 | "运行 python script.py" |
+| `new_session` | 开启新会话 | "清空历史，重新开始" |
+| `clear_session` | 清空当前会话 | "删除这段对话的历史" |
+| `wiki_delete` | 删除 Wiki 页面 | "删掉 Wiki 里的旧页面" |
 
 #### 子代理工具
 
 | 工具 | 功能 | 使用场景 |
 |------|------|---------|
-| `spawn` | 创建一个子任务 | 让 AI 并行处理多个子任务 |
-| `spawn_parallel` | 同时创建多个子任务 | 同时让多个 AI 做不同的事 |
+| `spawn` | 创建单个子代理 | 让 AI 处理一个独立子任务，支持选择模型 |
+| `spawn_parallel` | 并行创建多个子代理 | 同时让多个 AI 做不同的事（最多 10 个任务，5 个并发） |
 
-#### 记忆工具
+#### Wiki 知识工具
 
 | 工具 | 功能 |
 |------|------|
-| `memorize` | 保存一条记忆到 Wiki |
-| `memory_search` | 搜索 Wiki 记忆 |
-| `wiki_search` | 全文搜索 Wiki |
-| `wiki_read` | 读取 Wiki 页面 |
-| `wiki_write` | 写入 Wiki 页面 |
+| `wiki_search` | 使用 Tantivy BM25 搜索 Wiki 页面 |
+| `wiki_read` | 按路径读取 Wiki 页面 |
+| `wiki_write` | 写入/更新 Wiki 页面 |
+| `wiki_decay` | 运行 Wiki 页面频率衰减 |
+| `wiki_refresh` | 同步磁盘 Markdown 到 Wiki 索引 |
 
 ### 10.3 工具使用示例
 
@@ -1083,21 +1091,35 @@ AI: 文件内容如下：...
 
 ```yaml
 tools:
-  restrict_to_workspace: false            # true = 只允许操作 ~/.gasket/ 目录
+  restrict_to_workspace: false            # true = 只允许操作工作空间目录
 
   web:
-    user_agent: "Mozilla/5.0"             # 浏览器标识
-    timeout_seconds: 30                    # 请求超时时间
     search_provider: brave                 # 搜索引擎：brave / tavily / exa / firecrawl
     brave_api_key: "你的Brave-Search-API-Key"
+    # tavily_api_key: "your-key"
+    # exa_api_key: "your-key"
+    # firecrawl_api_key: "your-key"
     # http_proxy: "http://proxy:8080"     # HTTP 代理（如需要）
+    # https_proxy: "http://proxy:8080"
+    # socks5_proxy: "socks5://proxy:1080"
+    use_env_proxy: true                    # 自动读取 HTTP_PROXY 等环境变量
 
   exec:
-    enabled: true                          # 是否允许执行命令
-    timeout_seconds: 60                    # 命令超时时间
-    workspace: "."                         # 工作目录
+    timeout: 120                           # 命令超时时间（秒）
+    workspace: "."                         # 命令执行工作目录
 
-    # 安全限制
+    # 沙箱配置（可选）
+    sandbox:
+      enabled: false
+      backend: bwrap
+      tmp_size_mb: 64
+
+    # 命令策略
+    policy:
+      allowlist: []                        # 允许的命令，空数组 = 允许所有
+      denylist: ["rm -rf /", "mkfs"]       # 拒绝的命令模式
+
+    # 资源限制
     limits:
       max_memory_mb: 512                   # 最大内存使用
       max_cpu_secs: 60                     # 最大 CPU 时间
@@ -1257,8 +1279,9 @@ parameters:
 | `gasket wiki lint --fix` | 自动修复问题 |
 | `gasket wiki stats` | 查看统计 |
 | `gasket wiki migrate` | 从旧版迁移 |
-| `gasket memory refresh` | 同步到数据库和搜索索引 |
-| `gasket memory decay` | 触发频率衰减 |
+| `gasket wiki ingest <文件>` | 导入文件到 Wiki |
+| `gasket wiki lint` | Wiki 健康检查 |
+| `gasket wiki lint --fix` | 自动修复问题 |
 
 ### Cron（定时任务）
 
@@ -1404,7 +1427,7 @@ gasket stats
 
 **Q: 我可以直接编辑 Markdown 文件吗？**
 
-可以！编辑后运行 `gasket memory refresh` 同步即可。
+可以！编辑后让 AI 调用 `wiki_refresh` 工具同步，或使用 `gasket wiki ingest <文件路径>` 重新导入。
 
 **Q: Wiki 和普通对话有什么区别？**
 
