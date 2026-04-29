@@ -12,19 +12,34 @@ use crate::SubagentSpawner;
 use super::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
 use super::{Tool, ToolMetadata, ToolRegistry};
 
+/// Resolve a potentially relative path to an absolute path.
+fn resolve_to_absolute(path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    } else {
+        path
+    }
+}
+
 /// Resolve the exec workspace directory from config or default to `$HOME/.gasket`.
 ///
+/// The returned path is always absolute so that downstream path validators
+/// (canonicalize + starts_with) work correctly.
 /// Creates the directory if it doesn't exist.
 pub fn resolve_exec_workspace(
     config: &crate::config::Config,
     fallback: &Path,
 ) -> std::path::PathBuf {
     let workspace_path = if let Some(ref ws) = config.tools.exec.workspace {
-        std::path::PathBuf::from(ws)
+        resolve_to_absolute(std::path::PathBuf::from(ws))
     } else {
-        dirs::home_dir()
-            .map(|h| h.join(".gasket"))
-            .unwrap_or_else(|| fallback.to_path_buf())
+        resolve_to_absolute(
+            dirs::home_dir()
+                .map(|h| h.join(".gasket"))
+                .unwrap_or_else(|| fallback.to_path_buf()),
+        )
     };
 
     if !workspace_path.exists() {
@@ -35,7 +50,7 @@ pub fn resolve_exec_workspace(
                 e,
                 fallback
             );
-            return fallback.to_path_buf();
+            return resolve_to_absolute(fallback.to_path_buf());
         }
         tracing::info!("Created exec workspace: {:?}", workspace_path);
     }

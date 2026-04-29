@@ -60,13 +60,37 @@ pub async fn cmd_gateway() -> Result<()> {
 
     println!("🐈 Starting gateway...\n");
 
-    let workspace = resolve_workspace()?;
+    let workspace =
+        gasket_engine::tools::resolve_exec_workspace(&config, std::path::Path::new("."));
     let (page_store, page_index) = setup_wiki(&sqlite_store, &workspace, broker.clone()).await;
     let cron_sqlite_store = SqliteStore::new()
         .await
         .expect("Failed to open SQLite store for cron persistence");
     let cron_service =
         Arc::new(CronService::new(workspace.clone(), cron_sqlite_store.cron_store()).await);
+
+    let inbound_sender = gasket_engine::channels::InboundSender::new(broker.clone());
+    let providers = Arc::new(gasket_engine::channels::ImProviders::from_config(
+        &config.channels,
+        inbound_sender.clone(),
+    ));
+
+    // Set up WebSocket approval callback if WebSocket is enabled
+    let approval_callback = {
+        let mut callback: Option<Arc<dyn gasket_types::ApprovalCallback>> = None;
+        for provider in providers.iter() {
+            #[cfg(feature = "websocket")]
+            if let gasket_engine::channels::ImProvider::WebSocket(ref adapter) = provider {
+                let manager = adapter.manager().clone();
+                let router = Arc::new(gasket_engine::channels::ApprovalRouter::new());
+                manager.set_approval_router(router.clone());
+                callback = Some(Arc::new(
+                    gasket_engine::channels::WebSocketApprovalCallback::new(manager, router),
+                ));
+            }
+        }
+        callback
+    };
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
         &config,
@@ -76,14 +100,9 @@ pub async fn cmd_gateway() -> Result<()> {
         page_store.clone(),
         page_index.clone(),
         &cron_service,
+        approval_callback,
     )
     .await?;
-
-    let inbound_sender = gasket_engine::channels::InboundSender::new(broker.clone());
-    let providers = Arc::new(gasket_engine::channels::ImProviders::from_config(
-        &config.channels,
-        inbound_sender.clone(),
-    ));
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     setup_http_server(&providers, &agent, &mut tasks).await;
@@ -118,12 +137,6 @@ pub async fn cmd_gateway() -> Result<()> {
     shutdown_tasks(tasks).await;
 
     Ok(())
-}
-
-fn resolve_workspace() -> Result<std::path::PathBuf> {
-    Ok(dirs::home_dir()
-        .context("Could not find home directory")?
-        .join(".gasket"))
 }
 
 fn print_validation_errors(errors: &[gasket_engine::ConfigValidationError]) {
@@ -251,6 +264,7 @@ async fn setup_agent_pipeline(
     page_store: Option<gasket_engine::wiki::PageStore>,
     page_index: Option<Arc<gasket_engine::wiki::PageIndex>>,
     cron_service: &Arc<CronService>,
+    approval_callback: Option<Arc<dyn gasket_types::ApprovalCallback>>,
 ) -> Result<(
     Arc<AgentSession>,
     Arc<ToolRegistry>,
@@ -344,7 +358,11 @@ async fn setup_agent_pipeline(
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
     }
-    let tools = Arc::new(tools);
+    let tools = if let Some(callback) = approval_callback {
+        Arc::new(tools.with_approval_callback(callback))
+    } else {
+        Arc::new(tools)
+    };
 
     let pricing = provider_info
         .pricing

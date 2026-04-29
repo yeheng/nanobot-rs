@@ -13,9 +13,10 @@ use gasket_wiki::{PageIndex, PageStore};
 
 use super::{
     registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
-    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, ReadFileTool, SearchSopsTool,
-    SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool,
-    WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
+    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool, ReadFileTool,
+    SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool,
+    WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
+    WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.
@@ -384,6 +385,15 @@ impl ToolProvider for SystemToolProvider {
                 "Clear Session History",
                 "system",
                 ["session", "cleanup", "history"],
+                true,
+                true
+            );
+            reg!(
+                registry,
+                NewSessionTool::new(db.clone()),
+                "New Session",
+                "system",
+                ["session", "new", "reset"],
                 true,
                 true
             );

@@ -273,6 +273,22 @@ pub enum ChatEvent {
         index: u32,
         error: Arc<str>,
     },
+
+    /// Approval request sent to the user for a sensitive tool operation
+    ApprovalRequest {
+        id: Arc<str>,
+        tool_name: Arc<str>,
+        description: Arc<str>,
+        arguments: Arc<str>,
+    },
+
+    /// Approval response from the user
+    ApprovalResponse {
+        request_id: Arc<str>,
+        approved: bool,
+        #[serde(default)]
+        remember: bool,
+    },
 }
 
 impl ChatEvent {
@@ -397,6 +413,34 @@ impl ChatEvent {
             id: Arc::from(id.into()),
             index,
             error: Arc::from(error.into()),
+        }
+    }
+
+    /// Create an approval_request message
+    pub fn approval_request(
+        id: impl Into<String>,
+        tool_name: impl Into<String>,
+        description: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self::ApprovalRequest {
+            id: Arc::from(id.into()),
+            tool_name: Arc::from(tool_name.into()),
+            description: Arc::from(description.into()),
+            arguments: Arc::from(arguments.into()),
+        }
+    }
+
+    /// Create an approval_response message
+    pub fn approval_response(
+        request_id: impl Into<String>,
+        approved: bool,
+        remember: bool,
+    ) -> Self {
+        Self::ApprovalResponse {
+            request_id: Arc::from(request_id.into()),
+            approved,
+            remember,
         }
     }
 
@@ -718,3 +762,5 @@ mod tests {
         assert!(matches!(msg, ChatEvent::Thinking { .. }));
     }
 }
+
+

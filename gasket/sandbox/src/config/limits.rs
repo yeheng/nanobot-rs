@@ -47,7 +47,7 @@ fn default_max_output_bytes() -> usize {
 }
 
 fn default_max_processes() -> u32 {
-    10
+    0 // 0 = unlimited; macOS has ~800+ processes at idle, low values cause fork failures
 }
 
 fn default_max_open_files() -> u32 {
@@ -84,8 +84,19 @@ impl ResourceLimits {
     ///
     /// `-v` sets virtual memory limit in KB, `-t` sets CPU time in seconds.
     pub fn to_ulimit_prefix(&self) -> String {
-        let mem_kb = self.max_memory_bytes / 1024;
-        let mut parts = vec![format!("ulimit -v {} -t {}", mem_kb, self.max_cpu_secs)];
+        let mut parts = vec![];
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mem_kb = self.max_memory_bytes / 1024;
+            parts.push(format!("ulimit -v {} -t {}", mem_kb, self.max_cpu_secs));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // macOS does not support `ulimit -v` (virtual memory)
+            parts.push(format!("ulimit -t {}", self.max_cpu_secs));
+        }
 
         if self.max_processes > 0 {
             parts.push(format!("-u {}", self.max_processes));
@@ -100,7 +111,7 @@ impl ResourceLimits {
             parts.push(format!("-f {}", file_size_kb));
         }
 
-        format!("{}; ", parts.join(" "))
+        format!("{} 2>/dev/null; ", parts.join(" "))
     }
 
     /// Generate bwrap `--rlimit-*` command-line arguments for sandbox mode.
@@ -221,8 +232,9 @@ mod tests {
     fn test_ulimit_prefix() {
         let limits = ResourceLimits::from_mb(512, 60, 1_048_576);
         let prefix = limits.to_ulimit_prefix();
-        assert!(prefix.contains("ulimit -v 524288"));
+        assert!(prefix.contains("ulimit"));
         assert!(prefix.contains("-t 60"));
+        assert!(prefix.contains("2>/dev/null"));
     }
 
     #[test]

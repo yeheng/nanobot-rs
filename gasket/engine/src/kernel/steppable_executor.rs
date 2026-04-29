@@ -164,6 +164,9 @@ impl SteppableExecutor {
         if let Some(ref tracker) = self.ctx.token_tracker {
             ctx = ctx.token_tracker(tracker.clone());
         }
+        if let Some(ref session_key) = self.ctx.session_key {
+            ctx = ctx.session_key(session_key.clone());
+        }
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())

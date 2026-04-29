@@ -122,7 +122,8 @@ impl KnowledgeExtractor {
         let max_chars = 12000;
         let char_count = source.content.chars().count();
         let content = if char_count > max_chars {
-            let safe_len = source.content
+            let safe_len = source
+                .content
                 .char_indices()
                 .nth(max_chars)
                 .map(|(i, _)| i)

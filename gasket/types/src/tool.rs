@@ -306,3 +306,46 @@ fn build_property_schema(type_desc: &str, description: &str) -> serde_json::Map<
 
     prop
 }
+
+// ── Approval system types ───────────────────────────────────
+
+/// Request sent to the user asking for approval of a sensitive tool call.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolApprovalRequest {
+    /// Unique request ID (UUID v4).
+    pub id: String,
+    /// Name of the tool being invoked.
+    pub tool_name: String,
+    /// Human-readable description of the operation.
+    pub description: String,
+    /// JSON-serialized tool arguments.
+    pub arguments: String,
+}
+
+/// Response from the user to an approval request.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolApprovalResponse {
+    /// ID of the request being responded to.
+    pub request_id: String,
+    /// Whether the user approved the operation.
+    pub approved: bool,
+    /// Whether to remember this decision for future similar operations.
+    #[serde(default)]
+    pub remember: bool,
+}
+
+/// Callback invoked by `ToolRegistry` when a tool with `requires_approval`
+/// is about to be executed.
+#[async_trait]
+pub trait ApprovalCallback: Send + Sync {
+    /// Ask the user for approval.
+    ///
+    /// Returns `true` if the user approves, `false` if denied.
+    /// Implementations should block (await) until the user responds or a
+    /// timeout expires.
+    async fn request_approval(
+        &self,
+        session_key: &SessionKey,
+        request: ToolApprovalRequest,
+    ) -> Result<bool, String>;
+}

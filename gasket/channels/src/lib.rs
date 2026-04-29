@@ -19,6 +19,7 @@
 
 // Core types (always compiled)
 pub mod adapter;
+pub mod approval_router;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -54,6 +55,7 @@ pub mod wecom;
 
 // Convenience re-exports
 pub use adapter::ImAdapter;
+pub use approval_router::ApprovalRouter;
 pub use config::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
     WeComConfig, WebSocketConfig, WechatConfig,
@@ -67,3 +69,6 @@ pub use middleware::{
     log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
 };
 pub use provider::{ImProvider, ImProviders};
+
+#[cfg(feature = "websocket")]
+pub use websocket::WebSocketApprovalCallback;

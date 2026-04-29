@@ -35,9 +35,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     let config = load_config().await.context("Failed to load config")?;
-    let workspace = dirs::home_dir()
-        .context("Could not find home directory")?
-        .join(".gasket");
+    let workspace =
+        gasket_engine::tools::resolve_exec_workspace(&config, std::path::Path::new("."));
 
     // ── Infrastructure initialization (explicit, once) ──
     gasket_engine::config::init_config(config.clone());

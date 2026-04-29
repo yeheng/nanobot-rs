@@ -10,6 +10,7 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::approval_router::ApprovalRouter;
 use crate::events::ChannelType::WebSocket as WebSocketChannel;
 use crate::events::{InboundMessage, OutboundMessage};
 
@@ -59,7 +60,7 @@ impl Drop for ConnectionGuard {
 
         // Only remove user mapping if it still points to OUR connection_id.
         // DashMap's remove_if allows atomic check-and-remove.
-        manager
+        let was_removed = manager
             .user_connections
             .remove_if(&user_id, |_, current_conn_id| {
                 let is_ours = *current_conn_id == connection_id;
@@ -75,7 +76,20 @@ impl Drop for ConnectionGuard {
                 );
                 }
                 is_ours
-            });
+            })
+            .is_some();
+
+        // If we actually cleaned up this user's mapping, also clear remembered approvals
+        // so that a fresh connection does not inherit stale decisions.
+        if was_removed {
+            if let Ok(router_guard) = manager.approval_router.read() {
+                if let Some(ref router) = *router_guard {
+                    let session_key =
+                        crate::events::SessionKey::new(crate::events::ChannelType::WebSocket, &user_id);
+                    router.forget_session(&session_key);
+                }
+            }
+        }
     }
 }
 
@@ -97,6 +111,9 @@ pub struct WebSocketManager {
 
     /// Optional authentication token validator (can be set via set_auth_validator)
     auth_validator: std::sync::RwLock<Option<AuthValidator>>,
+
+    /// Router for approval request/response pairing
+    approval_router: std::sync::RwLock<Option<Arc<ApprovalRouter>>>,
 }
 
 impl WebSocketManager {
@@ -106,6 +123,14 @@ impl WebSocketManager {
             user_connections: DashMap::new(),
             inbound_tx,
             auth_validator: std::sync::RwLock::new(None),
+            approval_router: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Set the approval router for handling tool confirmation flows.
+    pub fn set_approval_router(&self, router: Arc<ApprovalRouter>) {
+        if let Ok(mut guard) = self.approval_router.write() {
+            *guard = Some(router);
         }
     }
 
@@ -320,6 +345,44 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                 match msg {
                     Message::Text(text) => {
                         debug!("incoming messages: {}", text);
+
+                        // Try to parse as an approval_response first
+                        let is_approval_response = {
+                            let router_guard = manager.approval_router.read().ok();
+                            if let Some(Some(ref router)) = router_guard.as_deref() {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if json.get("type").and_then(|t| t.as_str())
+                                        == Some("approval_response")
+                                    {
+                                        if let Ok(response) =
+                                            serde_json::from_value::<
+                                                gasket_types::ToolApprovalResponse,
+                                            >(json)
+                                        {
+                                            debug!(
+                                                "Routing approval_response for request {}",
+                                                response.request_id
+                                            );
+                                            router.resolve(&response);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if is_approval_response {
+                            continue;
+                        }
+
                         // Create InboundMessage and send to bus
                         let inbound = InboundMessage {
                             channel: WebSocketChannel,
@@ -433,6 +496,11 @@ impl WebSocketAdapter {
             .route("/broadcast", axum::routing::post(handle_broadcast))
             .with_state(manager)
     }
+
+    /// Return a reference to the inner [`WebSocketManager`].
+    pub fn manager(&self) -> &Arc<WebSocketManager> {
+        &self.manager
+    }
 }
 
 #[async_trait]
@@ -472,6 +540,91 @@ impl ImAdapter for CliAdapter {
 
     async fn send(&self, _msg: &crate::events::OutboundMessage) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+// ── WebSocket Approval Callback ────────────────────────────────────────────
+
+use gasket_types::{ApprovalCallback, SessionKey, ToolApprovalRequest};
+
+/// WebSocket-driven implementation of [`ApprovalCallback`].
+///
+/// Sends `ChatEvent::ApprovalRequest` to the user over WebSocket and blocks
+/// until the user replies with `approval_response` or a timeout expires.
+#[derive(Clone)]
+pub struct WebSocketApprovalCallback {
+    manager: Arc<WebSocketManager>,
+    router: Arc<ApprovalRouter>,
+    timeout: std::time::Duration,
+}
+
+impl WebSocketApprovalCallback {
+    /// Create a new callback with the given manager and router.
+    pub fn new(manager: Arc<WebSocketManager>, router: Arc<ApprovalRouter>) -> Self {
+        Self {
+            manager,
+            router,
+            timeout: std::time::Duration::from_secs(300),
+        }
+    }
+
+    /// Set a custom timeout for waiting on user approval.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+#[async_trait]
+impl ApprovalCallback for WebSocketApprovalCallback {
+    async fn request_approval(
+        &self,
+        session_key: &SessionKey,
+        request: ToolApprovalRequest,
+    ) -> Result<bool, String> {
+        // Check if we have a remembered decision for this session + tool
+        if let Some(remembered) = self.router.is_remembered(session_key, &request.tool_name) {
+            if remembered {
+                debug!(
+                    "Auto-approving {} for session {} (remembered)",
+                    request.tool_name, session_key
+                );
+                return Ok(true);
+            } else {
+                debug!(
+                    "Auto-denying {} for session {} (remembered)",
+                    request.tool_name, session_key
+                );
+                return Ok(false);
+            }
+        }
+
+        let id = uuid::Uuid::parse_str(&request.id)
+            .map_err(|e| format!("Invalid approval request id: {}", e))?;
+
+        let rx = self.router.register(id);
+
+        let ws_msg = OutboundMessage::with_ws_message(
+            WebSocketChannel,
+            session_key.chat_id.clone(),
+            gasket_types::events::ChatEvent::approval_request(
+                &request.id,
+                &request.tool_name,
+                &request.description,
+                &request.arguments,
+            ),
+        );
+        self.manager.send(ws_msg).await;
+
+        let response = self.router.wait_for_response(id, self.timeout, rx).await?;
+
+        // If the user asked us to remember this decision, store it
+        if response.remember {
+            self.router
+                .remember(session_key, &request.tool_name, response.approved);
+        }
+
+        Ok(response.approved)
     }
 }
 

@@ -149,6 +149,7 @@ pub fn spawn_subagent(
             spawner: None,
             token_tracker: token_tracker.clone(),
             checkpoint_callback: None,
+            session_key: None,
         };
 
         // Execute with timeout, cancellable via token

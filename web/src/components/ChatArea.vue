@@ -4,6 +4,7 @@ import { AlertCircle, ArrowDown, Bot, Sparkles, X as XIcon } from 'lucide-vue-ne
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useChatSession } from '../composables/useChatSession';
 import { useChatStore } from '../stores/chatStore';
+import ApprovalDialog from './ApprovalDialog.vue';
 import ChatHeader from './ChatHeader.vue';
 import ChatInput from './ChatInput.vue';
 import ChatTimeDivider from './ChatTimeDivider.vue';
@@ -102,6 +103,17 @@ const retryMessage = (msgId: string, content: string) => {
 
 const clearHistory = () => {
   chatStore.clearChatMessages(props.chatId);
+};
+
+// Approval dialog
+const currentApproval = computed(() => {
+  const vals = session.pendingApprovals.values();
+  const first = vals.next();
+  return first.value || null;
+});
+
+const handleApprovalResponse = (requestId: string, approved: boolean, remember: boolean) => {
+  session.sendApprovalResponse(requestId, approved, remember);
 };
 </script>
 
@@ -204,6 +216,11 @@ const clearHistory = () => {
         :is-receiving="session.isReceiving"
         @send="session.sendMessage"
         @stop="session.stopGenerating"
+      />
+
+      <ApprovalDialog
+        :request="currentApproval"
+        @respond="handleApprovalResponse"
       />
     </div>
   </div>

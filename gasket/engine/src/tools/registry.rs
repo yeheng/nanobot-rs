@@ -8,6 +8,7 @@ use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
 use gasket_providers::ToolDefinition;
+use gasket_types::{ApprovalCallback, ToolApprovalRequest};
 
 /// A tool bundled with its optional metadata.
 struct RegisteredTool {
@@ -32,12 +33,14 @@ impl Clone for RegisteredTool {
 /// Registry for managing tools.
 pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
+    approval_callback: Option<Arc<dyn ApprovalCallback>>,
 }
 
 impl Clone for ToolRegistry {
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
+            approval_callback: self.approval_callback.clone(),
         }
     }
 }
@@ -47,7 +50,15 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             items: HashMap::new(),
+            approval_callback: None,
         }
+    }
+
+    /// Set an approval callback that will be invoked before executing any tool
+    /// whose metadata has `requires_approval == true`.
+    pub fn with_approval_callback(mut self, callback: Arc<dyn ApprovalCallback>) -> Self {
+        self.approval_callback = Some(callback);
+        self
     }
 
     /// Register a tool
@@ -107,6 +118,42 @@ impl ToolRegistry {
             .items
             .get(name)
             .ok_or_else(|| ToolError::NotFound(format!("Tool not found: {}", name)))?;
+
+        // Check if approval is required
+        if let Some(ref meta) = entry.metadata {
+            if meta.requires_approval {
+                if let Some(ref callback) = self.approval_callback {
+                    let request = ToolApprovalRequest {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        tool_name: name.to_string(),
+                        description: if meta.display_name.is_empty() {
+                            format!("Execute tool '{}'", name)
+                        } else {
+                            meta.display_name.clone()
+                        },
+                        arguments: args.to_string(),
+                    };
+
+                    match callback.request_approval(&ctx.session_key, request).await {
+                        Ok(true) => {
+                            debug!("Tool {} approved by user", name);
+                        }
+                        Ok(false) => {
+                            return Err(ToolError::PermissionDenied(format!(
+                                "User denied execution of tool '{}'",
+                                name
+                            )));
+                        }
+                        Err(e) => {
+                            return Err(ToolError::PermissionDenied(format!(
+                                "Approval check failed for tool '{}': {}",
+                                name, e
+                            )));
+                        }
+                    }
+                }
+            }
+        }
 
         debug!("Executing tool: {} with args: {:?}", name, args);
         entry.tool.execute(args, ctx).await

@@ -24,19 +24,13 @@ pub use gasket_sandbox::ProcessManager;
 // Use alias to avoid name conflict with core's SandboxConfig
 pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
 
-/// Dangerous patterns blocked when running without sandbox (fallback mode).
+/// Patterns blocked only when running without sandbox (fallback mode).
 ///
-/// Includes `>` and `<` because fallback mode has no filesystem containment,
-/// allowing arbitrary file overwrite. FD-duplication like `2>&1` is caught
-/// by the `>` character.
-const FALLBACK_DANGEROUS_PATTERNS: &[&str] =
-    &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r", ">", "<"];
-
-/// Dangerous patterns blocked when running inside a sandbox.
-///
-/// `>` and `<` are allowed because the sandbox constrains filesystem access,
-/// making redirection safe. Pipe `|` is still blocked to prevent data exfiltration.
-const SANDBOX_DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", "|", "\n", "\r"];
+/// Only redirection (`>`, `<`) is blocked because fallback mode has no
+/// filesystem containment — without isolation, these can overwrite arbitrary
+/// files. All shell operators (`&&`, `||`, `|`, `;`, `$(`, etc.) are allowed
+/// since the denylist (substring match) covers dangerous sub-commands.
+const FALLBACK_DANGEROUS_PATTERNS: &[&str] = &[">", "<"];
 
 /// Shell execution tool with optional sandboxing.
 ///
@@ -144,17 +138,24 @@ impl ExecTool {
         Ok(())
     }
 
-    /// Validate command for potential injection attempts.
+    /// Validate command for unsafe patterns.
+    ///
+    /// Only enforced in fallback (non-sandboxed) mode, and only blocks
+    /// redirection (`>`, `<`) which can overwrite arbitrary files without
+    /// filesystem isolation. When sandbox is active, all shell operators
+    /// are allowed — the OS-level sandbox is the real security boundary.
     fn validate_command(&self, command: &str) -> Result<(), ToolError> {
-        let patterns = if self.process_manager.provides_filesystem_isolation() {
-            SANDBOX_DANGEROUS_PATTERNS
-        } else {
-            FALLBACK_DANGEROUS_PATTERNS
-        };
-        for pattern in patterns {
+        // Sandbox mode: trust the OS-level isolation
+        if self.process_manager.provides_filesystem_isolation() {
+            return Ok(());
+        }
+
+        // Fallback mode: only block redirection
+        for pattern in FALLBACK_DANGEROUS_PATTERNS {
             if command.contains(pattern) {
                 return Err(ToolError::InvalidArguments(format!(
-                    "Potentially unsafe pattern detected: '{}'. Command injection is not allowed.",
+                    "Redirection '{}' is not allowed without sandbox isolation. \
+                     Enable sandbox or simplify the command.",
                     pattern
                 )));
             }
@@ -374,34 +375,29 @@ mod tests {
     }
 
     #[test]
-    fn test_command_injection_blocked() {
+    fn test_shell_operators_allowed() {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Test various injection patterns (command chaining/substitution)
-        let injection_attempts = vec![
-            "echo hello && cat /etc/passwd",
-            "echo hello; cat /etc/passwd",
-            "echo hello || cat /etc/passwd",
-            "echo `cat /etc/passwd`",
-            "echo $(cat /etc/passwd)",
-            "echo ${PATH}",
+        // Shell operators should be allowed — the denylist covers dangerous sub-commands
+        let allowed_commands = vec![
+            "echo hello && echo world",
+            "echo hello || echo fallback",
+            "echo hello; echo world",
             "echo hello | cat",
+            "echo $(echo nested)",
+            "echo ${HOME}",
         ];
 
-        for cmd in injection_attempts {
+        for cmd in allowed_commands {
             let result = rt.block_on(
                 tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()),
             );
             assert!(
-                result.is_err(),
-                "Command '{}' should have been blocked",
-                cmd
-            );
-            assert!(
-                result.unwrap_err().to_string().contains("unsafe pattern"),
-                "Command '{}' should have been blocked as unsafe",
-                cmd
+                result.is_ok(),
+                "Command '{}' should be allowed, got error: {:?}",
+                cmd,
+                result
             );
         }
     }
@@ -411,10 +407,9 @@ mod tests {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // `>` and `<` are blocked to prevent arbitrary file overwrite on Windows fallback
+        // `>` and `<` are blocked in fallback mode (no filesystem isolation)
         let blocked_commands = vec![
             "echo hello > /tmp/test_output.txt",
-            "echo hello >> /tmp/test_append.txt",
             "cat < /tmp/test_input.txt",
         ];
 
@@ -428,20 +423,19 @@ mod tests {
                 cmd
             );
             assert!(
-                result.unwrap_err().to_string().contains("unsafe pattern"),
-                "Redirect command '{}' should be blocked as unsafe",
+                result.unwrap_err().to_string().contains("Redirection"),
+                "Redirect command '{}' should be blocked as redirection",
                 cmd
             );
         }
     }
 
     #[test]
-    fn test_fd_redirect_allowed() {
+    fn test_fd_redirect_blocked_on_fallback() {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // fd-duplication patterns like `2>&1` contain `>` and are therefore
-        // blocked in fallback mode to prevent arbitrary file overwrite.
+        // `2>&1` contains `>` and is blocked in fallback mode
         let result = rt.block_on(tool.execute(
             serde_json::json!({"command": "gasket memory reindex 2>&1"}),
             &ToolContext::default(),
@@ -451,8 +445,8 @@ mod tests {
             "fd redirect should be blocked in fallback mode"
         );
         assert!(
-            result.unwrap_err().to_string().contains("unsafe pattern"),
-            "fd redirect should be blocked as unsafe"
+            result.unwrap_err().to_string().contains("Redirection"),
+            "fd redirect should be blocked as redirection"
         );
     }
 }

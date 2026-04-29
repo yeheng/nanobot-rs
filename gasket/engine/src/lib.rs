@@ -139,10 +139,12 @@ pub mod channels {
     pub use gasket_channels::websocket;
     #[cfg(feature = "wecom")]
     pub use gasket_channels::wecom;
+    #[cfg(feature = "websocket")]
+    pub use gasket_channels::WebSocketApprovalCallback;
     pub use gasket_channels::{
-        adapter, log_inbound, middleware, ChannelConfigError, ChannelType, ChannelsConfig,
-        DingTalkConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider, ImProviders,
-        InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
+        adapter, log_inbound, middleware, ApprovalRouter, ChannelConfigError, ChannelType,
+        ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider,
+        ImProviders, InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
         WeComConfig, WebSocketMessage,
     };

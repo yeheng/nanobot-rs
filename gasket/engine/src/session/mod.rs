@@ -534,6 +534,7 @@ impl AgentSession {
         let fctx = FinalizeContext::from_request(&request);
         let messages = request.messages;
         let mut runtime_ctx = self.runtime_ctx.clone();
+        runtime_ctx.session_key = Some(session_key.clone());
 
         if let Some(ref compactor) = &self.compactor {
             runtime_ctx.checkpoint_callback = Some(Arc::new(SessionCheckpointCallback {

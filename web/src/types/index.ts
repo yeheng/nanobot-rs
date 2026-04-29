@@ -124,3 +124,18 @@ export interface Chat {
   contextStats?: ContextStats;
   watermarkInfo?: WatermarkInfo;
 }
+
+// ── Approval Types ──────────────────────────────────────────
+
+export interface ApprovalRequest {
+  id: string;
+  tool_name: string;
+  description: string;
+  arguments?: string;
+}
+
+export interface ApprovalResponse {
+  request_id: string;
+  approved: boolean;
+  remember?: boolean;
+}

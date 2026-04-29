@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;
 use gasket_providers::LlmProvider;
+use gasket_types::SessionKey;
 
 /// Async callback for proactive working-memory checkpoint injection.
 ///
@@ -30,6 +31,8 @@ pub struct RuntimeContext {
     /// Optional checkpoint callback for proactive working-memory injection.
     /// `None` means no checkpointing — checked before each step iteration.
     pub checkpoint_callback: Option<Arc<dyn CheckpointCallback>>,
+    /// Session key for the current request (for routing WebSocket messages).
+    pub session_key: Option<SessionKey>,
 }
 
 impl RuntimeContext {
@@ -45,6 +48,7 @@ impl RuntimeContext {
             spawner: None,
             token_tracker: None,
             checkpoint_callback: None,
+            session_key: None,
         }
     }
 }
@@ -58,6 +62,7 @@ impl Clone for RuntimeContext {
             spawner: self.spawner.clone(),
             token_tracker: self.token_tracker.clone(),
             checkpoint_callback: self.checkpoint_callback.clone(),
+            session_key: self.session_key.clone(),
         }
     }
 }

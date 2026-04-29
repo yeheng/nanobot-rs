@@ -1,7 +1,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useChatStore } from '@/stores/chatStore';
 import { useIMWebSocket } from '@/hooks/useIMWebSocket';
-import type { Message, SubagentState } from '@/types';
+import type { ApprovalRequest, Message, SubagentState } from '@/types';
 
 export function useChatSession(chatId: { value: string }) {
   const chatStore = useChatStore();
@@ -14,6 +14,8 @@ export function useChatSession(chatId: { value: string }) {
   const toolStartTimes = ref<Record<string, number>>({});
   const activeSubagents = ref<Map<string, SubagentState>>(new Map());
   const hasActiveSubagents = computed(() => activeSubagents.value.size > 0);
+
+  const pendingApprovals = ref<Map<string, ApprovalRequest>>(new Map());
 
   const errorBanner = ref<string | null>(null);
   let errorBannerTimer: ReturnType<typeof setTimeout> | null = null;
@@ -244,6 +246,14 @@ export function useChatSession(chatId: { value: string }) {
       case 'subagent_error':
         handleSubagentError(msg, botMsg);
         break;
+      case 'approval_request':
+        pendingApprovals.value.set(msg.id, {
+          id: msg.id,
+          tool_name: msg.tool_name,
+          description: msg.description,
+          arguments: msg.arguments,
+        });
+        break;
     }
   };
 
@@ -346,7 +356,18 @@ export function useChatSession(chatId: { value: string }) {
     isThinking.value = false;
     isReceiving.value = false;
     isSending.value = false;
+    pendingApprovals.value.clear();
     chatStore.abortToolCalls(chatId.value);
+  };
+
+  const sendApprovalResponse = (requestId: string, approved: boolean, remember: boolean = false) => {
+    send(JSON.stringify({
+      type: 'approval_response',
+      request_id: requestId,
+      approved,
+      remember,
+    }));
+    pendingApprovals.value.delete(requestId);
   };
 
   const sendMessage = (text: string) => {
@@ -401,6 +422,8 @@ export function useChatSession(chatId: { value: string }) {
     // Subagents
     activeSubagents,
     hasActiveSubagents,
+    // Approvals
+    pendingApprovals,
     // Error
     errorBanner,
     // Actions
@@ -409,6 +432,7 @@ export function useChatSession(chatId: { value: string }) {
     sendMessage,
     retryMessage,
     stopGenerating,
+    sendApprovalResponse,
     fetchContext,
     forceCompact,
     dismissError,

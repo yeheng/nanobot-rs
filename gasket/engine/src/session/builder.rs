@@ -140,6 +140,7 @@ impl SessionBuilder {
             spawner: None,
             token_tracker: None,
             checkpoint_callback: None,
+            session_key: None,
         };
 
         // ── 3. Context compactor ─────────────────────────────────────

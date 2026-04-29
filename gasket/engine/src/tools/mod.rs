@@ -14,6 +14,7 @@
 //! - `spawn`: Spawn sub-agents
 //! - `spawn_parallel`: Parallel sub-agent spawning
 //! - `script`: External script tools with YAML manifests
+//! - `new_session`: Generate a new session key and clear history
 
 mod builder;
 mod clear_session;
@@ -28,6 +29,7 @@ mod history_query;
 mod history_search;
 mod http;
 mod message;
+mod new_session;
 mod provider;
 mod registry;
 mod search_sops;
@@ -62,6 +64,7 @@ pub use history_query::HistoryQueryTool;
 pub use history_search::HistorySearchTool;
 pub use http::build_client_with_proxy;
 pub use message::MessageTool;
+pub use new_session::NewSessionTool;
 pub use provider::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
 pub use registry::ToolRegistry;
 pub use search_sops::{search_sops, SearchSopsTool};
