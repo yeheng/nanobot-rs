@@ -531,7 +531,9 @@ dim: 1536
 
     #[test]
     fn test_ollama_native_endpoint_detection() {
-        assert!(is_ollama_native_endpoint("http://localhost:11434/api/embed"));
+        assert!(is_ollama_native_endpoint(
+            "http://localhost:11434/api/embed"
+        ));
         assert!(is_ollama_native_endpoint(
             "http://localhost:11434/api/embed/"
         ));

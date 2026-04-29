@@ -212,7 +212,10 @@ async fn test_full_recall_flow_returns_hits_with_content() {
         min_score: 0.0,
         ..Default::default()
     };
-    let hits = searcher.recall("rust error handling", &config).await.unwrap();
+    let hits = searcher
+        .recall("rust error handling", &config)
+        .await
+        .unwrap();
     assert!(!hits.is_empty());
 
     // Every hit must have populated content (not empty) and a known role.
@@ -429,7 +432,10 @@ async fn test_indexer_dedup() {
     );
 
     let all = index.search(&provider.embed("test").await.unwrap(), 10);
-    assert!(all.is_empty(), "no entries should appear for duplicate event",);
+    assert!(
+        all.is_empty(),
+        "no entries should appear for duplicate event",
+    );
 
     indexer.shutdown().await;
 }

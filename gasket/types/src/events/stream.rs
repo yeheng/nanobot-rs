@@ -762,5 +762,3 @@ mod tests {
         assert!(matches!(msg, ChatEvent::Thinking { .. }));
     }
 }
-
-
