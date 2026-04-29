@@ -9,7 +9,6 @@ import ChatHeader from './ChatHeader.vue';
 import ChatInput from './ChatInput.vue';
 import ChatTimeDivider from './ChatTimeDivider.vue';
 import MessageBubble from './MessageBubble.vue';
-import SubagentPanel from './SubagentPanel.vue';
 
 const props = defineProps<{ chatId: string }>();
 const emit = defineEmits<{ (e: 'connection-status', status: boolean): void }>();
@@ -175,6 +174,7 @@ const handleApprovalResponse = (requestId: string, approved: boolean, remember: 
               :is-last-bot-message="msg.role === 'bot' && idx === messages.length - 1"
               :is-thinking="session.isThinking"
               :is-receiving="session.isReceiving"
+              :subagent-phase="session.subagentPhase"
               @retry="() => retryMessage(msg.id, msg.content)"
             />
           </template>
@@ -191,11 +191,6 @@ const handleApprovalResponse = (requestId: string, approved: boolean, remember: 
             </div>
           </div>
 
-          <SubagentPanel
-            v-if="session.hasActiveSubagents"
-            :subagents="session.activeSubagents"
-            class="max-w-full md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto w-full mt-2"
-          />
         </div>
       </ScrollArea>
 
