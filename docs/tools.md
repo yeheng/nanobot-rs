@@ -210,43 +210,30 @@ flowchart TB
     style Run fill:#C8E6C9
 ```
 
-### 4. 记忆工具
+### 4. 历史查询工具
 
-让 AI 能读写长期记忆：
+让 AI 能查询当前会话的对话历史：
 
 ```mermaid
 sequenceDiagram
     participant U as 用户
     participant AI as AI
-    participant M as 记忆工具
-    participant Store as 记忆存储
+    participant H as HistoryQueryTool
+    participant Store as SQLite 存储
 
-    U->>AI: 我叫小明，做后端开发
+    U->>AI: 我昨天说了什么？
 
-    Note over AI: 判断这是重要信息
+    AI->>H: history_query(query="昨天")
+    H->>Store: 按关键词搜索历史消息
+    Store-->>H: 匹配的消息列表
+    H-->>AI: 昨天用户说...
 
-    AI->>M: 保存记忆 (type: note/skill)
-    Note over M: 判断类型：事实→note，流程→skill
-    M->>Store: 写入对应抽屉
-    M-->>AI: 保存成功 (type: note)
-
-    ...第二天...
-
-    U->>AI: 帮我写段代码
-    AI->>M: 搜索用户相关信息
-    M->>Store: 查询记忆
-    Store-->>M: 小明，后端开发
-    M-->>AI: 用户信息
-
-    Note over AI: 根据用户背景调整回答
-
-    AI-->>U: 小明，这段后端代码...
+    AI-->>U: 你昨天提到了...
 ```
 
 **包含的工具：**
-- `memory_search` - 搜索记忆
-- `memorize` - 保存新记忆（支持 `memory_type`: `"note"` 或 `"skill"`）
-- `history_query` (`HistoryQueryTool`) - 查询 SQLite 中的对话历史
+- `history_query` - 按关键词查询当前会话的对话历史（SQLite 本地搜索）
+- `history_search` - 语义搜索历史对话（需要 `embedding` 特性）
 
 ### 4.1 Wiki 知识工具
 
@@ -289,7 +276,7 @@ sequenceDiagram
 
 ### 5. 子代理工具
 
-让 AI 能创建"分身"处理复杂任务：
+让 AI 能创建"分身"处理复杂任务，支持**实时流式事件**和**模型选择**：
 
 ```mermaid
 sequenceDiagram
@@ -303,28 +290,52 @@ sequenceDiagram
     
     Note over Main: 文件太多，需要并行处理
     
-    Main->>Spawn: 创建子代理1<br/>分析前端代码
-    Main->>Spawn: 创建子代理2<br/>分析后端代码
-    Main->>Spawn: 创建子代理3<br/>分析测试文件
-    
-    Spawn->>Sub: 启动3个子AI
+    Main->>Spawn: spawn_parallel(tasks=[...])
     
     par 并行执行
-        Sub->>Sub: 分析前端
+        Sub->>Sub: 分析前端（实时事件→用户）
     and
-        Sub->>Sub: 分析后端
+        Sub->>Sub: 分析后端（实时事件→用户）
     and
-        Sub->>Sub: 分析测试
+        Sub->>Sub: 分析测试（实时事件→用户）
     end
     
-    Sub-->>Res: 返回3份分析报告
+    Sub-->>Res: 返回分析报告
     Res-->>Main: 汇总结果
     Main-->>U: 完整项目分析...
 ```
 
 **包含的工具：**
 - `spawn` - 创建单个子代理
-- `spawn_parallel` - 并行创建多个子代理
+  - 参数：`task`（任务描述，必填），`model_id`（可选，使用模型配置中的 profile ID）
+- `spawn_parallel` - 并行创建最多 10 个子代理
+  - 参数：`tasks`（任务列表，必填），支持简单字符串数组或带 `model_id` 的对象数组
+  - 并发限制：最多 5 个同时执行，防止 API 限流
+
+**实时流式事件（WebSocket 模式）：**
+
+在 WebSocket 模式下，子代理的执行过程会实时推送到前端：
+
+| 事件 | 说明 |
+|------|------|
+| `subagent_started` | 子代理启动，附带任务描述 |
+| `subagent_thinking` | 子代理的思考过程 |
+| `subagent_tool_start` | 子代理开始调用工具 |
+| `subagent_tool_end` | 子代理工具调用完成 |
+| `subagent_content` | 子代理生成的内容片段 |
+| `subagent_completed` | 子代理完成，返回结果摘要 |
+
+可通过 `agents.defaults.ws_summary_limit` 控制摘要长度（0 = 完整返回）。
+
+### 6. 会话管理工具
+
+**包含的工具：**
+- `new_session` - 开启新会话，清空当前会话的所有历史消息和摘要，生成新的 session key
+- `clear_session` - 清空当前会话历史（保留 session key）
+
+### 7. 消息工具
+
+- `message` (`MessageTool`) - 向用户发送消息（用于 Cron 等后台任务主动推送）
 
 ### 工具执行签名
 
@@ -404,9 +415,10 @@ flowchart TB
     Understand -->|查资料| Search[网络搜索]
     Understand -->|改代码| File[文件编辑]
     Understand -->|运行测试| Shell[命令执行]
-    Understand -->|记住这个| Memory[保存记忆]
+    Understand -->|查历史| History[历史查询]
     Understand -->|任务太复杂| Subagent[创建子代理]
     Understand -->|查知识库| Wiki[Wiki搜索]
+    Understand -->|重新开始| Session[新会话]
     
     style Understand fill:#FFD700
 ```
@@ -544,16 +556,67 @@ flowchart TB
 
 ---
 
+## 工具审批系统
+
+Gasket 内置了**工具执行审批**机制，防止 AI 在未经确认的情况下执行危险操作。
+
+### 审批流程
+
+```mermaid
+sequenceDiagram
+    participant AI as AI大脑
+    participant R as 工具注册表
+    participant CB as ApprovalCallback
+    participant U as 用户/前端
+
+    AI->>R: 执行 write_file
+    R->>R: requires_approval = true
+    R->>CB: request_approval
+    CB->>U: 显示确认对话框
+    U-->>CB: 同意 / 拒绝 / 记住决定
+    CB-->>R: approved?
+    alt 同意
+        R->>R: 继续执行工具
+    else 拒绝
+        R-->>AI: PermissionDenied
+    end
+```
+
+### 需要审批的工具
+
+以下工具默认需要用户确认（WebSocket 模式显示确认对话框，CLI 模式直接执行）：
+
+| 工具 | 类别 | 说明 |
+|------|------|------|
+| `write_file` | 文件系统 | 创建或覆盖文件 |
+| `edit_file` | 文件系统 | 修改现有文件 |
+| `exec` | 系统 | 执行 Shell 命令 |
+| `new_session` | 会话 | 清空历史并新建会话 |
+| `clear_session` | 会话 | 清空当前会话历史 |
+| `wiki_delete` | Wiki | 删除 Wiki 页面 |
+
+**记住决策**：在 WebSocket 前端可以勾选"记住此决定"，同一会话中再次调用相同工具时将自动通过/拒绝。
+
+### 免审批工具
+
+以下只读工具无需确认，直接执行：
+
+- `read_file`, `list_dir`, `web_search`, `web_fetch`
+- `wiki_search`, `wiki_read`, `history_query`
+- `spawn`, `spawn_parallel`
+
+---
+
 ## 常见问题
 
 **Q: AI 能随便执行任何命令吗？**
-A: 不能。有安全策略限制，危险命令会被拦截或需要用户确认。
+A: 不能。`exec` 等危险工具默认需要用户确认。可通过 `tools.exec.policy` 配置命令白名单/黑名单进一步限制。
 
 **Q: AI 能访问我电脑上的所有文件吗？**
-A: 只能访问工作空间内的文件，不会随意读取系统敏感文件。
+A: 默认可以访问任意路径，但可通过 `tools.restrict_to_workspace: true` 限制仅允许访问工作空间目录。
 
 **Q: 工具执行失败怎么办？**
 A: AI 会收到错误信息，然后决定重试、换种方式、或告诉用户出错了。
 
 **Q: 怎么知道 AI 用了什么工具？**
-A: 在流式输出中可以看到工具调用信息，比如"正在搜索..."、"正在读取文件..."
+A: 在流式输出中可以看到工具调用信息，比如"正在搜索..."、"正在读取文件..."。WebSocket 模式下还能实时看到子代理的执行进度。

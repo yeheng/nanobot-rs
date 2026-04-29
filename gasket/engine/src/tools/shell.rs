@@ -264,11 +264,11 @@ impl Tool for ExecTool {
 fn build_sandbox_config(config: &ExecToolConfig, workspace: &Path) -> SandboxExecutorConfig {
     use gasket_sandbox::config::{
         ApprovalConfig, AuditConfig, CommandPolicyConfig as SandboxPolicyConfig,
-        ResourceLimitsConfig as SandboxLimitsConfig,
+        ResourceLimits as SandboxLimits,
     };
 
     // Build resource limits
-    let limits = SandboxLimitsConfig {
+    let limits = SandboxLimits {
         max_memory_mb: config.limits.max_memory_mb,
         max_cpu_secs: config.limits.max_cpu_secs,
         max_output_bytes: config.limits.max_output_bytes,

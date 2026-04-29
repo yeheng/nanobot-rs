@@ -7,35 +7,38 @@
 use serde::{Deserialize, Serialize};
 
 /// Resource limits to apply to a child process.
+///
+/// All size fields use user-friendly units (MB) for consistency.
+/// Byte conversion happens in `to_ulimit_prefix()` and `to_bwrap_args()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum virtual memory in bytes
-    #[serde(default = "default_max_memory_bytes")]
-    pub max_memory_bytes: u64,
+    /// Maximum virtual memory in MB (default: 512)
+    #[serde(default = "default_max_memory_mb")]
+    pub max_memory_mb: u32,
 
-    /// Maximum CPU time in seconds
+    /// Maximum CPU time in seconds (default: 60)
     #[serde(default = "default_max_cpu_secs")]
     pub max_cpu_secs: u32,
 
-    /// Maximum output size in bytes (applied after execution)
+    /// Maximum output size in bytes (default: 1 MB, applied after execution)
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
 
-    /// Maximum number of processes
+    /// Maximum number of processes (default: 0 = unlimited)
     #[serde(default = "default_max_processes")]
     pub max_processes: u32,
 
-    /// Maximum file size in bytes (0 = unlimited)
+    /// Maximum file size in MB (default: 0 = unlimited)
     #[serde(default)]
-    pub max_file_size_bytes: u64,
+    pub max_file_size_mb: u32,
 
-    /// Maximum number of open files
+    /// Maximum number of open files (default: 64)
     #[serde(default = "default_max_open_files")]
     pub max_open_files: u32,
 }
 
-fn default_max_memory_bytes() -> u64 {
-    512 * 1024 * 1024 // 512 MB
+fn default_max_memory_mb() -> u32 {
+    512
 }
 
 fn default_max_cpu_secs() -> u32 {
@@ -57,44 +60,29 @@ fn default_max_open_files() -> u32 {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_memory_bytes: default_max_memory_bytes(),
+            max_memory_mb: default_max_memory_mb(),
             max_cpu_secs: default_max_cpu_secs(),
             max_output_bytes: default_max_output_bytes(),
             max_processes: default_max_processes(),
-            max_file_size_bytes: 0,
+            max_file_size_mb: 0,
             max_open_files: default_max_open_files(),
         }
     }
 }
 
 impl ResourceLimits {
-    /// Create from MB values for convenience
-    pub fn from_mb(max_memory_mb: u32, max_cpu_secs: u32, max_output_bytes: usize) -> Self {
-        Self {
-            max_memory_bytes: u64::from(max_memory_mb) * 1024 * 1024,
-            max_cpu_secs,
-            max_output_bytes,
-            ..Default::default()
-        }
-    }
-
     /// Generate a `ulimit` prefix string for fallback (non-sandboxed) mode.
-    ///
-    /// Example output: `ulimit -v 524288 -t 60; `
-    ///
-    /// `-v` sets virtual memory limit in KB, `-t` sets CPU time in seconds.
     pub fn to_ulimit_prefix(&self) -> String {
         let mut parts = vec![];
 
         #[cfg(not(target_os = "macos"))]
         {
-            let mem_kb = self.max_memory_bytes / 1024;
+            let mem_kb = u64::from(self.max_memory_mb) * 1024;
             parts.push(format!("ulimit -v {} -t {}", mem_kb, self.max_cpu_secs));
         }
 
         #[cfg(target_os = "macos")]
         {
-            // macOS does not support `ulimit -v` (virtual memory)
             parts.push(format!("ulimit -t {}", self.max_cpu_secs));
         }
 
@@ -106,8 +94,8 @@ impl ResourceLimits {
             parts.push(format!("-n {}", self.max_open_files));
         }
 
-        if self.max_file_size_bytes > 0 {
-            let file_size_kb = self.max_file_size_bytes / 1024;
+        if self.max_file_size_mb > 0 {
+            let file_size_kb = u64::from(self.max_file_size_mb) * 1024;
             parts.push(format!("-f {}", file_size_kb));
         }
 
@@ -116,9 +104,10 @@ impl ResourceLimits {
 
     /// Generate bwrap `--rlimit-*` command-line arguments for sandbox mode.
     pub fn to_bwrap_args(&self) -> Vec<String> {
+        let mem_bytes = u64::from(self.max_memory_mb) * 1024 * 1024;
         let mut args = vec![
             "--rlimit-as".to_string(),
-            self.max_memory_bytes.to_string(),
+            mem_bytes.to_string(),
             "--rlimit-cpu".to_string(),
             self.max_cpu_secs.to_string(),
         ];
@@ -134,21 +123,15 @@ impl ResourceLimits {
             ]);
         }
 
-        if self.max_file_size_bytes > 0 {
-            args.extend([
-                "--rlimit-fsize".to_string(),
-                self.max_file_size_bytes.to_string(),
-            ]);
+        if self.max_file_size_mb > 0 {
+            let fsize_bytes = u64::from(self.max_file_size_mb) * 1024 * 1024;
+            args.extend(["--rlimit-fsize".to_string(), fsize_bytes.to_string()]);
         }
 
         args
     }
 
     /// Truncate output to `max_output_bytes`, appending a marker if truncated.
-    ///
-    /// Uses `str::floor_char_boundary` to safely handle UTF-8 character
-    /// boundaries — if `max_output_bytes` falls in the middle of a multi-byte
-    /// character, it snaps back to the nearest valid boundary.
     pub fn truncate_output(&self, output: &str) -> String {
         if output.len() <= self.max_output_bytes {
             return output.to_string();
@@ -166,71 +149,13 @@ impl ResourceLimits {
     }
 }
 
-/// Configuration for resource limits (for deserialization from config files)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceLimitsConfig {
-    /// Maximum memory in MB (default: 512)
-    #[serde(default = "default_max_memory_mb")]
-    pub max_memory_mb: u32,
-
-    /// Maximum CPU time in seconds (default: 60)
-    #[serde(default = "default_max_cpu_secs")]
-    pub max_cpu_secs: u32,
-
-    /// Maximum output size in bytes (default: 1MB)
-    #[serde(default = "default_max_output_bytes")]
-    pub max_output_bytes: usize,
-
-    /// Maximum number of processes (default: 10)
-    #[serde(default = "default_max_processes")]
-    pub max_processes: u32,
-
-    /// Maximum file size in MB (default: 0 = unlimited)
-    #[serde(default)]
-    pub max_file_size_mb: u32,
-
-    /// Maximum number of open files (default: 64)
-    #[serde(default = "default_max_open_files")]
-    pub max_open_files: u32,
-}
-
-fn default_max_memory_mb() -> u32 {
-    512
-}
-
-impl Default for ResourceLimitsConfig {
-    fn default() -> Self {
-        Self {
-            max_memory_mb: default_max_memory_mb(),
-            max_cpu_secs: default_max_cpu_secs(),
-            max_output_bytes: default_max_output_bytes(),
-            max_processes: default_max_processes(),
-            max_file_size_mb: 0,
-            max_open_files: default_max_open_files(),
-        }
-    }
-}
-
-impl From<&ResourceLimitsConfig> for ResourceLimits {
-    fn from(config: &ResourceLimitsConfig) -> Self {
-        Self {
-            max_memory_bytes: u64::from(config.max_memory_mb) * 1024 * 1024,
-            max_cpu_secs: config.max_cpu_secs,
-            max_output_bytes: config.max_output_bytes,
-            max_processes: config.max_processes,
-            max_file_size_bytes: u64::from(config.max_file_size_mb) * 1024 * 1024,
-            max_open_files: config.max_open_files,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_ulimit_prefix() {
-        let limits = ResourceLimits::from_mb(512, 60, 1_048_576);
+        let limits = ResourceLimits::default();
         let prefix = limits.to_ulimit_prefix();
         assert!(prefix.contains("ulimit"));
         assert!(prefix.contains("-t 60"));
@@ -239,24 +164,33 @@ mod tests {
 
     #[test]
     fn test_bwrap_args() {
-        let limits = ResourceLimits::from_mb(512, 60, 1_048_576);
+        let limits = ResourceLimits {
+            max_memory_mb: 512,
+            ..Default::default()
+        };
         let args = limits.to_bwrap_args();
         assert!(args.contains(&"--rlimit-as".to_string()));
-        assert!(args.contains(&"536870912".to_string()));
+        assert!(args.contains(&"536870912".to_string())); // 512 * 1024 * 1024
         assert!(args.contains(&"--rlimit-cpu".to_string()));
         assert!(args.contains(&"60".to_string()));
     }
 
     #[test]
     fn test_truncate_output_within_limit() {
-        let limits = ResourceLimits::from_mb(0, 0, 100);
+        let limits = ResourceLimits {
+            max_output_bytes: 100,
+            ..Default::default()
+        };
         let output = "short output";
         assert_eq!(limits.truncate_output(output), output);
     }
 
     #[test]
     fn test_truncate_output_exceeds_limit() {
-        let limits = ResourceLimits::from_mb(0, 0, 10);
+        let limits = ResourceLimits {
+            max_output_bytes: 10,
+            ..Default::default()
+        };
         let output = "this is a long output that exceeds the limit";
         let result = limits.truncate_output(output);
         assert!(result.starts_with("this is a "));
@@ -265,32 +199,24 @@ mod tests {
 
     #[test]
     fn test_truncate_output_utf8_boundary_safe() {
-        // "中" is 3 bytes, "文" is 3 bytes, "字" is 3 bytes
-        // "中文字" = 9 bytes total
-        let limits = ResourceLimits::from_mb(0, 0, 5); // Cuts in the middle of "文"
+        let limits = ResourceLimits {
+            max_output_bytes: 5,
+            ..Default::default()
+        };
         let output = "中文字符";
         let result = limits.truncate_output(output);
-        // Should truncate to "中" (3 bytes) not panic
         assert!(result.starts_with("中"));
         assert!(result.contains("[OUTPUT TRUNCATED"));
     }
 
     #[test]
-    fn test_from_config() {
-        let config = ResourceLimitsConfig {
-            max_memory_mb: 1024,
-            max_cpu_secs: 30,
-            max_output_bytes: 2_097_152,
-            max_processes: 20,
-            max_file_size_mb: 100,
-            max_open_files: 128,
-        };
-        let limits = ResourceLimits::from(&config);
-        assert_eq!(limits.max_memory_bytes, 1024 * 1024 * 1024);
-        assert_eq!(limits.max_cpu_secs, 30);
-        assert_eq!(limits.max_output_bytes, 2_097_152);
-        assert_eq!(limits.max_processes, 20);
-        assert_eq!(limits.max_file_size_bytes, 100 * 1024 * 1024);
-        assert_eq!(limits.max_open_files, 128);
+    fn test_default_values() {
+        let limits = ResourceLimits::default();
+        assert_eq!(limits.max_memory_mb, 512);
+        assert_eq!(limits.max_cpu_secs, 60);
+        assert_eq!(limits.max_output_bytes, 1_048_576);
+        assert_eq!(limits.max_processes, 0);
+        assert_eq!(limits.max_file_size_mb, 0);
+        assert_eq!(limits.max_open_files, 64);
     }
 }

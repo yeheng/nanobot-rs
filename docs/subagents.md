@@ -162,6 +162,10 @@ sequenceDiagram
     Main-->>User: 根据分析结果回复
 ```
 
+**参数：**
+- `task`（必填）- 任务描述
+- `model_id`（可选）- 模型 Profile ID，如 `"fast"`、`"coder"`，使用 `agents.models` 中定义的模型
+
 **适用场景：**
 - 复杂代码分析
 - 长篇文档总结
@@ -184,19 +188,22 @@ sequenceDiagram
     Main->>Sub3: 分析方案C
     
     par 并行执行
-        Sub1->>Sub1: 分析方案A
-        Sub1-->>Main: 方案A分析
+        Sub1->>Sub1: 分析方案A（实时事件→用户）
     and
-        Sub2->>Sub2: 分析方案B
-        Sub2-->>Main: 方案B分析
+        Sub2->>Sub2: 分析方案B（实时事件→用户）
     and
-        Sub3->>Sub3: 分析方案C
-        Sub3-->>Main: 方案C分析
+        Sub3->>Sub3: 分析方案C（实时事件→用户）
     end
     
     Main->>Main: 综合对比
     Main-->>User: 三个方案对比结果
 ```
+
+**参数：**
+- `tasks`（必填）- 任务列表，支持两种格式：
+  - 简单字符串数组：`["任务A", "任务B"]`
+  - 带模型选择的对象数组：`[{"task": "任务A", "model_id": "fast"}, ...]`
+- 最多 10 个任务，最多 5 个并发执行（防止 API 限流）
 
 **适用场景：**
 - A/B/C 方案对比
@@ -363,6 +370,18 @@ sequenceDiagram
     Main->>User: 显示: [子代理1] 完成
 ```
 
+**WebSocket 模式下可接收的事件类型：**
+
+| ChatEvent | 说明 |
+|-----------|------|
+| `subagent_started` | 子代理启动，附带任务描述 |
+| `subagent_thinking` | 子代理的思考过程 |
+| `subagent_tool_start` | 子代理开始调用工具 |
+| `subagent_tool_end` | 子代理工具调用完成 |
+| `subagent_content` | 子代理生成的内容片段 |
+| `subagent_completed` | 子代理完成，返回结果摘要 |
+| `subagent_error` | 子代理执行出错 |
+
 **这样用户能看到：**
 - `[子代理1]` 正在分析代码...
 - `[子代理1]` 正在读取文件 main.py...
@@ -507,10 +526,10 @@ flowchart TB
     style Complete fill:#C8E6C9
 ```
 
-**默认策略：**
-- 10 分钟超时
-- 失败返回错误信息
-- 主代理决定是否重试
+**超时配置：**
+- 子代理执行超时：`agents.defaults.subagent_timeout_secs`（默认 600 秒 = 10 分钟）
+- 工具执行超时：`agents.defaults.tool_timeout_secs`（默认 120 秒）
+- 失败返回错误信息，主代理决定是否重试
 
 ---
 
@@ -549,13 +568,13 @@ sequenceDiagram
 A: 子代理是无状态的，不保存历史。但可以继承主代理的配置和上下文。
 
 **Q: 可以创建多少个子代理？**
-A: 理论无限制，但受限于系统资源。建议合理控制并行数量。
+A: `spawn_parallel` 一次最多 10 个任务，内部最多 5 个并发执行。超过会报错。
 
 **Q: 子代理可以创建子-子代理吗？**
 A: 可以！支持递归创建，适合层层分解的复杂任务。
 
-**Q: 子代理执行时能取消吗？**
-A: 可以通过取消令牌（Cancellation Token）来终止子代理。
+**Q: WebSocket 模式下能看到子代理的执行过程吗？**
+A: 可以。子代理的思考、工具调用和内容生成会实时推送到前端，用户可以看到每个子代理的进度。
 
-**Q: 子代理失败会影响主代理吗？**
-A: 不会。子代理独立运行，失败只返回错误，不会导致主代理崩溃。
+**Q: 子代理摘要太长怎么办？**
+A: 可通过 `agents.defaults.ws_summary_limit` 限制摘要长度（字符数），0 表示不限制。

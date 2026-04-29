@@ -551,6 +551,49 @@ sequenceDiagram
 
 ---
 
+## 工具审批流程
+
+当 AI 调用需要审批的工具时，Session 会触发审批流程：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant S as Session
+    participant K as Kernel
+    participant R as 工具注册表
+    participant CB as ApprovalCallback
+    
+    U->>S: 帮我创建文件
+    S->>K: 处理消息
+    K->>R: 执行 write_file
+    R->>R: requires_approval = true
+    R->>CB: request_approval
+    
+    alt WebSocket 模式
+        CB->>U: 显示确认对话框
+        U-->>CB: 确认 / 拒绝 / 记住
+    else CLI 模式
+        CB->>CB: 无回调，直接执行
+    end
+    
+    CB-->>R: 审批结果
+    alt 同意
+        R->>R: 执行 write_file
+        R-->>K: 结果
+    else 拒绝
+        R-->>K: PermissionDenied
+    end
+    K-->>S: 回复
+    S-->>U: 文件已创建 / 操作被拒绝
+```
+
+**WebSocket 模式特性：**
+- 前端弹出确认对话框，展示工具名称、描述和参数
+- 用户可选择"记住此决定"，同一会话中相同工具自动审批
+- 超时未响应则视为拒绝
+
+---
+
 ## 常见问题
 
 **Q: Session 和对话是什么关系？**

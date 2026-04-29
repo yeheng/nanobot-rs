@@ -169,6 +169,7 @@ impl Tool for SpawnParallelTool {
             let sem = semaphore.clone();
             let session_key = ctx.session_key.clone();
             let outbound_tx = ctx.outbound_tx.clone();
+            let ws_summary_limit = ctx.ws_summary_limit;
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
 
@@ -247,12 +248,16 @@ impl Tool for SpawnParallelTool {
                 })?;
 
                 // Notify frontend that subagent has completed
-                let summary = result
-                    .response
-                    .content
-                    .chars()
-                    .take(100)
-                    .collect::<String>();
+                let summary = if ws_summary_limit == 0 {
+                    result.response.content.clone()
+                } else {
+                    result
+                        .response
+                        .content
+                        .chars()
+                        .take(ws_summary_limit)
+                        .collect::<String>()
+                };
                 let _ = outbound_tx
                     .send(gasket_types::events::OutboundMessage::with_ws_message(
                         session_key.channel.clone(),

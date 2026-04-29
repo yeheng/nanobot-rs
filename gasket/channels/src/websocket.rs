@@ -84,8 +84,10 @@ impl Drop for ConnectionGuard {
         if was_removed {
             if let Ok(router_guard) = manager.approval_router.read() {
                 if let Some(ref router) = *router_guard {
-                    let session_key =
-                        crate::events::SessionKey::new(crate::events::ChannelType::WebSocket, &user_id);
+                    let session_key = crate::events::SessionKey::new(
+                        crate::events::ChannelType::WebSocket,
+                        &user_id,
+                    );
                     router.forget_session(&session_key);
                 }
             }

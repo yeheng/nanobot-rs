@@ -49,12 +49,9 @@ pub mod audit;
 
 // Re-exports for convenience
 pub use backend::{available_backends, create_backend, Platform, SandboxBackend};
-pub use config::{
-    AuditConfig, CommandPolicy, CommandPolicyConfig, ResourceLimits, ResourceLimitsConfig,
-    SandboxConfig,
-};
+pub use config::{AuditConfig, CommandPolicy, CommandPolicyConfig, ResourceLimits, SandboxConfig};
 pub use error::{Result, SandboxError};
-pub use executor::{CommandBuilder, ExecutionResult, ProcessManager};
+pub use executor::{ExecutionResult, ProcessManager};
 
 #[cfg(feature = "approval")]
 pub use approval::{

@@ -98,6 +98,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -128,6 +133,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -153,21 +163,3 @@ jobs:
           name: gasket-windows
           path: gasket/target/release/gasket-windows.zip
 
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Build docs
-        run: cd gasket && cargo doc --no-deps --all-features
-      
-      - name: Upload docs
-        uses: actions/upload-artifact@v4
-        with:
-          name: docs
-          path: gasket/target/doc

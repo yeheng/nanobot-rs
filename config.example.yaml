@@ -79,6 +79,8 @@ agents:
     thinking_enabled: false
     historyRecallK: 5
     streaming: true
+    # Maximum characters for WebSocket subagent summary (0 = unlimited, default)
+    ws_summary_limit: 0
     # Optional: override internal AI behavior prompts
     # prompts:
     #   identity_prefix: "You are a cat. Meow.\nYour working directory: {workspace}."

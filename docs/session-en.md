@@ -262,6 +262,49 @@ flowchart TB
 
 ---
 
+## Tool Approval Flow
+
+When AI calls a tool that requires approval, Session coordinates the approval process:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Session
+    participant Kernel
+    participant Registry as ToolRegistry
+    participant CB as ApprovalCallback
+    
+    User->>Session: Create a file for me
+    Session->>Kernel: Process message
+    Kernel->>Registry: Execute write_file
+    Registry->>Registry: requires_approval = true
+    Registry->>CB: request_approval
+    
+    alt WebSocket Mode
+        CB->>User: Show confirmation dialog
+        User-->>CB: Approve / Deny / Remember
+    else CLI Mode
+        CB->>CB: No callback, execute directly
+    end
+    
+    CB-->>Registry: Approval result
+    alt Approved
+        Registry->>Registry: Execute write_file
+        Registry-->>Kernel: Result
+    else Denied
+        Registry-->>Kernel: PermissionDenied
+    end
+    Kernel-->>Session: Response
+    Session-->>User: File created / Operation denied
+```
+
+**WebSocket Mode Features:**
+- Frontend shows a confirmation dialog with tool name, description, and arguments
+- Users can check "Remember this decision" to auto-approve/deny future calls of the same tool in the same session
+- Timeout without response is treated as denial
+
+---
+
 ## Key Data Structures
 
 ### AgentSession

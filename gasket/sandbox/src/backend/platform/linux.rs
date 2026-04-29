@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::validate_workspace;
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
-use crate::config::{ResourceLimits, SandboxConfig};
+use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
 /// Bubblewrap-based sandbox (Linux only).

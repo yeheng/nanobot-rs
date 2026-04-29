@@ -152,12 +152,16 @@ impl Tool for SpawnTool {
         })?;
 
         // Notify frontend that subagent has completed
-        let summary = result
-            .response
-            .content
-            .chars()
-            .take(100)
-            .collect::<String>();
+        let summary = if ctx.ws_summary_limit == 0 {
+            result.response.content.clone()
+        } else {
+            result
+                .response
+                .content
+                .chars()
+                .take(ctx.ws_summary_limit)
+                .collect::<String>()
+        };
         let _ = ctx
             .outbound_tx
             .send(gasket_types::events::OutboundMessage::with_ws_message(

@@ -326,8 +326,9 @@ echo "备份完成: ~/backup/gasket/$DATE"
 3. **网络稳定性**：使用稳定的网络
 
 ```yaml
-gateway:
-  session_timeout: 7200  # 2小时
+agents:
+  defaults:
+    session_idle_timeout_secs: 7200  # 2小时
 ```
 
 ---

@@ -297,8 +297,8 @@ impl EmbeddingStore {
         let mut top: Vec<(String, f32)> = Vec::with_capacity(top_k);
         let mut buf: Vec<f32> = Vec::with_capacity(query.len());
 
-        let mut stream = sqlx::query("SELECT event_id, embedding FROM event_embeddings")
-            .fetch(&self.pool);
+        let mut stream =
+            sqlx::query("SELECT event_id, embedding FROM event_embeddings").fetch(&self.pool);
 
         while let Some(row) = stream.try_next().await? {
             let event_id: String = row.get("event_id");

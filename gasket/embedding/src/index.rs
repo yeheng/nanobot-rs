@@ -105,7 +105,11 @@ impl MemoryIndex {
                 let (min_idx, &(min_score, _)) = top
                     .iter()
                     .enumerate()
-                    .min_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap_or(std::cmp::Ordering::Equal))
+                    .min_by(|a, b| {
+                        a.1 .0
+                            .partial_cmp(&b.1 .0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                     .unwrap();
                 if score > min_score {
                     top[min_idx] = (score, row);

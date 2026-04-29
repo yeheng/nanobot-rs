@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::{CommandPolicyConfig, ResourceLimitsConfig};
+use super::{CommandPolicyConfig, ResourceLimits};
 
 /// Main sandbox configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub struct SandboxConfig {
 
     /// Resource limits
     #[serde(default)]
-    pub limits: ResourceLimitsConfig,
+    pub limits: ResourceLimits,
 
     /// Command policy
     #[serde(default)]
@@ -58,7 +58,7 @@ impl Default for SandboxConfig {
             backend: default_backend(),
             tmp_size_mb: default_tmp_size_mb(),
             workspace: None,
-            limits: ResourceLimitsConfig::default(),
+            limits: ResourceLimits::default(),
             policy: CommandPolicyConfig::default(),
             approval: ApprovalConfig::default(),
             audit: AuditConfig::default(),
