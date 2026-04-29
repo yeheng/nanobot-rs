@@ -282,7 +282,6 @@ mod embedding_impl {
 
     use super::super::{HookAction, HookPoint, MutableContext, PipelineHook};
     use crate::error::AgentError;
-    use gasket_storage::EventStore;
     use gasket_types::SessionKey;
 
     /// Hook that recalls relevant historical messages using semantic embedding search.
@@ -291,21 +290,12 @@ mod embedding_impl {
     pub struct HistoryRecallHook {
         searcher: Arc<RecallSearcher>,
         config: RecallConfig,
-        event_store: EventStore,
     }
 
     impl HistoryRecallHook {
         /// Create a new semantic recall hook.
-        pub fn new(
-            searcher: Arc<RecallSearcher>,
-            config: RecallConfig,
-            event_store: EventStore,
-        ) -> Self {
-            Self {
-                searcher,
-                config,
-                event_store,
-            }
+        pub fn new(searcher: Arc<RecallSearcher>, config: RecallConfig) -> Self {
+            Self { searcher, config }
         }
     }
 
@@ -325,32 +315,16 @@ mod embedding_impl {
                 None => return Ok(HookAction::Continue),
             };
 
-            let results = match self.searcher.recall(user_input, &self.config).await {
-                Ok(r) => r,
+            let hits = match self.searcher.recall(user_input, &self.config).await {
+                Ok(h) => h,
                 Err(e) => {
                     warn!("[{}] Semantic recall failed: {}", self.name(), e);
                     return Ok(HookAction::Continue);
                 }
             };
 
-            if results.is_empty() {
+            if hits.is_empty() {
                 debug!("[{}] No semantically relevant history found", self.name());
-                return Ok(HookAction::Continue);
-            }
-
-            // Load full event content for matched IDs.
-            let ids: Vec<uuid::Uuid> = results
-                .iter()
-                .filter_map(|(id, _)| uuid::Uuid::parse_str(id).ok())
-                .collect();
-
-            let events = self
-                .event_store
-                .get_events_by_ids_global(&ids)
-                .await
-                .unwrap_or_default();
-
-            if events.is_empty() {
                 return Ok(HookAction::Continue);
             }
 
@@ -358,16 +332,9 @@ mod embedding_impl {
                 SessionKey::new(gasket_types::ChannelType::Cli, ctx.session_key)
             });
 
-            let lines: Vec<String> = events
+            let lines: Vec<String> = hits
                 .iter()
-                .map(|e| {
-                    let role = match e.event_type {
-                        gasket_types::EventType::UserMessage => "user",
-                        gasket_types::EventType::AssistantMessage => "assistant",
-                        _ => "system",
-                    };
-                    format!("[{}]: {}", role, e.content)
-                })
+                .map(|h| format!("[{}]: {}", h.role, h.content))
                 .collect();
 
             let injection = format!(
@@ -379,7 +346,7 @@ mod embedding_impl {
             debug!(
                 "[{}] Injected {} semantically recalled messages for session {}",
                 self.name(),
-                events.len(),
+                hits.len(),
                 session_key
             );
 

@@ -1,7 +1,10 @@
-//! LanceDB-backed vector store with persistent ANN index.
+//! LanceDB-backed vector store with optional ANN index.
 //!
-//! Uses the `lancedb` crate for embedded vector search with IVF-PQ indexing.
-//! Data is stored on local disk (or S3/GCS) — no external server required.
+//! Uses the `lancedb` crate for embedded vector search. By default queries
+//! use brute-force cosine distance over Arrow batches; once the table grows
+//! past `ANN_THRESHOLD` rows, callers should invoke
+//! [`LanceVectorStore::ensure_vector_index`] to build an IVF-PQ index for
+//! sub-linear search.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,11 +15,18 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
+use lancedb::index::{vector::IvfPqIndexBuilder, Index};
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::DistanceType;
 
 use crate::vector_store::{SearchResult, StoredEmbedding, VectorRecord, VectorStore};
 
-/// LanceDB-backed vector store with persistent ANN index.
+/// Approximate row count above which an IVF-PQ index is worth building.
+/// Below this, brute force scan is fast enough and IVF-PQ training is
+/// unstable.
+pub const ANN_THRESHOLD: i64 = 1024;
+
+/// LanceDB-backed vector store.
 pub struct LanceVectorStore {
     table: lancedb::Table,
     dim: usize,
@@ -33,7 +43,6 @@ impl LanceVectorStore {
         let table = match db.open_table(table_name).execute().await {
             Ok(t) => t,
             Err(lancedb::Error::TableNotFound { .. }) => {
-                // Create an empty table with the expected schema.
                 let schema = Self::schema(dim);
                 let empty_batch = RecordBatch::new_empty(schema);
                 db.create_table(table_name, vec![empty_batch])
@@ -45,6 +54,30 @@ impl LanceVectorStore {
         };
 
         Ok(Self { table, dim })
+    }
+
+    /// Build (or replace) an IVF-PQ cosine index on the `vector` column when
+    /// the table has at least [`ANN_THRESHOLD`] rows. No-op otherwise.
+    ///
+    /// Safe to call repeatedly; uses `replace(true)` so re-indexing on
+    /// growth is allowed.
+    pub async fn ensure_vector_index(&self) -> Result<bool> {
+        let count = self
+            .table
+            .count_rows(None)
+            .await
+            .map_err(|e| anyhow!("count_rows failed: {e}"))? as i64;
+        if count < ANN_THRESHOLD {
+            return Ok(false);
+        }
+        let builder = IvfPqIndexBuilder::default().distance_type(DistanceType::Cosine);
+        self.table
+            .create_index(&["vector"], Index::IvfPq(builder))
+            .replace(true)
+            .execute()
+            .await
+            .map_err(|e| anyhow!("create_index failed: {e}"))?;
+        Ok(true)
     }
 
     fn schema(dim: usize) -> Arc<Schema> {
@@ -75,7 +108,16 @@ impl LanceVectorStore {
         let now = chrono::Utc::now().to_rfc3339();
         let created_ats: Vec<&str> = (0..n).map(|_| now.as_str()).collect();
 
-        // Flatten all vectors into a single Float32Array for FixedSizeListArray.
+        for r in records {
+            if r.vector.len() != dim {
+                return Err(anyhow!(
+                    "vector length {} does not match table dim {}",
+                    r.vector.len(),
+                    dim
+                ));
+            }
+        }
+
         let mut flat_values = Vec::with_capacity(n * dim);
         for r in records {
             flat_values.extend_from_slice(&r.vector);
@@ -167,7 +209,6 @@ impl VectorStore for LanceVectorStore {
         let batch = Self::records_to_batch(&records, self.dim)?;
         let schema = batch.schema();
 
-        // Use merge_insert for upsert semantics (match on event_id).
         let mut merge = self.table.merge_insert(&["event_id"]);
         merge
             .when_matched_update_all(None)
@@ -189,12 +230,16 @@ impl VectorStore for LanceVectorStore {
         min_score: f32,
         exclude: &HashSet<String>,
     ) -> Result<Vec<SearchResult>> {
+        if top_k == 0 || query.is_empty() {
+            return Ok(Vec::new());
+        }
         let overfetch = top_k + exclude.len();
         let stream = self
             .table
             .query()
             .nearest_to(query)
             .map_err(|e| anyhow!("invalid query vector: {e}"))?
+            .distance_type(DistanceType::Cosine)
             .limit(overfetch)
             .execute()
             .await
@@ -213,29 +258,23 @@ impl VectorStore for LanceVectorStore {
                 .downcast_ref::<StringArray>()
                 .ok_or_else(|| anyhow!("event_id is not StringArray"))?;
 
-            let vectors = batch
-                .column_by_name("vector")
-                .ok_or_else(|| anyhow!("missing vector column"))?
+            let distances = batch
+                .column_by_name("_distance")
+                .ok_or_else(|| anyhow!("missing _distance column"))?
                 .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .ok_or_else(|| anyhow!("vector is not FixedSizeListArray"))?;
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| anyhow!("_distance is not Float32Array"))?;
 
             for i in 0..batch.num_rows() {
                 let event_id = event_ids.value(i).to_string();
                 if exclude.contains(&event_id) {
                     continue;
                 }
-
-                // Compute cosine similarity from the stored vector.
-                let list = vectors.value(i);
-                let floats = list.as_any().downcast_ref::<Float32Array>().unwrap();
-                let stored_vec: Vec<f32> = floats.values().to_vec();
-                let sim = crate::index::cosine_similarity(query, &stored_vec);
-
+                // LanceDB cosine distance == 1 - cosine_similarity.
+                let sim = 1.0 - distances.value(i);
                 if sim < min_score {
                     continue;
                 }
-
                 results.push(SearchResult {
                     id: event_id,
                     score: sim,
@@ -243,7 +282,6 @@ impl VectorStore for LanceVectorStore {
             }
         }
 
-        // Sort by descending score and truncate.
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -257,22 +295,26 @@ impl VectorStore for LanceVectorStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let predicate = ids
-            .iter()
-            .map(|id| format!("event_id = '{}'", id.replace('\'', "''")))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-
+        // Build an IN(...) predicate; chunk to keep query strings reasonable.
+        const CHUNK: usize = 500;
         let before = self
             .table
             .count_rows(None)
             .await
             .map_err(|e| anyhow!("count before delete failed: {e}"))?;
 
-        self.table
-            .delete(&predicate)
-            .await
-            .map_err(|e| anyhow!("LanceDB delete failed: {e}"))?;
+        for chunk in ids.chunks(CHUNK) {
+            let list = chunk
+                .iter()
+                .map(|id| format!("'{}'", id.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",");
+            let predicate = format!("event_id IN ({list})");
+            self.table
+                .delete(&predicate)
+                .await
+                .map_err(|e| anyhow!("LanceDB delete failed: {e}"))?;
+        }
 
         let after = self
             .table
@@ -325,9 +367,10 @@ impl VectorStore for LanceVectorStore {
     }
 
     async fn load_recent(&self, limit: usize) -> Result<Vec<StoredEmbedding>> {
-        // LanceDB doesn't have a native ORDER BY ... LIMIT on non-indexed columns.
-        // We load all and sort in memory. For the hot-start use case this is fine
-        // since we only load `hot_limit` (default 1000) records.
+        // LanceDB has no native ORDER BY ... LIMIT on non-indexed columns.
+        // For the cold-start use case we only call this with a bounded
+        // `hot_limit` (default 1000), and `created_at` is rfc3339 which is
+        // lexicographically ordered, so in-memory sort is acceptable.
         let all = self.load_all().await?;
         let mut sorted = all;
         sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -350,14 +393,27 @@ mod tests {
         }
     }
 
-    async fn test_store(dim: usize) -> LanceVectorStore {
-        let tmpdir = tempfile::tempdir().unwrap();
-        let path = tmpdir.path().to_str().unwrap().to_string();
-        // Leak the tempdir so it persists for the test.
-        std::mem::forget(tmpdir);
-        LanceVectorStore::open(&path, "test_vectors", dim)
+    /// Wrapper that keeps the temp directory alive for the lifetime of the
+    /// test store.
+    struct TestStore {
+        store: LanceVectorStore,
+        _tmp: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestStore {
+        type Target = LanceVectorStore;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    async fn test_store(dim: usize) -> TestStore {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let store = LanceVectorStore::open(&path, "test_vectors", dim)
             .await
-            .unwrap()
+            .unwrap();
+        TestStore { store, _tmp: tmp }
     }
 
     #[tokio::test]
@@ -371,7 +427,6 @@ mod tests {
             .unwrap();
         assert_eq!(store.count().await.unwrap(), 1);
 
-        // Idempotent upsert with same ID.
         store
             .upsert(vec![sample_record("e1", vec![1.0, 0.0, 0.0])])
             .await
@@ -475,11 +530,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Query perpendicular to e2 — cosine sim should be 0.0.
         let results = store
             .search(&[1.0, 0.0, 0.0], 5, 0.5, &HashSet::new())
             .await
             .unwrap();
         assert!(results.iter().all(|r| r.score >= 0.5));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_index_below_threshold_noop() {
+        let store = test_store(3).await;
+        store
+            .upsert(vec![sample_record("e1", vec![1.0, 0.0, 0.0])])
+            .await
+            .unwrap();
+        let built = store.ensure_vector_index().await.unwrap();
+        assert!(!built, "should not build index for tiny dataset");
     }
 }
