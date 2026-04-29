@@ -157,7 +157,7 @@ impl SteppableExecutor {
             response.reasoning_content.clone(),
         ));
 
-        let mut ctx = ToolContext::default();
+        let mut ctx = ToolContext::default().ws_summary_limit(self.ctx.config.ws_summary_limit);
         if let Some(ref spawner) = self.ctx.spawner {
             ctx = ctx.spawner(spawner.clone());
         }

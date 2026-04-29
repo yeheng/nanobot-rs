@@ -95,6 +95,7 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         tool_timeout_secs: defaults.tool_timeout_secs,
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
+        ws_summary_limit: config.agents.defaults.ws_summary_limit,
         prompts: {
             let p = &config.agents.defaults.prompts;
             gasket_engine::session::config::PromptsConfig {

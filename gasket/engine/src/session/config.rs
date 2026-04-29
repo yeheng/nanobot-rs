@@ -195,6 +195,8 @@ pub struct AgentConfig {
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
+    /// Maximum characters for WebSocket subagent summary (0 = unlimited).
+    pub ws_summary_limit: usize,
     /// Prompt configuration for internal AI behaviors.
     pub prompts: PromptsConfig,
     /// Memory token budget for three-phase context loading.
@@ -222,6 +224,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+            ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
             memory_budget: None,
             evolution: Some(EvolutionConfig::default()),
@@ -247,6 +250,7 @@ impl AgentConfigExt for AgentConfig {
             max_tool_result_chars: self.max_tool_result_chars,
             thinking_enabled: self.thinking_enabled,
             tool_timeout_secs: self.tool_timeout_secs,
+            ws_summary_limit: self.ws_summary_limit,
         }
     }
 }

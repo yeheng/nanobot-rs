@@ -130,6 +130,8 @@ pub struct ToolContext {
     /// Token tracker for budget enforcement across parent and subagents.
     /// Always present — defaults to an unlimited tracker when not configured.
     pub token_tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
+    /// Maximum characters for WebSocket subagent summary (0 = unlimited).
+    pub ws_summary_limit: usize,
 }
 
 impl Default for ToolContext {
@@ -140,6 +142,7 @@ impl Default for ToolContext {
             outbound_tx,
             spawner: std::sync::Arc::new(NoopSpawner),
             token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
+            ws_summary_limit: 0,
         }
     }
 }
@@ -151,6 +154,7 @@ impl std::fmt::Debug for ToolContext {
             .field("outbound_tx", &"Sender<OutboundMessage>")
             .field("spawner", &"SubagentSpawner")
             .field("token_tracker", &"TokenTracker")
+            .field("ws_summary_limit", &self.ws_summary_limit)
             .finish()
     }
 }
@@ -176,6 +180,11 @@ impl ToolContext {
         tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
     ) -> Self {
         self.token_tracker = tracker;
+        self
+    }
+
+    pub fn ws_summary_limit(mut self, limit: usize) -> Self {
+        self.ws_summary_limit = limit;
         self
     }
 }

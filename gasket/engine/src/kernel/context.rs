@@ -78,6 +78,8 @@ pub struct KernelConfig {
     pub max_tool_result_chars: usize,
     pub thinking_enabled: bool,
     pub tool_timeout_secs: u64,
+    /// Maximum characters for WebSocket subagent summary (0 = unlimited).
+    pub ws_summary_limit: usize,
 }
 
 impl KernelConfig {
@@ -91,6 +93,7 @@ impl KernelConfig {
             max_tool_result_chars: 16000,
             thinking_enabled: false,
             tool_timeout_secs: 120,
+            ws_summary_limit: 0,
         }
     }
 }
