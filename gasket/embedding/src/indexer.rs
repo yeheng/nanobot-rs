@@ -36,7 +36,8 @@ impl EmbeddingIndexer {
 
         let handle = tokio::spawn(async move {
             let mut buffer: Vec<SessionEvent> = Vec::with_capacity(BATCH_SIZE);
-            let mut flush_interval = tokio::time::interval(std::time::Duration::from_millis(FLUSH_INTERVAL_MS));
+            let mut flush_interval =
+                tokio::time::interval(std::time::Duration::from_millis(FLUSH_INTERVAL_MS));
             flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {

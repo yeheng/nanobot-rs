@@ -90,9 +90,16 @@ impl MacOsSandboxBackend {
 (allow process-exec)
 (allow process-fork)
 (allow network-outbound)
-(allow signal (target self))
 (allow file-read-metadata)
 (allow sysctl-read)
+(allow signal (target same-sandbox))
+
+; Allow cf prefs to work.
+(allow user-preference-read)
+
+; process-info
+(allow process-info* (target same-sandbox))
+
 "#
         )
     }
