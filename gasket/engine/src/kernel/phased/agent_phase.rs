@@ -71,24 +71,24 @@ impl AgentPhase {
     }
 
     /// Returns the list of tool names explicitly allowed in this phase.
-    /// An empty Vec means all tools are allowed.
-    pub fn allowed_tools(&self) -> Vec<&'static str> {
+    /// An empty slice means all tools are allowed.
+    pub fn allowed_tools(&self) -> &'static [&'static str] {
         match self {
-            AgentPhase::Research => vec![
+            AgentPhase::Research => &[
                 "wiki_search",
                 "wiki_read",
                 "history_search",
                 "query_history",
                 "phase_transition",
             ],
-            AgentPhase::Planning => vec![
+            AgentPhase::Planning => &[
                 "create_plan",
                 "phase_transition",
                 "wiki_read",
                 "wiki_search",
             ],
-            AgentPhase::Execute => vec![],
-            AgentPhase::Review => vec![
+            AgentPhase::Execute => &[],
+            AgentPhase::Review => &[
                 "wiki_write",
                 "wiki_delete",
                 "wiki_read",
@@ -96,7 +96,7 @@ impl AgentPhase {
                 "evolution",
                 "phase_transition",
             ],
-            AgentPhase::Done => vec![],
+            AgentPhase::Done => &[],
         }
     }
 }
