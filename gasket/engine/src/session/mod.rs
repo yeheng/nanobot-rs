@@ -587,8 +587,17 @@ impl AgentSession {
         kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<ExecutionResult, AgentError> {
         if runtime_ctx.config.phased_execution {
-            // Phased mode — use PhasedExecutor (full run() wiring in follow-up)
-            // For now, fall through to standard kernel execution
+            let executor = crate::kernel::phased::PhasedExecutor::new(runtime_ctx.clone());
+            return match executor.run(messages, kernel_tx).await {
+                Ok(r) => Ok(r),
+                Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
+                    content: format!("Maximum iterations ({}) reached.", n),
+                    reasoning_content: None,
+                    tools_used: vec![],
+                    token_usage: None,
+                }),
+                Err(e) => Err(e.into()),
+            };
         }
         match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
             Ok(r) => Ok(r),
