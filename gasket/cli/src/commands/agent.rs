@@ -287,6 +287,65 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 std::io::stderr().flush().ok();
                             }
                             ChatEvent::Done => println!(),
+                            ChatEvent::PhaseTransition { from, to } => {
+                                let icon = match to.as_ref() {
+                                    "planning" => "📝",
+                                    "execute" => "⚡",
+                                    "research" => "🔍",
+                                    "review" => "🔎",
+                                    _ => "↻",
+                                };
+                                eprintln!("\n{} Phase transition: {} → {}", icon.cyan(), from, to);
+                            }
+                            ChatEvent::WaitForUserInput { phase } => {
+                                let msg = match phase.as_deref() {
+                                    Some("research") => {
+                                        "🔍 Waiting for your input (research phase)..."
+                                    }
+                                    Some("planning") => {
+                                        "📝 Waiting for your input (planning phase)..."
+                                    }
+                                    Some("review") => "🔎 Waiting for your input (review phase)...",
+                                    Some(p) => {
+                                        return eprintln!(
+                                            "\n💬 Waiting for your input ({} phase)...",
+                                            p
+                                        )
+                                    }
+                                    None => "💬 Waiting for your input...",
+                                };
+                                eprintln!("\n{}", msg.yellow());
+                            }
+                            ChatEvent::ToolStart { name, .. } => {
+                                if name.as_ref() == "create_plan" {
+                                    eprintln!("{}", "📝 Generating plan...".cyan());
+                                } else {
+                                    eprintln!(
+                                        "{} {}",
+                                        "🔧".dimmed(),
+                                        format!("[{}]", name).dimmed()
+                                    );
+                                }
+                            }
+                            ChatEvent::ToolEnd { name, output } => {
+                                if name.as_ref() == "create_plan" {
+                                    if let Some(ref out) = output {
+                                        if let Some(path_line) =
+                                            out.lines().find(|l| l.starts_with("Path:"))
+                                        {
+                                            eprintln!("{} {}", "✅".green(), path_line.green());
+                                        } else {
+                                            eprintln!("{}", "✅ Plan created".green());
+                                        }
+                                    }
+                                } else {
+                                    eprintln!(
+                                        "{} {}",
+                                        "✅".dimmed(),
+                                        format!("[{}] done", name).dimmed()
+                                    );
+                                }
+                            }
                             // TokenStats are handled internally; skip other non-user events
                             _ => {}
                         }
@@ -301,6 +360,24 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             } else {
                 let response = agent.process_direct(&msg, &session_key).await?;
                 print_response_with_reasoning(&response, render_md);
+                if let Some(ref phase) = response.interrupted_phase {
+                    eprintln!(
+                        "\n{} {}",
+                        "💬".yellow(),
+                        format!(
+                            "Waiting for your input ({} phase). Type your reply to continue.",
+                            phase
+                        )
+                        .yellow()
+                    );
+                }
+                if !response.tools_used.is_empty() {
+                    eprintln!(
+                        "{} {}",
+                        "🔧".dimmed(),
+                        format!("Tools used: {}", response.tools_used.join(", ")).dimmed()
+                    );
+                }
             }
         }
         None => {
@@ -332,7 +409,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         // Handle phase override commands: /plan, /execute, /research
                         // These extract content + target_phase, letting the user
                         // explicitly drive the phased state machine.
-                        let phase_cmd = parse_phase_command(line);
+                        let phase_cmd = gasket_types::parse_phase_command(line);
                         if let Some((content, target_phase)) = phase_cmd {
                             if use_streaming {
                                 println!();
@@ -358,6 +435,63 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                                         std::io::stderr().flush().ok();
                                                     }
                                                     ChatEvent::Done => {}
+                                                    ChatEvent::PhaseTransition { from, to } => {
+                                                        let icon = match to.as_ref() {
+                                                            "planning" => "📝",
+                                                            "execute" => "⚡",
+                                                            "research" => "🔍",
+                                                            "review" => "🔎",
+                                                            _ => "↻",
+                                                        };
+                                                        eprintln!(
+                                                            "\n{} Phase transition: {} → {}",
+                                                            icon.cyan(),
+                                                            from,
+                                                            to
+                                                        );
+                                                    }
+                                                    ChatEvent::ToolStart { name, .. } => {
+                                                        if name.as_ref() == "create_plan" {
+                                                            eprintln!(
+                                                                "{}",
+                                                                "📝 Generating plan...".cyan()
+                                                            );
+                                                        } else {
+                                                            eprintln!(
+                                                                "{} {}",
+                                                                "🔧".dimmed(),
+                                                                format!("[{}]", name).dimmed()
+                                                            );
+                                                        }
+                                                    }
+                                                    ChatEvent::ToolEnd { name, output } => {
+                                                        if name.as_ref() == "create_plan" {
+                                                            if let Some(ref out) = output {
+                                                                if let Some(path_line) =
+                                                                    out.lines().find(|l| {
+                                                                        l.starts_with("Path:")
+                                                                    })
+                                                                {
+                                                                    eprintln!(
+                                                                        "{} {}",
+                                                                        "✅".green(),
+                                                                        path_line.green()
+                                                                    );
+                                                                } else {
+                                                                    eprintln!(
+                                                                        "{}",
+                                                                        "✅ Plan created".green()
+                                                                    );
+                                                                }
+                                                            }
+                                                        } else {
+                                                            eprintln!(
+                                                                "{} {}",
+                                                                "✅".dimmed(),
+                                                                format!("[{}] done", name).dimmed()
+                                                            );
+                                                        }
+                                                    }
                                                     _ => {}
                                                 }
                                             }
@@ -387,6 +521,20 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                     Ok(response) => {
                                         println!();
                                         print_response_with_reasoning(&response, render_md);
+                                        if let Some(ref phase) = response.interrupted_phase {
+                                            eprintln!("\n{} {}", "💬".yellow(), format!("Waiting for your input ({} phase). Type your reply to continue.", phase).yellow());
+                                        }
+                                        if !response.tools_used.is_empty() {
+                                            eprintln!(
+                                                "{} {}",
+                                                "🔧".dimmed(),
+                                                format!(
+                                                    "Tools used: {}",
+                                                    response.tools_used.join(", ")
+                                                )
+                                                .dimmed()
+                                            );
+                                        }
                                         println!();
                                     }
                                     Err(e) => println!("\n{} {}\n", "Error:".red(), e),
@@ -440,6 +588,62 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                                     std::io::stderr().flush().ok();
                                                 }
                                                 ChatEvent::Done => {}
+                                                ChatEvent::PhaseTransition { from, to } => {
+                                                    let icon = match to.as_ref() {
+                                                        "planning" => "📝",
+                                                        "execute" => "⚡",
+                                                        "research" => "🔍",
+                                                        "review" => "🔎",
+                                                        _ => "↻",
+                                                    };
+                                                    eprintln!(
+                                                        "\n{} Phase transition: {} → {}",
+                                                        icon.cyan(),
+                                                        from,
+                                                        to
+                                                    );
+                                                }
+                                                ChatEvent::ToolStart { name, .. } => {
+                                                    if name.as_ref() == "create_plan" {
+                                                        eprintln!(
+                                                            "{}",
+                                                            "📝 Generating plan...".cyan()
+                                                        );
+                                                    } else {
+                                                        eprintln!(
+                                                            "{} {}",
+                                                            "🔧".dimmed(),
+                                                            format!("[{}]", name).dimmed()
+                                                        );
+                                                    }
+                                                }
+                                                ChatEvent::ToolEnd { name, output } => {
+                                                    if name.as_ref() == "create_plan" {
+                                                        if let Some(ref out) = output {
+                                                            if let Some(path_line) = out
+                                                                .lines()
+                                                                .find(|l| l.starts_with("Path:"))
+                                                            {
+                                                                eprintln!(
+                                                                    "{} {}",
+                                                                    "✅".green(),
+                                                                    path_line.green()
+                                                                );
+                                                            } else {
+                                                                eprintln!(
+                                                                    "{}",
+                                                                    "✅ Plan created".green()
+                                                                );
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!(
+                                                            "{} {}",
+                                                            "✅".dimmed(),
+                                                            format!("[{}] done", name).dimmed()
+                                                        );
+                                                    }
+                                                }
                                                 _ => {}
                                             }
                                         }
@@ -462,6 +666,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 Ok(response) => {
                                     println!();
                                     print_response_with_reasoning(&response, render_md);
+                                    if let Some(ref phase) = response.interrupted_phase {
+                                        eprintln!("\n{} {}", "💬".yellow(), format!("Waiting for your input ({} phase). Type your reply to continue.", phase).yellow());
+                                    }
                                     println!();
                                 }
                                 Err(e) => println!("\n{} {}\n", "Error:".red(), e),
@@ -531,27 +738,4 @@ fn print_response_with_reasoning(response: &AgentResponse, render_md: bool) {
 
     // Print main response content
     print_response(&response.content, render_md);
-}
-
-/// Parse phase-override slash commands.
-///
-/// Returns `Some((content, target_phase))` if the input matches a phase command
-/// like `/plan do something`, `None` otherwise.
-fn parse_phase_command(input: &str) -> Option<(String, String)> {
-    let input = input.trim();
-    let commands = [
-        ("/plan ", "planning"),
-        ("/execute ", "execute"),
-        ("/research ", "research"),
-    ];
-
-    for (prefix, phase) in commands {
-        if input.to_lowercase().starts_with(prefix) {
-            let content = input[prefix.len()..].trim().to_string();
-            if !content.is_empty() {
-                return Some((content, phase.to_string()));
-            }
-        }
-    }
-    None
 }

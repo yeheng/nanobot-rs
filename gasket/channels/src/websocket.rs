@@ -385,17 +385,22 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                             continue;
                         }
 
+                        // Parse phase-override slash commands (e.g. /plan, /execute, /research)
+                        let (content, override_phase) = gasket_types::parse_phase_command(&text)
+                            .map(|(c, p)| (c, Some(p)))
+                            .unwrap_or_else(|| (text.to_string(), None));
+
                         // Create InboundMessage and send to bus
                         let inbound = InboundMessage {
                             channel: WebSocketChannel,
                             sender_id: user_id.clone(),
                             chat_id: user_id.clone(), // Use user_id for session persistence
-                            content: text.to_string(),
+                            content,
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
                             trace_id: None,
-                            override_phase: None,
+                            override_phase,
                         };
 
                         if let Err(e) = manager.send_inbound(inbound).await {

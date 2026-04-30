@@ -71,16 +71,20 @@ impl ImAdapter for TelegramAdapter {
 
                         debug!("Received message from {}: {}", user_id, text);
 
+                        let (content, override_phase) = gasket_types::parse_phase_command(text)
+                            .map(|(c, p)| (c, Some(p)))
+                            .unwrap_or_else(|| (text.to_string(), None));
+
                         let inbound = InboundMessage {
                             channel: ChannelType::Telegram,
                             sender_id: user_id_str,
                             chat_id: chat_id.to_string(),
-                            content: text.to_string(),
+                            content,
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
                             trace_id: None,
-                            override_phase: None,
+                            override_phase,
                         };
 
                         if let Err(e) = inbound_sender.send(inbound).await {

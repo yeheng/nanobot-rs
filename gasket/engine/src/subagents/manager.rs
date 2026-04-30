@@ -96,6 +96,7 @@ pub fn spawn_subagent(
     result_tx: mpsc::Sender<SubagentResult>,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     cancellation_token: CancellationToken,
+    spawner: Option<Arc<dyn gasket_types::SubagentSpawner>>,
 ) -> JoinHandle<()> {
     let subagent_id = task.id.clone();
     let task_desc = task.task.clone();
@@ -146,7 +147,7 @@ pub fn spawn_subagent(
             provider,
             tools,
             config: config.to_kernel_config(),
-            spawner: None,
+            spawner,
             token_tracker: token_tracker.clone(),
             checkpoint_callback: None,
             session_key: None,
@@ -290,6 +291,7 @@ async fn send_error_result(
             model: model.clone(),
             token_usage: None,
             cost: 0.0,
+            interrupted_phase: None,
         },
         model: model.clone(),
     };
@@ -373,6 +375,7 @@ impl SubagentSpawner for SimpleSpawner {
         };
         let _task_desc = task_spec.task.clone();
 
+        let spawner: Arc<dyn gasket_types::SubagentSpawner> = Arc::new(self.clone());
         spawn_subagent(
             provider,
             self.tools.clone(),
@@ -382,6 +385,7 @@ impl SubagentSpawner for SimpleSpawner {
             result_tx,
             self.token_tracker.clone(),
             tracker.cancellation_token(),
+            Some(spawner),
         );
 
         let result = tracker
@@ -451,6 +455,7 @@ impl SubagentSpawner for SimpleSpawner {
         };
         let task_desc = task_spec.task.clone();
 
+        let spawner: Arc<dyn gasket_types::SubagentSpawner> = Arc::new(self.clone());
         spawn_subagent(
             provider,
             self.tools.clone(),
@@ -460,6 +465,7 @@ impl SubagentSpawner for SimpleSpawner {
             result_tx,
             self.token_tracker.clone(),
             tracker.cancellation_token(),
+            Some(spawner),
         );
 
         let event_rx = tracker

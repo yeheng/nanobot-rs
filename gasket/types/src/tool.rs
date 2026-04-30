@@ -221,6 +221,10 @@ pub struct ToolContext {
     /// Shared cancellation token for the current aggregator task.
     /// Tools use this to cancel previous aggregators when spawning new ones.
     pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    /// Event sender for forwarding subagent stream events to the frontend.
+    /// When present, tools like `create_plan` can stream subagent progress
+    /// (thinking, content, tool calls) to the user in real-time.
+    pub event_tx: Option<tokio::sync::mpsc::Sender<crate::StreamEvent>>,
 }
 
 impl Default for ToolContext {
@@ -234,6 +238,7 @@ impl Default for ToolContext {
             ws_summary_limit: 0,
             synthesis_callback: None,
             aggregator_cancel: None,
+            event_tx: None,
         }
     }
 }
@@ -248,6 +253,7 @@ impl std::fmt::Debug for ToolContext {
             .field("ws_summary_limit", &self.ws_summary_limit)
             .field("synthesis_callback", &self.synthesis_callback.is_some())
             .field("aggregator_cancel", &self.aggregator_cancel.is_some())
+            .field("event_tx", &self.event_tx.is_some())
             .finish()
     }
 }
@@ -291,6 +297,11 @@ impl ToolContext {
         cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
     ) -> Self {
         self.aggregator_cancel = Some(cancel);
+        self
+    }
+
+    pub fn event_tx(mut self, tx: Option<tokio::sync::mpsc::Sender<crate::StreamEvent>>) -> Self {
+        self.event_tx = tx;
         self
     }
 }

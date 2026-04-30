@@ -248,6 +248,10 @@ impl FeishuChannel {
 
             debug!("Received Feishu message: {}", content);
 
+            let (content, override_phase) = gasket_types::parse_phase_command(&content)
+                .map(|(c, p)| (c, Some(p)))
+                .unwrap_or_else(|| (content, None));
+
             let metadata = serde_json::to_value(&message).ok();
 
             let inbound = InboundMessage {
@@ -259,7 +263,7 @@ impl FeishuChannel {
                 metadata,
                 timestamp: chrono::Utc::now(),
                 trace_id: None,
-                override_phase: None,
+                override_phase,
             };
 
             self.inbound_sender.send(inbound).await?;

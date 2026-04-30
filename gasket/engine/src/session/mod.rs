@@ -43,6 +43,9 @@ pub struct AgentResponse {
     pub model: Option<String>,
     pub token_usage: Option<gasket_types::TokenUsage>,
     pub cost: f64,
+    /// When phased execution is interrupted by `WaitForUserInput`, this field
+    /// contains the phase name (e.g. "research"). `None` for normal completion.
+    pub interrupted_phase: Option<String>,
 }
 
 impl AgentResponse {
@@ -57,6 +60,7 @@ impl AgentResponse {
             model,
             token_usage: result.token_usage,
             cost: 0.0,
+            interrupted_phase: result.interrupted_phase,
         }
     }
 }
@@ -505,6 +509,7 @@ impl AgentSession {
                     model: Some(model),
                     token_usage: None,
                     cost: 0.0,
+                    interrupted_phase: None,
                 })
             });
             return Ok((rx, handle));

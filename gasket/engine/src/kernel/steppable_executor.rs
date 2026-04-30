@@ -195,6 +195,10 @@ impl SteppableExecutor {
         if let Some(ref cancel) = self.ctx.aggregator_cancel {
             ctx = ctx.aggregator_cancel(cancel.clone());
         }
+        // Forward kernel's event stream to ToolContext so tools can relay subagent progress
+        if let Some(tx) = event_tx.cloned() {
+            ctx = ctx.event_tx(Some(tx));
+        }
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())

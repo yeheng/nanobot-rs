@@ -45,8 +45,10 @@ impl PhasePrompt {
             AgentPhase::Planning => format!(
                 "[Phase: Planning]\n\n\
                  {ctx_section}\
-                 基于以上信息和用户的需求，制定清晰的执行计划。\n\
-                 列出步骤、依赖和预期结果。"
+                 你现在处于计划阶段。基于以上信息和用户的需求，判断是否有足够的信息来制定计划。\n\n\
+                 如果信息不足（目标不清晰、缺少关键上下文、用户意图模糊），请直接问用户澄清问题，不要调用 create_plan。\n\
+                 只有在信息充分、目标明确时，才调用 create_plan 生成执行计划。\n\
+                 计划应包含步骤、依赖和预期结果。"
             ),
             AgentPhase::Execute => format!(
                 "[Phase: Execute]\n\n\

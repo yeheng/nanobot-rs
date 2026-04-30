@@ -15,9 +15,12 @@ use super::{simple_schema, Tool, ToolContext, ToolError, ToolOutput, ToolResult}
 
 const DEFAULT_PLANNING_TASK: &str = "\
 You are a planning assistant. \
-Generate a structured execution plan in Markdown format. \
+Your job is to help create a structured execution plan in Markdown format. \
 Use headers, checklists (- [ ]), and specify dependencies. \
-Do NOT output JSON.\n\n";
+Do NOT output JSON.\n\n\
+IMPORTANT: If the goal is unclear, ambiguous, or missing critical context, \
+do NOT generate a plan. Instead, list 1-3 clarifying questions that would help \
+you create a better plan. Only generate a plan when you have enough information.\n\n";
 
 pub struct CreatePlanTool {
     page_store: PageStore,
@@ -132,13 +135,47 @@ impl Tool for CreatePlanTool {
 
         let task = format!("{}Goal: {}\n\nContext: {}", template, goal, context_section);
 
-        let result = ctx
-            .spawner
-            .spawn(task, None)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
+        let plan_markdown = if let Some(ref event_tx) = ctx.event_tx {
+            // Streaming path: forward subagent events to the frontend in real-time
+            let (subagent_id, mut event_rx, result_rx, _cancel) = ctx
+                .spawner
+                .spawn_with_stream(task, None)
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
 
-        let plan_markdown = result.response.content;
+            // Forward events to the main event stream so the frontend sees subagent progress
+            let event_forwarder = {
+                let event_tx = event_tx.clone();
+                let subagent_id = subagent_id.clone();
+                tokio::spawn(async move {
+                    while let Some(mut event) = event_rx.recv().await {
+                        // Tag events with the subagent ID so the frontend knows the source
+                        event.agent_id = Some(std::sync::Arc::from(subagent_id.as_str()));
+                        if event_tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                })
+            };
+
+            let result = result_rx.await.map_err(|e| {
+                ToolError::ExecutionError(format!("Result channel closed: {}", e))
+            })?;
+
+            // Give the forwarder a moment to finish draining events, then abort
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            event_forwarder.abort();
+
+            result.response.content
+        } else {
+            // Blocking path: no event stream available (e.g. CLI mode or tests)
+            let result = ctx
+                .spawner
+                .spawn(task, None)
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
+            result.response.content
+        };
 
         if plan_markdown.is_empty() {
             return Err(ToolError::ExecutionError(

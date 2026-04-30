@@ -269,6 +269,7 @@ impl MonitoredRunner {
                 model: self.spec.model.clone(),
                 token_usage: self.ledger.total_usage.clone(),
                 cost: 0.0,
+                interrupted_phase: None,
             },
             model: self.spec.model.clone(),
         }

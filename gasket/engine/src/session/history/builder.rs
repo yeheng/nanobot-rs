@@ -255,7 +255,7 @@ impl ContextBuilder {
     /// Pure, synchronous assembly of the LLM prompt sequence.
     fn assemble_prompt(
         processed_history: Vec<SessionEvent>,
-        current_message: &str,
+        _current_message: &str,
         system_prompts: &[String],
         summary: Option<&str>,
     ) -> Vec<ChatMessage> {
@@ -284,7 +284,10 @@ impl ContextBuilder {
             }
         }
 
-        // 3. Add processed history events (convert SessionEvent to ChatMessage)
+        // 3. Add processed history events (convert SessionEvent to ChatMessage).
+        // Note: the current user message was already persisted to the event store
+        // before history was loaded, so it is included in processed_history.
+        // We intentionally do NOT add current_message again here.
         for event in processed_history {
             match event.event_type {
                 gasket_types::EventType::UserMessage => {
@@ -296,9 +299,6 @@ impl ContextBuilder {
                 _ => {}
             }
         }
-
-        // 4. Current message
-        messages.push(ChatMessage::user(current_message));
 
         messages
     }

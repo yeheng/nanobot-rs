@@ -15,6 +15,7 @@ impl session::MessageHandler for EchoHandler {
         &self,
         _: &SessionKey,
         message: &str,
+        _override_phase: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok(format!("Echo: {}", message))
     }
@@ -23,6 +24,7 @@ impl session::MessageHandler for EchoHandler {
         &self,
         _: &str,
         _: &SessionKey,
+        _override_phase: Option<&str>,
     ) -> Result<
         (
             tokio::sync::mpsc::Receiver<ChatEvent>,

@@ -53,6 +53,34 @@ impl InboundMessage {
     }
 }
 
+/// Parse phase-override slash commands from message content.
+///
+/// Returns `Some((content_without_prefix, phase_name))` if the input matches
+/// a phase command like `/plan do something`, `None` otherwise.
+///
+/// Recognized commands:
+/// - `/plan <content>` → phase `"planning"`
+/// - `/execute <content>` → phase `"execute"`
+/// - `/research <content>` → phase `"research"`
+pub fn parse_phase_command(input: &str) -> Option<(String, String)> {
+    let input = input.trim();
+    let commands = [
+        ("/plan ", "planning"),
+        ("/execute ", "execute"),
+        ("/research ", "research"),
+    ];
+
+    for (prefix, phase) in commands {
+        if input.to_lowercase().starts_with(prefix) {
+            let content = input[prefix.len()..].trim().to_string();
+            if !content.is_empty() {
+                return Some((content, phase.to_string()));
+            }
+        }
+    }
+    None
+}
+
 // ── Target ──────────────────────────────────────────────────
 
 /// Delivery target for an outbound message.

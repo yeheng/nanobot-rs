@@ -234,6 +234,9 @@ async fn run_loop(
                 PhaseAction::Transition => continue,
                 PhaseAction::Interrupt(interrupted) => {
                     if let Some(ref tx) = event_tx {
+                        let _ = tx
+                            .send(StreamEvent::wait_for_user_input(interrupted.clone()))
+                            .await;
                         let _ = tx.send(StreamEvent::done()).await;
                     }
                     return Ok(state.to_result_with_interrupt(

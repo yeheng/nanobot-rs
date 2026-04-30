@@ -98,16 +98,20 @@ impl ImAdapter for WechatAdapter {
                 let inbound_sender = inbound_sender.clone();
 
                 tokio::spawn(async move {
+                    let (content, override_phase) = gasket_types::parse_phase_command(&text)
+                        .map(|(c, p)| (c, Some(p)))
+                        .unwrap_or_else(|| (text, None));
+
                     let inbound = InboundMessage {
                         channel: ChannelType::Wechat,
                         sender_id: user_id.clone(),
                         chat_id: user_id,
-                        content: text,
+                        content,
                         media: None,
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
-                        override_phase: None,
+                        override_phase,
                     };
 
                     if let Err(e) = inbound_sender.send(inbound).await {
