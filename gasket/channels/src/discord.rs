@@ -141,6 +141,7 @@ impl EventHandler for DiscordHandler {
             })),
             timestamp: chrono::Utc::now(),
             trace_id: None,
+        override_phase: None,
         };
 
         if let Err(e) = self.inbound_sender.send(inbound).await {

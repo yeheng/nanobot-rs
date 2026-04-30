@@ -107,6 +107,7 @@ impl ImAdapter for WechatAdapter {
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
+                    override_phase: None,
                     };
 
                     if let Err(e) = inbound_sender.send(inbound).await {

@@ -282,6 +282,7 @@ mod tests {
             metadata: None,
             timestamp: Utc::now(),
             trace_id: None,
+        override_phase: None,
         }
     }
 

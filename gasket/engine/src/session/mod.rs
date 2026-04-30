@@ -430,8 +430,21 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
+        self.process_direct_with_phase(content, session_key, None).await
+    }
+
+    /// Process a message with an explicit phase override.
+    ///
+    /// When `override_phase` is `Some`, the session's persisted phase is
+    /// unconditionally overwritten before execution begins.
+    pub async fn process_direct_with_phase(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        override_phase: Option<&str>,
+    ) -> Result<AgentResponse, AgentError> {
         let (_event_rx, handle) = self
-            .process_direct_streaming_with_channel(content, session_key)
+            .process_direct_streaming_with_phase(content, session_key, override_phase)
             .await?;
 
         // Discard streaming events, await final result
@@ -456,7 +469,26 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let (mut ctx, aborted) = self.preprocess(content, session_key).await?;
+        self.process_direct_streaming_with_phase(content, session_key, None).await
+    }
+
+    /// Process a message with streaming and an explicit phase override.
+    ///
+    /// When `override_phase` is `Some`, the persisted phase state is overwritten
+    /// before the kernel starts — user intent takes absolute priority.
+    pub async fn process_direct_streaming_with_phase(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        override_phase: Option<&str>,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Receiver<ChatEvent>,
+            tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+        ),
+        AgentError,
+    > {
+        let (mut ctx, aborted) = self.preprocess(content, session_key, override_phase).await?;
 
         if let Some(msg) = aborted {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
@@ -546,11 +578,33 @@ impl AgentSession {
     // ── Pipeline stages ──────────────────────────────────────────────────────
 
     /// Stage 1: PreProcess — build request, wire checkpoint callback.
+    ///
+    /// If `override_phase` is present, the user has explicitly requested a phase
+    /// switch (e.g. via `/plan` command). This is written to SQLite immediately,
+    /// overriding any persisted or LLM-inferred state.
     async fn preprocess(
         &self,
         content: &str,
         session_key: &SessionKey,
+        override_phase: Option<&str>,
     ) -> Result<(PipelineContext, Option<String>), AgentError> {
+        // User-explicit phase override: write to SQLite before any reads.
+        // Priority: User > System > LLM.
+        if let Some(phase) = override_phase {
+            if crate::kernel::phased::AgentPhase::try_from(phase).is_ok() {
+                if let Err(e) = self
+                    .context_builder
+                    .event_store()
+                    .set_current_phase(session_key, Some(phase))
+                    .await
+                {
+                    tracing::warn!("Failed to persist override_phase: {}", e);
+                }
+            } else {
+                tracing::warn!("Invalid override_phase '{}', ignoring", phase);
+            }
+        }
+
         let outcome = self.prepare_pipeline(content, session_key).await?;
         let request = match outcome {
             BuildOutcome::Aborted(msg) => {

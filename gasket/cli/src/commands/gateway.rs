@@ -691,6 +691,7 @@ fn start_heartbeat_service(
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
+                    override_phase: None,
                     };
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Inbound,
@@ -825,6 +826,7 @@ fn start_cron_checker(
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
+                    override_phase: None,
                     };
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Inbound,

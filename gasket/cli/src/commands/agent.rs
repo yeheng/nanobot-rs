@@ -329,6 +329,72 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             break;
                         }
 
+                        // Handle phase override commands: /plan, /execute, /research
+                        // These extract content + target_phase, letting the user
+                        // explicitly drive the phased state machine.
+                        let phase_cmd = parse_phase_command(line);
+                        if let Some((content, target_phase)) = phase_cmd {
+                            if use_streaming {
+                                println!();
+                                let streaming_result = agent
+                                    .process_direct_streaming_with_phase(
+                                        &content,
+                                        &interactive_session,
+                                        Some(target_phase.as_str()),
+                                    )
+                                    .await;
+
+                                match streaming_result {
+                                    Ok((mut event_rx, result_handle)) => {
+                                        let forward_handle = tokio::spawn(async move {
+                                            while let Some(event) = event_rx.recv().await {
+                                                match event {
+                                                    ChatEvent::Content { content } => {
+                                                        print!("{}", content);
+                                                        std::io::stdout().flush().ok();
+                                                    }
+                                                    ChatEvent::Thinking { content } => {
+                                                        eprint!("{}", content.dimmed().italic());
+                                                        std::io::stderr().flush().ok();
+                                                    }
+                                                    ChatEvent::Done => {}
+                                                    _ => {}
+                                                }
+                                            }
+                                        });
+
+                                        let (result, _) =
+                                            tokio::join!(result_handle, forward_handle);
+                                        if result.is_ok() {
+                                            println!("\n");
+                                        } else if let Err(e) = result {
+                                            println!("\n{} {}\n", "Error:".red(), e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("\n{} {}\n", "Error:".red(), e);
+                                    }
+                                }
+                            } else {
+                                match agent
+                                    .process_direct_with_phase(
+                                        &content,
+                                        &interactive_session,
+                                        Some(target_phase.as_str()),
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        println!();
+                                        print_response_with_reasoning(&response, render_md);
+                                        println!();
+                                    }
+                                    Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                                }
+                            }
+                            continue;
+                        }
+
                         // Handle CLI-specific slash commands locally
                         // (these must NOT reach the agent core — other channels
                         //  like Telegram should treat "/new" as normal LLM input)
@@ -343,7 +409,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 "🐈 gasket commands:\n\
                                  /new  — Start a new conversation\n\
                                  /help — Show available commands\n\
-                                 /exit — Exit the REPL"
+                                 /exit — Exit the REPL\n\
+                                 /plan <msg> — Force enter planning phase\n\
+                                 /execute <msg> — Force enter execute phase\n\
+                                 /research <msg> — Force enter research phase"
                             );
                             continue;
                         }
@@ -462,4 +531,23 @@ fn print_response_with_reasoning(response: &AgentResponse, render_md: bool) {
 
     // Print main response content
     print_response(&response.content, render_md);
+}
+
+/// Parse phase-override slash commands.
+///
+/// Returns `Some((content, target_phase))` if the input matches a phase command
+/// like `/plan do something`, `None` otherwise.
+fn parse_phase_command(input: &str) -> Option<(String, String)> {
+    let input = input.trim();
+    let commands = [("/plan ", "planning"), ("/execute ", "execute"), ("/research ", "research")];
+
+    for (prefix, phase) in commands {
+        if input.to_lowercase().starts_with(prefix) {
+            let content = input[prefix.len()..].trim().to_string();
+            if !content.is_empty() {
+                return Some((content, phase.to_string()));
+            }
+        }
+    }
+    None
 }

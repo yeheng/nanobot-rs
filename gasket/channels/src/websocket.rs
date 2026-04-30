@@ -395,6 +395,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                             metadata: None,
                             timestamp: chrono::Utc::now(),
                             trace_id: None,
+                            override_phase: None,
                         };
 
                         if let Err(e) = manager.send_inbound(inbound).await {

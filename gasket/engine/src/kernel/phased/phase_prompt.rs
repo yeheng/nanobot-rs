@@ -41,32 +41,27 @@ impl PhasePrompt {
                 "[Phase: Research]\n\n\
                  你现在处于研究阶段。使用 wiki_search 和 wiki_read 搜索知识库，\
                  用 history_search 查找历史对话。\n\
-                 信息充分后调用 phase_transition 进入下一阶段。\n\n\
-                 你可以回复用户来澄清需求。"
+                 信息充分后向用户总结发现的内容。"
             ),
             AgentPhase::Planning => format!(
                 "[Phase: Planning]\n\n\
                  {ctx_section}\
-                 基于以上信息和用户的需求，请制定执行计划。\
-                 简单任务可以直接跳过此阶段。\n\
-                 制定完成后调用 phase_transition(\"execute\") 进入执行。"
+                 基于以上信息和用户的需求，制定清晰的执行计划。\n\
+                 列出步骤、依赖和预期结果。"
             ),
             AgentPhase::Execute => format!(
                 "[Phase: Execute]\n\n\
                  {ctx_section}\
-                 执行你的计划。所有工具现在可用。\n\
-                 完成后调用 phase_transition(\"review\") 进行复盘，\
-                 或 phase_transition(\"done\") 直接结束。"
+                 执行你的计划。所有工具现在可用。"
             ),
             AgentPhase::Review => format!(
                 "[Phase: Review]\n\n\
                  {ctx_section}\
-                 审视刚才的执行过程，回答三个问题：\n\
+                 审视执行过程：\n\
                  1. 结果是否达到了用户的目标？\n\
-                 2. 这次对话中有哪些值得持久保存的知识？\n\
+                 2. 有哪些值得持久保存的知识？\n\
                  3. 有哪些 wiki 页面应该创建或更新？\n\n\
-                 如果发现了持久知识，主动调用 wiki_write 写入（每次最多 3 条）。\n\
-                 完成后调用 phase_transition(\"done\")。"
+                 如发现持久知识，主动调用 wiki_write 写入（每次最多 3 条）。"
             ),
             AgentPhase::Done => String::new(),
         }
@@ -97,6 +92,8 @@ mod tests {
         let prompt = PhasePrompt::entry_prompt(AgentPhase::Research, &ContextAccumulator::new());
         assert!(prompt.contains("Research"));
         assert!(prompt.contains("wiki_search"));
+        // Research prompt should NOT contain phase_transition (user drives transitions)
+        assert!(!prompt.contains("phase_transition"));
     }
 
     #[test]
@@ -106,6 +103,7 @@ mod tests {
         let prompt = PhasePrompt::entry_prompt(AgentPhase::Planning, &ctx);
         assert!(prompt.contains("Planning"));
         assert!(prompt.contains("Found 3 wiki pages"));
+        assert!(!prompt.contains("phase_transition"));
     }
 
     #[test]

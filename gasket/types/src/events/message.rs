@@ -37,6 +37,13 @@ pub struct InboundMessage {
     /// Trail trace ID for end-to-end request tracking.
     #[serde(default)]
     pub trace_id: Option<String>,
+
+    /// User-explicit phase override (e.g. "planning", "execute").
+    /// Set by CLI commands like `/plan <content>` or API field `override_phase`.
+    /// When present, the session layer writes this directly to persisted phase state,
+    /// bypassing any LLM-driven phase inference.
+    #[serde(default)]
+    pub override_phase: Option<String>,
 }
 
 impl InboundMessage {
