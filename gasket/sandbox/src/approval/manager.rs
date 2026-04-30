@@ -246,7 +246,13 @@ impl ApprovalManager {
         }
     }
 
-    /// Request approval from user
+    /// Request approval from user.
+    ///
+    /// Returns the effective `PermissionLevel` if the operation is approved
+    /// (`Allowed`, `AskOnce`, or `AskAlways`). Returns
+    /// `SandboxError::PermissionDenied` if the user (or a rule) denies, and
+    /// `SandboxError::ApprovalFailed` if confirmation is required but no
+    /// interaction handler is configured (fail-closed).
     pub async fn request_approval(
         &self,
         operation: &OperationType,
@@ -265,22 +271,36 @@ impl ApprovalManager {
                 let request = ApprovalRequest::new(operation.clone(), operation.description())
                     .with_suggested_level(suggested_level);
 
-                // Get user confirmation
-                if let Some(interaction) = &self.interaction {
-                    let level = interaction.confirm(&request).await?;
+                let Some(interaction) = self.interaction.as_ref() else {
+                    // Fail closed: confirmation required but no UI is wired up.
+                    warn!(
+                        operation = %operation.description(),
+                        "Approval required but no interaction handler configured; denying"
+                    );
+                    return Err(SandboxError::ApprovalFailed(
+                        "approval interaction handler not configured".into(),
+                    ));
+                };
 
-                    // Cache if ask_once - store the actual decision (approved/denied)
-                    if level == PermissionLevel::AskOnce {
-                        // For AskOnce, we cache the user's decision
-                        // The user approved by returning AskOnce, so cache as approved
-                        self.session.cache_decision(operation, context, true);
-                    }
+                let level = interaction.confirm(&request).await?;
 
-                    Ok(level)
-                } else {
-                    // No interaction handler, use suggested level or deny
-                    warn!("No interaction handler configured, using suggested level");
-                    Ok(suggested_level)
+                // Cache the user's decision when the suggestion was AskOnce.
+                // Treat any non-Denied response as approval for the session.
+                if suggested_level == PermissionLevel::AskOnce {
+                    self.session.cache_decision(
+                        operation,
+                        context,
+                        level != PermissionLevel::Denied,
+                    );
+                }
+
+                match level {
+                    PermissionLevel::Denied => Err(SandboxError::PermissionDenied(
+                        "user denied operation".into(),
+                    )),
+                    PermissionLevel::Allowed
+                    | PermissionLevel::AskOnce
+                    | PermissionLevel::AskAlways => Ok(level),
                 }
             }
         }

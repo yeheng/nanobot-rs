@@ -9,24 +9,73 @@
 //! sandboxing obvious at every call site.
 
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
 use tracing::{debug, warn};
 use winapi::shared::minwindef::FALSE;
-use winapi::um::handleapi::CloseHandle;
+use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
+use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
+use winapi::um::tlhelp32::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use winapi::um::winnt::{
     JobObjectExtendedLimitInformation, HANDLE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
-    JOB_OBJECT_LIMIT_PROCESS_TIME,
+    JOB_OBJECT_LIMIT_PROCESS_TIME, THREAD_SUSPEND_RESUME,
 };
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
+
+/// `CREATE_SUSPENDED` from `winapi::um::winbase`. Pulled out as a local
+/// constant so we don't have to add another feature flag to the winapi
+/// dependency just for this one symbol.
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// Resume the primary thread of a process by walking the system thread snapshot.
+///
+/// Used to release a child that was created with `CREATE_SUSPENDED` after we
+/// have safely assigned it to a Job Object. Returns `true` if any thread of
+/// the process was resumed.
+unsafe fn resume_process_threads(pid: u32) -> bool {
+    let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if snap.is_null() || snap == INVALID_HANDLE_VALUE {
+        return false;
+    }
+
+    let mut entry: THREADENTRY32 = std::mem::zeroed();
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+
+    let mut resumed = false;
+    if Thread32First(snap, &mut entry) != FALSE {
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, entry.th32ThreadID);
+                if !thread.is_null() {
+                    // ResumeThread returns the previous suspend count (or
+                    // u32::MAX on failure). We don't loop — a freshly
+                    // CREATE_SUSPENDED'd thread has a suspend count of 1.
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed = true;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+            if Thread32Next(snap, &mut entry) == FALSE {
+                break;
+            }
+        }
+    }
+
+    CloseHandle(snap);
+    resumed
+}
 
 /// RAII wrapper for a Windows Job Object handle.
 struct JobObject(HANDLE);
@@ -233,11 +282,17 @@ impl SandboxBackend for HostExecutor {
 
         let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
             let mut command = Command::new("cmd");
-            command.arg("/C").arg(&cmd).current_dir(&validated);
+            command
+                .arg("/C")
+                .arg(&cmd)
+                .current_dir(&validated)
+                // Spawn suspended so the child can't run (or escape into
+                // grandchildren) before we assign it to the Job Object below.
+                .creation_flags(CREATE_SUSPENDED);
 
             debug!("Windows command: {:?}", command);
 
-            let mut child = command
+            let child = command
                 .spawn()
                 .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
@@ -247,6 +302,13 @@ impl SandboxBackend for HostExecutor {
                 if ok == FALSE {
                     warn!("HostExecutor: AssignProcessToJobObject failed");
                 }
+            }
+
+            // Now that the child is enrolled in the Job Object (or we have
+            // decided not to use one), release the suspended primary thread.
+            let pid = child.id();
+            if !unsafe { resume_process_threads(pid) } {
+                warn!("HostExecutor: failed to resume primary thread for pid {}", pid);
             }
 
             child
