@@ -125,6 +125,7 @@ export interface Chat {
   updatedAt: number;
   contextStats?: ContextStats;
   watermarkInfo?: WatermarkInfo;
+  waitingPhase?: string | null;
 }
 
 // ── Approval Types ──────────────────────────────────────────

@@ -317,34 +317,18 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 eprintln!("\n{}", msg.yellow());
                             }
                             ChatEvent::ToolStart { name, .. } => {
-                                if name.as_ref() == "create_plan" {
-                                    eprintln!("{}", "📝 Generating plan...".cyan());
-                                } else {
-                                    eprintln!(
-                                        "{} {}",
-                                        "🔧".dimmed(),
-                                        format!("[{}]", name).dimmed()
-                                    );
-                                }
+                                eprintln!(
+                                    "{} {}",
+                                    "🔧".dimmed(),
+                                    format!("[{}]", name).dimmed()
+                                );
                             }
-                            ChatEvent::ToolEnd { name, output } => {
-                                if name.as_ref() == "create_plan" {
-                                    if let Some(ref out) = output {
-                                        if let Some(path_line) =
-                                            out.lines().find(|l| l.starts_with("Path:"))
-                                        {
-                                            eprintln!("{} {}", "✅".green(), path_line.green());
-                                        } else {
-                                            eprintln!("{}", "✅ Plan created".green());
-                                        }
-                                    }
-                                } else {
-                                    eprintln!(
-                                        "{} {}",
-                                        "✅".dimmed(),
-                                        format!("[{}] done", name).dimmed()
-                                    );
-                                }
+                            ChatEvent::ToolEnd { name, .. } => {
+                                eprintln!(
+                                    "{} {}",
+                                    "✅".dimmed(),
+                                    format!("[{}] done", name).dimmed()
+                                );
                             }
                             // TokenStats are handled internally; skip other non-user events
                             _ => {}
@@ -451,46 +435,18 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                                         );
                                                     }
                                                     ChatEvent::ToolStart { name, .. } => {
-                                                        if name.as_ref() == "create_plan" {
-                                                            eprintln!(
-                                                                "{}",
-                                                                "📝 Generating plan...".cyan()
-                                                            );
-                                                        } else {
-                                                            eprintln!(
-                                                                "{} {}",
-                                                                "🔧".dimmed(),
-                                                                format!("[{}]", name).dimmed()
-                                                            );
-                                                        }
+                                                        eprintln!(
+                                                            "{} {}",
+                                                            "🔧".dimmed(),
+                                                            format!("[{}]", name).dimmed()
+                                                        );
                                                     }
-                                                    ChatEvent::ToolEnd { name, output } => {
-                                                        if name.as_ref() == "create_plan" {
-                                                            if let Some(ref out) = output {
-                                                                if let Some(path_line) =
-                                                                    out.lines().find(|l| {
-                                                                        l.starts_with("Path:")
-                                                                    })
-                                                                {
-                                                                    eprintln!(
-                                                                        "{} {}",
-                                                                        "✅".green(),
-                                                                        path_line.green()
-                                                                    );
-                                                                } else {
-                                                                    eprintln!(
-                                                                        "{}",
-                                                                        "✅ Plan created".green()
-                                                                    );
-                                                                }
-                                                            }
-                                                        } else {
-                                                            eprintln!(
-                                                                "{} {}",
-                                                                "✅".dimmed(),
-                                                                format!("[{}] done", name).dimmed()
-                                                            );
-                                                        }
+                                                    ChatEvent::ToolEnd { name, .. } => {
+                                                        eprintln!(
+                                                            "{} {}",
+                                                            "✅".dimmed(),
+                                                            format!("[{}] done", name).dimmed()
+                                                        );
                                                     }
                                                     _ => {}
                                                 }
@@ -604,45 +560,18 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                                     );
                                                 }
                                                 ChatEvent::ToolStart { name, .. } => {
-                                                    if name.as_ref() == "create_plan" {
-                                                        eprintln!(
-                                                            "{}",
-                                                            "📝 Generating plan...".cyan()
-                                                        );
-                                                    } else {
-                                                        eprintln!(
-                                                            "{} {}",
-                                                            "🔧".dimmed(),
-                                                            format!("[{}]", name).dimmed()
-                                                        );
-                                                    }
+                                                    eprintln!(
+                                                        "{} {}",
+                                                        "🔧".dimmed(),
+                                                        format!("[{}]", name).dimmed()
+                                                    );
                                                 }
-                                                ChatEvent::ToolEnd { name, output } => {
-                                                    if name.as_ref() == "create_plan" {
-                                                        if let Some(ref out) = output {
-                                                            if let Some(path_line) = out
-                                                                .lines()
-                                                                .find(|l| l.starts_with("Path:"))
-                                                            {
-                                                                eprintln!(
-                                                                    "{} {}",
-                                                                    "✅".green(),
-                                                                    path_line.green()
-                                                                );
-                                                            } else {
-                                                                eprintln!(
-                                                                    "{}",
-                                                                    "✅ Plan created".green()
-                                                                );
-                                                            }
-                                                        }
-                                                    } else {
-                                                        eprintln!(
-                                                            "{} {}",
-                                                            "✅".dimmed(),
-                                                            format!("[{}] done", name).dimmed()
-                                                        );
-                                                    }
+                                                ChatEvent::ToolEnd { name, .. } => {
+                                                    eprintln!(
+                                                        "{} {}",
+                                                        "✅".dimmed(),
+                                                        format!("[{}] done", name).dimmed()
+                                                    );
                                                 }
                                                 _ => {}
                                             }

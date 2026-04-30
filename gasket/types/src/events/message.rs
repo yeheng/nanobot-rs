@@ -59,15 +59,19 @@ impl InboundMessage {
 /// a phase command like `/plan do something`, `None` otherwise.
 ///
 /// Recognized commands:
+/// - `/research <content>` → phase `"research"`
 /// - `/plan <content>` → phase `"planning"`
 /// - `/execute <content>` → phase `"execute"`
-/// - `/research <content>` → phase `"research"`
+/// - `/review <content>` → phase `"review"`
+/// - `/done <content>` → phase `"done"`
 pub fn parse_phase_command(input: &str) -> Option<(String, String)> {
     let input = input.trim();
     let commands = [
+        ("/research ", "research"),
         ("/plan ", "planning"),
         ("/execute ", "execute"),
-        ("/research ", "research"),
+        ("/review ", "review"),
+        ("/done ", "done"),
     ];
 
     for (prefix, phase) in commands {

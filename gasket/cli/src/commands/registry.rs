@@ -118,6 +118,5 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
             }
         },
         stop_words_path: config.stop_words_path.clone(),
-        phased_execution: config.agents.defaults.phased_execution,
     }
 }

@@ -12,11 +12,10 @@ use crate::{MaintenanceStore, SessionStore};
 use gasket_wiki::{PageIndex, PageStore};
 
 use super::{
-    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
-    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool, ReadFileTool,
-    SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool,
-    WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
-    WriteFileTool,
+    registry::ToolRegistry, ClearSessionTool, EditFileTool, EvolutionConfig, EvolutionTool,
+    ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool, ReadFileTool, SearchSopsTool,
+    SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool, WikiDecayTool,
+    WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool, WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.
@@ -188,19 +187,13 @@ impl ToolProvider for CoreToolProvider {
 pub struct WikiToolProvider {
     page_store: Option<PageStore>,
     page_index: Option<Arc<PageIndex>>,
-    planning_prompt: Option<String>,
 }
 
 impl WikiToolProvider {
-    pub fn new(
-        page_store: Option<PageStore>,
-        page_index: Option<Arc<PageIndex>>,
-        planning_prompt: Option<String>,
-    ) -> Self {
+    pub fn new(page_store: Option<PageStore>, page_index: Option<Arc<PageIndex>>) -> Self {
         Self {
             page_store,
             page_index,
-            planning_prompt,
         }
     }
 }
@@ -277,28 +270,6 @@ impl ToolProvider for WikiToolProvider {
             true,
             true
         );
-
-        if let Some(ref prompt) = self.planning_prompt {
-            reg!(
-                registry,
-                CreatePlanTool::new(store.clone(), Some(prompt.clone()),),
-                "Create Plan",
-                "system",
-                ["plan", "markdown"],
-                false,
-                true
-            );
-        } else {
-            reg!(
-                registry,
-                CreatePlanTool::new(store.clone(), None,),
-                "Create Plan",
-                "system",
-                ["plan", "markdown"],
-                false,
-                true
-            );
-        }
     }
 }
 

@@ -52,21 +52,33 @@ impl PhasePrompt {
         match phase {
             AgentPhase::Research => "[Phase: Research]\n\n\
                  你现在处于研究阶段。使用 wiki_search 和 wiki_read 搜索知识库，\
-                 用 history_search 查找历史对话。\n\
-                 信息充分后向用户总结发现的内容。"
+                 用 history_search 查找历史对话。\n\n\
+                 你的工作流程：\n\
+                 1. 搜索并收集相关信息\n\
+                 2. 如果信息不足或需要澄清，直接向用户提问（AI 会暂停等你回复）\n\
+                 3. 如果信息充分，向用户总结发现的内容\n\
+                 4. 当你认为已经收集了足够信息，调用 phase_transition(\"planning\") 进入计划阶段，\
+                 或 phase_transition(\"execute\") 直接跳过计划阶段。"
                 .to_string(),
             AgentPhase::Planning => format!(
                 "[Phase: Planning]\n\n\
                  {ctx_section}\
-                 你现在处于计划阶段。基于以上信息和用户的需求，判断是否有足够的信息来制定计划。\n\n\
-                 如果信息不足（目标不清晰、缺少关键上下文、用户意图模糊），请直接问用户澄清问题，不要调用 create_plan。\n\
-                 只有在信息充分、目标明确时，才调用 create_plan 生成执行计划。\n\
-                 计划应包含步骤、依赖和预期结果。"
+                 你现在处于计划阶段。基于以上信息和用户的需求，制定详细的执行计划。\n\n\
+                 你的工作流程：\n\
+                 1. 如果信息不足（目标不清晰、缺少关键上下文、用户意图模糊），请直接向用户提问澄清\n\
+                 2. 信息充分时，直接输出结构化的执行计划（使用标题、步骤、依赖关系）\n\
+                 3. 使用 wiki_write 工具将计划保存到 topics/plans/<slug> 路径下\n\
+                 4. 保存成功后，调用 phase_transition(\"execute\") 进入执行阶段"
             ),
             AgentPhase::Execute => format!(
                 "[Phase: Execute]\n\n\
                  {ctx_section}\
-                 执行你的计划。所有工具现在可用。"
+                 执行你的计划。所有工具现在可用。\n\n\
+                 你的工作流程：\n\
+                 1. 按照计划逐步执行\n\
+                 2. 如果需要向用户汇报进度或请示，直接输出文本（AI 会暂停等你回复）\n\
+                 3. 执行完成后，调用 phase_transition(\"review\") 进入审查阶段，\
+                 或 phase_transition(\"done\") 如果无需审查"
             ),
             AgentPhase::Review => format!(
                 "[Phase: Review]\n\n\
@@ -75,7 +87,11 @@ impl PhasePrompt {
                  1. 结果是否达到了用户的目标？\n\
                  2. 有哪些值得持久保存的知识？\n\
                  3. 有哪些 wiki 页面应该创建或更新？\n\n\
-                 如发现持久知识，主动调用 wiki_write 写入（每次最多 3 条）。"
+                 你的工作流程：\n\
+                 1. 审查结果，必要时调用 wiki_write 写入知识（每次最多 3 条）\n\
+                 2. 如果发现问题需要修正，调用 phase_transition(\"planning\") 重新规划\
+                 或 phase_transition(\"execute\") 补充执行\n\
+                 3. 审查通过且无遗留问题后，调用 phase_transition(\"done\") 结束任务"
             ),
             AgentPhase::Done => String::new(),
         }
@@ -115,8 +131,8 @@ mod tests {
         let prompt = PhasePrompt::entry_prompt(AgentPhase::Research, &ContextAccumulator::new());
         assert!(prompt.contains("Research"));
         assert!(prompt.contains("wiki_search"));
-        // Research prompt should NOT contain phase_transition (user drives transitions)
-        assert!(!prompt.contains("phase_transition"));
+        // Research prompt should guide LLM to call phase_transition when ready
+        assert!(prompt.contains("phase_transition"));
     }
 
     #[test]
@@ -126,7 +142,8 @@ mod tests {
         let prompt = PhasePrompt::entry_prompt(AgentPhase::Planning, &ctx);
         assert!(prompt.contains("Planning"));
         assert!(prompt.contains("Found 3 wiki pages"));
-        assert!(!prompt.contains("phase_transition"));
+        // Planning prompt should guide LLM to call phase_transition to execute
+        assert!(prompt.contains("phase_transition"));
     }
 
     #[test]

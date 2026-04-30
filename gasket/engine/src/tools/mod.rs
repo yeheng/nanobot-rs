@@ -19,7 +19,6 @@
 mod builder;
 mod clear_session;
 mod context;
-mod create_plan;
 mod cron;
 mod evolution;
 mod filesystem;
@@ -56,7 +55,6 @@ pub use builder::HistorySearchParams;
 pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
 pub use clear_session::ClearSessionTool;
 pub use context::ContextTool;
-pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
 pub use evolution::{EvolutionConfig, EvolutionTool};
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};

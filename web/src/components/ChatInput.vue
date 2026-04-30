@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
 import { Send, Square } from 'lucide-vue-next';
-import { nextTick, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 
 const props = defineProps<{
   isConnected: boolean;
   sessionStatus: string;
   isThinking: boolean;
   isReceiving: boolean;
+  waitingPhase?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +18,16 @@ const emit = defineEmits<{
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const inputValue = ref('');
+
+const inputPlaceholder = computed(() => {
+  if (props.sessionStatus === 'receiving') return 'AI is processing...';
+  if (props.sessionStatus === 'waiting_input') {
+    return props.waitingPhase
+      ? `💬 AI is waiting for your reply to continue...`
+      : '💬 AI is waiting for your reply...';
+  }
+  return 'Type a message...';
+});
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -53,8 +64,9 @@ const submit = () => {
           'border-primary/30 ring-2 ring-primary/20': sessionStatus === 'receiving' || sessionStatus === 'sending'
         }">
         <textarea ref="inputRef" v-model="inputValue" @keydown="handleKeydown" @input="autoResize"
-          :placeholder="sessionStatus === 'receiving' ? 'AI is processing...' : 'Type a message...'"
+          :placeholder="inputPlaceholder"
           :disabled="!isConnected || sessionStatus === 'receiving' || sessionStatus === 'sending'"
+          :class="{ 'border-amber-400/50 ring-2 ring-amber-400/20': sessionStatus === 'waiting_input' }"
           autofocus rows="1"
           class="flex-1 overflow-x-hidden border-0 bg-transparent shadow-none focus:outline-none focus:ring-0 th-text px-3 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed resize-none custom-scrollbar min-h-[40px] max-h-[200px]"></textarea>
 
@@ -64,7 +76,7 @@ const submit = () => {
         </Button>
         <Button v-else @click="submit" :disabled="!inputValue.trim() || !isConnected || sessionStatus === 'sending'"
           class="w-9 h-9 rounded-xl text-white shrink-0 ml-2 transition-all"
-          :class="{ 'bg-primary hover:opacity-90': sessionStatus === 'idle', 'bg-muted cursor-not-allowed': sessionStatus !== 'idle' }"
+          :class="{ 'bg-primary hover:opacity-90': sessionStatus === 'idle' || sessionStatus === 'waiting_input', 'bg-muted cursor-not-allowed': sessionStatus !== 'idle' && sessionStatus !== 'waiting_input' }"
           size="icon">
           <Send class="w-4 h-4" />
         </Button>

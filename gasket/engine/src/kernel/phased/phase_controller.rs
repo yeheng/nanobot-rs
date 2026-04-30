@@ -18,6 +18,7 @@ use super::agent_phase::AgentPhase;
 use super::phase_prompt::{ContextAccumulator, PhasePrompt};
 use super::research_context::ResearchContext;
 use super::step_action::StepAction;
+use gasket_providers::MessageRole;
 
 // ── State machine ──────────────────────────────────────────────────
 
@@ -120,6 +121,10 @@ impl PhaseController {
     }
 
     /// One-time init: auto-search + entry prompt + initial event.
+    ///
+    /// When resuming from a previous WaitForUserInput (detected by presence of
+    /// assistant messages in history), auto-search is skipped to avoid redundant
+    /// queries and duplicate context injection.
     pub async fn initialize(
         &mut self,
         messages: &mut Vec<ChatMessage>,
@@ -127,7 +132,11 @@ impl PhaseController {
     ) {
         let phase = self.state.current_phase();
 
-        if phase == AgentPhase::Research {
+        // Detect resumed execution: if history already contains assistant messages,
+        // this is not a fresh start — skip auto-search to avoid redundant work.
+        let is_resumed = messages.iter().any(|m| m.role == MessageRole::Assistant);
+
+        if phase == AgentPhase::Research && !is_resumed {
             if let Some(search_ctx) = self.run_auto_search(messages).await {
                 messages.push(ChatMessage::system(search_ctx));
             }
@@ -202,8 +211,13 @@ impl PhaseController {
         _msg_count_before: usize,
         event_tx: &Option<mpsc::Sender<StreamEvent>>,
     ) -> PhaseAction {
-        self.state.advance_iteration();
         let action = StepAction::classify(result);
+
+        // WaitForUserInput should not consume an iteration — the LLM is pausing
+        // for user interaction, not doing work.
+        if !matches!(action, StepAction::WaitForUserInput) {
+            self.state.advance_iteration();
+        }
 
         match action {
             StepAction::PhaseTransition {
@@ -242,6 +256,14 @@ impl PhaseController {
             StepAction::WaitForUserInput => {
                 let current = self.state.current_phase();
                 debug!("[PhaseController] WaitForUserInput in phase {}", current);
+
+                // Save context summary so user reply can resume with context
+                if current != AgentPhase::Execute && current != AgentPhase::Done {
+                    self.state.add_context(format!(
+                        "与用户交互暂停，等待用户回复以继续 {} 阶段。",
+                        current
+                    ));
+                }
 
                 if current == AgentPhase::Execute {
                     self.state.transition(AgentPhase::Done).ok();

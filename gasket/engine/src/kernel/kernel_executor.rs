@@ -159,7 +159,7 @@ impl KernelExecutor {
 
 /// Unified multi-turn LLM loop.
 ///
-/// When `ctx.config.phased_execution` is true, a `PhaseController` is created
+/// When `options.start_phase` is present, a `PhaseController` is created
 /// to manage per-step phase logic (tool filtering, prompt injection, transitions).
 /// Otherwise, the loop runs the standard SteppableExecutor cycle.
 async fn run_loop(
@@ -171,12 +171,13 @@ async fn run_loop(
     let mut state = ExecutionState::new(messages);
     let mut ledger = TokenLedger::new();
 
-    // Create phase controller if phased execution is enabled
-    let mut phase = if ctx.config.phased_execution {
-        let start_phase = options
-            .start_phase
-            .and_then(|s| crate::kernel::phased::AgentPhase::try_from(s).ok());
-        let mut ctrl = PhaseController::new(ctx, start_phase);
+    // Create phase controller only when a start phase is explicitly provided
+    // (e.g. from /plan, /execute, /research slash commands or resumed phase).
+    let mut phase = if let Some(start_phase) = options
+        .start_phase
+        .and_then(|s| crate::kernel::phased::AgentPhase::try_from(s).ok())
+    {
+        let mut ctrl = PhaseController::new(ctx, Some(start_phase));
         ctrl.initialize(&mut state.messages, &event_tx).await;
         Some(ctrl)
     } else {

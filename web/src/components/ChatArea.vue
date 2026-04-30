@@ -159,6 +159,16 @@ const phaseLabel = (phase: string): string => {
         :class="`phase-${session.currentPhase}`"
       >
         {{ phaseLabel(session.currentPhase) }}
+        <span v-if="session.waitingPhase" class="phase-waiting-dot" title="AI 在等待你的回复"></span>
+      </div>
+
+      <!-- Waiting for input indicator -->
+      <div
+        v-if="session.waitingPhase && !session.currentPhase"
+        class="waiting-input-banner"
+      >
+        <span class="waiting-pulse-dot"></span>
+        AI 在等待你的回复以继续 {{ phaseLabel(session.waitingPhase) }}
       </div>
 
       <!-- Messages -->
@@ -228,6 +238,7 @@ const phaseLabel = (phase: string): string => {
         :session-status="session.sessionStatus"
         :is-thinking="session.isThinking"
         :is-receiving="session.isReceiving"
+        :waiting-phase="session.waitingPhase"
         @send="session.sendMessage"
         @stop="session.stopGenerating"
       />
@@ -244,7 +255,7 @@ const phaseLabel = (phase: string): string => {
 .phase-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 3px 12px;
   border-radius: 12px;
   font-size: 12px;
@@ -256,9 +267,51 @@ const phaseLabel = (phase: string): string => {
   animation: phase-enter 0.2s ease-out;
 }
 
+.phase-waiting-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.waiting-input-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 8px 16px;
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  animation: phase-enter 0.2s ease-out;
+}
+
+.dark .waiting-input-banner {
+  background: #451a03;
+  color: #fcd34d;
+  border-color: #92400e;
+}
+
+.waiting-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
 @keyframes phase-enter {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
 }
 
 .custom-scrollbar::-webkit-scrollbar { width: 6px; }

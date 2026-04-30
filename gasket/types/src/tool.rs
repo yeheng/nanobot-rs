@@ -222,7 +222,7 @@ pub struct ToolContext {
     /// Tools use this to cancel previous aggregators when spawning new ones.
     pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
     /// Event sender for forwarding subagent stream events to the frontend.
-    /// When present, tools like `create_plan` can stream subagent progress
+    /// When present, tools can stream subagent progress
     /// (thinking, content, tool calls) to the user in real-time.
     pub event_tx: Option<tokio::sync::mpsc::Sender<crate::StreamEvent>>,
 }

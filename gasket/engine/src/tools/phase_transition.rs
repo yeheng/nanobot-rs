@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::kernel::phased::AgentPhase;
+
 use super::{Tool, ToolContext, ToolControlSignal, ToolError, ToolOutput, ToolResult};
 
 /// Tool for transitioning between agent working phases.
@@ -67,11 +69,10 @@ impl Tool for PhaseTransitionTool {
         let parsed: TransitionArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
-        let valid = ["planning", "execute", "review", "done"];
-        if !valid.contains(&parsed.phase.as_str()) {
+        if AgentPhase::try_from(parsed.phase.as_str()).is_err() {
             return Err(ToolError::InvalidArguments(format!(
-                "Invalid phase '{}'. Valid: {:?}",
-                parsed.phase, valid
+                "Invalid phase '{}'. Valid phases: research, planning, execute, review, done",
+                parsed.phase
             )));
         }
 

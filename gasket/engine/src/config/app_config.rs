@@ -50,7 +50,7 @@ pub struct PromptsConfig {
     /// Must contain `{{conversation}}` which will be replaced with the transcript.
     #[serde(default)]
     pub evolution: Option<String>,
-    /// User prompt template used by CreatePlanTool for plan generation.
+    /// User prompt template used by the Planning phase for plan generation.
     /// Must contain `{{goal}}` and `{{context}}` which will be replaced at runtime.
     #[serde(default)]
     pub planning: Option<String>,
@@ -79,9 +79,6 @@ pub struct AgentDefaults {
     pub ws_summary_limit: usize,
     #[serde(default)]
     pub prompts: PromptsConfig,
-    /// Enable phased execution (Research → Planning → Execute → Review → Done).
-    #[serde(default, alias = "phasedExecution")]
-    pub phased_execution: bool,
 }
 
 impl Default for AgentDefaults {
@@ -97,7 +94,6 @@ impl Default for AgentDefaults {
             memory_budget: None,
             ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
-            phased_execution: false,
         }
     }
 }

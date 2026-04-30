@@ -19,6 +19,7 @@ export function useChatSession(chatId: { value: string }) {
   const SUBAGENT_TIMEOUT_MS = 300_000; // 5 minutes client-side timeout as a safety net
 
   const currentPhase = ref<string | null>(null);
+  const waitingPhase = ref<string | null>(null);
 
   const pendingApprovals = ref<Map<string, ApprovalRequest>>(new Map());
 
@@ -35,7 +36,7 @@ export function useChatSession(chatId: { value: string }) {
     return 'bg-destructive';
   });
 
-  type SessionStatus = 'disconnected' | 'idle' | 'sending' | 'receiving';
+  type SessionStatus = 'disconnected' | 'idle' | 'sending' | 'receiving' | 'waiting_input';
 
   const showError = (message: string) => {
     errorBanner.value = message;
@@ -287,9 +288,15 @@ export function useChatSession(chatId: { value: string }) {
         break;
       case 'phase_transition':
         currentPhase.value = msg.to;
+        waitingPhase.value = null;
         if (msg.to === 'done') {
           setTimeout(() => { currentPhase.value = null }, 2000);
         }
+        break;
+      case 'wait_for_user_input':
+        isThinking.value = false;
+        isReceiving.value = false;
+        waitingPhase.value = msg.phase || currentPhase.value;
         break;
       case 'approval_request':
         pendingApprovals.value.set(msg.id, {
@@ -345,6 +352,7 @@ export function useChatSession(chatId: { value: string }) {
     if (!isConnected.value) return 'disconnected';
     if (isSending.value) return 'sending';
     if (isReceiving.value || isThinking.value) return 'receiving';
+    if (waitingPhase.value) return 'waiting_input';
     return 'idle';
   });
 
@@ -401,6 +409,7 @@ export function useChatSession(chatId: { value: string }) {
     isThinking.value = false;
     isReceiving.value = false;
     isSending.value = false;
+    waitingPhase.value = null;
     pendingApprovals.value.clear();
     chatStore.abortToolCalls(chatId.value);
     Object.values(subagentTimers.value).forEach(clearTimeout);
@@ -437,6 +446,7 @@ export function useChatSession(chatId: { value: string }) {
     }
 
     isSending.value = true;
+    waitingPhase.value = null;
     try {
       send(text);
       chatStore.updateMessageStatus(chatId.value, msgId, 'sent');
@@ -479,6 +489,7 @@ export function useChatSession(chatId: { value: string }) {
     subagentPhase,
     // Phase
     currentPhase,
+    waitingPhase,
     // Approvals
     pendingApprovals,
     // Error

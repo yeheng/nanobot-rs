@@ -84,12 +84,7 @@ impl AgentPhase {
                 "query_history",
                 "phase_transition",
             ],
-            AgentPhase::Planning => &[
-                "create_plan",
-                "phase_transition",
-                "wiki_read",
-                "wiki_search",
-            ],
+            AgentPhase::Planning => &["wiki_write", "wiki_read", "wiki_search", "phase_transition"],
             AgentPhase::Execute => &[],
             AgentPhase::Review => &[
                 "wiki_write",

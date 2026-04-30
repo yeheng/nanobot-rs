@@ -117,12 +117,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // ── Wiki + memory tools (conditional on page_store) ───────
     let prompts = &config.agents.defaults.prompts;
-    WikiToolProvider::new(
-        page_store.clone(),
-        page_index.clone(),
-        prompts.planning.clone(),
-    )
-    .register_tools(&mut tools);
+    WikiToolProvider::new(page_store.clone(), page_index.clone()).register_tools(&mut tools);
 
     // ── System/maintenance tools ─
     let session_store = Some(sqlite_store.session_store());
