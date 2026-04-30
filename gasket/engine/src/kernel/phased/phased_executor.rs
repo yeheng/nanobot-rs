@@ -6,12 +6,14 @@ use crate::kernel::context::RuntimeContext;
 use crate::kernel::kernel_executor::{ExecutionResult, TokenLedger};
 use crate::kernel::steppable_executor::SteppableExecutor;
 use crate::kernel::KernelError;
+use crate::tools::ToolContext;
 
 use gasket_providers::{ChatMessage, MessageRole};
 use gasket_types::StreamEvent;
 
 use super::agent_phase::AgentPhase;
 use super::phase_prompt::{ContextAccumulator, PhasePrompt};
+use super::research_context::ResearchContext;
 use super::step_action::StepAction;
 
 /// Internal state machine for phase tracking.
@@ -26,6 +28,16 @@ impl PhaseStateMachine {
     pub fn new() -> Self {
         Self {
             phase: AgentPhase::Research,
+            iteration_in_phase: 0,
+            total_iterations: 0,
+            context: ContextAccumulator::new(),
+        }
+    }
+
+    /// Create a state machine starting at the given phase (for re-entrant sessions).
+    pub fn starting_at(phase: AgentPhase) -> Self {
+        Self {
+            phase,
             iteration_in_phase: 0,
             total_iterations: 0,
             context: ContextAccumulator::new(),
@@ -103,24 +115,35 @@ impl PhasedExecutor {
 
     /// Execute the phased agent loop.
     ///
-    /// Replaces `kernel::execute_streaming()` when `phased_execution` is enabled.
+    /// `start_phase` allows resuming a previously interrupted phased session
+    /// (e.g. when the LLM asked for clarification during Research).
+    /// When `None`, starts from Research with auto-search.
     pub async fn run(
         &self,
         messages: Vec<ChatMessage>,
         event_tx: mpsc::Sender<StreamEvent>,
+        start_phase: Option<AgentPhase>,
     ) -> Result<ExecutionResult, KernelError> {
-        let mut state = PhaseStateMachine::new();
+        let initial_phase = start_phase.unwrap_or(AgentPhase::Research);
+        let mut state = PhaseStateMachine::starting_at(initial_phase);
         let mut ledger = TokenLedger::new();
         let mut all_messages = messages;
         let mut tools_used = Vec::new();
 
-        // Inject initial Research phase entry prompt
-        let entry = PhasePrompt::entry_prompt(AgentPhase::Research, state.context());
+        // Auto-search only for fresh Research starts
+        if initial_phase == AgentPhase::Research {
+            if let Some(search_context) = self.run_auto_search(&all_messages).await {
+                all_messages.push(ChatMessage::system(search_context));
+            }
+        }
+
+        // Inject entry prompt for the starting phase
+        let entry = PhasePrompt::entry_prompt(initial_phase, state.context());
         all_messages.push(ChatMessage::system(entry));
 
         // Send initial phase event
         let _ = event_tx
-            .send(StreamEvent::phase_transition("init", "research"))
+            .send(StreamEvent::phase_transition("init", initial_phase.to_string()))
             .await;
 
         loop {
@@ -144,6 +167,7 @@ impl PhasedExecutor {
                     reasoning_content: None,
                     tools_used,
                     token_usage: ledger.total_usage.clone(),
+                    interrupted_phase: None,
                 });
             }
 
@@ -159,6 +183,7 @@ impl PhasedExecutor {
                     reasoning_content: None,
                     tools_used,
                     token_usage: ledger.total_usage.clone(),
+                    interrupted_phase: None,
                 });
             }
 
@@ -190,6 +215,7 @@ impl PhasedExecutor {
                             reasoning_content: None,
                             tools_used,
                             token_usage: ledger.total_usage.clone(),
+                            interrupted_phase: None,
                         });
                     }
                 }
@@ -260,7 +286,6 @@ impl PhasedExecutor {
                         ))
                         .await;
 
-                    // If transitioning to Done, loop will handle terminal state next iteration
                     continue;
                 }
                 StepAction::WaitForUserInput => {
@@ -281,14 +306,22 @@ impl PhasedExecutor {
                             ))
                             .await;
                     }
-                    // For Research/Planning/Review, text response means LLM wants user input.
-                    // Since we can't pause mid-stream, we treat it as done.
+
+                    // For non-Execute phases, mark the interrupted phase so the
+                    // session layer can resume on the next user message.
+                    let interrupted = if current_phase != AgentPhase::Execute {
+                        Some(current_phase.to_string())
+                    } else {
+                        None
+                    };
+
                     let _ = event_tx.send(StreamEvent::done()).await;
                     return Ok(ExecutionResult {
                         content: result.response.content.clone().unwrap_or_default(),
                         reasoning_content: result.response.reasoning_content.clone(),
                         tools_used,
                         token_usage: ledger.total_usage.clone(),
+                        interrupted_phase: interrupted,
                     });
                 }
                 StepAction::Continue => {
@@ -298,10 +331,54 @@ impl PhasedExecutor {
         }
     }
 
-    /// Build a filtered RuntimeContext with only allowed tools for the current phase.
+    /// Run auto-search at the start of Research phase.
     ///
-    /// Phases with empty `allowed_tools()` (Execute, Done) get the full registry.
-    /// Other phases get a filtered registry containing only their allowed tools.
+    /// Calls `wiki_search` via the ToolRegistry and formats the result
+    /// as a structured system message for injection.
+    async fn run_auto_search(&self, messages: &[ChatMessage]) -> Option<String> {
+        let query = ResearchContext::build_search_query(messages);
+        if query.trim().is_empty() {
+            debug!("[PhasedExecutor] Auto-search skipped: empty query");
+            return None;
+        }
+
+        debug!("[PhasedExecutor] Auto-search query: '{}'", query);
+
+        let tool_ctx = ToolContext::default();
+        let wiki_result = match self
+            .ctx
+            .tools
+            .execute(
+                "wiki_search",
+                serde_json::json!({"query": query, "limit": 5}),
+                &tool_ctx,
+            )
+            .await
+        {
+            Ok(output) if !output.starts_with("No wiki pages found") => Some(output),
+            Ok(_) => {
+                debug!("[PhasedExecutor] Auto-search: no wiki results");
+                None
+            }
+            Err(e) => {
+                debug!("[PhasedExecutor] Auto-search wiki_search failed: {}", e);
+                None
+            }
+        };
+
+        if wiki_result.is_none() {
+            return None;
+        }
+
+        Some(format!(
+            "[Research Context — 自动检索]\n\n{}\n\n\
+             你可以用 wiki_read 查看完整页面，或 wiki_search 调整搜索方向。\n\
+             需要更多信息也可以直接问我。信息充分后调用 phase_transition 进入下一阶段。",
+            wiki_result.unwrap()
+        ))
+    }
+
+    /// Build a filtered RuntimeContext with only allowed tools for the current phase.
     fn build_filtered_context(&self, phase: AgentPhase) -> RuntimeContext {
         let allowed = phase.allowed_tools();
 
@@ -327,6 +404,13 @@ mod tests {
         assert_eq!(sm.current_phase(), AgentPhase::Research);
         assert_eq!(sm.iteration_in_phase(), 0);
         assert_eq!(sm.total_iterations(), 0);
+    }
+
+    #[test]
+    fn test_starting_at() {
+        let sm = PhaseStateMachine::starting_at(AgentPhase::Execute);
+        assert_eq!(sm.current_phase(), AgentPhase::Execute);
+        assert_eq!(sm.iteration_in_phase(), 0);
     }
 
     #[test]

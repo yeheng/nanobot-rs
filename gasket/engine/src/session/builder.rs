@@ -254,6 +254,7 @@ impl SessionBuilder {
             pending_done,
             #[cfg(feature = "embedding")]
             embedding_indexer,
+            phased_session_phase: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 }

@@ -42,6 +42,10 @@ pub struct ExecutionResult {
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
     pub token_usage: Option<TokenUsage>,
+    /// When phased execution is interrupted by `WaitForUserInput`, this field
+    /// contains the phase name (e.g. "research"). The session layer uses this
+    /// to restore the phase on the next user message. `None` for normal completion.
+    pub interrupted_phase: Option<String>,
 }
 
 /// Accumulated execution state — message history and tool tracking only.
@@ -70,6 +74,7 @@ impl ExecutionState {
             reasoning_content,
             tools_used: self.tools_used.clone(),
             token_usage: ledger.total_usage.clone(),
+            interrupted_phase: None,
         }
     }
 }

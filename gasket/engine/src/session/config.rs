@@ -213,6 +213,8 @@ pub struct AgentConfig {
     pub wiki: Option<WikiConfig>,
     /// Optional path to an external stop-words file for keyword-based history recall.
     pub stop_words_path: Option<std::path::PathBuf>,
+    /// Enable phased execution (Research → Planning → Execute → Review → Done).
+    pub phased_execution: bool,
 }
 
 impl Default for AgentConfig {
@@ -236,6 +238,7 @@ impl Default for AgentConfig {
             evolution: Some(EvolutionConfig::default()),
             wiki: None,
             stop_words_path: None,
+            phased_execution: false,
         }
     }
 }
@@ -257,7 +260,7 @@ impl AgentConfigExt for AgentConfig {
             thinking_enabled: self.thinking_enabled,
             tool_timeout_secs: self.tool_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
-            phased_execution: false,
+            phased_execution: self.phased_execution,
         }
     }
 }
