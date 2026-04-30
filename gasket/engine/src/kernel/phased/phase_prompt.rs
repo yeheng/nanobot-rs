@@ -1,8 +1,13 @@
+use std::collections::HashMap;
+
 use super::agent_phase::AgentPhase;
 
 #[derive(Debug, Default)]
 pub struct ContextAccumulator {
-    summaries: Vec<(AgentPhase, String)>,
+    /// Stores the latest summary for each phase. When a phase is revisited
+    /// (e.g. Review -> Execute -> Review loop), the old summary is overwritten
+    /// to prevent context snowballing.
+    summaries: HashMap<AgentPhase, String>,
 }
 
 impl ContextAccumulator {
@@ -11,16 +16,24 @@ impl ContextAccumulator {
     }
 
     pub fn add(&mut self, phase: AgentPhase, summary: String) {
-        self.summaries.push((phase, summary));
+        self.summaries.insert(phase, summary);
     }
 
     pub fn format(&self) -> String {
         if self.summaries.is_empty() {
             return String::new();
         }
-        let mut parts = vec!["## Collected Context".to_string()];
-        for (phase, summary) in &self.summaries {
-            parts.push(format!("### {} ({} phase)\n{}", phase, phase, summary));
+        let mut parts = vec!["## 已确定的前置上下文".to_string()];
+        // Output in logical execution order so the LLM sees context chronologically
+        for phase in [
+            AgentPhase::Research,
+            AgentPhase::Planning,
+            AgentPhase::Execute,
+            AgentPhase::Review,
+        ] {
+            if let Some(summary) = self.summaries.get(&phase) {
+                parts.push(format!("### {} Phase\n{}", phase, summary));
+            }
         }
         parts.join("\n\n")
     }
@@ -77,6 +90,15 @@ impl PhasePrompt {
     }
 
     pub fn hard_limit_prompt(from: AgentPhase, to: AgentPhase) -> String {
+        // Special harsh prompt when Review is force-closed to Done to prevent
+        // the agent from silently shipping broken results.
+        if matches!((from, to), (AgentPhase::Review, AgentPhase::Done)) {
+            return format!(
+                "[系统强制] {} 阶段达到迭代上限，强制结束任务。\
+                 请立即向用户总结你失败的原因及当前进度。",
+                from
+            );
+        }
         format!(
             "[系统强制] {} 阶段达到迭代上限，由引擎强制推进至 {} 阶段。",
             from, to

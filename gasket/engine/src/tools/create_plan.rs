@@ -158,9 +158,9 @@ impl Tool for CreatePlanTool {
                 })
             };
 
-            let result = result_rx.await.map_err(|e| {
-                ToolError::ExecutionError(format!("Result channel closed: {}", e))
-            })?;
+            let result = result_rx
+                .await
+                .map_err(|e| ToolError::ExecutionError(format!("Result channel closed: {}", e)))?;
 
             // Give the forwarder a moment to finish draining events, then abort
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -169,11 +169,10 @@ impl Tool for CreatePlanTool {
             result.response.content
         } else {
             // Blocking path: no event stream available (e.g. CLI mode or tests)
-            let result = ctx
-                .spawner
-                .spawn(task, None)
-                .await
-                .map_err(|e| ToolError::ExecutionError(format!("Plan generation failed: {}", e)))?;
+            let result =
+                ctx.spawner.spawn(task, None).await.map_err(|e| {
+                    ToolError::ExecutionError(format!("Plan generation failed: {}", e))
+                })?;
             result.response.content
         };
 

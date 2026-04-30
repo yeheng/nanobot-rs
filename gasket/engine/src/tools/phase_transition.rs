@@ -38,7 +38,7 @@ impl Tool for PhaseTransitionTool {
     fn description(&self) -> &str {
         "Transition to the next working phase. Valid targets depend on current phase: \
          Research -> planning|execute, Planning -> execute, Execute -> review|done, \
-         Review -> done. Optionally provide a context_summary for the next phase."
+         Review -> planning|execute|done. Optionally provide a context_summary for the next phase."
     }
 
     fn parameters(&self) -> Value {

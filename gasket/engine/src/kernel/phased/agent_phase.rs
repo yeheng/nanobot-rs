@@ -28,12 +28,15 @@ impl AgentPhase {
     pub fn can_transition_to(&self, target: &AgentPhase) -> bool {
         matches!(
             (self, target),
-            (AgentPhase::Research, AgentPhase::Planning)
-                | (AgentPhase::Research, AgentPhase::Execute)
+            // Research can go to planning or execute directly
+            (AgentPhase::Research, AgentPhase::Planning | AgentPhase::Execute)
+                // Planning must go to execute
                 | (AgentPhase::Planning, AgentPhase::Execute)
-                | (AgentPhase::Execute, AgentPhase::Review)
-                | (AgentPhase::Execute, AgentPhase::Done)
-                | (AgentPhase::Review, AgentPhase::Done)
+                // Execute can go to review or finish
+                | (AgentPhase::Execute, AgentPhase::Review | AgentPhase::Done)
+                // Review can loop back to planning or execute for correction,
+                // or finish if everything looks good
+                | (AgentPhase::Review, AgentPhase::Planning | AgentPhase::Execute | AgentPhase::Done)
         )
     }
 
@@ -156,6 +159,16 @@ mod tests {
     #[test]
     fn test_valid_transition_review_to_done() {
         assert!(AgentPhase::Review.can_transition_to(&AgentPhase::Done));
+    }
+
+    #[test]
+    fn test_valid_transition_review_to_planning() {
+        assert!(AgentPhase::Review.can_transition_to(&AgentPhase::Planning));
+    }
+
+    #[test]
+    fn test_valid_transition_review_to_execute() {
+        assert!(AgentPhase::Review.can_transition_to(&AgentPhase::Execute));
     }
 
     // --- Invalid transitions ---
