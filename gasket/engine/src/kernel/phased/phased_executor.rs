@@ -1,5 +1,18 @@
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+use crate::kernel::context::RuntimeContext;
+use crate::kernel::kernel_executor::{ExecutionResult, TokenLedger};
+use crate::kernel::steppable_executor::SteppableExecutor;
+use crate::kernel::KernelError;
+
+use gasket_providers::{ChatMessage, MessageRole};
+use gasket_types::StreamEvent;
+
 use super::agent_phase::AgentPhase;
-use super::phase_prompt::ContextAccumulator;
+use super::phase_prompt::{ContextAccumulator, PhasePrompt};
+use super::step_action::StepAction;
 
 /// Internal state machine for phase tracking.
 pub struct PhaseStateMachine {
@@ -79,8 +92,230 @@ impl PhaseStateMachine {
 }
 
 /// Main entry point for phased execution.
-/// The full run() method will be completed when integrating with SteppableExecutor.
-pub struct PhasedExecutor;
+pub struct PhasedExecutor {
+    ctx: RuntimeContext,
+}
+
+impl PhasedExecutor {
+    pub fn new(ctx: RuntimeContext) -> Self {
+        Self { ctx }
+    }
+
+    /// Execute the phased agent loop.
+    ///
+    /// Replaces `kernel::execute_streaming()` when `phased_execution` is enabled.
+    pub async fn run(
+        &self,
+        messages: Vec<ChatMessage>,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<ExecutionResult, KernelError> {
+        let mut state = PhaseStateMachine::new();
+        let mut ledger = TokenLedger::new();
+        let mut all_messages = messages;
+        let mut tools_used = Vec::new();
+
+        // Inject initial Research phase entry prompt
+        let entry = PhasePrompt::entry_prompt(AgentPhase::Research, state.context());
+        all_messages.push(ChatMessage::system(entry));
+
+        // Send initial phase event
+        let _ = event_tx
+            .send(StreamEvent::phase_transition("init", "research"))
+            .await;
+
+        loop {
+            let current_phase = state.current_phase();
+
+            // --- Terminal state ---
+            if current_phase == AgentPhase::Done {
+                let _ = event_tx.send(StreamEvent::done()).await;
+                return Ok(ExecutionResult {
+                    content: all_messages
+                        .iter()
+                        .rev()
+                        .find_map(|m| {
+                            if m.role == MessageRole::Assistant {
+                                m.content.clone()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default(),
+                    reasoning_content: None,
+                    tools_used,
+                    token_usage: ledger.total_usage.clone(),
+                });
+            }
+
+            // --- Global iteration limit ---
+            if state.is_at_global_limit(self.ctx.config.max_iterations) {
+                warn!(
+                    "[PhasedExecutor] Global max iterations ({}) reached in phase {}",
+                    self.ctx.config.max_iterations, current_phase
+                );
+                let _ = event_tx.send(StreamEvent::done()).await;
+                return Ok(ExecutionResult {
+                    content: "达到最大迭代次数，任务执行被截断。".to_string(),
+                    reasoning_content: None,
+                    tools_used,
+                    token_usage: ledger.total_usage.clone(),
+                });
+            }
+
+            // --- Hard limit for current phase ---
+            if state.is_at_hard_limit() {
+                let from = current_phase;
+                match state.force_transition() {
+                    Ok(to) => {
+                        warn!(
+                            "[PhasedExecutor] Hard limit in {}, forcing to {}",
+                            from, to
+                        );
+                        let prompt = PhasePrompt::hard_limit_prompt(from, to);
+                        all_messages.push(ChatMessage::system(prompt));
+                        let entry = PhasePrompt::entry_prompt(to, state.context());
+                        all_messages.push(ChatMessage::system(entry));
+                        let _ = event_tx
+                            .send(StreamEvent::phase_transition(
+                                from.to_string(),
+                                to.to_string(),
+                            ))
+                            .await;
+                        continue;
+                    }
+                    Err(_) => {
+                        let _ = event_tx.send(StreamEvent::done()).await;
+                        return Ok(ExecutionResult {
+                            content: "达到迭代上限，任务执行被截断。".to_string(),
+                            reasoning_content: None,
+                            tools_used,
+                            token_usage: ledger.total_usage.clone(),
+                        });
+                    }
+                }
+            }
+
+            // --- Soft limit injection ---
+            if state.is_at_soft_limit() {
+                let prompt = PhasePrompt::soft_limit_prompt(current_phase);
+                all_messages.push(ChatMessage::system(prompt));
+            }
+
+            // --- Build filtered context for this step ---
+            let phased_ctx = self.build_filtered_context(current_phase);
+
+            // --- Execute one step ---
+            let steppable = SteppableExecutor::new(phased_ctx);
+            let result = steppable
+                .step(&mut all_messages, &mut ledger, Some(&event_tx))
+                .await
+                .map_err(|e| KernelError::Provider(e.to_string()))?;
+
+            for tr in &result.tool_results {
+                tools_used.push(tr.tool_name.clone());
+            }
+
+            state.advance_iteration();
+
+            // --- Classify the step result ---
+            let action = StepAction::classify(&result);
+
+            match action {
+                StepAction::PhaseTransition { to } => {
+                    let from = current_phase;
+                    info!("[PhasedExecutor] Phase transition: {} -> {}", from, to);
+
+                    // Extract context_summary from phase_transition tool call arguments
+                    if let Some(tc) = result
+                        .response
+                        .tool_calls
+                        .iter()
+                        .find(|tc| tc.function.name == "phase_transition")
+                    {
+                        if let Some(summary) = tc
+                            .function
+                            .arguments
+                            .get("context_summary")
+                            .and_then(|v| v.as_str())
+                        {
+                            if !summary.is_empty() {
+                                state.add_context(summary.to_string());
+                            }
+                        }
+                    }
+
+                    state
+                        .transition(to)
+                        .map_err(|e| KernelError::Provider(e))?;
+
+                    // Inject next phase entry prompt
+                    let entry = PhasePrompt::entry_prompt(to, state.context());
+                    all_messages.push(ChatMessage::system(entry));
+
+                    // Emit phase transition event
+                    let _ = event_tx
+                        .send(StreamEvent::phase_transition(
+                            from.to_string(),
+                            to.to_string(),
+                        ))
+                        .await;
+
+                    // If transitioning to Done, loop will handle terminal state next iteration
+                    continue;
+                }
+                StepAction::WaitForUserInput => {
+                    debug!(
+                        "[PhasedExecutor] LLM sent text without tool calls in phase {} — treating as phase completion",
+                        current_phase
+                    );
+
+                    // If in Execute phase with text response, auto-transition to Done
+                    if current_phase == AgentPhase::Execute {
+                        state
+                            .transition(AgentPhase::Done)
+                            .map_err(|e| KernelError::Provider(e))?;
+                        let _ = event_tx
+                            .send(StreamEvent::phase_transition(
+                                "execute".to_string(),
+                                "done".to_string(),
+                            ))
+                            .await;
+                    }
+                    // For Research/Planning/Review, text response means LLM wants user input.
+                    // Since we can't pause mid-stream, we treat it as done.
+                    let _ = event_tx.send(StreamEvent::done()).await;
+                    return Ok(ExecutionResult {
+                        content: result.response.content.clone().unwrap_or_default(),
+                        reasoning_content: result.response.reasoning_content.clone(),
+                        tools_used,
+                        token_usage: ledger.total_usage.clone(),
+                    });
+                }
+                StepAction::Continue => {
+                    // Normal tool execution — loop continues
+                }
+            }
+        }
+    }
+
+    /// Build a filtered RuntimeContext with only allowed tools for the current phase.
+    ///
+    /// Phases with empty `allowed_tools()` (Execute, Done) get the full registry.
+    /// Other phases get a filtered registry containing only their allowed tools.
+    fn build_filtered_context(&self, phase: AgentPhase) -> RuntimeContext {
+        let allowed = phase.allowed_tools();
+
+        if allowed.is_empty() {
+            return self.ctx.clone();
+        }
+
+        let filtered_registry = self.ctx.tools.filtered(allowed);
+        RuntimeContext {
+            tools: Arc::new(filtered_registry),
+            ..self.ctx.clone()
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
