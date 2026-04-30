@@ -4,14 +4,20 @@ use crate::kernel::KernelConfig;
 
 fn default_wiki_base() -> String {
     dirs::home_dir()
-        .map(|p| p.join(".gasket/wiki").to_str().unwrap().to_string())
-        .unwrap_or_else(|| "~/.gasket/wiki".to_string())
+        .expect("home directory not available")
+        .join(".gasket/wiki")
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 fn default_sources_base() -> String {
     dirs::home_dir()
-        .map(|p| p.join(".gasket/sources").to_str().unwrap().to_string())
-        .unwrap_or_else(|| "~/.gasket/sources".to_string())
+        .expect("home directory not available")
+        .join(".gasket/sources")
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 fn default_batch_size() -> usize {

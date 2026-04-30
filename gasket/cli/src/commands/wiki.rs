@@ -247,7 +247,7 @@ pub async fn cmd_wiki_search(query: &str, limit: usize) -> Result<()> {
 
     let tantivy_dir = dirs::home_dir()
         .map(|p| p.join(".gasket/wiki/.tantivy"))
-        .unwrap_or_else(|| PathBuf::from("~/.gasket/wiki/.tantivy"));
+        .unwrap();
 
     if tantivy_dir.exists() {
         match gasket_storage::wiki::TantivyPageIndex::open(tantivy_dir) {
