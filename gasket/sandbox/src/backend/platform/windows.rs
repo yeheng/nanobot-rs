@@ -308,7 +308,10 @@ impl SandboxBackend for HostExecutor {
             // decided not to use one), release the suspended primary thread.
             let pid = child.id();
             if !unsafe { resume_process_threads(pid) } {
-                warn!("HostExecutor: failed to resume primary thread for pid {}", pid);
+                warn!(
+                    "HostExecutor: failed to resume primary thread for pid {}",
+                    pid
+                );
             }
 
             child

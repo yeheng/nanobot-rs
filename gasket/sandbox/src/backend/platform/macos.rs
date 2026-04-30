@@ -255,8 +255,7 @@ mod tests {
         let backend = MacOsSandboxBackend::new();
         // Hostile path attempting to close the subpath literal and inject a
         // new directive granting world-writable access.
-        let injected =
-            "/tmp/x\")(allow file-write* (subpath \"/";
+        let injected = "/tmp/x\")(allow file-write* (subpath \"/";
         let profile = backend.generate_profile(Path::new(injected));
 
         // The escaped quote must survive intact; no unescaped `")` should

@@ -112,6 +112,10 @@ pub fn spawn_aggregator(
         ws_summary_limit,
     } = ctx;
     tokio::spawn(async move {
+        // Clone for the cancellation branch since tokio::select! may move values
+        let cancel_ids = subagent_ids.clone();
+        let cancel_indices = subagent_indices.clone();
+
         let results = tokio::select! {
             results = collect_all_results(
                 result_receivers,
@@ -123,6 +127,16 @@ pub fn spawn_aggregator(
             ) => results,
             _ = cancellation_token.cancelled() => {
                 info!("[Aggregator] Cancelled");
+                // Notify frontend that all subagents are cancelled so they don't stay in "running" state
+                for (i, id) in cancel_ids.iter().enumerate() {
+                    let index = cancel_indices.get(i).copied().unwrap_or(0);
+                    send_ws_event(
+                        &session_key,
+                        &outbound_tx,
+                        ChatEvent::subagent_error(id, index, "Cancelled"),
+                    )
+                    .await;
+                }
                 return;
             }
         };

@@ -89,11 +89,7 @@ impl ProcessManager {
             })?
     }
 
-    async fn execute_inner(
-        &self,
-        command: &str,
-        working_dir: &Path,
-    ) -> Result<ExecutionResult> {
+    async fn execute_inner(&self, command: &str, working_dir: &Path) -> Result<ExecutionResult> {
         // Step 1: Policy check
         if let PolicyVerdict::Deny(reason) = self.policy.check(command) {
             return Err(SandboxError::PolicyDenied(reason));
