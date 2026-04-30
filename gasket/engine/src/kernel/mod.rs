@@ -7,6 +7,7 @@ pub mod context;
 pub mod error;
 pub mod executor;
 pub(crate) mod kernel_executor;
+pub mod phased;
 pub(crate) mod request_handler;
 pub(crate) mod steppable_executor;
 pub mod stream;
