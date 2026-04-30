@@ -412,6 +412,7 @@ fn parse_copilot_response(body: &str) -> Result<ChatResponse, crate::ProviderErr
         tool_calls,
         reasoning_content: None, // Copilot doesn't support reasoning_content
         usage: None,
+        finish_reason: None,
     })
 }
 

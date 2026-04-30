@@ -351,6 +351,7 @@ impl MinimaxProvider {
             tool_calls,
             reasoning_content,
             usage,
+            finish_reason: None,
         })
     }
 

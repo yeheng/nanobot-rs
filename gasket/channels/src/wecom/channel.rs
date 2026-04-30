@@ -461,6 +461,7 @@ impl WeComChannel {
                     metadata: serde_json::to_value(&message).ok(),
                     timestamp: chrono::Utc::now(),
                     trace_id: ctx_trace_id,
+                    override_phase: None,
                 };
 
                 self.inbound_sender.send(inbound).await?;

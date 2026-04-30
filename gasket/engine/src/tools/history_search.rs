@@ -92,7 +92,7 @@ mod impl_ {
                 .map_err(|e| ToolError::ExecutionError(format!("Search failed: {}", e)))?;
 
             if hits.is_empty() {
-                return Ok("No semantically similar history found.".to_string());
+                return Ok("No semantically similar history found.".to_string().into());
             }
 
             let mut lines = vec![format!(
@@ -112,7 +112,7 @@ mod impl_ {
                 ));
             }
 
-            Ok(lines.join(""))
+            Ok(lines.join("").into())
         }
     }
 }
