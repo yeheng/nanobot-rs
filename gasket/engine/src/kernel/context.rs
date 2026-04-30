@@ -92,6 +92,9 @@ pub struct KernelConfig {
     pub tool_timeout_secs: u64,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
+    /// Enable phased execution (Research → Planning → Execute → Review → Done).
+    /// When false (default), behavior is identical to current SteppableExecutor loop.
+    pub phased_execution: bool,
 }
 
 impl KernelConfig {
@@ -106,6 +109,7 @@ impl KernelConfig {
             thinking_enabled: false,
             tool_timeout_secs: 120,
             ws_summary_limit: 0,
+            phased_execution: false,
         }
     }
 }

@@ -257,6 +257,7 @@ impl AgentConfigExt for AgentConfig {
             thinking_enabled: self.thinking_enabled,
             tool_timeout_secs: self.tool_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
+            phased_execution: false,
         }
     }
 }

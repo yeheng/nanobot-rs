@@ -586,6 +586,10 @@ impl AgentSession {
         messages: Vec<ChatMessage>,
         kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<ExecutionResult, AgentError> {
+        if runtime_ctx.config.phased_execution {
+            // Phased mode — use PhasedExecutor (full run() wiring in follow-up)
+            // For now, fall through to standard kernel execution
+        }
         match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
             Ok(r) => Ok(r),
             Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {

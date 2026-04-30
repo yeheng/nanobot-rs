@@ -141,6 +141,9 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     )
     .register_tools(&mut tools);
 
+    // Phased execution tool (always registered, filtered by PhasedToolSet)
+    tools.register(Box::new(super::PhaseTransitionTool::new()));
+
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
