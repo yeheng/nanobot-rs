@@ -56,7 +56,7 @@ impl Tool for WikiDecayTool {
             Ok(format!(
                 "No stale wiki pages found. {} candidates scanned.",
                 report.total_scanned
-            ))
+            ).into())
         } else {
             Ok(format!(
                 "Wiki decay complete: {} scanned, {} decayed{}",
@@ -67,7 +67,7 @@ impl Tool for WikiDecayTool {
                 } else {
                     String::new()
                 }
-            ))
+            ).into())
         }
     }
 }

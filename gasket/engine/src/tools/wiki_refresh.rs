@@ -42,7 +42,7 @@ impl WikiRefreshTool {
         tokio::task::spawn_blocking(move || {
             let mut files = Vec::new();
             Self::scan_dir_recursive(&wiki_root, &wiki_root, &mut files)?;
-            Ok(files)
+            Ok(files.into())
         })
         .await
         .map_err(|e| anyhow::anyhow!("Wiki scan task panicked: {}", e))?
@@ -146,7 +146,7 @@ impl WikiRefreshTool {
         }
 
         info!("WikiRefresh: synced {} changed pages", synced);
-        Ok(synced)
+        Ok(synced.into())
     }
 
     /// Full rebuild: sync SQLite from disk (removes stale records), then rebuild Tantivy.
@@ -161,11 +161,11 @@ impl WikiRefreshTool {
             .map_err(|e| ToolError::ExecutionError(format!("Tantivy rebuild failed: {}", e)))?;
 
         info!("WikiRefresh: full rebuild complete with {} pages", synced);
-        Ok(synced)
+        Ok(synced.into())
     }
 
     /// Gather statistics.
-    async fn stats(&self) -> Result<String, ToolError> {
+    async fn stats(&self) -> ToolResult {
         let all_pages = self
             .page_store
             .list(PageFilter::default())
@@ -194,7 +194,7 @@ impl WikiRefreshTool {
         Ok(format!(
             "📊 Wiki Statistics\n\nTotal pages: {}\nIndex docs: {}\n\nBy type:\n  📚 Topics: {}\n  👥 Entities: {}\n  📄 Sources: {}\n  📋 SOPs: {}",
             total, index_docs, topics, entities, sources, sops
-        ))
+        ).into())
     }
 }
 
@@ -242,14 +242,14 @@ impl Tool for WikiRefreshTool {
                 Ok(format!(
                     "✓ Wiki sync complete\n\nSynced {} changed pages.",
                     count
-                ))
+                ).into())
             }
             "reindex" => {
                 let count = self.full_rebuild().await?;
                 Ok(format!(
                     "✓ Wiki reindex complete\n\nReindexed {} pages from Markdown files.",
                     count
-                ))
+                ).into())
             }
             "stats" => self.stats().await,
             _ => Err(ToolError::InvalidArguments(format!(

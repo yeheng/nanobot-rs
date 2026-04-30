@@ -46,8 +46,8 @@ mod wiki_tools;
 
 // Re-export tool trait and base types from gasket-types
 pub use gasket_types::{
-    simple_schema, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError, ToolMetadata,
-    ToolResult,
+    simple_schema, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolControlSignal,
+    ToolError, ToolMetadata, ToolOutput, ToolResult,
 };
 
 // Re-export tool implementations

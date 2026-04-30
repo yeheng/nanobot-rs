@@ -217,7 +217,7 @@ mod tests {
             _args: Value,
             _ctx: &ToolContext,
         ) -> ToolResult {
-            Ok("ok".to_string())
+            Ok("ok".into())
         }
     }
 

@@ -193,45 +193,31 @@ impl PhaseController {
     }
 
     /// Post-step: classify, handle transitions.
-    /// For `PhaseTransition`, truncates messages back to `msg_count_before`
-    /// (Task 3: elide tool_result noise from history).
     pub async fn post_step(
         &mut self,
         result: &StepResult,
         messages: &mut Vec<ChatMessage>,
-        msg_count_before: usize,
+        _msg_count_before: usize,
         event_tx: &Option<mpsc::Sender<StreamEvent>>,
     ) -> PhaseAction {
         self.state.advance_iteration();
         let action = StepAction::classify(result);
 
         match action {
-            StepAction::PhaseTransition { to } => {
+            StepAction::PhaseTransition { to, context_summary } => {
                 let from = self.state.current_phase();
                 info!("[PhaseController] Phase transition: {} -> {}", from, to);
 
-                if let Some(tc) = result
-                    .response
-                    .tool_calls
-                    .iter()
-                    .find(|tc| tc.function.name == "phase_transition")
-                {
-                    if let Some(summary) = tc
-                        .function
-                        .arguments
-                        .get("context_summary")
-                        .and_then(|v| v.as_str())
-                    {
-                        if !summary.is_empty() {
-                            self.state.add_context(summary.to_string());
-                        }
+                if let Some(summary) = context_summary {
+                    if !summary.is_empty() {
+                        self.state.add_context(summary);
                     }
                 }
 
                 self.state.transition(to).ok();
 
-                // Task 3: truncate tool messages, inject merged system prompt instead
-                messages.truncate(msg_count_before);
+                // Inject entry prompt for the new phase — full history is preserved.
+                // ContextCompactor handles compression when needed.
                 messages.push(ChatMessage::system(PhasePrompt::entry_prompt(
                     to,
                     self.state.context(),
@@ -302,7 +288,7 @@ impl PhaseController {
             )
             .await
         {
-            Ok(output) if !output.starts_with("No wiki pages found") => Some(output),
+            Ok(output) if !output.content.starts_with("No wiki pages found") => Some(output.content),
             _ => None,
         };
 

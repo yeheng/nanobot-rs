@@ -105,7 +105,7 @@ impl ContextTool {
             stats.uncompacted_events,
             stats.event_tokens,
             if stats.is_compressing { "compressing..." } else { "idle" }
-        ))
+        ).into())
     }
 
     async fn exec_watermark(&self, session_key: &gasket_types::SessionKey) -> ToolResult {
@@ -118,15 +118,15 @@ impl ContextTool {
         Ok(format!(
             "Context Watermark:\n  Covered sequence: {}\n  Max sequence: {}\n  Uncompacted events: {}\n  Compacted: {:.1}% of history",
             info.watermark, info.max_sequence, info.uncompacted_count, info.compacted_percent
-        ))
+        ).into())
     }
 
     async fn exec_compact(&self, session_key: &gasket_types::SessionKey) -> ToolResult {
         let triggered = self.compactor.force_compact(session_key, &[]);
         if triggered {
-            Ok("Compaction triggered. Running in background.".to_string())
+            Ok("Compaction triggered. Running in background.".into())
         } else {
-            Ok("Compaction skipped: already in progress.".to_string())
+            Ok("Compaction skipped: already in progress.".into())
         }
     }
 }

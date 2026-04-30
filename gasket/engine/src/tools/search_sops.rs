@@ -109,7 +109,7 @@ impl Tool for SearchSopsTool {
             return Ok(format!(
                 "No SOP pages found matching '{}'. Consider creating one.",
                 query
-            ));
+            ).into());
         }
 
         let mut output = format!(
@@ -135,7 +135,7 @@ impl Tool for SearchSopsTool {
             ));
         }
 
-        Ok(output)
+        Ok(output.into())
     }
 }
 

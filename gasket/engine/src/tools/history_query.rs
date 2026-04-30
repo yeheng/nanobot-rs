@@ -116,7 +116,7 @@ impl Tool for HistoryQueryTool {
         .map_err(|e| ToolError::ExecutionError(format!("Database query failed: {}", e)))?;
 
         if rows.is_empty() {
-            return Ok("No history found.".to_string());
+            return Ok("No history found.".into());
         }
 
         let mut lines = vec![format!("Conversation history ({} messages):", rows.len())];
@@ -133,7 +133,7 @@ impl Tool for HistoryQueryTool {
             lines.push(format!("\n[{}] {}:\n{}", timestamp, role, preview));
         }
 
-        Ok(lines.join(""))
+        Ok(lines.join("").into())
     }
 }
 
@@ -177,8 +177,8 @@ mod tests {
         let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
         let text = result.unwrap();
-        assert!(text.contains("Hello world"));
-        assert!(text.contains("user"));
+        assert!(text.content.contains("Hello world"));
+        assert!(text.content.contains("user"));
     }
 
     #[tokio::test]
@@ -191,6 +191,6 @@ mod tests {
         });
         let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("No history found"));
+        assert!(result.unwrap().content.contains("No history found"));
     }
 }

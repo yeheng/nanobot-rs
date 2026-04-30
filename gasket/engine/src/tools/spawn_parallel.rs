@@ -239,7 +239,7 @@ impl Tool for SpawnParallelTool {
                 },
             );
 
-            return Ok(format!("已启动 {} 个并行任务，执行中...", count));
+            return Ok(format!("已启动 {} 个并行任务，执行中...", count).into());
         }
 
         // ── Blocking mode: no synthesis_callback ───────────────────────
@@ -378,7 +378,7 @@ impl Tool for SpawnParallelTool {
             output.push_str("\n\n");
         }
 
-        Ok(output)
+        Ok(output.into())
     }
 }
 

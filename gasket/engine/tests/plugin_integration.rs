@@ -81,7 +81,7 @@ async fn test_simple_echo_tool() {
     let args = serde_json::json!({"message": "hello world"});
     let result = echo_tool.execute(args, &ToolContext::default()).await;
     assert!(result.is_ok(), "Simple echo failed: {:?}", result);
-    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap().content).unwrap();
     assert_eq!(parsed["result"]["echo"], "hello world");
     assert_eq!(parsed["result"]["status"], "ok");
 }
@@ -106,7 +106,7 @@ async fn test_jsonrpc_ping_tool() {
     let args = serde_json::json!({"name": "Alice"});
     let result = ping_tool.execute(args, &make_test_ctx()).await;
     assert!(result.is_ok(), "JsonRpc ping failed: {:?}", result);
-    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap().content).unwrap();
     assert_eq!(parsed["result"]["greeting"], "Hello, Alice!");
     assert_eq!(parsed["result"]["llm_called"], false);
 }

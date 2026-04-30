@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Tool, ToolContext, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolControlSignal, ToolError, ToolOutput, ToolResult};
 
 /// Tool for transitioning between agent working phases.
 pub struct PhaseTransitionTool;
@@ -69,9 +69,18 @@ impl Tool for PhaseTransitionTool {
             )));
         }
 
-        Ok(format!(
-            "Phase transition to {} acknowledged.",
-            parsed.phase
+        let summary = if parsed.context_summary.is_empty() {
+            None
+        } else {
+            Some(parsed.context_summary.clone())
+        };
+
+        Ok(ToolOutput::with_signal(
+            format!("Phase transition to {} acknowledged.", parsed.phase),
+            ToolControlSignal::TransitionPhase {
+                phase: parsed.phase.clone(),
+                context_summary: summary,
+            },
         ))
     }
 }
@@ -93,7 +102,9 @@ mod tests {
         let args = serde_json::json!({"phase": "execute", "context_summary": "Found wiki pages"});
         let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("execute"));
+        let output = result.unwrap();
+        assert!(output.content.contains("execute"));
+        assert!(output.signal.is_some());
     }
 
     #[tokio::test]

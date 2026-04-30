@@ -418,7 +418,7 @@ impl WebSearchTool {
             }
         };
 
-        Ok(format_hits(&hits))
+        Ok(format_hits(&hits).into())
     }
 
     /// Extract an API key from config, or return a descriptive error.

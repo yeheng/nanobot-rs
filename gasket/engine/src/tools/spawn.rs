@@ -136,7 +136,7 @@ impl Tool for SpawnTool {
                 },
             );
 
-            return Ok("Subagent task dispatched. Results will stream in real-time.".to_string());
+            return Ok("Subagent task dispatched. Results will stream in real-time.".into());
         }
 
         // ── Blocking mode: no synthesis_callback ───────────────────────
@@ -235,6 +235,6 @@ impl Tool for SpawnTool {
         // Ensure event forwarding completes (or channel is closed)
         let _ = forward_handle.await;
 
-        Ok(format_subagent_response(&result))
+        Ok(format_subagent_response(&result).into())
     }
 }

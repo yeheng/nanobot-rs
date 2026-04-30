@@ -120,8 +120,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     WikiToolProvider::new(
         page_store.clone(),
         page_index.clone(),
-        provider.clone(),
-        model.clone(),
         prompts.planning.clone(),
     )
     .register_tools(&mut tools);

@@ -29,5 +29,5 @@ pub use token_tracker::{
 pub use tool::{
     simple_schema, ApprovalCallback, NoopSpawner, SubagentResponse, SubagentResult,
     SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
-    ToolContext, ToolError, ToolMetadata, ToolResult,
+    ToolContext, ToolControlSignal, ToolError, ToolMetadata, ToolOutput, ToolResult,
 };

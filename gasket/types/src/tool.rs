@@ -12,8 +12,68 @@ use std::sync::Arc;
 use crate::events::{OutboundMessage, SessionKey};
 use tokio_util::sync::CancellationToken;
 
+/// Control signals that tools can return to influence kernel behavior.
+///
+/// Tools emit signals through `ToolOutput`; the kernel inspects them
+/// without coupling to any specific tool name or JSON structure.
+#[derive(Debug, Clone)]
+pub enum ToolControlSignal {
+    /// Request a phase transition with optional context summary.
+    TransitionPhase {
+        phase: String,
+        context_summary: Option<String>,
+    },
+}
+
+/// Output of a successful tool execution.
+///
+/// Replaces the bare `String` in `ToolResult` so tools can optionally
+/// emit a `ToolControlSignal` alongside their text output.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolOutput {
+    pub content: String,
+    #[serde(skip_serializing)]
+    pub signal: Option<ToolControlSignal>,
+}
+
+impl ToolOutput {
+    /// Plain text output — no control signal.
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            signal: None,
+        }
+    }
+
+    /// Text output with a control signal attached.
+    pub fn with_signal(content: impl Into<String>, signal: ToolControlSignal) -> Self {
+        Self {
+            content: content.into(),
+            signal: Some(signal),
+        }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(s: String) -> Self {
+        Self::text(s)
+    }
+}
+
+impl From<&str> for ToolOutput {
+    fn from(s: &str) -> Self {
+        Self::text(s)
+    }
+}
+
+impl std::fmt::Display for ToolOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.content)
+    }
+}
+
 /// Result type for tool execution
-pub type ToolResult = Result<String, ToolError>;
+pub type ToolResult = Result<ToolOutput, ToolError>;
 
 /// Future type returned by [`SynthesisCallback::synthesize`].
 pub type SynthesisFuture = std::pin::Pin<

@@ -160,7 +160,7 @@ impl Tool for WebFetchTool {
             text
         };
 
-        Ok(truncated)
+        Ok(truncated.into())
     }
 }
 
@@ -185,7 +185,7 @@ async fn extract_core_content(url_str: &str, html: String) -> Result<String, any
                 if text.len() < 100 {
                     Ok(fallback_extract(&html))
                 } else {
-                    Ok(format!("Title: {}\n\n{}", title, text))
+                    Ok(format!("Title: {}\n\n{}", title, text).into())
                 }
             }
             Err(_) => Ok(fallback_extract(&html)),

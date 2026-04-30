@@ -188,8 +188,6 @@ impl ToolProvider for CoreToolProvider {
 pub struct WikiToolProvider {
     page_store: Option<PageStore>,
     page_index: Option<Arc<PageIndex>>,
-    provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
-    model: Option<String>,
     planning_prompt: Option<String>,
 }
 
@@ -197,15 +195,11 @@ impl WikiToolProvider {
     pub fn new(
         page_store: Option<PageStore>,
         page_index: Option<Arc<PageIndex>>,
-        provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
-        model: Option<String>,
         planning_prompt: Option<String>,
     ) -> Self {
         Self {
             page_store,
             page_index,
-            provider,
-            model,
             planning_prompt,
         }
     }
@@ -284,14 +278,25 @@ impl ToolProvider for WikiToolProvider {
             true
         );
 
-        if let (Some(ref prov), Some(ref mdl)) = (&self.provider, &self.model) {
+        if let Some(ref prompt) = self.planning_prompt {
             reg!(
                 registry,
                 CreatePlanTool::new(
-                    prov.clone(),
-                    mdl.clone(),
                     store.clone(),
-                    self.planning_prompt.clone(),
+                    Some(prompt.clone()),
+                ),
+                "Create Plan",
+                "system",
+                ["plan", "markdown"],
+                false,
+                true
+            );
+        } else {
+            reg!(
+                registry,
+                CreatePlanTool::new(
+                    store.clone(),
+                    None,
                 ),
                 "Create Plan",
                 "system",
