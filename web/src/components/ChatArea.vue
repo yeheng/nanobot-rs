@@ -114,6 +114,16 @@ const currentApproval = computed(() => {
 const handleApprovalResponse = (requestId: string, approved: boolean, remember: boolean) => {
   session.sendApprovalResponse(requestId, approved, remember);
 };
+
+const phaseLabel = (phase: string): string => {
+  const labels: Record<string, string> = {
+    research: '🔍 Research',
+    planning: '📋 Planning',
+    execute: '⚡ Execute',
+    review: '📝 Review',
+  };
+  return labels[phase] || phase;
+};
 </script>
 
 <template>
@@ -140,6 +150,15 @@ const handleApprovalResponse = (requestId: string, approved: boolean, remember: 
         <button @click="session.dismissError" class="p-0.5 hover:bg-destructive/20 rounded transition-colors text-destructive">
           <XIcon class="w-3.5 h-3.5" />
         </button>
+      </div>
+
+      <!-- Phase indicator badge -->
+      <div
+        v-if="session.currentPhase"
+        class="phase-badge"
+        :class="`phase-${session.currentPhase}`"
+      >
+        {{ phaseLabel(session.currentPhase) }}
       </div>
 
       <!-- Messages -->
@@ -222,6 +241,26 @@ const handleApprovalResponse = (requestId: string, approved: boolean, remember: 
 </template>
 
 <style>
+.phase-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 8px 16px;
+  background: var(--color-surface-2, #f1f5f9);
+  color: var(--color-text-secondary, #64748b);
+  transition: all 0.3s ease;
+  animation: phase-enter 0.2s ease-out;
+}
+
+@keyframes phase-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .custom-scrollbar::-webkit-scrollbar { width: 6px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); border-radius: 4px; }
 .dark .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
