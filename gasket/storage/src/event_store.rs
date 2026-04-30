@@ -408,6 +408,33 @@ impl EventStore {
         Ok(max_seq)
     }
 
+    /// Get the persisted current phase for a session (for re-entrant phased execution).
+    pub async fn get_current_phase(&self, session_key: &SessionKey) -> Result<Option<String>, StoreError> {
+        let phase: Option<String> = sqlx::query_scalar(
+            "SELECT current_phase FROM sessions_v2 WHERE key = ?",
+        )
+        .bind(session_key.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        Ok(phase)
+    }
+
+    /// Persist the current phase for a session.
+    /// Pass `None` to clear (session completed or non-phased).
+    pub async fn set_current_phase(
+        &self,
+        session_key: &SessionKey,
+        phase: Option<&str>,
+    ) -> Result<(), StoreError> {
+        sqlx::query("UPDATE sessions_v2 SET current_phase = ? WHERE key = ?")
+            .bind(phase)
+            .bind(session_key.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Garbage-collect events that have been summarized.
     ///
     /// Deletes all events with `sequence <= target_sequence` for the given session.
@@ -748,7 +775,8 @@ mod tests {
                 total_events INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 channel TEXT NOT NULL DEFAULT '',
-                chat_id TEXT NOT NULL DEFAULT ''
+                chat_id TEXT NOT NULL DEFAULT '',
+                current_phase TEXT
             )
             "#,
         )

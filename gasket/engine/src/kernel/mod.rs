@@ -57,3 +57,16 @@ pub async fn execute_streaming(
     exec.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
         .await
 }
+
+/// Streaming LLM conversation loop with optional phase start.
+pub async fn execute_streaming_with_phase(
+    ctx: &RuntimeContext,
+    messages: Vec<ChatMessage>,
+    event_tx: mpsc::Sender<StreamEvent>,
+    start_phase: Option<&str>,
+) -> Result<ExecutionResult, KernelError> {
+    let exec = build_executor(ctx);
+    let options = ExecutorOptions::new().with_start_phase(start_phase);
+    exec.execute_stream_with_options(messages, event_tx, &options)
+        .await
+}

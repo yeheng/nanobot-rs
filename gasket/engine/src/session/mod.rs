@@ -248,11 +248,6 @@ pub struct AgentSession {
     #[allow(dead_code)]
     #[cfg(feature = "embedding")]
     embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>,
-    /// Saved phase from a previous interrupted phased execution.
-    /// When the LLM sends text without tool calls in Research/Planning/Review,
-    /// the current phase is saved here. On the next user message, the PhasedExecutor
-    /// resumes from this phase instead of starting fresh.
-    phased_session_phase: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 /// Context carried through the PreProcess → Execute → PostProcess pipeline.
@@ -264,8 +259,6 @@ struct PipelineContext {
     finalizer: ResponseFinalizer,
     /// Resumed phase for re-entrant phased execution.
     start_phase: Option<crate::kernel::phased::AgentPhase>,
-    /// Shared handle to save interrupted phase back to AgentSession.
-    phase_saver: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl AgentSession {
@@ -513,8 +506,9 @@ impl AgentSession {
         // Extract messages so we can move them into the kernel without cloning.
         let messages = std::mem::take(&mut ctx.messages);
 
-        // Capture phase saver for the spawned task to write back interrupted phase.
-        let phase_saver = ctx.phase_saver.clone();
+        // Capture event_store + session_key for persisting interrupted phase.
+        let event_store = self.context_builder.event_store().clone();
+        let persist_key = ctx.fctx.session_key.clone();
 
         // Spawn via TaskTracker so graceful shutdown can await this task.
         // T3: Stream combinator replaces manual loop + extra spawn.
@@ -533,12 +527,14 @@ impl AgentSession {
             let (result, _) = tokio::join!(exec_future, stream_future);
             let result = result?;
 
-            // Save interrupted phase for re-entrant phased sessions.
+            // Persist interrupted phase for re-entrant phased sessions.
             let interrupted = result.interrupted_phase.clone();
             let response = Self::postprocess(result, &ctx).await;
 
-            if let Some(phase) = interrupted {
-                *phase_saver.lock().await = Some(phase);
+            if let Some(ref phase) = interrupted {
+                let _ = event_store
+                    .set_current_phase(&persist_key, Some(phase))
+                    .await;
             }
 
             Ok(response)
@@ -571,7 +567,6 @@ impl AgentSession {
                     model: self.config.model.clone(),
                     finalizer: self.finalizer.clone(),
                     start_phase: None,
-                    phase_saver: self.phased_session_phase.clone(),
                 };
                 return Ok((ctx, Some(msg)));
             }
@@ -591,8 +586,14 @@ impl AgentSession {
             }));
         }
 
-        // Read saved phase for re-entrant phased execution.
-        let saved_phase_str = self.phased_session_phase.lock().await.take();
+        // Read persisted phase for re-entrant phased execution.
+        let saved_phase_str = self
+            .context_builder
+            .event_store()
+            .get_current_phase(&fctx.session_key)
+            .await
+            .ok()
+            .flatten();
         let start_phase = saved_phase_str
             .as_ref()
             .and_then(|s| crate::kernel::phased::AgentPhase::try_from(s.as_str()).ok());
@@ -604,33 +605,26 @@ impl AgentSession {
             model: self.config.model.clone(),
             finalizer: self.finalizer.clone(),
             start_phase,
-            phase_saver: self.phased_session_phase.clone(),
         };
         Ok((ctx, None))
     }
 
-    /// Stage 2: Execute — run the kernel streaming loop.
+    /// Stage 2: Execute — unified kernel loop (phased + non-phased).
     async fn execute(
         runtime_ctx: &RuntimeContext,
         messages: Vec<ChatMessage>,
         kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
         start_phase: Option<crate::kernel::phased::AgentPhase>,
     ) -> Result<ExecutionResult, AgentError> {
-        if runtime_ctx.config.phased_execution {
-            let executor = crate::kernel::phased::PhasedExecutor::new(runtime_ctx.clone());
-            return match executor.run(messages, kernel_tx, start_phase).await {
-                Ok(r) => Ok(r),
-                Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
-                    content: format!("Maximum iterations ({}) reached.", n),
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    token_usage: None,
-                    interrupted_phase: None,
-                }),
-                Err(e) => Err(e.into()),
-            };
-        }
-        match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
+        let phase_str = start_phase.map(|p| p.to_string());
+        match kernel::execute_streaming_with_phase(
+            runtime_ctx,
+            messages,
+            kernel_tx,
+            phase_str.as_deref(),
+        )
+        .await
+        {
             Ok(r) => Ok(r),
             Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
                 content: format!("Maximum iterations ({}) reached.", n),

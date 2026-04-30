@@ -24,12 +24,19 @@ async fn create_sessions_table(pool: &SqlitePool) -> anyhow::Result<()> {
             updated_at      TEXT NOT NULL,
             last_consolidated_event TEXT,
             total_events    INTEGER NOT NULL DEFAULT 0,
-            total_tokens    INTEGER NOT NULL DEFAULT 0
+            total_tokens    INTEGER NOT NULL DEFAULT 0,
+            current_phase   TEXT
         )
         "#,
     )
     .execute(pool)
     .await?;
+
+    // Migration: add current_phase column to existing tables
+    let _ = sqlx::query("ALTER TABLE sessions_v2 ADD COLUMN current_phase TEXT")
+        .execute(pool)
+        .await;
+
     Ok(())
 }
 
