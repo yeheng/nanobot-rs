@@ -423,6 +423,7 @@ impl SubagentSpawner for SimpleSpawner {
             String,
             mpsc::Receiver<StreamEvent>,
             tokio::sync::oneshot::Receiver<TypesSubagentResult>,
+            tokio_util::sync::CancellationToken,
         ),
         Box<dyn std::error::Error + Send>,
     > {
@@ -467,6 +468,7 @@ impl SubagentSpawner for SimpleSpawner {
 
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let result_subagent_id = subagent_id.clone();
+        let cancel_token = tracker.cancellation_token();
 
         tokio::spawn(async move {
             let types_result = match tracker.wait_for_all(1).await {
@@ -521,6 +523,6 @@ impl SubagentSpawner for SimpleSpawner {
             let _ = completion_tx.send(types_result);
         });
 
-        Ok((subagent_id, event_rx, completion_rx))
+        Ok((subagent_id, event_rx, completion_rx, cancel_token))
     }
 }

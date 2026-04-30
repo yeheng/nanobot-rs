@@ -46,9 +46,10 @@ pub trait SubagentSpawner: Send + Sync {
     /// - `String`: the subagent ID (UUID)
     /// - `Receiver<StreamEvent>`: real-time events (thinking, tool calls, content)
     /// - `Receiver<SubagentResult>`: final result when execution completes
+    /// - `CancellationToken`: handle to cancel the subagent mid-flight
     ///
     /// Default implementation delegates to [`spawn`](Self::spawn) and returns
-    /// empty channels for backward compatibility.
+    /// empty channels plus a dummy cancellation token for backward compatibility.
     async fn spawn_with_stream(
         &self,
         task: String,
@@ -58,6 +59,7 @@ pub trait SubagentSpawner: Send + Sync {
             String,
             tokio::sync::mpsc::Receiver<crate::StreamEvent>,
             tokio::sync::oneshot::Receiver<SubagentResult>,
+            tokio_util::sync::CancellationToken,
         ),
         Box<dyn std::error::Error + Send>,
     > {
@@ -65,7 +67,7 @@ pub trait SubagentSpawner: Send + Sync {
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let (tx, result_rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(result);
-        Ok((String::new(), rx, result_rx))
+        Ok((String::new(), rx, result_rx, tokio_util::sync::CancellationToken::new()))
     }
 }
 

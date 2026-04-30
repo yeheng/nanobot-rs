@@ -85,7 +85,7 @@ impl Tool for SpawnTool {
         info!("[Spawn] Starting subagent for task: {}", args.task);
 
         // Spawn subagent via the trait with streaming events
-        let (subagent_id, event_rx, result_rx) = spawner
+        let (subagent_id, event_rx, result_rx, subagent_cancel_token) = spawner
             .spawn_with_stream(args.task.clone(), args.model_id.clone())
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
@@ -126,6 +126,7 @@ impl Tool for SpawnTool {
                 vec![result_rx],
                 vec![subagent_id],
                 vec![0],
+                vec![subagent_cancel_token],
                 callback,
                 cancel_token,
                 spawn_common::AggregatorContext {

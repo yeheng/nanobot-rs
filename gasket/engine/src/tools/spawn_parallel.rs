@@ -172,6 +172,7 @@ impl Tool for SpawnParallelTool {
             // Spawn tasks with bounded concurrency
             let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
             let mut spawned = Vec::with_capacity(task_specs.len());
+            let mut cancel_tokens = Vec::with_capacity(task_specs.len());
 
             for (idx, spec) in task_specs.into_iter().enumerate() {
                 let spawner_clone = spawner.clone();
@@ -181,7 +182,7 @@ impl Tool for SpawnParallelTool {
                     ToolError::ExecutionError(format!("Semaphore acquire error: {}", e))
                 })?;
 
-                let (subagent_id, event_rx, result_rx) = spawner_clone
+                let (subagent_id, event_rx, result_rx, cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id)
                     .await
                     .map_err(|e| {
@@ -197,6 +198,7 @@ impl Tool for SpawnParallelTool {
                 );
 
                 spawned.push((subagent_id, spec.task.clone(), idx as u32, result_rx));
+                cancel_tokens.push(cancel_token);
             }
 
             // Collect info for startup events and aggregation
@@ -227,6 +229,7 @@ impl Tool for SpawnParallelTool {
                 result_receivers,
                 subagent_ids,
                 subagent_indices,
+                cancel_tokens,
                 callback,
                 cancel_token,
                 spawn_common::AggregatorContext {
@@ -253,7 +256,7 @@ impl Tool for SpawnParallelTool {
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
 
-                let (subagent_id, mut event_rx, result_rx) = spawner_clone
+                let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id)
                     .await
                     .map_err(|e| {

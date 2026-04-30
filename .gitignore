@@ -32,4 +32,3 @@ config.yaml
 .worktrees/
 gasket/target/
 .zread
-.worktrees/

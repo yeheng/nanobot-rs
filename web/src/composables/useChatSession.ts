@@ -15,6 +15,8 @@ export function useChatSession(chatId: { value: string }) {
   const activeSubagents = ref<Map<string, SubagentState>>(new Map());
   const hasActiveSubagents = computed(() => activeSubagents.value.size > 0);
   const subagentPhase = ref<'idle' | 'running' | 'synthesizing' | 'completed'>('idle');
+  const subagentTimers = ref<Record<string, ReturnType<typeof setTimeout>>>({});
+  const SUBAGENT_TIMEOUT_MS = 300_000; // 5 minutes client-side timeout as a safety net
 
   const pendingApprovals = ref<Map<string, ApprovalRequest>>(new Map());
 
@@ -64,6 +66,24 @@ export function useChatSession(chatId: { value: string }) {
     };
     activeSubagents.value.set(msg.id, state);
     chatStore.pushSubagent(chatId.value, botMsg.id, { ...state });
+
+    // Client-side timeout: if backend never sends completed/error, force-finish the task
+    if (subagentTimers.value[msg.id]) clearTimeout(subagentTimers.value[msg.id]);
+    subagentTimers.value[msg.id] = setTimeout(() => {
+      const sub = activeSubagents.value.get(msg.id);
+      if (sub && sub.status === 'running') {
+        sub.status = 'error';
+        sub.error = 'Timed out';
+        sub.endTime = Date.now();
+        chatStore.updateSubagent(chatId.value, botMsg.id, msg.id, {
+          status: 'error',
+          error: 'Timed out',
+          endTime: Date.now(),
+        });
+        checkAndFinalizeSubagents();
+      }
+      delete subagentTimers.value[msg.id];
+    }, SUBAGENT_TIMEOUT_MS);
   };
 
   const handleSubagentThinking = (msg: { id: string; content: string }, botMsg: Message) => {
@@ -139,6 +159,10 @@ export function useChatSession(chatId: { value: string }) {
   };
 
   const handleSubagentCompleted = (msg: { id: string; index: number; summary: string; tool_count: number }, botMsg: Message) => {
+    if (subagentTimers.value[msg.id]) {
+      clearTimeout(subagentTimers.value[msg.id]);
+      delete subagentTimers.value[msg.id];
+    }
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent) {
       subagent.status = 'completed';
@@ -159,6 +183,10 @@ export function useChatSession(chatId: { value: string }) {
   };
 
   const handleSubagentError = (msg: { id: string; index: number; error: string }, botMsg: Message) => {
+    if (subagentTimers.value[msg.id]) {
+      clearTimeout(subagentTimers.value[msg.id]);
+      delete subagentTimers.value[msg.id];
+    }
     const subagent = activeSubagents.value.get(msg.id);
     if (subagent) {
       subagent.status = 'error';
@@ -367,6 +395,8 @@ export function useChatSession(chatId: { value: string }) {
     isSending.value = false;
     pendingApprovals.value.clear();
     chatStore.abortToolCalls(chatId.value);
+    Object.values(subagentTimers.value).forEach(clearTimeout);
+    subagentTimers.value = {};
   };
 
   const sendApprovalResponse = (requestId: string, approved: boolean, remember: boolean = false) => {
@@ -392,8 +422,10 @@ export function useChatSession(chatId: { value: string }) {
     });
 
     if (subagentPhase.value === 'running') {
-      activeSubagents.value.clear()
-      subagentPhase.value = 'idle'
+      activeSubagents.value.clear();
+      subagentPhase.value = 'idle';
+      Object.values(subagentTimers.value).forEach(clearTimeout);
+      subagentTimers.value = {};
     }
 
     isSending.value = true;

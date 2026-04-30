@@ -102,6 +102,7 @@ pub fn spawn_aggregator(
     result_receivers: Vec<tokio::sync::oneshot::Receiver<SubagentResult>>,
     subagent_ids: Vec<String>,
     subagent_indices: Vec<u32>,
+    subagent_cancel_tokens: Vec<tokio_util::sync::CancellationToken>,
     synthesis_callback: Arc<dyn SynthesisCallback>,
     cancellation_token: tokio_util::sync::CancellationToken,
     ctx: AggregatorContext,
@@ -115,6 +116,7 @@ pub fn spawn_aggregator(
         // Clone for the cancellation branch since tokio::select! may move values
         let cancel_ids = subagent_ids.clone();
         let cancel_indices = subagent_indices.clone();
+        let cancel_tokens = subagent_cancel_tokens.clone();
 
         let results = tokio::select! {
             results = collect_all_results(
@@ -127,7 +129,11 @@ pub fn spawn_aggregator(
             ) => results,
             _ = cancellation_token.cancelled() => {
                 info!("[Aggregator] Cancelled");
-                // Notify frontend that all subagents are cancelled so they don't stay in "running" state
+                // 1. Cascade-cancel all subagents to stop wasting LLM API calls
+                for token in &cancel_tokens {
+                    token.cancel();
+                }
+                // 2. Notify frontend so tasks don't stay in "running" state
                 for (i, id) in cancel_ids.iter().enumerate() {
                     let index = cancel_indices.get(i).copied().unwrap_or(0);
                     send_ws_event(
