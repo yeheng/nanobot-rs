@@ -494,7 +494,7 @@ impl Tool for EvolutionTool {
         // Scan for qualifying sessions.
         let sessions = self.scan_sessions(threshold).await?;
         if sessions.is_empty() {
-            return Ok("Evolution: no sessions need processing.".to_string());
+            return Ok("Evolution: no sessions need processing.".into());
         }
 
         info!(
@@ -540,7 +540,8 @@ impl Tool for EvolutionTool {
         Ok(format!(
             "Evolution complete: {} session(s) processed, {} memory item(s) extracted.",
             processed, total_memories
-        ))
+        )
+        .into())
     }
 }
 

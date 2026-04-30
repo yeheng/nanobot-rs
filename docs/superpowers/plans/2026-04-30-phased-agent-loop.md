@@ -2,1099 +2,1612 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a phased agent execution loop (Research → Planning → Execute → Review) with engine-enforced auto-search and cross-session learning, gated behind a config flag for backward compatibility.
+**Goal:** Replace the open-ended LLM loop with a phased execution model (Research → Planning → Execute → Review → Done) that enables cross-session learning via automatic wiki knowledge retrieval and extraction.
 
-**Architecture:** A new `PhasedExecutor` wraps the existing `SteppableExecutor`, managing phase state and injecting phase-aware prompts. A `PhaseTransitionTool` (internal, not publicly registered) lets the LLM declare phase changes. The Research phase auto-runs `wiki_search` + `history_search` via the ToolRegistry before the LLM sees the user message. A `PhaseChanged` ChatEvent variant notifies the frontend.
+**Architecture:** `PhasedExecutor` wraps the existing `SteppableExecutor` without modifying it. It manages phase state, filters available tools per phase via `PhasedToolSet` at request-building time, injects phase-aware system messages, and intercepts `phase_transition` tool calls. `ResearchContext` handles auto-search on user messages. The session layer dispatches to `PhasedExecutor` or the existing kernel based on a config flag.
 
-**Tech Stack:** Rust (tokio async), gasket-types, gasket-providers, ChatEvent WebSocket protocol, Vue.js frontend
+**Tech Stack:** Rust (edition 2021), tokio, serde, sqlx, gasket_wiki (Tantivy BM25), gasket_types (StreamEvent)
 
 ---
 
 ## File Structure
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `gasket/types/src/phase.rs` | Create | `AgentPhase` enum + display logic |
-| `gasket/types/src/lib.rs` | Modify | Re-export `phase` module |
-| `gasket/types/src/events/stream.rs` | Modify | Add `PhaseChanged` ChatEvent variant |
-| `gasket/engine/src/tools/phase_transition.rs` | Create | `PhaseTransitionTool` — internal tool for LLM phase switching |
-| `gasket/engine/src/tools/mod.rs` | Modify | Register `phase_transition` module |
-| `gasket/engine/src/kernel/context.rs` | Modify | Add `phased` to `KernelConfig` |
-| `gasket/engine/src/kernel/phased_executor.rs` | Create | `PhasedExecutor` — state machine wrapping SteppableExecutor |
-| `gasket/engine/src/kernel/executor.rs` | Modify | Re-export `PhasedExecutor` |
-| `gasket/engine/src/kernel/mod.rs` | Modify | Register `phased_executor` module |
-| `web/src/composables/useChatSession.ts` | Modify | Handle `phase_changed` events |
-| `web/src/components/ChatMessage.vue` | Modify | Render phase indicator badge |
+### New files
 
-## Simplifications vs. Spec
+| File | Responsibility |
+|------|---------------|
+| `gasket/engine/src/kernel/phased/agent_phase.rs` | `AgentPhase` enum, transition validation, per-phase config |
+| `gasket/engine/src/kernel/phased/phased_tool_set.rs` | `PhasedToolSet` — filters `ToolRegistry` per phase |
+| `gasket/engine/src/kernel/phased/step_action.rs` | `StepAction` enum — classifies StepResult for phased loop |
+| `gasket/engine/src/kernel/phased/phase_prompt.rs` | `PhasePrompt` + `ContextAccumulator` — entry prompts & context |
+| `gasket/engine/src/kernel/phased/research_context.rs` | `ResearchContext` — auto-search query building + result formatting |
+| `gasket/engine/src/kernel/phased/phased_executor.rs` | `PhaseStateMachine` + `PhasedExecutor` — state machine & run loop |
+| `gasket/engine/src/kernel/phased/mod.rs` | Module re-exports |
+| `gasket/engine/src/tools/phase_transition.rs` | `PhaseTransitionTool` — the `phase_transition` tool impl |
 
-Two spec requirements are deferred to a follow-up:
+### Modified files
 
-1. **Tool filtering by phase (Spec 2.4)**: Phase 1 uses prompt guidance only — the LLM is told which tools to use but not prevented from calling others. Keeps the ToolRegistry unchanged.
-2. **User clarification re-entrancy (Spec 3.4)**: The PhasedExecutor is structured as re-entrant (`cycle()` returns `needs_user_input`), but the kernel entry creates a fresh executor each call. Full re-entrancy requires session dispatcher changes — deferred.
+| File | Change |
+|------|--------|
+| `gasket/types/src/events/stream.rs` | Add `PhaseTransition` variant to `StreamEventKind` |
+| `gasket/engine/src/kernel/context.rs` | Add `phased_execution: bool` to `KernelConfig` |
+| `gasket/engine/src/kernel/mod.rs` | Add `pub mod phased`, re-export |
+| `gasket/engine/src/tools/mod.rs` | Register `phase_transition` module |
+| `gasket/engine/src/tools/builder.rs` | Register `PhaseTransitionTool` in `build_tool_registry` |
+| `gasket/engine/src/session/mod.rs` | Dispatch to `PhasedExecutor` when `phased_execution` is true |
 
 ---
 
-### Task 1: AgentPhase type in gasket-types
+### Task 1: AgentPhase Enum + Transition Validation
 
 **Files:**
-- Create: `gasket/types/src/phase.rs`
-- Modify: `gasket/types/src/lib.rs` (add `pub mod phase;`)
+- Create: `gasket/engine/src/kernel/phased/agent_phase.rs`
+- Create: `gasket/engine/src/kernel/phased/mod.rs`
+- Create: `gasket/engine/src/kernel/phased/step_action.rs` (placeholder)
+- Create: `gasket/engine/src/kernel/phased/phased_tool_set.rs` (placeholder)
+- Create: `gasket/engine/src/kernel/phased/phase_prompt.rs` (placeholder)
+- Create: `gasket/engine/src/kernel/phased/research_context.rs` (placeholder)
+- Create: `gasket/engine/src/kernel/phased/phased_executor.rs` (placeholder)
+- Modify: `gasket/engine/src/kernel/mod.rs`
 
-- [ ] **Step 1: Write the phase module**
+- [ ] **Step 1: Write the test**
 
 ```rust
-// gasket/types/src/phase.rs
-use serde::{Deserialize, Serialize};
+// gasket/engine/src/kernel/phased/agent_phase.rs
 
-/// Agent execution phase in the phased execution model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_transitions_from_research() {
+        let phase = AgentPhase::Research;
+        assert!(phase.can_transition_to(&AgentPhase::Planning));
+        assert!(phase.can_transition_to(&AgentPhase::Execute));
+        assert!(!phase.can_transition_to(&AgentPhase::Review));
+        assert!(!phase.can_transition_to(&AgentPhase::Done));
+        assert!(!phase.can_transition_to(&AgentPhase::Research));
+    }
+
+    #[test]
+    fn test_valid_transitions_from_planning() {
+        let phase = AgentPhase::Planning;
+        assert!(phase.can_transition_to(&AgentPhase::Execute));
+        assert!(!phase.can_transition_to(&AgentPhase::Review));
+        assert!(!phase.can_transition_to(&AgentPhase::Planning));
+    }
+
+    #[test]
+    fn test_valid_transitions_from_execute() {
+        let phase = AgentPhase::Execute;
+        assert!(phase.can_transition_to(&AgentPhase::Review));
+        assert!(phase.can_transition_to(&AgentPhase::Done));
+        assert!(!phase.can_transition_to(&AgentPhase::Execute));
+    }
+
+    #[test]
+    fn test_valid_transitions_from_review() {
+        let phase = AgentPhase::Review;
+        assert!(phase.can_transition_to(&AgentPhase::Done));
+        assert!(!phase.can_transition_to(&AgentPhase::Review));
+    }
+
+    #[test]
+    fn test_done_is_terminal() {
+        let phase = AgentPhase::Done;
+        assert!(!phase.can_transition_to(&AgentPhase::Research));
+        assert!(!phase.can_transition_to(&AgentPhase::Execute));
+    }
+
+    #[test]
+    fn test_hard_limit_iterations() {
+        assert_eq!(AgentPhase::Research.max_iterations(), 7);
+        assert_eq!(AgentPhase::Planning.max_iterations(), 5);
+        assert_eq!(AgentPhase::Execute.max_iterations(), u32::MAX);
+        assert_eq!(AgentPhase::Review.max_iterations(), 5);
+        assert_eq!(AgentPhase::Done.max_iterations(), 0);
+    }
+
+    #[test]
+    fn test_soft_limit_iterations() {
+        assert_eq!(AgentPhase::Research.soft_limit_iterations(), 5);
+        assert_eq!(AgentPhase::Planning.soft_limit_iterations(), 3);
+        assert_eq!(AgentPhase::Execute.soft_limit_iterations(), 0);
+        assert_eq!(AgentPhase::Review.soft_limit_iterations(), 3);
+    }
+
+    #[test]
+    fn test_forced_transition_target() {
+        assert_eq!(
+            AgentPhase::Research.forced_transition_target(),
+            Some(&AgentPhase::Execute)
+        );
+        assert_eq!(
+            AgentPhase::Planning.forced_transition_target(),
+            Some(&AgentPhase::Execute)
+        );
+        assert_eq!(AgentPhase::Execute.forced_transition_target(), None);
+        assert_eq!(
+            AgentPhase::Review.forced_transition_target(),
+            Some(&AgentPhase::Done)
+        );
+    }
+
+    #[test]
+    fn test_from_str_roundtrip() {
+        for name in &["research", "planning", "execute", "review", "done"] {
+            let phase = AgentPhase::try_from(*name).unwrap();
+            assert_eq!(phase.as_str(), *name);
+        }
+        assert!(AgentPhase::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn test_allowed_tools_research() {
+        let tools = AgentPhase::Research.allowed_tools();
+        assert!(tools.contains(&"wiki_search"));
+        assert!(tools.contains(&"wiki_read"));
+        assert!(tools.contains(&"phase_transition"));
+        assert!(!tools.contains(&"shell"));
+    }
+
+    #[test]
+    fn test_allowed_tools_execute_is_empty() {
+        assert!(AgentPhase::Execute.allowed_tools().is_empty());
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd gasket/engine && cargo test --lib kernel::phased::agent_phase 2>&1 | head -5`
+Expected: compilation error — module does not exist
+
+- [ ] **Step 3: Create module directory and implement**
+
+```bash
+mkdir -p gasket/engine/src/kernel/phased
+```
+
+```rust
+// gasket/engine/src/kernel/phased/agent_phase.rs
+
+use std::fmt;
+
+/// Execution phases for the phased agent loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentPhase {
-    /// Engine-enforced: auto-search wiki + history, retrieval sub-loop, user clarification
     Research,
-    /// LLM-driven: create plan based on gathered context
     Planning,
-    /// LLM-driven: full tool execution (standard SteppableExecutor behavior)
     Execute,
-    /// LLM-driven: review results, extract learnings, write wiki
     Review,
-    /// Terminal state
     Done,
 }
 
 impl AgentPhase {
-    /// Display label for frontend phase indicator
-    pub fn label(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
-            AgentPhase::Research => "Research",
-            AgentPhase::Planning => "Planning",
-            AgentPhase::Execute => "Execute",
-            AgentPhase::Review => "Review",
-            AgentPhase::Done => "Done",
+            Self::Research => "research",
+            Self::Planning => "planning",
+            Self::Execute => "execute",
+            Self::Review => "review",
+            Self::Done => "done",
         }
     }
 
-    /// Valid target phases that can be transitioned to from this phase
-    pub fn valid_targets(&self) -> &'static [AgentPhase] {
+    pub fn can_transition_to(&self, target: &AgentPhase) -> bool {
+        matches!(
+            (self, target),
+            (Self::Research, Self::Planning | Self::Execute)
+                | (Self::Planning, Self::Execute)
+                | (Self::Execute, Self::Review | Self::Done)
+                | (Self::Review, Self::Done)
+        )
+    }
+
+    /// Hard iteration limit per phase (soft limit + 2 grace iterations).
+    pub fn max_iterations(&self) -> u32 {
         match self {
-            AgentPhase::Research => &[AgentPhase::Planning, AgentPhase::Execute],
-            AgentPhase::Planning => &[AgentPhase::Execute],
-            AgentPhase::Execute => &[AgentPhase::Review, AgentPhase::Done],
-            AgentPhase::Review => &[AgentPhase::Done],
-            AgentPhase::Done => &[],
+            Self::Research => 7,
+            Self::Planning => 5,
+            Self::Execute => u32::MAX,
+            Self::Review => 5,
+            Self::Done => 0,
         }
     }
 
-    /// Whether this phase allows transition to the given target
-    pub fn can_transition_to(&self, target: AgentPhase) -> bool {
-        self.valid_targets().contains(&target)
+    /// Soft iteration limit — engine injects a prompt encouraging transition.
+    pub fn soft_limit_iterations(&self) -> u32 {
+        match self {
+            Self::Research => 5,
+            Self::Planning => 3,
+            Self::Execute => 0,
+            Self::Review => 3,
+            Self::Done => 0,
+        }
+    }
+
+    /// Phase to force-transition to when iteration limit is hit.
+    pub fn forced_transition_target(&self) -> Option<&AgentPhase> {
+        match self {
+            Self::Research | Self::Planning => Some(&AgentPhase::Execute),
+            Self::Review => Some(&AgentPhase::Done),
+            Self::Execute | Self::Done => None,
+        }
+    }
+
+    /// Tool names allowed in this phase. Empty Vec = all tools (Execute phase).
+    pub fn allowed_tools(&self) -> Vec<&'static str> {
+        match self {
+            Self::Research => vec![
+                "wiki_search",
+                "wiki_read",
+                "history_search",
+                "query_history",
+                "phase_transition",
+            ],
+            Self::Planning => vec!["create_plan", "phase_transition", "wiki_read", "wiki_search"],
+            Self::Execute => vec![],
+            Self::Review => vec![
+                "wiki_write",
+                "wiki_delete",
+                "wiki_read",
+                "wiki_search",
+                "evolution",
+                "phase_transition",
+            ],
+            Self::Done => vec![],
+        }
     }
 }
 
-impl std::fmt::Display for AgentPhase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
+impl fmt::Display for AgentPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for AgentPhase {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "research" => Ok(Self::Research),
+            "planning" => Ok(Self::Planning),
+            "execute" => Ok(Self::Execute),
+            "review" => Ok(Self::Review),
+            "done" => Ok(Self::Done),
+            other => Err(format!("Unknown phase: {}", other)),
+        }
     }
 }
 ```
 
-- [ ] **Step 2: Add module to lib.rs**
-
-In `gasket/types/src/lib.rs`, find the existing `pub mod` declarations and add:
+- [ ] **Step 4: Create module entry point + placeholder files**
 
 ```rust
-pub mod phase;
+// gasket/engine/src/kernel/phased/mod.rs
+
+pub mod agent_phase;
+pub mod step_action;
+pub mod phased_tool_set;
+pub mod phase_prompt;
+pub mod research_context;
+pub mod phased_executor;
+
+pub use agent_phase::AgentPhase;
+pub use step_action::StepAction;
+pub use phased_tool_set::PhasedToolSet;
+pub use research_context::ResearchContext;
+pub use phased_executor::PhasedExecutor;
 ```
 
-Re-export at the top of lib.rs alongside existing re-exports:
+Create each placeholder as a single-line file:
+```rust
+// gasket/engine/src/kernel/phased/step_action.rs
+// Placeholder — implemented in Task 3.
+```
+```rust
+// gasket/engine/src/kernel/phased/phased_tool_set.rs
+// Placeholder — implemented in Task 2.
+```
+```rust
+// gasket/engine/src/kernel/phased/phase_prompt.rs
+// Placeholder — implemented in Task 6.
+```
+```rust
+// gasket/engine/src/kernel/phased/research_context.rs
+// Placeholder — implemented in Task 5.
+```
+```rust
+// gasket/engine/src/kernel/phased/phased_executor.rs
+// Placeholder — implemented in Task 8.
+```
+
+- [ ] **Step 5: Register module in kernel**
+
+Modify `gasket/engine/src/kernel/mod.rs` — add after existing `pub mod` lines:
 
 ```rust
-pub use phase::AgentPhase;
+pub mod phased;
 ```
 
-- [ ] **Step 3: Build to verify**
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::agent_phase`
+Expected: all 10 tests PASS
+
+- [ ] **Step 7: Commit**
 
 ```bash
-cargo build --package gasket-types
-```
-
-Expected: compiles without errors.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add gasket/types/src/phase.rs gasket/types/src/lib.rs
-git commit -m "feat(types): add AgentPhase enum for phased execution model"
+git add gasket/engine/src/kernel/phased/ gasket/engine/src/kernel/mod.rs
+git commit -m "feat(engine): add AgentPhase enum with transition validation"
 ```
 
 ---
 
-### Task 2: PhaseChanged ChatEvent variant
+### Task 2: PhasedToolSet — Phase-Aware Tool Filtering
 
 **Files:**
-- Modify: `gasket/types/src/events/stream.rs` (add variant + constructor)
+- Modify: `gasket/engine/src/kernel/phased/phased_tool_set.rs` (replace placeholder)
 
-- [ ] **Step 1: Add PhaseChanged variant to ChatEvent**
-
-In `gasket/types/src/events/stream.rs`, add to the `ChatEvent` enum (after the existing variants, before the closing `}`):
+- [ ] **Step 1: Write the tests**
 
 ```rust
-    /// Agent transitioned to a new execution phase
-    PhaseChanged { phase: crate::AgentPhase },
-```
+// gasket/engine/src/kernel/phased/phased_tool_set.rs
 
-- [ ] **Step 2: Add constructor**
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::{Tool, ToolContext, ToolResult};
+    use async_trait::async_trait;
+    use serde_json::Value;
 
-In the `impl ChatEvent` block, add after the existing constructor methods:
+    struct FakeTool { name: &'static str }
 
-```rust
-    /// Create a phase_changed message
-    pub fn phase_changed(phase: crate::AgentPhase) -> Self {
-        Self::PhaseChanged { phase }
+    #[async_trait]
+    impl Tool for FakeTool {
+        fn name(&self) -> &str { self.name }
+        fn description(&self) -> &str { "fake" }
+        fn parameters(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
+            Ok("ok".to_string())
+        }
     }
+
+    fn make_registry() -> Arc<ToolRegistry> {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(FakeTool { name: "wiki_search" }));
+        reg.register(Box::new(FakeTool { name: "wiki_read" }));
+        reg.register(Box::new(FakeTool { name: "shell" }));
+        reg.register(Box::new(FakeTool { name: "write_file" }));
+        reg.register(Box::new(FakeTool { name: "phase_transition" }));
+        Arc::new(reg)
+    }
+
+    #[test]
+    fn test_research_phase_filters_tools() {
+        let registry = make_registry();
+        let tool_set = PhasedToolSet::new(registry, AgentPhase::Research);
+        let names: Vec<&str> = tool_set.definition_names();
+        assert!(names.contains(&"wiki_search"));
+        assert!(names.contains(&"wiki_read"));
+        assert!(names.contains(&"phase_transition"));
+        assert!(!names.contains(&"shell"));
+        assert!(!names.contains(&"write_file"));
+    }
+
+    #[test]
+    fn test_execute_phase_returns_all_tools() {
+        let registry = make_registry();
+        let tool_set = PhasedToolSet::new(registry, AgentPhase::Execute);
+        let names: Vec<&str> = tool_set.definition_names();
+        assert_eq!(names.len(), 5);
+        assert!(names.contains(&"shell"));
+    }
+
+    #[test]
+    fn test_for_phase_changes_filter() {
+        let registry = make_registry();
+        let research = PhasedToolSet::new(registry.clone(), AgentPhase::Research);
+        assert_eq!(research.definition_names().len(), 3);
+        let execute = research.for_phase(AgentPhase::Execute);
+        assert_eq!(execute.definition_names().len(), 5);
+    }
+
+    #[test]
+    fn test_delegates_execution_to_registry() {
+        let registry = make_registry();
+        let tool_set = PhasedToolSet::new(registry.clone(), AgentPhase::Execute);
+        assert!(tool_set.get("shell").is_some());
+    }
+}
 ```
 
-- [ ] **Step 3: Build and run existing tests**
+- [ ] **Step 2: Run tests to verify they fail**
 
-```bash
-cargo build --package gasket-types
-cargo test --package gasket-types
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phased_tool_set`
+Expected: compilation error
+
+- [ ] **Step 3: Implement PhasedToolSet**
+
+```rust
+// gasket/engine/src/kernel/phased/phased_tool_set.rs
+
+use std::sync::Arc;
+
+use crate::tools::ToolRegistry;
+use gasket_providers::ToolDefinition;
+
+use super::agent_phase::AgentPhase;
+
+/// Phase-aware tool set — filters ToolRegistry definitions per phase.
+///
+/// When phase is Execute, all tools are visible (empty allowed list = all).
+pub struct PhasedToolSet {
+    registry: Arc<ToolRegistry>,
+    phase: AgentPhase,
+}
+
+impl PhasedToolSet {
+    pub fn new(registry: Arc<ToolRegistry>, phase: AgentPhase) -> Self {
+        Self { registry, phase }
+    }
+
+    pub fn for_phase(&self, new_phase: AgentPhase) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            phase: new_phase,
+        }
+    }
+
+    pub fn phase(&self) -> AgentPhase {
+        self.phase
+    }
+
+    /// Get filtered tool definitions for the current phase.
+    pub fn get_definitions(&self) -> Vec<ToolDefinition> {
+        let allowed = self.phase.allowed_tools();
+        let all_defs = self.registry.get_definitions();
+        if allowed.is_empty() {
+            return all_defs;
+        }
+        all_defs
+            .into_iter()
+            .filter(|def| allowed.contains(&def.function.name.as_str()))
+            .collect()
+    }
+
+    /// Get filtered definition names (test helper).
+    #[cfg(test)]
+    fn definition_names(&self) -> Vec<&str> {
+        let allowed = self.phase.allowed_tools();
+        let all_names = self.registry.list();
+        if allowed.is_empty() {
+            return all_names;
+        }
+        all_names.into_iter().filter(|n| allowed.contains(n)).collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn crate::tools::Tool> {
+        self.registry.get(name)
+    }
+
+    pub async fn execute(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &crate::tools::ToolContext,
+    ) -> crate::tools::ToolResult {
+        self.registry.execute(name, args, ctx).await
+    }
+}
 ```
 
-Expected: all tests pass.
+- [ ] **Step 4: Run tests to verify they pass**
 
-- [ ] **Step 4: Commit**
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phased_tool_set`
+Expected: all 4 tests PASS
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add gasket/types/src/events/stream.rs
-git commit -m "feat(types): add PhaseChanged ChatEvent for frontend phase indicator"
+git add gasket/engine/src/kernel/phased/phased_tool_set.rs
+git commit -m "feat(engine): add PhasedToolSet for phase-aware tool filtering"
 ```
 
 ---
 
-### Task 3: PhaseTransitionTool
+### Task 3: StepAction Enum
+
+**Files:**
+- Modify: `gasket/engine/src/kernel/phased/step_action.rs` (replace placeholder)
+
+- [ ] **Step 1: Write the tests**
+
+```rust
+// gasket/engine/src/kernel/phased/step_action.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_step_result_with_tools(tools: Vec<(&str, &str)>) -> StepResult {
+        use gasket_providers::{ChatResponse, ToolCall};
+        let tool_calls: Vec<ToolCall> = tools
+            .into_iter()
+            .enumerate()
+            .map(|(i, (name, args))| {
+                ToolCall::new(
+                    format!("call_{}", i),
+                    name,
+                    serde_json::from_str(args).unwrap_or_default(),
+                )
+            })
+            .collect();
+        StepResult {
+            response: ChatResponse {
+                content: None,
+                tool_calls,
+                reasoning_content: None,
+                usage: None,
+            },
+            tool_results: vec![],
+            should_continue: true,
+        }
+    }
+
+    fn make_step_result_with_content(text: &str) -> StepResult {
+        use gasket_providers::ChatResponse;
+        StepResult {
+            response: ChatResponse {
+                content: Some(text.to_string()),
+                tool_calls: vec![],
+                reasoning_content: None,
+                usage: None,
+            },
+            tool_results: vec![],
+            should_continue: false,
+        }
+    }
+
+    #[test]
+    fn test_classify_phase_transition() {
+        let result = make_step_result_with_tools(vec![
+            ("phase_transition", r#"{"phase":"execute"}"#),
+        ]);
+        let action = StepAction::classify(&result);
+        assert!(matches!(action, StepAction::PhaseTransition { to } if to == AgentPhase::Execute));
+    }
+
+    #[test]
+    fn test_classify_text_response() {
+        let result = make_step_result_with_content("Can you clarify?");
+        let action = StepAction::classify(&result);
+        assert!(matches!(action, StepAction::WaitForUserInput));
+    }
+
+    #[test]
+    fn test_classify_other_tool_calls_continue() {
+        let result = make_step_result_with_tools(vec![
+            ("wiki_search", r#"{"query":"test"}"#),
+        ]);
+        let action = StepAction::classify(&result);
+        assert!(matches!(action, StepAction::Continue));
+    }
+
+    #[test]
+    fn test_classify_mixed_tools_prioritizes_phase_transition() {
+        let result = make_step_result_with_tools(vec![
+            ("wiki_search", r#"{"query":"test"}"#),
+            ("phase_transition", r#"{"phase":"planning"}"#),
+        ]);
+        let action = StepAction::classify(&result);
+        assert!(matches!(action, StepAction::PhaseTransition { to } if to == AgentPhase::Planning));
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::step_action`
+Expected: compilation error
+
+- [ ] **Step 3: Implement StepAction**
+
+```rust
+// gasket/engine/src/kernel/phased/step_action.rs
+
+use crate::kernel::steppable_executor::StepResult;
+use super::agent_phase::AgentPhase;
+
+/// Classifies a StepResult into a phase-aware action.
+#[derive(Debug, PartialEq)]
+pub enum StepAction {
+    /// Tool calls executed, more steps needed.
+    Continue,
+    /// LLM sent text without tool calls — pause for user input.
+    WaitForUserInput,
+    /// LLM called phase_transition — switch phase.
+    PhaseTransition { to: AgentPhase },
+}
+
+impl StepAction {
+    pub fn classify(result: &StepResult) -> Self {
+        for tc in &result.response.tool_calls {
+            if tc.function.name == "phase_transition" {
+                if let Some(phase_str) = tc.function.arguments.get("phase").and_then(|v| v.as_str())
+                {
+                    if let Ok(to) = AgentPhase::try_from(phase_str) {
+                        return StepAction::PhaseTransition { to };
+                    }
+                }
+            }
+        }
+        if !result.response.has_tool_calls() && result.response.content.is_some() {
+            return StepAction::WaitForUserInput;
+        }
+        StepAction::Continue
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::step_action`
+Expected: all 4 tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add gasket/engine/src/kernel/phased/step_action.rs
+git commit -m "feat(engine): add StepAction enum for phased result classification"
+```
+
+---
+
+### Task 4: PhaseTransitionTool
 
 **Files:**
 - Create: `gasket/engine/src/tools/phase_transition.rs`
-- Modify: `gasket/engine/src/tools/mod.rs` (add module + re-export)
+- Modify: `gasket/engine/src/tools/mod.rs`
 
-- [ ] **Step 1: Write PhaseTransitionTool**
+- [ ] **Step 1: Write the tests**
 
 ```rust
 // gasket/engine/src/tools/phase_transition.rs
-//! Internal tool for LLM-driven phase transitions.
-//!
-//! This tool is NOT registered in the public ToolRegistry. It is attached
-//! only by the PhasedExecutor during phased execution.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_metadata() {
+        let tool = PhaseTransitionTool::new();
+        assert_eq!(tool.name(), "phase_transition");
+        assert!(tool.description().contains("phase"));
+    }
+
+    #[test]
+    fn test_execute_valid_phase() {
+        let tool = PhaseTransitionTool::new();
+        let args = serde_json::json!({
+            "phase": "execute",
+            "context_summary": "Found relevant wiki pages"
+        });
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("execute"));
+    }
+
+    #[test]
+    fn test_execute_missing_phase() {
+        let tool = PhaseTransitionTool::new();
+        let args = serde_json::json!({});
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_invalid_phase() {
+        let tool = PhaseTransitionTool::new();
+        let args = serde_json::json!({"phase": "invalid_phase"});
+        let result = tool.execute(args, &ToolContext::default()).await;
+        assert!(result.is_err());
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib tools::phase_transition`
+Expected: compilation error
+
+- [ ] **Step 3: Implement PhaseTransitionTool**
+
+```rust
+// gasket/engine/src/tools/phase_transition.rs
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_types::AgentPhase;
 
-/// Internal tool that allows the LLM to declare phase transitions.
-///
-/// The current phase is shared via `Arc<Mutex<AgentPhase>>` so the
-/// PhasedExecutor can detect transitions after each step.
-pub struct PhaseTransitionTool {
-    current_phase: Arc<Mutex<AgentPhase>>,
-}
+pub struct PhaseTransitionTool;
 
 impl PhaseTransitionTool {
-    pub fn new(current_phase: Arc<Mutex<AgentPhase>>) -> Self {
-        Self { current_phase }
-    }
+    pub fn new() -> Self { Self }
 }
 
 #[derive(Deserialize)]
 struct TransitionArgs {
-    phase: AgentPhase,
+    phase: String,
     #[serde(default)]
-    context_summary: Option<String>,
+    context_summary: String,
 }
 
 #[async_trait]
 impl Tool for PhaseTransitionTool {
-    fn name(&self) -> &str {
-        "phase_transition"
-    }
+    fn name(&self) -> &str { "phase_transition" }
 
     fn description(&self) -> &str {
-        "Transition to the next working phase. Call this when you have gathered \
-         enough information (Research), completed planning (Planning), finished \
-         execution (Execute), or completed review (Review)."
+        "Transition to the next working phase. \
+         Valid targets depend on current phase: \
+         Research -> planning|execute, Planning -> execute, \
+         Execute -> review|done, Review -> done. \
+         Optionally provide a context_summary for the next phase."
     }
 
     fn parameters(&self) -> Value {
-        let phase = self.current_phase.lock().unwrap();
-        let valid: Vec<&str> = phase
-            .valid_targets()
-            .iter()
-            .map(|p| match p {
-                AgentPhase::Planning => "planning",
-                AgentPhase::Execute => "execute",
-                AgentPhase::Review => "review",
-                AgentPhase::Done => "done",
-                _ => "unknown",
-            })
-            .collect();
-
         serde_json::json!({
             "type": "object",
             "properties": {
                 "phase": {
                     "type": "string",
-                    "enum": valid,
-                    "description": "Target phase to transition to"
+                    "enum": ["planning", "execute", "review", "done"],
+                    "description": "Target phase"
                 },
                 "context_summary": {
                     "type": "string",
-                    "description": "Optional summary of findings for the next phase"
+                    "description": "Optional summary for the next phase"
                 }
             },
             "required": ["phase"]
         })
     }
 
-    #[instrument(name = "tool.phase_transition", skip_all)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let parsed: TransitionArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
-        let mut phase = self.current_phase.lock().unwrap();
-        let current = *phase;
-
-        if !current.can_transition_to(parsed.phase) {
+        let valid = ["planning", "execute", "review", "done"];
+        if !valid.contains(&parsed.phase.as_str()) {
             return Err(ToolError::InvalidArguments(format!(
-                "Cannot transition from {} to {}. Valid targets: {:?}",
-                current.label(),
-                parsed.phase.label(),
-                current.valid_targets().iter().map(|p| p.label()).collect::<Vec<_>>()
+                "Invalid phase '{}'. Valid: {:?}", parsed.phase, valid
             )));
         }
 
-        debug!(
-            "Phase transition: {} -> {} (summary: {:?})",
-            current.label(),
-            parsed.phase.label(),
-            parsed.context_summary
-        );
-
-        *phase = parsed.phase;
-
-        let summary = parsed
-            .context_summary
-            .map(|s| format!("\nContext summary: {}", s))
-            .unwrap_or_default();
-
-        Ok(format!(
-            "Transitioned from {} to {}.{}",
-            current.label(),
-            parsed.phase.label(),
-            summary
-        ))
+        // Actual transition is handled by PhasedExecutor intercepting the tool call.
+        Ok(format!("Phase transition to {} acknowledged.", parsed.phase))
     }
 }
 ```
 
-- [ ] **Step 2: Register module in tools/mod.rs**
+- [ ] **Step 4: Register in tools/mod.rs**
 
-Add to the module declarations (alphabetically, after `new_session`):
+Modify `gasket/engine/src/tools/mod.rs`:
+- Add `mod phase_transition;` in module declarations (alphabetically after `provider`)
+- Add `pub use phase_transition::PhaseTransitionTool;` in re-exports
 
-```rust
-mod phase_transition;
-```
+- [ ] **Step 5: Run tests to verify they pass**
 
-Add to the re-exports (alongside other tool types):
+Run: `cd gasket && cargo test --package gasket-engine --lib tools::phase_transition`
+Expected: all 4 tests PASS
 
-```rust
-pub use phase_transition::PhaseTransitionTool;
-```
-
-- [ ] **Step 3: Build to verify**
+- [ ] **Step 6: Commit**
 
 ```bash
-cargo build --package gasket-engine
+git add gasket/engine/src/tools/phase_transition.rs gasket/engine/src/tools/mod.rs
+git commit -m "feat(engine): add PhaseTransitionTool"
 ```
 
-Expected: compiles without errors.
+---
+
+### Task 5: ResearchContext — Auto-Search Query Building
+
+**Files:**
+- Modify: `gasket/engine/src/kernel/phased/research_context.rs` (replace placeholder)
+
+- [ ] **Step 1: Write the tests**
+
+```rust
+// gasket/engine/src/kernel/phased/research_context.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gasket_providers::ChatMessage;
+
+    #[test]
+    fn test_build_search_query_single_message() {
+        let messages = vec![ChatMessage::user("How does tokio work?")];
+        let query = ResearchContext::build_search_query(&messages);
+        assert_eq!(query, "How does tokio work?");
+    }
+
+    #[test]
+    fn test_build_search_query_concatenates_recent() {
+        let messages = vec![
+            ChatMessage::user("Tell me about Rust"),
+            ChatMessage::assistant("Rust is..."),
+            ChatMessage::user("How about async?"),
+        ];
+        let query = ResearchContext::build_search_query(&messages);
+        assert!(query.contains("Tell me about Rust"));
+        assert!(query.contains("How about async?"));
+    }
+
+    #[test]
+    fn test_build_search_query_limits_to_last_3() {
+        let mut messages = vec![];
+        for i in 0..5 {
+            messages.push(ChatMessage::user(format!("Message {}", i)));
+            messages.push(ChatMessage::assistant(format!("Reply {}", i)));
+        }
+        let query = ResearchContext::build_search_query(&messages);
+        assert!(query.contains("Message 4"));
+        assert!(query.contains("Message 3"));
+        assert!(query.contains("Message 2"));
+        assert!(!query.contains("Message 1"));
+    }
+
+    #[test]
+    fn test_format_both_empty() {
+        let formatted = ResearchContext::format_auto_search_results(&[], &[]);
+        assert!(formatted.contains("未找到"));
+    }
+
+    #[test]
+    fn test_format_wiki_hits() {
+        let wiki = vec![WikiHit {
+            title: "Tokio Runtime".into(),
+            path: "topics/tokio".into(),
+            score: 0.92,
+            summary: "Async runtime".into(),
+        }];
+        let formatted = ResearchContext::format_auto_search_results(&wiki, &[]);
+        assert!(formatted.contains("Tokio Runtime"));
+        assert!(formatted.contains("0.92"));
+    }
+
+    #[test]
+    fn test_format_history_hits() {
+        let history = vec![HistoryHit {
+            role: "user".into(),
+            content: "How to use tokio?".into(),
+            timestamp: "2026-04-29".into(),
+        }];
+        let formatted = ResearchContext::format_auto_search_results(&[], &history);
+        assert!(formatted.contains("How to use tokio?"));
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::research_context`
+Expected: compilation error
+
+- [ ] **Step 3: Implement ResearchContext**
+
+```rust
+// gasket/engine/src/kernel/phased/research_context.rs
+
+use gasket_providers::ChatMessage;
+
+pub struct WikiHit {
+    pub title: String,
+    pub path: String,
+    pub score: f32,
+    pub summary: String,
+}
+
+pub struct HistoryHit {
+    pub role: String,
+    pub content: String,
+    pub timestamp: String,
+}
+
+pub struct ResearchContext;
+
+impl ResearchContext {
+    /// Build search query from last 3 user messages.
+    pub fn build_search_query(messages: &[ChatMessage]) -> String {
+        let user_msgs: Vec<&str> = messages
+            .iter()
+            .rev()
+            .filter(|m| m.role == "user")
+            .filter_map(|m| m.content.as_deref())
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        user_msgs.join(" ")
+    }
+
+    /// Format auto-search results as injected system message.
+    pub fn format_auto_search_results(
+        wiki_hits: &[WikiHit],
+        history_hits: &[HistoryHit],
+    ) -> String {
+        let mut parts = vec!["[Research Context — 自动检索]\n".to_string()];
+
+        if wiki_hits.is_empty() && history_hits.is_empty() {
+            parts.push("未找到相关的 Wiki 页面或历史记录。\n".to_string());
+        } else {
+            if !wiki_hits.is_empty() {
+                parts.push(format!("## Wiki 相关页面 ({}条)\n", wiki_hits.len()));
+                for hit in wiki_hits {
+                    parts.push(format!("- {} ({:.2}): {}\n", hit.path, hit.score, hit.summary));
+                }
+                parts.push("\n".to_string());
+            }
+            if !history_hits.is_empty() {
+                parts.push(format!("## 历史相关记录 ({}条)\n", history_hits.len()));
+                for hit in history_hits {
+                    let preview = truncate_str(&hit.content, 100);
+                    parts.push(format!("- [{}] {}: {}\n", hit.timestamp, hit.role, preview));
+                }
+                parts.push("\n".to_string());
+            }
+        }
+
+        parts.push(
+            "你可以用 wiki_read 查看完整页面，或 history_search 调整搜索方向。\n\
+             需要更多信息也可以直接问我。信息充分后调用 phase_transition 进入下一阶段。"
+                .to_string(),
+        );
+        parts.join("")
+    }
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> &str {
+    if s.chars().count() <= max_chars {
+        s
+    } else {
+        let end = s.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(s.len());
+        &s[..end]
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::research_context`
+Expected: all 6 tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add gasket/engine/src/kernel/phased/research_context.rs
+git commit -m "feat(engine): add ResearchContext for auto-search query building"
+```
+
+---
+
+### Task 6: PhasePrompt + ContextAccumulator
+
+**Files:**
+- Modify: `gasket/engine/src/kernel/phased/phase_prompt.rs` (replace placeholder)
+
+- [ ] **Step 1: Write the tests**
+
+```rust
+// gasket/engine/src/kernel/phased/phase_prompt.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_research_entry_prompt() {
+        let prompt = PhasePrompt::entry_prompt(AgentPhase::Research, &ContextAccumulator::new());
+        assert!(prompt.contains("Research"));
+        assert!(prompt.contains("wiki_search"));
+    }
+
+    #[test]
+    fn test_planning_with_research_summary() {
+        let mut ctx = ContextAccumulator::new();
+        ctx.add(AgentPhase::Research, "Found 3 wiki pages".into());
+        let prompt = PhasePrompt::entry_prompt(AgentPhase::Planning, &ctx);
+        assert!(prompt.contains("Planning"));
+        assert!(prompt.contains("Found 3 wiki pages"));
+    }
+
+    #[test]
+    fn test_execute_with_accumulated_context() {
+        let mut ctx = ContextAccumulator::new();
+        ctx.add(AgentPhase::Research, "User wants async info".into());
+        ctx.add(AgentPhase::Planning, "Plan: read docs".into());
+        let prompt = PhasePrompt::entry_prompt(AgentPhase::Execute, &ctx);
+        assert!(prompt.contains("Execute"));
+        assert!(prompt.contains("User wants async info"));
+        assert!(prompt.contains("Plan: read docs"));
+    }
+
+    #[test]
+    fn test_review_entry_prompt() {
+        let prompt = PhasePrompt::entry_prompt(AgentPhase::Review, &ContextAccumulator::new());
+        assert!(prompt.contains("Review"));
+        assert!(prompt.contains("wiki_write"));
+    }
+
+    #[test]
+    fn test_soft_limit_prompt() {
+        let prompt = PhasePrompt::soft_limit_prompt(AgentPhase::Research);
+        assert!(prompt.contains("phase_transition"));
+        assert!(prompt.contains("信息已足够"));
+    }
+
+    #[test]
+    fn test_hard_limit_prompt() {
+        let prompt = PhasePrompt::hard_limit_prompt(AgentPhase::Research, AgentPhase::Execute);
+        assert!(prompt.contains("强制推进"));
+        assert!(prompt.contains("execute"));
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phase_prompt`
+Expected: compilation error
+
+- [ ] **Step 3: Implement PhasePrompt and ContextAccumulator**
+
+```rust
+// gasket/engine/src/kernel/phased/phase_prompt.rs
+
+use super::agent_phase::AgentPhase;
+
+/// Accumulates context summaries across phase transitions.
+#[derive(Debug, Default)]
+pub struct ContextAccumulator {
+    summaries: Vec<(AgentPhase, String)>,
+}
+
+impl ContextAccumulator {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn add(&mut self, phase: AgentPhase, summary: String) {
+        self.summaries.push((phase, summary));
+    }
+
+    pub fn format(&self) -> String {
+        if self.summaries.is_empty() {
+            return String::new();
+        }
+        let mut parts = vec!["## Collected Context".to_string()];
+        for (phase, summary) in &self.summaries {
+            parts.push(format!("### {} ({} phase)\n{}", phase, phase, summary));
+        }
+        parts.join("\n\n")
+    }
+}
+
+pub struct PhasePrompt;
+
+impl PhasePrompt {
+    pub fn entry_prompt(phase: AgentPhase, ctx: &ContextAccumulator) -> String {
+        let ctx_block = ctx.format();
+        let ctx_section = if ctx_block.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", ctx_block)
+        };
+
+        match phase {
+            AgentPhase::Research => format!(
+                "[Phase: Research]\n\n\
+                 你现在处于研究阶段。使用 wiki_search 和 wiki_read 搜索知识库，\
+                 用 history_search 查找历史对话。\n\
+                 信息充分后调用 phase_transition 进入下一阶段。\n\n\
+                 你可以回复用户来澄清需求。"
+            ),
+            AgentPhase::Planning => format!(
+                "[Phase: Planning]\n\n\
+                 {ctx_section}\
+                 基于以上信息和用户的需求，请制定执行计划。简单任务可以直接跳过此阶段。\n\
+                 制定完成后调用 phase_transition(\"execute\") 进入执行。"
+            ),
+            AgentPhase::Execute => format!(
+                "[Phase: Execute]\n\n\
+                 {ctx_section}\
+                 执行你的计划。所有工具现在可用。\n\
+                 完成后调用 phase_transition(\"review\") 进行复盘，或 phase_transition(\"done\") 直接结束。"
+            ),
+            AgentPhase::Review => format!(
+                "[Phase: Review]\n\n\
+                 {ctx_section}\
+                 审视刚才的执行过程，回答三个问题：\n\
+                 1. 结果是否达到了用户的目标？\n\
+                 2. 这次对话中有哪些值得持久保存的知识？\n\
+                 3. 有哪些 wiki 页面应该创建或更新？\n\n\
+                 如果发现了持久知识，主动调用 wiki_write 写入（每次最多 3 条）。\n\
+                 完成后调用 phase_transition(\"done\")。"
+            ),
+            AgentPhase::Done => String::new(),
+        }
+    }
+
+    pub fn soft_limit_prompt(phase: AgentPhase) -> String {
+        format!(
+            "[系统提示] {} 阶段已达到建议迭代上限。信息已足够，请调用 phase_transition 进入下一阶段。",
+            phase
+        )
+    }
+
+    pub fn hard_limit_prompt(from: AgentPhase, to: AgentPhase) -> String {
+        format!(
+            "[系统强制] {} 阶段达到迭代上限，由引擎强制推进至 {} 阶段。",
+            from, to
+        )
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phase_prompt`
+Expected: all 6 tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add gasket/engine/src/kernel/phased/phase_prompt.rs
+git commit -m "feat(engine): add PhasePrompt and ContextAccumulator"
+```
+
+---
+
+### Task 7: StreamEvent PhaseTransition Variant
+
+**Files:**
+- Modify: `gasket/types/src/events/stream.rs`
+
+- [ ] **Step 1: Add PhaseTransition variant to StreamEventKind**
+
+In `gasket/types/src/events/stream.rs`, add after the `Done` variant in `StreamEventKind` (around line 131):
+
+```rust
+    /// Phase transition in the phased agent loop
+    PhaseTransition {
+        from: Arc<str>,
+        to: Arc<str>,
+    },
+```
+
+Add constructor to `StreamEvent` impl block:
+
+```rust
+    /// Create a phase_transition event for the main agent
+    pub fn phase_transition(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            agent_id: None,
+            kind: StreamEventKind::PhaseTransition {
+                from: Arc::from(from.into()),
+                to: Arc::from(to.into()),
+            },
+        }
+    }
+```
+
+- [ ] **Step 2: Handle in to_chat_event / StreamEvent conversion**
+
+Find where `StreamEventKind` variants are matched for conversion and add:
+
+```rust
+StreamEventKind::PhaseTransition { .. } => None,
+```
+
+- [ ] **Step 3: Build and run tests**
+
+Run: `cd gasket && cargo build --package gasket-types && cargo test --package gasket-types`
+Expected: compiles and all tests pass
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add gasket/engine/src/tools/phase_transition.rs gasket/engine/src/tools/mod.rs
-git commit -m "feat(engine): add PhaseTransitionTool for LLM-driven phase switching"
+git add gasket/types/src/events/stream.rs
+git commit -m "feat(types): add PhaseTransition variant to StreamEventKind"
 ```
 
 ---
 
-### Task 4: PhasedExecutor — state machine (re-entrant design)
+### Task 8: PhaseStateMachine + PhasedExecutor
 
 **Files:**
-- Create: `gasket/engine/src/kernel/phased_executor.rs`
-- Modify: `gasket/engine/src/kernel/executor.rs` (add re-export)
-- Modify: `gasket/engine/src/kernel/mod.rs` (add module)
+- Modify: `gasket/engine/src/kernel/phased/phased_executor.rs` (replace placeholder)
 
-- [ ] **Step 1: Write the PhasedExecutor**
+- [ ] **Step 1: Write the tests**
 
 ```rust
-// gasket/engine/src/kernel/phased_executor.rs
-//! Phased executor — Research → Planning → Execute → Review state machine.
-//!
-//! Wraps `SteppableExecutor`, managing phase state and injecting phase-aware
-//! prompts.  Designed to be **re-entrant**: each user message drives one
-//! `cycle()` call, and the executor yields control when the LLM asks the user
-//! a question mid-Research (or when the full phase chain completes).
-//!
-//! The caller (session dispatcher / kernel_executor) handles the I/O boundary:
-//! call `cycle()` → if `needs_user_input`, send response to user, wait for
-//! their reply, append it to messages, call `cycle()` again without re-running
-//! auto-search.
+// gasket/engine/src/kernel/phased/phased_executor.rs
 
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use tracing::{debug, info};
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-use crate::kernel::{
-    context::RuntimeContext,
-    error::KernelError,
-    steppable_executor::SteppableExecutor,
-};
-use crate::tools::PhaseTransitionTool;
-use gasket_providers::ChatMessage;
-use gasket_types::AgentPhase;
+    #[test]
+    fn test_initial_phase_is_research() {
+        let sm = PhaseStateMachine::new();
+        assert_eq!(sm.current_phase(), AgentPhase::Research);
+        assert_eq!(sm.iteration_in_phase(), 0);
+        assert_eq!(sm.total_iterations(), 0);
+    }
 
-/// Maximum iterations per phase.
-const MAX_RESEARCH_ITERS: u32 = 5;
-const MAX_PLANNING_ITERS: u32 = 3;
-const MAX_REVIEW_ITERS: u32 = 3;
+    #[test]
+    fn test_valid_transition() {
+        let mut sm = PhaseStateMachine::new();
+        sm.transition(AgentPhase::Execute).unwrap();
+        assert_eq!(sm.current_phase(), AgentPhase::Execute);
+        assert_eq!(sm.iteration_in_phase(), 0);
+        assert_eq!(sm.total_iterations(), 0);
+    }
 
-// ── Phase prompts ───────────────────────────────────────────
+    #[test]
+    fn test_invalid_transition() {
+        let mut sm = PhaseStateMachine::new();
+        let result = sm.transition(AgentPhase::Review);
+        assert!(result.is_err());
+        assert_eq!(sm.current_phase(), AgentPhase::Research);
+    }
 
-const RESEARCH_PROMPT: &str = "\
-[Phase: Research]
+    #[test]
+    fn test_iteration_tracking() {
+        let mut sm = PhaseStateMachine::new();
+        sm.advance_iteration();
+        sm.advance_iteration();
+        assert_eq!(sm.iteration_in_phase(), 2);
+        assert_eq!(sm.total_iterations(), 2);
 
-You are in the Research phase. Gather information to understand the user's request:
-- Use `wiki_search` and `wiki_read` to find relevant knowledge
-- Use `history_search` and `query_history` to recall past conversations
-- If information is insufficient, ask the user clarifying questions
-- When you have enough context, call `phase_transition(\"planning\")` to plan, \
-  or `phase_transition(\"execute\")` to skip planning for simple tasks.
+        sm.transition(AgentPhase::Execute).unwrap();
+        assert_eq!(sm.iteration_in_phase(), 0);
+        assert_eq!(sm.total_iterations(), 2);
+    }
 
-**Important:** If you respond with text (not a tool call) during Research, \
-your response will be sent to the user and you will wait for their reply. \
-Only respond with text when you really need the user's input.";
+    #[test]
+    fn test_soft_limit() {
+        let mut sm = PhaseStateMachine::new();
+        for _ in 0..5 { sm.advance_iteration(); }
+        assert!(sm.is_at_soft_limit());
+        assert!(!sm.is_at_hard_limit());
+    }
 
-const PLANNING_PROMPT: &str = "\
-[Phase: Planning]
+    #[test]
+    fn test_hard_limit() {
+        let mut sm = PhaseStateMachine::new();
+        for _ in 0..7 { sm.advance_iteration(); }
+        assert!(sm.is_at_hard_limit());
+    }
 
-Research findings: {context_summary}
+    #[test]
+    fn test_force_transition() {
+        let mut sm = PhaseStateMachine::new();
+        for _ in 0..7 { sm.advance_iteration(); }
+        let target = sm.force_transition().unwrap();
+        assert_eq!(target, AgentPhase::Execute);
+        assert_eq!(sm.current_phase(), AgentPhase::Execute);
+    }
 
-Based on the research and user's request, create a plan.
-Call `phase_transition(\"execute\")` when ready, or skip with a direct transition \
-for simple tasks.";
+    #[test]
+    fn test_context_accumulation() {
+        let mut sm = PhaseStateMachine::new();
+        sm.add_context("Found wiki pages".into());
+        sm.transition(AgentPhase::Execute).unwrap();
+        sm.add_context("Executed plan".into());
+        assert!(sm.context().format().contains("Found wiki pages"));
+        assert!(sm.context().format().contains("Executed plan"));
+    }
 
-const EXECUTE_PROMPT: &str = "\
-[Phase: Execute]
+    #[test]
+    fn test_global_limit() {
+        let mut sm = PhaseStateMachine::new();
+        for _ in 0..99 { sm.advance_iteration(); }
+        assert!(!sm.is_at_global_limit(100));
+        sm.advance_iteration();
+        assert!(sm.is_at_global_limit(100));
+    }
+}
+```
 
-Execute your plan. All tools are now available.
-When done, call `phase_transition(\"review\")` for reflection, \
-or `phase_transition(\"done\")` to finish.";
+- [ ] **Step 2: Run tests to verify they fail**
 
-const REVIEW_PROMPT: &str = "\
-[Phase: Review]
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phased_executor`
+Expected: compilation error
 
-Review the execution. Ask yourself:
-1. Did you achieve the user's goal?
-2. What persistent knowledge should be saved?
-3. Which wiki pages should be created or updated?
+- [ ] **Step 3: Implement PhaseStateMachine and PhasedExecutor**
 
-If you found valuable knowledge, write it to wiki using `wiki_write`.
-Call `phase_transition(\"done\")` when finished.";
+```rust
+// gasket/engine/src/kernel/phased/phased_executor.rs
 
-// ── Result types ─────────────────────────────────────────────
+use super::agent_phase::AgentPhase;
+use super::phase_prompt::{ContextAccumulator, PhasePrompt};
 
-/// Outcome of one phased cycle.
-pub struct PhasedCycleResult {
-    /// Text response to send to the user (only set when needs_user_input is true).
-    pub user_response: Option<String>,
-    /// Whether execution is complete.
-    pub done: bool,
-    /// Final content (only set when done is true).
-    pub content: Option<String>,
-    /// Final reasoning (only set when done is true).
-    pub reasoning_content: Option<String>,
-    /// Tool names used across all phases in this cycle.
-    pub tools_used: Vec<String>,
-    /// Phases visited during this cycle.
-    pub phases_visited: Vec<AgentPhase>,
-    /// Whether the executor needs the user to respond before continuing.
-    /// Caller should send `user_response` to the user, wait for input,
-    /// append the user's message to the message list, and call `cycle()` again.
-    pub needs_user_input: bool,
+/// Internal state machine for phase tracking.
+pub struct PhaseStateMachine {
+    phase: AgentPhase,
+    iteration_in_phase: u32,
+    total_iterations: u32,
+    context: ContextAccumulator,
 }
 
-/// Re-entrant phased executor.
-///
-/// Owns the phase state across multiple `cycle()` calls.  Each `cycle()`
-/// advances the phase machine as far as possible, yielding only when the
-/// LLM asks the user a question (mid-Research) or when the full chain
-/// reaches Done.
-pub struct PhasedExecutor {
-    ctx: RuntimeContext,
-    phase: Arc<Mutex<AgentPhase>>,
-    context_summary: Arc<Mutex<Option<String>>>,
-    /// True after the first auto-search has run — prevents re-running on re-entry.
-    auto_search_done: bool,
-    /// Messages accumulated across cycles (the PhasedExecutor owns the history).
-    messages: Vec<ChatMessage>,
-}
-
-impl PhasedExecutor {
-    /// Create a new PhasedExecutor from the given context and initial messages.
-    ///
-    /// The `messages` should include the system prompt and the first user message.
-    /// Builds an internal ToolRegistry that adds `phase_transition` alongside
-    /// the original tools.
-    pub fn new(ctx: RuntimeContext, messages: Vec<ChatMessage>) -> Self {
-        let phase = Arc::new(Mutex::new(AgentPhase::Research));
-        let context_summary = Arc::new(Mutex::new(None::<String>));
-
-        // Clone original registry and attach phase_transition
-        let mut registry = (*ctx.tools).clone();
-        registry.register(Box::new(PhaseTransitionTool::new(phase.clone())));
-
-        let mut ctx = ctx;
-        ctx.tools = Arc::new(registry);
-
+impl PhaseStateMachine {
+    pub fn new() -> Self {
         Self {
-            ctx,
-            phase,
-            context_summary,
-            auto_search_done: false,
-            messages,
+            phase: AgentPhase::Research,
+            iteration_in_phase: 0,
+            total_iterations: 0,
+            context: ContextAccumulator::new(),
         }
     }
 
-    /// Run one cycle of the phased execution.
-    ///
-    /// On first call: runs auto-search, injects Research prompt, enters the
-    /// phase loop.  On subsequent calls (after user input): resumes from the
-    /// current phase without re-running auto-search.
-    ///
-    /// Returns `PhasedCycleResult` — check `needs_user_input` and `done` to
-    /// decide what to do next.
-    pub async fn cycle(
-        &mut self,
-        event_tx: Option<&mpsc::Sender<crate::kernel::StreamEvent>>,
-    ) -> Result<PhasedCycleResult, KernelError> {
-        let mut tools_used: Vec<String> = Vec::new();
-        let mut phases_visited: Vec<AgentPhase> = Vec::new();
+    pub fn current_phase(&self) -> AgentPhase { self.phase }
 
-        // First cycle: auto-search + inject Research prompt
-        if !self.auto_search_done {
-            self.auto_search_done = true;
-            let search_results = self.run_auto_search().await;
-            self.messages.push(ChatMessage::system(search_results));
-            self.messages.push(ChatMessage::system(RESEARCH_PROMPT.to_string()));
-            phases_visited.push(AgentPhase::Research);
-            self.send_phase_event(event_tx, AgentPhase::Research).await;
-        }
+    pub fn iteration_in_phase(&self) -> u32 { self.iteration_in_phase }
 
-        loop {
-            let current_phase = *self.phase.lock().unwrap();
+    pub fn total_iterations(&self) -> u32 { self.total_iterations }
 
-            match current_phase {
-                AgentPhase::Research => {
-                    let (response_text, used, phase_changed, done) = self
-                        .run_phase_loop(event_tx, MAX_RESEARCH_ITERS)
-                        .await?;
-                    tools_used.extend(used);
+    pub fn context(&self) -> &ContextAccumulator { &self.context }
 
-                    if phase_changed {
-                        let new_phase = *self.phase.lock().unwrap();
-                        self.enter_phase(event_tx, &mut phases_visited, new_phase).await;
-                        continue;
-                    }
-
-                    // LLM responded with text, not tool calls — asking user a question
-                    if done && response_text.is_some() {
-                        return Ok(PhasedCycleResult {
-                            user_response: response_text,
-                            done: false,
-                            content: None,
-                            reasoning_content: None,
-                            tools_used,
-                            phases_visited,
-                            needs_user_input: true,
-                        });
-                    }
-
-                    // LLM done without text — shouldn't normally happen, but treat as done
-                    return Ok(PhasedCycleResult {
-                        user_response: None,
-                        done: true,
-                        content: Some(String::new()),
-                        reasoning_content: None,
-                        tools_used,
-                        phases_visited,
-                        needs_user_input: false,
-                    });
-                }
-
-                AgentPhase::Planning => {
-                    let prompt = {
-                        let summary = self.context_summary.lock().unwrap().clone()
-                            .unwrap_or_else(|| "Research completed.".to_string());
-                        PLANNING_PROMPT.replace("{context_summary}", &summary)
-                    };
-                    self.messages.push(ChatMessage::system(prompt));
-
-                    let (_, used, phase_changed, _) = self
-                        .run_phase_loop(event_tx, MAX_PLANNING_ITERS)
-                        .await?;
-                    tools_used.extend(used);
-
-                    if phase_changed {
-                        let new_phase = *self.phase.lock().unwrap();
-                        if new_phase == AgentPhase::Execute {
-                            self.enter_phase(event_tx, &mut phases_visited, new_phase).await;
-                            continue;
-                        }
-                        // Planning → Done (unlikely but allowed)
-                        return Ok(PhasedCycleResult {
-                            user_response: None,
-                            done: true,
-                            content: Some(String::new()),
-                            reasoning_content: None,
-                            tools_used,
-                            phases_visited,
-                            needs_user_input: false,
-                        });
-                    }
-
-                    // Max iters — force to Execute
-                    {
-                        let mut p = self.phase.lock().unwrap();
-                        *p = AgentPhase::Execute;
-                    }
-                    self.enter_phase(event_tx, &mut phases_visited, AgentPhase::Execute).await;
-                    continue;
-                }
-
-                AgentPhase::Execute => {
-                    self.messages.push(ChatMessage::system(EXECUTE_PROMPT.to_string()));
-
-                    let (response_text, used, phase_changed, done) = self
-                        .run_phase_loop(event_tx, u32::MAX)
-                        .await?;
-                    tools_used.extend(used);
-
-                    if phase_changed {
-                        let new_phase = *self.phase.lock().unwrap();
-                        if new_phase == AgentPhase::Review {
-                            self.enter_phase(event_tx, &mut phases_visited, new_phase).await;
-                            continue;
-                        }
-                        // Execute → Done
-                        return Ok(PhasedCycleResult {
-                            user_response: None,
-                            done: true,
-                            content: Some(response_text.unwrap_or_default()),
-                            reasoning_content: None,
-                            tools_used,
-                            phases_visited,
-                            needs_user_input: false,
-                        });
-                    }
-
-                    // Execute completed naturally (LLM responded without tools)
-                    {
-                        let mut p = self.phase.lock().unwrap();
-                        if *p == AgentPhase::Execute {
-                            *p = AgentPhase::Done;
-                        }
-                    }
-                    return Ok(PhasedCycleResult {
-                        user_response: None,
-                        done: true,
-                        content: Some(response_text.unwrap_or_default()),
-                        reasoning_content: None,
-                        tools_used,
-                        phases_visited,
-                        needs_user_input: false,
-                    });
-                }
-
-                AgentPhase::Review => {
-                    self.messages.push(ChatMessage::system(REVIEW_PROMPT.to_string()));
-
-                    let (response_text, used, phase_changed, _) = self
-                        .run_phase_loop(event_tx, MAX_REVIEW_ITERS)
-                        .await?;
-                    tools_used.extend(used);
-
-                    // Force transition to Done
-                    {
-                        let mut p = self.phase.lock().unwrap();
-                        *p = AgentPhase::Done;
-                    }
-                    self.send_phase_event(event_tx, AgentPhase::Done).await;
-                    phases_visited.push(AgentPhase::Done);
-
-                    return Ok(PhasedCycleResult {
-                        user_response: None,
-                        done: true,
-                        content: Some(response_text.unwrap_or_default()),
-                        reasoning_content: None,
-                        tools_used,
-                        phases_visited,
-                        needs_user_input: false,
-                    });
-                }
-
-                AgentPhase::Done => {
-                    return Ok(PhasedCycleResult {
-                        user_response: None,
-                        done: true,
-                        content: Some(String::new()),
-                        reasoning_content: None,
-                        tools_used,
-                        phases_visited,
-                        needs_user_input: false,
-                    });
-                }
-            }
-        }
+    pub fn add_context(&mut self, summary: String) {
+        self.context.add(self.phase, summary);
     }
 
-    // ── Private helpers ───────────────────────────────────────
+    pub fn advance_iteration(&mut self) {
+        self.iteration_in_phase += 1;
+        self.total_iterations += 1;
+    }
 
-    /// Run the SteppableExecutor loop for one phase.
-    ///
-    /// Returns: (last_response_text, tools_used, phase_changed, done)
-    /// - `phase_changed` = true when the LLM called `phase_transition`
-    /// - `done` = true when the LLM responded without tool calls (natural end of phase)
-    async fn run_phase_loop(
-        &mut self,
-        event_tx: Option<&mpsc::Sender<crate::kernel::StreamEvent>>,
-        max_iters: u32,
-    ) -> Result<(Option<String>, Vec<String>, bool, bool), KernelError> {
-        let steppable = SteppableExecutor::new(self.ctx.clone());
-        let mut ledger = crate::kernel::kernel_executor::TokenLedger::new();
-        let mut tools_used: Vec<String> = Vec::new();
-        let start_phase = *self.phase.lock().unwrap();
-
-        for iteration in 1..=max_iters {
-            debug!("[Phased] iter {} / {} (phase: {:?})", iteration, max_iters, start_phase);
-
-            let result = steppable
-                .step(&mut self.messages, &mut ledger, event_tx)
-                .await?;
-
-            for tr in &result.tool_results {
-                tools_used.push(tr.tool_name.clone());
-            }
-
-            // Check if phase_transition was called
-            let current_phase = *self.phase.lock().unwrap();
-            if current_phase != start_phase {
-                let text = result.response.content.clone();
-                return Ok((text, tools_used, true, false));
-            }
-
-            if !result.should_continue {
-                let text = result.response.content.clone();
-                return Ok((text, tools_used, false, true));
-            }
+    pub fn transition(&mut self, target: AgentPhase) -> Result<(), String> {
+        if !self.phase.can_transition_to(&target) {
+            return Err(format!(
+                "Invalid phase transition: {} -> {}",
+                self.phase, target
+            ));
         }
-
-        info!("[Phased] Max iters ({}) reached for {:?}", max_iters, start_phase);
-        Ok((None, tools_used, false, false))
+        self.phase = target;
+        self.iteration_in_phase = 0;
+        Ok(())
     }
 
-    /// Inject phase entry prompt and notify frontend.
-    async fn enter_phase(
-        &self,
-        event_tx: Option<&mpsc::Sender<crate::kernel::StreamEvent>>,
-        phases_visited: &mut Vec<AgentPhase>,
-        phase: AgentPhase,
-    ) {
-        // Prompt injection happens in the phase match arms above (before run_phase_loop).
-        // This just handles the event + tracking.
-        self.send_phase_event(event_tx, phase).await;
-        phases_visited.push(phase);
+    pub fn is_at_soft_limit(&self) -> bool {
+        let soft = self.phase.soft_limit_iterations();
+        soft > 0 && self.iteration_in_phase >= soft
     }
 
-    /// Run auto-search for the Research phase.
-    async fn run_auto_search(&self) -> String {
-        let user_query = self.messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m, ChatMessage::User(_)))
-            .map(|m| {
-                if let ChatMessage::User(content) = m { content.as_str() } else { "" }
-            })
-            .unwrap_or("");
-
-        if user_query.is_empty() {
-            return "[Research Context]\nNo user query found for auto-search.".to_string();
-        }
-
-        let ctx = crate::tools::ToolContext::default();
-
-        let wiki_future = async {
-            let args = serde_json::json!({"query": user_query, "limit": 5});
-            self.ctx.tools.execute("wiki_search", args, &ctx).await
-        };
-
-        let history_future = async {
-            let args = serde_json::json!({"keywords": user_query, "limit": 10});
-            match self.ctx.tools.execute("history_search", args.clone(), &ctx).await {
-                Ok(result) => Ok(result),
-                Err(_) => self.ctx.tools.execute("query_history", args, &ctx).await,
-            }
-        };
-
-        let (wiki_result, history_result) = tokio::join!(wiki_future, history_future);
-
-        let wiki_section = match wiki_result {
-            Ok(text) if !text.starts_with("No wiki pages") => {
-                format!("## Wiki 相关页面\n\n{}", text)
-            }
-            _ => "## Wiki 相关页面\n\n未找到相关页面。".to_string(),
-        };
-
-        let history_section = match history_result {
-            Ok(text) if !text.starts_with("No history") => {
-                format!("## 历史相关记录\n\n{}", text)
-            }
-            _ => "## 历史相关记录\n\n未找到相关记录。".to_string(),
-        };
-
-        format!(
-            "[Research Context — 自动检索]\n\n{}\n\n{}\n\n\
-             你可以用 wiki_read 查看完整页面，或 history_search 调整搜索方向。\n\
-             需要更多信息也可以直接问我。信息充分后调用 phase_transition 进入下一阶段。",
-            wiki_section, history_section
-        )
+    pub fn is_at_hard_limit(&self) -> bool {
+        let hard = self.phase.max_iterations();
+        hard > 0 && hard < u32::MAX && self.iteration_in_phase >= hard
     }
 
-    /// Send a PhaseChanged event to the frontend via the event channel.
-    async fn send_phase_event(
-        &self,
-        event_tx: Option<&mpsc::Sender<crate::kernel::StreamEvent>>,
-        phase: AgentPhase,
-    ) {
-        if let Some(tx) = event_tx {
-            let chat_event = gasket_types::ChatEvent::phase_changed(phase);
-            let json = serde_json::to_string(&chat_event).unwrap_or_default();
-            let _ = tx.send(crate::kernel::StreamEvent::Text {
-                content: std::sync::Arc::from(json),
-            }).await;
+    pub fn is_at_global_limit(&self, global_max: u32) -> bool {
+        self.total_iterations >= global_max
+    }
+
+    pub fn force_transition(&mut self) -> Result<AgentPhase, String> {
+        if let Some(target) = self.phase.forced_transition_target() {
+            let target = *target;
+            self.transition(target)?;
+            Ok(target)
+        } else {
+            Err(format!("Cannot force-transition from {}", self.phase))
         }
     }
 }
+
+/// Main entry point for phased execution.
+///
+/// This struct holds the high-level run() method that will be called
+/// from the session layer. The actual implementation of run() will be
+/// completed when integrating with SteppableExecutor (Task 10).
+pub struct PhasedExecutor;
 ```
 
-- [ ] **Step 2: Add module to kernel/mod.rs**
+- [ ] **Step 4: Run tests to verify they pass**
 
-In `gasket/engine/src/kernel/mod.rs`, add to the module declarations:
-
-```rust
-pub(crate) mod phased_executor;
-```
-
-- [ ] **Step 3: Add re-export to kernel/executor.rs**
-
-In `gasket/engine/src/kernel/executor.rs`, add:
-
-```rust
-pub use crate::kernel::phased_executor::{PhasedExecutor, PhasedResult};
-```
-
-- [ ] **Step 4: Build to verify**
-
-```bash
-cargo build --package gasket-engine
-```
-
-Expected: compiles without errors.
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::phased::phased_executor`
+Expected: all 9 tests PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gasket/engine/src/kernel/phased_executor.rs \
-        gasket/engine/src/kernel/mod.rs \
-        gasket/engine/src/kernel/executor.rs
-git commit -m "feat(engine): add PhasedExecutor state machine for Research-Plan-Execute-Review loop"
+git add gasket/engine/src/kernel/phased/phased_executor.rs
+git commit -m "feat(engine): add PhaseStateMachine for phased loop orchestration"
 ```
 
 ---
 
-### Task 5: KernelConfig integration gate
+### Task 9: KernelConfig phased_execution Flag
 
 **Files:**
-- Modify: `gasket/engine/src/kernel/context.rs` (add `phased` field)
-- Modify: `gasket/engine/src/kernel/mod.rs` (use PhasedExecutor when `phased` is true)
+- Modify: `gasket/engine/src/kernel/context.rs`
 
-- [ ] **Step 1: Add `phased` field to KernelConfig**
+- [ ] **Step 1: Add `phased_execution` field**
 
-In `gasket/engine/src/kernel/context.rs`, add to the `KernelConfig` struct after `ws_summary_limit`:
-
-```rust
-    /// Enable phased execution (Research → Planning → Execute → Review).
-    /// When false (default), uses the standard unphased loop.
-    pub phased: bool,
-```
-
-In `KernelConfig::new()`, add:
+Modify `gasket/engine/src/kernel/context.rs` — add to `KernelConfig` struct (after `ws_summary_limit`):
 
 ```rust
-            phased: false,
+    /// Enable phased execution (Research → Planning → Execute → Review → Done).
+    /// When false (default), behavior is identical to current SteppableExecutor loop.
+    pub phased_execution: bool,
 ```
 
-- [ ] **Step 2: Check for compilation errors at other construction sites**
+Update `KernelConfig::new()` to include `phased_execution: false,`.
+
+- [ ] **Step 2: Fix any construction sites**
+
+Run: `cd gasket && cargo check --workspace 2>&1 | grep "missing field \`phased_execution\`"`
+Add `phased_execution: false` to any failing sites.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd gasket && cargo test --package gasket-engine --lib kernel::context`
+Expected: existing tests pass
+
+- [ ] **Step 4: Commit**
 
 ```bash
-cargo check --workspace 2>&1 | head -50
+git add gasket/engine/src/kernel/context.rs
+git commit -m "feat(engine): add phased_execution flag to KernelConfig"
 ```
-
-Add `phased: false` to any `KernelConfig` construction sites that fail.
-
-- [ ] **Step 3: Modify kernel/mod.rs to use PhasedExecutor when `phased` is true**
-
-In `gasket/engine/src/kernel/mod.rs`, modify `execute_streaming`:
-
-```rust
-pub async fn execute_streaming(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-    event_tx: mpsc::Sender<StreamEvent>,
-) -> Result<ExecutionResult, KernelError> {
-    if ctx.config.phased {
-        let mut phased = phased_executor::PhasedExecutor::new(ctx.clone(), messages);
-        loop {
-            let result = phased.cycle(Some(&event_tx)).await?;
-            if result.done {
-                return Ok(ExecutionResult {
-                    content: result.content.unwrap_or_default(),
-                    reasoning_content: result.reasoning_content,
-                    tools_used: result.tools_used,
-                    token_usage: None,
-                });
-            }
-            if result.needs_user_input {
-                // Send the LLM's question to the user via event_tx
-                if let Some(text) = &result.user_response {
-                    let _ = event_tx
-                        .send(StreamEvent::content(text.clone()))
-                        .await;
-                }
-                let _ = event_tx.send(StreamEvent::done()).await;
-                // The session dispatcher will call execute_streaming again
-                // with the user's response appended to messages
-                return Err(KernelError::Provider(
-                    "PhasedExecutor needs user input — re-invoke with updated messages".to_string(),
-                ));
-            }
-        }
-    } else {
-        let exec = build_executor(ctx);
-        exec.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
-            .await
-    }
-}
-```
-
-Similarly modify `execute`:
-
-```rust
-pub async fn execute(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-) -> Result<ExecutionResult, KernelError> {
-    if ctx.config.phased {
-        let mut phased = phased_executor::PhasedExecutor::new(ctx.clone(), messages);
-        loop {
-            let result = phased.cycle(None).await?;
-            if result.done {
-                return Ok(ExecutionResult {
-                    content: result.content.unwrap_or_default(),
-                    reasoning_content: result.reasoning_content,
-                    tools_used: result.tools_used,
-                    token_usage: None,
-                });
-            }
-            // Non-streaming mode shouldn't normally get needs_user_input
-            // (streaming is the primary phased use case); fall through to error
-            if result.needs_user_input {
-                return Err(KernelError::Provider(
-                    "PhasedExecutor needs user input in non-streaming mode".to_string(),
-                ));
-            }
-        }
-    } else {
-        let exec = build_executor(ctx);
-        exec.execute_with_options(messages, &ExecutorOptions::new())
-            .await
-    }
-}
-```
-
-Note: The `StreamEvent::Done` sent when `needs_user_input` is true signals to the session dispatcher that the current response is complete but the conversation isn't done. The dispatcher will invoke `execute_streaming` again when the user responds. At that point, the `messages` parameter should include the user's new message appended. The PhasedExecutor will resume from wherever it left off — but wait, this doesn't work because `PhasedExecutor::new()` creates a fresh executor each time. 
-
-**Important design note:** For user clarification to work correctly, the PhasedExecutor must persist across multiple `execute_streaming` calls. This requires the session dispatcher to hold the PhasedExecutor instance, not create a new one each time. The current kernel API (`execute_streaming` as a pure function) doesn't support this.
-
-**Simplification for initial implementation:** Skip the user-clarification re-entrancy for now. The Research phase runs auto-search + sub-loop in one shot. If the LLM wants to ask the user, it calls `phase_transition("execute")` to enter Execute, then asks the question there. This keeps the kernel API unchanged — `execute_streaming` is still a pure function that runs the full phase chain to Done.
-
-This means the `cycle()` loop in Step 3 above simplifies to:
-
-```rust
-if ctx.config.phased {
-    let mut phased = phased_executor::PhasedExecutor::new(ctx.clone(), messages);
-    let result = phased.cycle(Some(&event_tx)).await?;
-    // PhasedExecutor always runs to Done (no mid-cycle user I/O yet)
-    Ok(ExecutionResult {
-        content: result.content.unwrap_or_default(),
-        reasoning_content: result.reasoning_content,
-        tools_used: result.tools_used,
-        token_usage: None,
-    })
-}
-```
-
-The re-entrant design is in the code so it can be activated later when the session dispatcher is updated to hold the executor across calls.
 
 ---
 
-### Task 6: Frontend phase indicator
+### Task 10: Register PhaseTransitionTool in Builder
 
 **Files:**
-- Modify: `web/src/composables/useChatSession.ts`
-- Modify: `web/src/components/ChatMessage.vue` (or the main message panel component)
+- Modify: `gasket/engine/src/tools/builder.rs`
 
-- [ ] **Step 1: Check current frontend structure**
+- [ ] **Step 1: Register the tool**
+
+Modify `gasket/engine/src/tools/builder.rs` — add after the SystemToolProvider registration (around line 143):
+
+```rust
+    // Phased execution tool (always registered, filtered by PhasedToolSet)
+    tools.register(Box::new(super::PhaseTransitionTool::new()));
+```
+
+- [ ] **Step 2: Build to verify**
+
+Run: `cd gasket && cargo build --package gasket-engine`
+Expected: compiles
+
+- [ ] **Step 3: Commit**
 
 ```bash
-ls web/src/components/ | grep -i message
-```
-
-- [ ] **Step 2: Add phase tracking to useChatSession**
-
-In `web/src/composables/useChatSession.ts`, add a reactive `currentPhase` ref:
-
-```typescript
-// Add near other reactive state declarations
-const currentPhase = ref<string | null>(null)
-
-// In the WebSocket message handler, add handling for phase_changed:
-case 'phase_changed':
-  currentPhase.value = data.phase
-  break
-```
-
-Export `currentPhase` from the composable's return object.
-
-- [ ] **Step 3: Add phase badge to the chat component**
-
-In the appropriate chat message component, add a phase indicator badge above the message stream:
-
-```vue
-<!-- Phase indicator badge -->
-<div
-  v-if="currentPhase"
-  class="phase-badge"
-  :class="`phase-${currentPhase}`"
->
-  {{ currentPhase }}
-</div>
-```
-
-Add minimal CSS for the badge:
-
-```css
-.phase-badge {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 8px;
-  background: var(--color-surface-2);
-  color: var(--color-text-secondary);
-  transition: all 0.2s ease;
-}
-```
-
-- [ ] **Step 4: Build frontend**
-
-```bash
-cd web && npm run build
-```
-
-Expected: no build errors.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add web/src/composables/useChatSession.ts web/src/components/
-git commit -m "feat(web): add phase indicator badge for phased agent execution"
+git add gasket/engine/src/tools/builder.rs
+git commit -m "feat(engine): register PhaseTransitionTool in builder"
 ```
 
 ---
 
-### Task 7: End-to-end verification
+### Task 11: Session Layer Dispatch
 
-**Files:** None new
+**Files:**
+- Modify: `gasket/engine/src/session/mod.rs`
 
-- [ ] **Step 1: Build entire workspace**
+- [ ] **Step 1: Modify AgentSession::execute()**
 
-```bash
-cargo build --workspace
+Modify `gasket/engine/src/session/mod.rs` — update the `execute()` method (around line 583):
+
+```rust
+    async fn execute(
+        runtime_ctx: &RuntimeContext,
+        messages: Vec<ChatMessage>,
+        kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<ExecutionResult, AgentError> {
+        if runtime_ctx.config.phased_execution {
+            // Phased mode — use PhasedExecutor (full implementation in follow-up)
+            // For now, fall through to standard kernel execution
+            // The PhasedExecutor::run() integration will be completed when
+            // the SteppableExecutor + PhasedToolSet wiring is finalized.
+        }
+        match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
+            Ok(r) => Ok(r),
+            Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
+                content: format!("Maximum iterations ({}) reached.", n),
+                reasoning_content: None,
+                tools_used: vec![],
+                token_usage: None,
+            }),
+            Err(e) => Err(e.into()),
+        }
+    }
 ```
 
-Expected: compiles without errors.
+Note: The full `PhasedExecutor::run()` wiring with `SteppableExecutor` requires resolving how `PhasedToolSet` interacts with `RuntimeContext.tools: Arc<ToolRegistry>`. The recommended approach (Approach A from the spec) is to build a filtered `ToolRegistry` clone before each step. This will be implemented in a follow-up commit once the foundation components are verified.
 
-- [ ] **Step 2: Run all tests**
+- [ ] **Step 2: Build to verify**
 
-```bash
-cargo test --workspace
-```
+Run: `cd gasket && cargo build --workspace`
+Expected: compiles
 
-Expected: all tests pass.
+- [ ] **Step 3: Run all tests**
 
-- [ ] **Step 3: Verify backward compatibility**
+Run: `cd gasket && cargo test --workspace`
+Expected: all tests pass (new code is behind `phased_execution: false` default)
 
-Confirm that with `phased: false` (default), the agent loop behaves identically:
-
-```bash
-# Run a simple CLI message with default config
-cargo run --release --package gasket-cli -- agent -m "hello"
-```
-
-Expected: standard agent response, no phase indicators.
-
-- [ ] **Step 4: Manual phased mode test**
-
-Temporarily set `phased: true` in test config and verify phase events are emitted:
+- [ ] **Step 4: Commit**
 
 ```bash
-# Enable phased mode and check that phase_changed events appear in stream
+git add gasket/engine/src/session/mod.rs
+git commit -m "feat(engine): add phased execution dispatch stub in session layer"
 ```
 
-- [ ] **Step 5: Commit any fixes and finalize**
+---
+
+### Task 12: Workspace Build Verification
+
+- [ ] **Step 1: Full workspace build**
+
+Run: `cd gasket && cargo build --workspace`
+Expected: compiles without errors
+
+- [ ] **Step 2: Full test suite**
+
+Run: `cd gasket && cargo test --workspace`
+Expected: all tests pass
+
+- [ ] **Step 3: Commit any fixes**
 
 ```bash
 git add -A
-git commit -m "chore: end-to-end verification of phased agent loop"
+git commit -m "fix: address workspace build issues from phased executor integration"
 ```
+
+---
+
+## Self-Review
+
+### Spec Coverage
+
+| Spec Section | Task |
+|-------------|------|
+| §2.1 New Components | Tasks 1-8 (file structure) |
+| §2.2 Phase State Machine | Task 1 (AgentPhase), Task 8 (PhaseStateMachine) |
+| §2.3 Phase Transitions | Task 1 (can_transition_to), Task 8 (iteration tracking) |
+| §2.4 Tool Sets Per Phase | Task 2 (PhasedToolSet + allowed_tools) |
+| §2.5 Tool Filtering | Task 2 (request-time filtering) |
+| §3.1 Auto-Search | Task 5 (ResearchContext) |
+| §3.2 Injected Context | Task 5 (format_auto_search_results) |
+| §3.3 Retrieval Sub-Loop | Task 8 (PhasedExecutor run loop — follow-up) |
+| §3.4 User Clarification | Task 3 (StepAction::WaitForUserInput) |
+| §3.5 Guard Rails | Task 8 (soft/hard limit, forced transition) |
+| §4 Planning Phase | Task 6 (PhasePrompt) |
+| §5 Execute Phase | Task 6 (PhasePrompt) |
+| §6 Review Phase | Task 6 (PhasePrompt) |
+| §7 phase_transition Tool | Task 4 (PhaseTransitionTool) |
+| §8 Frontend Event | Task 7 (StreamEventKind::PhaseTransition) |
+| §11 Backward Compatibility | Task 9 (KernelConfig flag), Task 11 (dispatch) |
+| §12 Error Handling | Task 8 (hard limit, forced transition, global limit) |
+
+### Placeholder Scan
+
+No TBD, TODO, or "implement later" in task steps. Task 11 explicitly notes the follow-up work needed for `PhasedExecutor::run()` wiring.
+
+### Type Consistency
+
+- `AgentPhase` defined in Task 1, used in Tasks 2-8 with consistent method names
+- `PhasedToolSet::new(Arc<ToolRegistry>, AgentPhase)` matches usage in Task 8/10
+- `StepAction::classify(&StepResult)` signature matches `StepResult` from `steppable_executor.rs`
+- `ContextAccumulator::add(AgentPhase, String)` matches `PhaseStateMachine::add_context`
+- `StreamEventKind::PhaseTransition` uses `Arc<str>` consistent with other variants

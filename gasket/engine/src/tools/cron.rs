@@ -143,12 +143,12 @@ impl Tool for CronTool {
                 Ok(format!(
                     "✓ Scheduled job '{}'\n\nJob ID: {}\nCron: {}\nChannel: {}\nTo: {}\n\nUse this Job ID with action 'remove' to delete this job later.",
                     name, id, cron, channel_display, chat_id_display
-                ))
+                ).into())
             }
             "list" => {
                 let jobs = self.service.list_jobs();
                 if jobs.is_empty() {
-                    return Ok("No scheduled jobs. Use action 'add' to create one.".to_string());
+                    return Ok("No scheduled jobs. Use action 'add' to create one.".into());
                 }
 
                 let mut result = format!("Scheduled jobs ({} total):\n", jobs.len());
@@ -162,7 +162,7 @@ impl Tool for CronTool {
                         status, job.name, job.id, job.message, job.cron, next
                     ));
                 }
-                Ok(result)
+                Ok(result.into())
             }
             "remove" => {
                 let job_id = args.job_id.ok_or_else(|| {
@@ -181,12 +181,12 @@ impl Tool for CronTool {
                 })?;
 
                 if removed {
-                    Ok(format!("✓ Removed job: {}", job_id))
+                    Ok(format!("✓ Removed job: {}", job_id).into())
                 } else {
                     Ok(format!(
                         "Job not found: {}. Use action 'list' to see all available jobs.",
                         job_id
-                    ))
+                    ).into())
                 }
             }
             "refresh" => {
@@ -197,7 +197,7 @@ impl Tool for CronTool {
                 Ok(format!(
                     "✓ Refreshed cron jobs\n\nLoaded: {}\nUpdated: {}\nRemoved: {}\nErrors: {}",
                     report.loaded, report.updated, report.removed, report.errors
-                ))
+                ).into())
             }
             "refresh_next_run" => {
                 let results = self
@@ -212,7 +212,7 @@ impl Tool for CronTool {
                     })?;
 
                 if results.is_empty() {
-                    return Ok("No cron jobs to refresh.".to_string());
+                    return Ok("No cron jobs to refresh.".into());
                 }
 
                 let mut output = format!("✓ Refreshed next run times ({} jobs)\n\n", results.len());
@@ -222,7 +222,7 @@ impl Tool for CronTool {
                     });
                     output.push_str(&format!("• {} ({}): {}\n", name, id, next));
                 }
-                Ok(output)
+                Ok(output.into())
             }
             _ => Err(ToolError::InvalidArguments(format!(
                 "Unknown action: '{}'. Valid actions are: 'add', 'list', 'remove', 'refresh', 'refresh_next_run'",
@@ -314,15 +314,15 @@ mod tests {
         let result = tool.execute(args, &ToolContext::default()).await;
         assert!(result.is_ok(), "Add should succeed: {:?}", result);
         let response = result.unwrap();
-        assert!(response.contains("Test Job"));
-        assert!(response.contains("Job ID:"));
+        assert!(response.content.contains("Test Job"));
+        assert!(response.content.contains("Job ID:"));
 
         // List jobs
         let list_args = json!({"action": "list"});
         let list_result = tool.execute(list_args, &ToolContext::default()).await;
         assert!(list_result.is_ok());
         let list_response = list_result.unwrap();
-        assert!(list_response.contains("Test Job"));
+        assert!(list_response.content.contains("Test Job"));
 
         // Cleanup
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -353,9 +353,9 @@ mod tests {
         assert!(list_result.is_ok());
         let list_response = list_result.unwrap();
         assert!(
-            list_response.contains("Consistency Test"),
+            list_response.content.contains("Consistency Test"),
             "Job should be immediately visible: {}",
-            list_response
+            list_response.content
         );
 
         // Cleanup

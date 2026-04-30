@@ -19,6 +19,7 @@
 //!     result_tx,
 //!     None,
 //!     CancellationToken::new(),
+//!     None,
 //! );
 //!
 //! // Or use the SimpleSpawner for trait-based spawning (preferred)

@@ -242,7 +242,7 @@ impl Tool for ExecTool {
 
         // Step 3: Format output
         if result.is_success() {
-            Ok(result.stdout)
+            Ok(result.stdout.into())
         } else if result.timed_out {
             Err(ToolError::ExecutionError(format!(
                 "Command timed out after {} seconds",
@@ -252,7 +252,8 @@ impl Tool for ExecTool {
             Ok(format!(
                 "Command exited with code {:?}\nStdout:\n{}\nStderr:\n{}",
                 result.exit_code, result.stdout, result.stderr
-            ))
+            )
+            .into())
         }
     }
 }
@@ -319,7 +320,7 @@ mod tests {
             &ToolContext::default(),
         ));
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("hi"));
+        assert!(result.unwrap().content.contains("hi"));
     }
 
     #[test]

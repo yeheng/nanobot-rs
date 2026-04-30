@@ -83,6 +83,7 @@ struct StreamAccumulator {
     reasoning_content: String,
     tool_acc: ToolCallAccumulator,
     accumulated_usage: Option<gasket_providers::Usage>,
+    finish_reason: Option<gasket_providers::FinishReason>,
 }
 
 impl StreamAccumulator {
@@ -92,6 +93,7 @@ impl StreamAccumulator {
             reasoning_content: String::new(),
             tool_acc: ToolCallAccumulator::new(),
             accumulated_usage: None,
+            finish_reason: None,
         }
     }
 
@@ -112,6 +114,9 @@ impl StreamAccumulator {
         if let Some(ref usage) = chunk.usage {
             self.accumulated_usage = Some(usage.clone());
         }
+        if chunk.finish_reason.is_some() {
+            self.finish_reason = chunk.finish_reason.clone();
+        }
     }
 
     fn finalize(self) -> ChatResponse {
@@ -120,6 +125,7 @@ impl StreamAccumulator {
             tool_calls: self.tool_acc.finalize(),
             reasoning_content: optional_string(self.reasoning_content),
             usage: self.accumulated_usage,
+            finish_reason: self.finish_reason,
         }
     }
 }

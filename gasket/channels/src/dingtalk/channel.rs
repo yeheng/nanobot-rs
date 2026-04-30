@@ -315,6 +315,10 @@ impl DingTalkChannel {
         let content = message.text.content.clone();
         debug!("Received DingTalk message: {}", content);
 
+        let (content, override_phase) = gasket_types::parse_phase_command(&content)
+            .map(|(c, p)| (c, Some(p)))
+            .unwrap_or_else(|| (content, None));
+
         let metadata = serde_json::to_value(&message).ok();
 
         let inbound = InboundMessage {
@@ -326,6 +330,7 @@ impl DingTalkChannel {
             metadata,
             timestamp: chrono::Utc::now(),
             trace_id: None,
+            override_phase,
         };
 
         self.inbound_sender.send(inbound).await?;

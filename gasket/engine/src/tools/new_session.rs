@@ -77,6 +77,7 @@ impl Tool for NewSessionTool {
              Please use this new session key for all subsequent operations. \
              The conversation context has been reset.",
             old_key_str, new_key_str
-        ))
+        )
+        .into())
     }
 }

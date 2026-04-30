@@ -130,6 +130,15 @@ pub enum StreamEventKind {
     /// Stream has completed for this iteration
     Done,
 
+    /// Phase transition in the phased agent loop
+    PhaseTransition { from: Arc<str>, to: Arc<str> },
+
+    /// Agent is waiting for user input (phased execution paused)
+    WaitForUserInput {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        phase: Option<Arc<str>>,
+    },
+
     /// Plain text message (legacy support for non-streaming channels)
     Text { content: Arc<str> },
 }
@@ -211,6 +220,15 @@ pub enum ChatEvent {
 
     /// Error message
     Error { message: Arc<str> },
+
+    /// Phase transition in the phased agent loop
+    PhaseTransition { from: Arc<str>, to: Arc<str> },
+
+    /// Agent is waiting for user input (phased execution paused)
+    WaitForUserInput {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        phase: Option<Arc<str>>,
+    },
 
     /// Context usage statistics
     ContextStats {
@@ -344,6 +362,21 @@ impl ChatEvent {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: Arc::from(message.into()),
+        }
+    }
+
+    /// Create a phase_transition message
+    pub fn phase_transition(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self::PhaseTransition {
+            from: Arc::from(from.into()),
+            to: Arc::from(to.into()),
+        }
+    }
+
+    /// Create a wait_for_user_input message
+    pub fn wait_for_user_input(phase: Option<impl Into<String>>) -> Self {
+        Self::WaitForUserInput {
+            phase: phase.map(|p| Arc::from(p.into())),
         }
     }
 
@@ -533,6 +566,27 @@ impl StreamEvent {
         }
     }
 
+    /// Create a phase_transition event for the main agent
+    pub fn phase_transition(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            agent_id: None,
+            kind: StreamEventKind::PhaseTransition {
+                from: Arc::from(from.into()),
+                to: Arc::from(to.into()),
+            },
+        }
+    }
+
+    /// Create a wait_for_user_input event for the main agent
+    pub fn wait_for_user_input(phase: Option<impl Into<String>>) -> Self {
+        Self {
+            agent_id: None,
+            kind: StreamEventKind::WaitForUserInput {
+                phase: phase.map(|p| Arc::from(p.into())),
+            },
+        }
+    }
+
     // === Subagent Event Constructors ===
 
     /// Create a thinking message for a subagent
@@ -624,26 +678,33 @@ impl StreamEvent {
     /// out subagent events.  Useful when the caller explicitly wants to forward
     /// subagent reasoning / tool calls to the WebSocket.
     pub fn to_chat_event_unconditional(&self) -> Option<ChatEvent> {
-        Some(match &self.kind {
-            StreamEventKind::Thinking { content } => ChatEvent::Thinking {
+        match &self.kind {
+            StreamEventKind::Thinking { content } => Some(ChatEvent::Thinking {
                 content: Arc::clone(content),
-            },
-            StreamEventKind::ToolStart { name, arguments } => ChatEvent::ToolStart {
+            }),
+            StreamEventKind::ToolStart { name, arguments } => Some(ChatEvent::ToolStart {
                 name: Arc::clone(name),
                 arguments: arguments.as_ref().map(Arc::clone),
-            },
-            StreamEventKind::ToolEnd { name, output } => ChatEvent::ToolEnd {
+            }),
+            StreamEventKind::ToolEnd { name, output } => Some(ChatEvent::ToolEnd {
                 name: Arc::clone(name),
                 output: output.as_ref().map(Arc::clone),
-            },
-            StreamEventKind::Content { content } => ChatEvent::Content {
+            }),
+            StreamEventKind::Content { content } => Some(ChatEvent::Content {
                 content: Arc::clone(content),
-            },
-            StreamEventKind::Done => ChatEvent::Done,
-            StreamEventKind::Text { content } => ChatEvent::Text {
+            }),
+            StreamEventKind::Done => Some(ChatEvent::Done),
+            StreamEventKind::PhaseTransition { from, to } => Some(ChatEvent::PhaseTransition {
+                from: Arc::clone(from),
+                to: Arc::clone(to),
+            }),
+            StreamEventKind::WaitForUserInput { phase } => Some(ChatEvent::WaitForUserInput {
+                phase: phase.as_ref().map(Arc::clone),
+            }),
+            StreamEventKind::Text { content } => Some(ChatEvent::Text {
                 content: Arc::clone(content),
-            },
-        })
+            }),
+        }
     }
 
     /// Serialize to JSON string

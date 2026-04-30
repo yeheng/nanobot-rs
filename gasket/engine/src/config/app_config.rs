@@ -79,6 +79,9 @@ pub struct AgentDefaults {
     pub ws_summary_limit: usize,
     #[serde(default)]
     pub prompts: PromptsConfig,
+    /// Enable phased execution (Research → Planning → Execute → Review → Done).
+    #[serde(default, alias = "phasedExecution")]
+    pub phased_execution: bool,
 }
 
 impl Default for AgentDefaults {
@@ -94,6 +97,7 @@ impl Default for AgentDefaults {
             memory_budget: None,
             ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
+            phased_execution: false,
         }
     }
 }

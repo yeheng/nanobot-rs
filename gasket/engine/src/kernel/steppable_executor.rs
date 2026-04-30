@@ -17,6 +17,7 @@ use crate::kernel::{
 use crate::token_tracker::TokenUsage;
 use crate::tools::truncate_for_display;
 use crate::tools::ToolContext;
+use crate::tools::ToolControlSignal;
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
 
@@ -29,6 +30,13 @@ pub struct StepResult {
     pub response: ChatResponse,
     pub tool_results: Vec<ToolCallResult>,
     pub should_continue: bool,
+}
+
+impl StepResult {
+    /// Extract the first control signal from tool results, if any.
+    pub fn control_signal(&self) -> Option<&ToolControlSignal> {
+        self.tool_results.iter().find_map(|r| r.signal.as_ref())
+    }
 }
 
 pub struct SteppableExecutor {
@@ -187,6 +195,10 @@ impl SteppableExecutor {
         if let Some(ref cancel) = self.ctx.aggregator_cancel {
             ctx = ctx.aggregator_cancel(cancel.clone());
         }
+        // Forward kernel's event stream to ToolContext so tools can relay subagent progress
+        if let Some(tx) = event_tx.cloned() {
+            ctx = ctx.event_tx(Some(tx));
+        }
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())
@@ -233,7 +245,7 @@ impl SteppableExecutor {
                                 .await;
                         }
 
-                        (idx, tool_call.id, tool_name, result.output)
+                        (idx, tool_call.id, tool_name, result.output, result.signal)
                     }
                 })
                 .buffer_unordered(5)
@@ -241,10 +253,10 @@ impl SteppableExecutor {
                 .await;
 
         let mut results = results;
-        results.sort_by_key(|(idx, _, _, _)| *idx);
+        results.sort_by_key(|(idx, _, _, _, _)| *idx);
 
         let mut tool_results = Vec::new();
-        for (_, tool_call_id, tool_name, output) in results {
+        for (_, tool_call_id, tool_name, output, signal) in results {
             tracing::info!(
                 "[Steppable] Pushing tool result: id={} name={} output_len={}",
                 tool_call_id,
@@ -260,6 +272,7 @@ impl SteppableExecutor {
                 tool_call_id,
                 tool_name,
                 output,
+                signal,
             });
         }
         tool_results

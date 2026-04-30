@@ -234,9 +234,11 @@ impl Tool for PluginTool {
                 );
 
                 // Serialize to JSON string
-                serde_json::to_string(&Value::Object(output)).map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to serialize result: {}", e))
-                })
+                serde_json::to_string(&Value::Object(output))
+                    .map(|s| s.into())
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to serialize result: {}", e))
+                    })
             }
             Err(e) => Err(ToolError::ExecutionError(format!(
                 "Plugin '{}' error: {}",
@@ -458,7 +460,7 @@ mod tests {
 
         assert!(result.is_ok());
         let output_str = result.unwrap();
-        let output: Value = serde_json::from_str(&output_str).unwrap();
+        let output: Value = serde_json::from_str(&output_str.content).unwrap();
 
         // Verify result field contains echoed input
         assert_eq!(output["result"]["hello"], "world");
@@ -572,6 +574,7 @@ parameters:
                         output_tokens: 5,
                         total_tokens: 15,
                     }),
+                    finish_reason: None,
                 })
             }
         }

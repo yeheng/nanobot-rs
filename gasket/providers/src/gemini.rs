@@ -278,6 +278,7 @@ impl GeminiProvider {
             tool_calls,
             reasoning_content: None,
             usage: None,
+            finish_reason: None,
         })
     }
 }

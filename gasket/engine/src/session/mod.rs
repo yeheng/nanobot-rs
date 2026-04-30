@@ -43,6 +43,9 @@ pub struct AgentResponse {
     pub model: Option<String>,
     pub token_usage: Option<gasket_types::TokenUsage>,
     pub cost: f64,
+    /// When phased execution is interrupted by `WaitForUserInput`, this field
+    /// contains the phase name (e.g. "research"). `None` for normal completion.
+    pub interrupted_phase: Option<String>,
 }
 
 impl AgentResponse {
@@ -57,6 +60,7 @@ impl AgentResponse {
             model,
             token_usage: result.token_usage,
             cost: 0.0,
+            interrupted_phase: result.interrupted_phase,
         }
     }
 }
@@ -257,6 +261,8 @@ struct PipelineContext {
     fctx: FinalizeContext,
     model: String,
     finalizer: ResponseFinalizer,
+    /// Resumed phase for re-entrant phased execution.
+    start_phase: Option<crate::kernel::phased::AgentPhase>,
 }
 
 impl AgentSession {
@@ -428,8 +434,22 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
+        self.process_direct_with_phase(content, session_key, None)
+            .await
+    }
+
+    /// Process a message with an explicit phase override.
+    ///
+    /// When `override_phase` is `Some`, the session's persisted phase is
+    /// unconditionally overwritten before execution begins.
+    pub async fn process_direct_with_phase(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        override_phase: Option<&str>,
+    ) -> Result<AgentResponse, AgentError> {
         let (_event_rx, handle) = self
-            .process_direct_streaming_with_channel(content, session_key)
+            .process_direct_streaming_with_phase(content, session_key, override_phase)
             .await?;
 
         // Discard streaming events, await final result
@@ -454,7 +474,29 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let (mut ctx, aborted) = self.preprocess(content, session_key).await?;
+        self.process_direct_streaming_with_phase(content, session_key, None)
+            .await
+    }
+
+    /// Process a message with streaming and an explicit phase override.
+    ///
+    /// When `override_phase` is `Some`, the persisted phase state is overwritten
+    /// before the kernel starts — user intent takes absolute priority.
+    pub async fn process_direct_streaming_with_phase(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        override_phase: Option<&str>,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Receiver<ChatEvent>,
+            tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+        ),
+        AgentError,
+    > {
+        let (mut ctx, aborted) = self
+            .preprocess(content, session_key, override_phase)
+            .await?;
 
         if let Some(msg) = aborted {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
@@ -467,6 +509,7 @@ impl AgentSession {
                     model: Some(model),
                     token_usage: None,
                     cost: 0.0,
+                    interrupted_phase: None,
                 })
             });
             return Ok((rx, handle));
@@ -504,6 +547,10 @@ impl AgentSession {
         // Extract messages so we can move them into the kernel without cloning.
         let messages = std::mem::take(&mut ctx.messages);
 
+        // Capture event_store + session_key for persisting interrupted phase.
+        let event_store = self.context_builder.event_store().clone();
+        let persist_key = ctx.fctx.session_key.clone();
+
         // Spawn via TaskTracker so graceful shutdown can await this task.
         // T3: Stream combinator replaces manual loop + extra spawn.
         let result_handle = self.pending_done.spawn(async move {
@@ -516,11 +563,19 @@ impl AgentSession {
                     }
                 });
 
-            let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx);
+            let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx, ctx.start_phase);
             let (result, _) = tokio::join!(exec_future, stream_future);
             let result = result?;
 
+            // Persist interrupted phase for re-entrant phased sessions.
+            let interrupted = result.interrupted_phase.clone();
             let response = Self::postprocess(result, &ctx).await;
+
+            if let Some(ref phase) = interrupted {
+                let _ = event_store
+                    .set_current_phase(&persist_key, Some(phase))
+                    .await;
+            }
 
             Ok(response)
         });
@@ -531,11 +586,33 @@ impl AgentSession {
     // ── Pipeline stages ──────────────────────────────────────────────────────
 
     /// Stage 1: PreProcess — build request, wire checkpoint callback.
+    ///
+    /// If `override_phase` is present, the user has explicitly requested a phase
+    /// switch (e.g. via `/plan` command). This is written to SQLite immediately,
+    /// overriding any persisted or LLM-inferred state.
     async fn preprocess(
         &self,
         content: &str,
         session_key: &SessionKey,
+        override_phase: Option<&str>,
     ) -> Result<(PipelineContext, Option<String>), AgentError> {
+        // User-explicit phase override: write to SQLite before any reads.
+        // Priority: User > System > LLM.
+        if let Some(phase) = override_phase {
+            if crate::kernel::phased::AgentPhase::try_from(phase).is_ok() {
+                if let Err(e) = self
+                    .context_builder
+                    .event_store()
+                    .set_current_phase(session_key, Some(phase))
+                    .await
+                {
+                    tracing::warn!("Failed to persist override_phase: {}", e);
+                }
+            } else {
+                tracing::warn!("Invalid override_phase '{}', ignoring", phase);
+            }
+        }
+
         let outcome = self.prepare_pipeline(content, session_key).await?;
         let request = match outcome {
             BuildOutcome::Aborted(msg) => {
@@ -551,6 +628,7 @@ impl AgentSession {
                     },
                     model: self.config.model.clone(),
                     finalizer: self.finalizer.clone(),
+                    start_phase: None,
                 };
                 return Ok((ctx, Some(msg)));
             }
@@ -570,29 +648,52 @@ impl AgentSession {
             }));
         }
 
+        // Read persisted phase for re-entrant phased execution.
+        let saved_phase_str = self
+            .context_builder
+            .event_store()
+            .get_current_phase(&fctx.session_key)
+            .await
+            .ok()
+            .flatten();
+        let start_phase = saved_phase_str
+            .as_ref()
+            .and_then(|s| crate::kernel::phased::AgentPhase::try_from(s.as_str()).ok());
+
         let ctx = PipelineContext {
             runtime_ctx,
             messages,
             fctx,
             model: self.config.model.clone(),
             finalizer: self.finalizer.clone(),
+            start_phase,
         };
         Ok((ctx, None))
     }
 
-    /// Stage 2: Execute — run the kernel streaming loop.
+    /// Stage 2: Execute — unified kernel loop (phased + non-phased).
     async fn execute(
         runtime_ctx: &RuntimeContext,
         messages: Vec<ChatMessage>,
         kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        start_phase: Option<crate::kernel::phased::AgentPhase>,
     ) -> Result<ExecutionResult, AgentError> {
-        match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
+        let phase_str = start_phase.map(|p| p.to_string());
+        match kernel::execute_streaming_with_phase(
+            runtime_ctx,
+            messages,
+            kernel_tx,
+            phase_str.as_deref(),
+        )
+        .await
+        {
             Ok(r) => Ok(r),
             Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
                 content: format!("Maximum iterations ({}) reached.", n),
                 reasoning_content: None,
                 tools_used: vec![],
                 token_usage: None,
+                interrupted_phase: None,
             }),
             Err(e) => Err(e.into()),
         }

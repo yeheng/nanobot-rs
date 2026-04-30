@@ -400,6 +400,7 @@ impl MoonshotProvider {
             tool_calls,
             reasoning_content,
             usage,
+            finish_reason: None,
         })
     }
 
@@ -628,6 +629,7 @@ impl MoonshotProvider {
             tool_calls,
             reasoning_content,
             usage,
+            finish_reason: None,
         })
     }
 

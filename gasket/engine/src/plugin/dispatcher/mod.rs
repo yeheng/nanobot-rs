@@ -357,6 +357,7 @@ mod tests {
                     output_tokens: 5,
                     total_tokens: 15,
                 }),
+                finish_reason: None,
             })
         }
     }

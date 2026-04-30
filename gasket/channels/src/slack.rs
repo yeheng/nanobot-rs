@@ -129,11 +129,15 @@ impl SlackAdapter {
 
                             debug!("Received Slack message from {}: {}", user, text);
 
+                            let (content, override_phase) = gasket_types::parse_phase_command(text)
+                                .map(|(c, p)| (c, Some(p)))
+                                .unwrap_or_else(|| (text.to_string(), None));
+
                             let inbound = InboundMessage {
                                 channel: ChannelType::Slack,
                                 sender_id: user.to_string(),
                                 chat_id: channel.to_string(),
-                                content: text.to_string(),
+                                content,
                                 media: None,
                                 metadata: Some(serde_json::json!({
                                     "thread_ts": event_data["thread_ts"],
@@ -141,6 +145,7 @@ impl SlackAdapter {
                                 })),
                                 timestamp: chrono::Utc::now(),
                                 trace_id: None,
+                                override_phase,
                             };
 
                             if let Err(e) = inbound_sender.send(inbound).await {

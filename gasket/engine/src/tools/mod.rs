@@ -30,6 +30,7 @@ mod history_search;
 mod http;
 mod message;
 mod new_session;
+mod phase_transition;
 mod provider;
 mod registry;
 mod search_sops;
@@ -45,8 +46,8 @@ mod wiki_tools;
 
 // Re-export tool trait and base types from gasket-types
 pub use gasket_types::{
-    simple_schema, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolError, ToolMetadata,
-    ToolResult,
+    simple_schema, SubagentResult, SubagentSpawner, Tool, ToolContext, ToolControlSignal,
+    ToolError, ToolMetadata, ToolOutput, ToolResult,
 };
 
 // Re-export tool implementations
@@ -66,6 +67,7 @@ pub use history_search::HistorySearchTool;
 pub use http::build_client_with_proxy;
 pub use message::MessageTool;
 pub use new_session::NewSessionTool;
+pub use phase_transition::PhaseTransitionTool;
 pub use provider::{CoreToolProvider, SystemToolProvider, ToolProvider, WikiToolProvider};
 pub use registry::ToolRegistry;
 pub use search_sops::{search_sops, SearchSopsTool};

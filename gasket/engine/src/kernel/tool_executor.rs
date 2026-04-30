@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, warn};
 
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{ToolContext, ToolControlSignal, ToolRegistry};
 use gasket_providers::ToolCall;
 
 /// Result of executing a single tool call
@@ -13,6 +13,7 @@ pub struct ToolCallResult {
     pub tool_call_id: String,
     pub tool_name: String,
     pub output: String,
+    pub signal: Option<ToolControlSignal>,
 }
 
 /// Executes tool calls against a `ToolRegistry`.
@@ -61,7 +62,7 @@ impl<'a> ToolExecutor<'a> {
                 debug!(
                     tool = %tool_call.function.name,
                     elapsed_ms = elapsed.as_millis() as u64,
-                    output_len = output.len(),
+                    output_len = output.content.len(),
                     "Tool completed"
                 );
             }
@@ -75,9 +76,9 @@ impl<'a> ToolExecutor<'a> {
             }
         }
 
-        let mut result_str = match result {
-            Ok(r) => r,
-            Err(e) => format!("Error: {}", e),
+        let (mut result_str, signal) = match result {
+            Ok(tool_output) => (tool_output.content, tool_output.signal),
+            Err(e) => (format!("Error: {}", e), None),
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
@@ -94,6 +95,7 @@ impl<'a> ToolExecutor<'a> {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.function.name.clone(),
             output: result_str,
+            signal,
         }
     }
 }
@@ -101,7 +103,7 @@ impl<'a> ToolExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{Tool, ToolError, ToolResult as TResult};
+    use crate::tools::{Tool, ToolError, ToolOutput, ToolResult as TResult};
     use async_trait::async_trait;
     use serde_json::Value;
 
@@ -123,7 +125,7 @@ mod tests {
         }
 
         async fn execute(&self, args: Value, _ctx: &ToolContext) -> TResult {
-            Ok(args.to_string())
+            Ok(ToolOutput::text(args.to_string()))
         }
     }
 

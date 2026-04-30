@@ -160,7 +160,7 @@ impl Tool for WebFetchTool {
             text
         };
 
-        Ok(truncated)
+        Ok(truncated.into())
     }
 }
 

@@ -120,8 +120,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     WikiToolProvider::new(
         page_store.clone(),
         page_index.clone(),
-        provider.clone(),
-        model.clone(),
         prompts.planning.clone(),
     )
     .register_tools(&mut tools);
@@ -140,6 +138,9 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         event_store,
     )
     .register_tools(&mut tools);
+
+    // Phased execution tool (always registered, filtered by PhaseController)
+    tools.register(Box::new(super::PhaseTransitionTool::new()));
 
     // Extra tools (e.g. gateway-specific MessageTool, CronTool)
     for (tool, metadata) in extra_tools {

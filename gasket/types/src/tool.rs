@@ -12,8 +12,68 @@ use std::sync::Arc;
 use crate::events::{OutboundMessage, SessionKey};
 use tokio_util::sync::CancellationToken;
 
+/// Control signals that tools can return to influence kernel behavior.
+///
+/// Tools emit signals through `ToolOutput`; the kernel inspects them
+/// without coupling to any specific tool name or JSON structure.
+#[derive(Debug, Clone)]
+pub enum ToolControlSignal {
+    /// Request a phase transition with optional context summary.
+    TransitionPhase {
+        phase: String,
+        context_summary: Option<String>,
+    },
+}
+
+/// Output of a successful tool execution.
+///
+/// Replaces the bare `String` in `ToolResult` so tools can optionally
+/// emit a `ToolControlSignal` alongside their text output.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolOutput {
+    pub content: String,
+    #[serde(skip_serializing)]
+    pub signal: Option<ToolControlSignal>,
+}
+
+impl ToolOutput {
+    /// Plain text output — no control signal.
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            signal: None,
+        }
+    }
+
+    /// Text output with a control signal attached.
+    pub fn with_signal(content: impl Into<String>, signal: ToolControlSignal) -> Self {
+        Self {
+            content: content.into(),
+            signal: Some(signal),
+        }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(s: String) -> Self {
+        Self::text(s)
+    }
+}
+
+impl From<&str> for ToolOutput {
+    fn from(s: &str) -> Self {
+        Self::text(s)
+    }
+}
+
+impl std::fmt::Display for ToolOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.content)
+    }
+}
+
 /// Result type for tool execution
-pub type ToolResult = Result<String, ToolError>;
+pub type ToolResult = Result<ToolOutput, ToolError>;
 
 /// Future type returned by [`SynthesisCallback::synthesize`].
 pub type SynthesisFuture = std::pin::Pin<
@@ -67,7 +127,12 @@ pub trait SubagentSpawner: Send + Sync {
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let (tx, result_rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(result);
-        Ok((String::new(), rx, result_rx, tokio_util::sync::CancellationToken::new()))
+        Ok((
+            String::new(),
+            rx,
+            result_rx,
+            tokio_util::sync::CancellationToken::new(),
+        ))
     }
 }
 
@@ -156,6 +221,10 @@ pub struct ToolContext {
     /// Shared cancellation token for the current aggregator task.
     /// Tools use this to cancel previous aggregators when spawning new ones.
     pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    /// Event sender for forwarding subagent stream events to the frontend.
+    /// When present, tools like `create_plan` can stream subagent progress
+    /// (thinking, content, tool calls) to the user in real-time.
+    pub event_tx: Option<tokio::sync::mpsc::Sender<crate::StreamEvent>>,
 }
 
 impl Default for ToolContext {
@@ -169,6 +238,7 @@ impl Default for ToolContext {
             ws_summary_limit: 0,
             synthesis_callback: None,
             aggregator_cancel: None,
+            event_tx: None,
         }
     }
 }
@@ -183,6 +253,7 @@ impl std::fmt::Debug for ToolContext {
             .field("ws_summary_limit", &self.ws_summary_limit)
             .field("synthesis_callback", &self.synthesis_callback.is_some())
             .field("aggregator_cancel", &self.aggregator_cancel.is_some())
+            .field("event_tx", &self.event_tx.is_some())
             .finish()
     }
 }
@@ -226,6 +297,11 @@ impl ToolContext {
         cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
     ) -> Self {
         self.aggregator_cancel = Some(cancel);
+        self
+    }
+
+    pub fn event_tx(mut self, tx: Option<tokio::sync::mpsc::Sender<crate::StreamEvent>>) -> Self {
+        self.event_tx = tx;
         self
     }
 }

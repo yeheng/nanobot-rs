@@ -165,7 +165,7 @@ impl WikiRefreshTool {
     }
 
     /// Gather statistics.
-    async fn stats(&self) -> Result<String, ToolError> {
+    async fn stats(&self) -> ToolResult {
         let all_pages = self
             .page_store
             .list(PageFilter::default())
@@ -194,7 +194,7 @@ impl WikiRefreshTool {
         Ok(format!(
             "📊 Wiki Statistics\n\nTotal pages: {}\nIndex docs: {}\n\nBy type:\n  📚 Topics: {}\n  👥 Entities: {}\n  📄 Sources: {}\n  📋 SOPs: {}",
             total, index_docs, topics, entities, sources, sops
-        ))
+        ).into())
     }
 }
 
@@ -239,17 +239,15 @@ impl Tool for WikiRefreshTool {
         match args.action.as_str() {
             "sync" => {
                 let count = self.sync_changed().await?;
-                Ok(format!(
-                    "✓ Wiki sync complete\n\nSynced {} changed pages.",
-                    count
-                ))
+                Ok(format!("✓ Wiki sync complete\n\nSynced {} changed pages.", count).into())
             }
             "reindex" => {
                 let count = self.full_rebuild().await?;
                 Ok(format!(
                     "✓ Wiki reindex complete\n\nReindexed {} pages from Markdown files.",
                     count
-                ))
+                )
+                .into())
             }
             "stats" => self.stats().await,
             _ => Err(ToolError::InvalidArguments(format!(

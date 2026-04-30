@@ -403,6 +403,11 @@ pub struct ChatResponse {
     /// Token usage information (if provided by API)
     #[serde(default)]
     pub usage: Option<Usage>,
+
+    /// Why the model stopped generating.
+    /// `None` when not available (e.g. non-streaming path that didn't parse it).
+    #[serde(default)]
+    pub finish_reason: Option<FinishReason>,
 }
 
 impl ChatResponse {
@@ -417,6 +422,7 @@ impl ChatResponse {
             tool_calls: Vec::new(),
             reasoning_content: None,
             usage: None,
+            finish_reason: None,
         }
     }
 
@@ -427,6 +433,7 @@ impl ChatResponse {
             tool_calls,
             reasoning_content: None,
             usage: None,
+            finish_reason: None,
         }
     }
 }
@@ -436,7 +443,7 @@ impl ChatResponse {
 // ---------------------------------------------------------------------------
 
 /// Reason why the stream finished
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub enum FinishReason {
     /// Model finished generating normally
     Stop,

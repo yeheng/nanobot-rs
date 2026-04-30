@@ -72,6 +72,7 @@ impl ResponseFinalizer {
             model: Some(model.to_string()),
             token_usage: result.token_usage,
             cost,
+            interrupted_phase: result.interrupted_phase,
         }
     }
 }

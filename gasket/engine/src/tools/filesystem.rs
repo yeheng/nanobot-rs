@@ -220,7 +220,7 @@ impl Tool for ReadFileTool {
             content
         };
 
-        Ok(result)
+        Ok(result.into())
     }
 }
 
@@ -291,7 +291,8 @@ impl Tool for WriteFileTool {
             "Successfully wrote {} bytes to {}",
             args.content.len(),
             args.file_path
-        ))
+        )
+        .into())
     }
 }
 
@@ -395,7 +396,7 @@ impl Tool for EditFileTool {
             ))
         })?;
 
-        Ok(format!("Successfully edited {}", args.file_path))
+        Ok(format!("Successfully edited {}", args.file_path).into())
     }
 }
 
@@ -471,7 +472,7 @@ impl Tool for ListDirTool {
             }
         }
 
-        Ok(result)
+        Ok(result.into())
     }
 }
 
@@ -614,10 +615,10 @@ mod tests {
         });
 
         let result = tool.execute(args, &ToolContext::default()).await.unwrap();
-        assert!(result.contains("Line 2"));
-        assert!(result.contains("Line 3"));
-        assert!(result.contains("Line 4"));
-        assert!(!result.contains("Line 5"));
+        assert!(result.content.contains("Line 2"));
+        assert!(result.content.contains("Line 3"));
+        assert!(result.content.contains("Line 4"));
+        assert!(!result.content.contains("Line 5"));
 
         // Cleanup
         let _ = fs::remove_file(&test_file).await;
@@ -691,7 +692,7 @@ mod tests {
 
             let result = tool.execute(args, &ToolContext::default()).await;
             assert!(result.is_ok(), "Should allow legitimate path");
-            assert_eq!(result.unwrap(), "legitimate content");
+            assert_eq!(result.unwrap().content, "legitimate content");
         }
     }
 }

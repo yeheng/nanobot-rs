@@ -130,17 +130,22 @@ impl EventHandler for DiscordHandler {
 
         debug!("Received message from {}: {}", user_id, msg.content);
 
+        let (content, override_phase) = gasket_types::parse_phase_command(&msg.content)
+            .map(|(c, p)| (c, Some(p)))
+            .unwrap_or_else(|| (msg.content.clone(), None));
+
         let inbound = InboundMessage {
             channel: ChannelType::Discord,
             sender_id: user_id,
             chat_id: msg.channel_id.to_string(),
-            content: msg.content.clone(),
+            content,
             media: None,
             metadata: Some(serde_json::json!({
                 "message_id": msg.id.to_string(),
             })),
             timestamp: chrono::Utc::now(),
             trace_id: None,
+            override_phase,
         };
 
         if let Err(e) = self.inbound_sender.send(inbound).await {

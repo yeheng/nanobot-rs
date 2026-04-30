@@ -85,6 +85,6 @@ impl Tool for ClearSessionTool {
         Ok(format!(
             "Cleared session `{}`. All events and the session record have been removed. Summary deleted: {}.",
             key_str, summary_deleted
-        ))
+        ).into())
     }
 }

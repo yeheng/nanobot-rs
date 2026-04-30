@@ -91,7 +91,8 @@ impl Tool for MessageTool {
         Ok(format!(
             "Message sent successfully to {}:{}",
             channel_name, params.chat_id
-        ))
+        )
+        .into())
     }
 }
 

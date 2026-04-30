@@ -18,6 +18,8 @@ export function useChatSession(chatId: { value: string }) {
   const subagentTimers = ref<Record<string, ReturnType<typeof setTimeout>>>({});
   const SUBAGENT_TIMEOUT_MS = 300_000; // 5 minutes client-side timeout as a safety net
 
+  const currentPhase = ref<string | null>(null);
+
   const pendingApprovals = ref<Map<string, ApprovalRequest>>(new Map());
 
   const errorBanner = ref<string | null>(null);
@@ -283,6 +285,12 @@ export function useChatSession(chatId: { value: string }) {
         subagentPhase.value = 'synthesizing';
         setTimeout(() => { subagentPhase.value = 'completed' }, 300);
         break;
+      case 'phase_transition':
+        currentPhase.value = msg.to;
+        if (msg.to === 'done') {
+          setTimeout(() => { currentPhase.value = null }, 2000);
+        }
+        break;
       case 'approval_request':
         pendingApprovals.value.set(msg.id, {
           id: msg.id,
@@ -469,6 +477,8 @@ export function useChatSession(chatId: { value: string }) {
     activeSubagents,
     hasActiveSubagents,
     subagentPhase,
+    // Phase
+    currentPhase,
     // Approvals
     pendingApprovals,
     // Error

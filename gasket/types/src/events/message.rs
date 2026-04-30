@@ -37,6 +37,13 @@ pub struct InboundMessage {
     /// Trail trace ID for end-to-end request tracking.
     #[serde(default)]
     pub trace_id: Option<String>,
+
+    /// User-explicit phase override (e.g. "planning", "execute").
+    /// Set by CLI commands like `/plan <content>` or API field `override_phase`.
+    /// When present, the session layer writes this directly to persisted phase state,
+    /// bypassing any LLM-driven phase inference.
+    #[serde(default)]
+    pub override_phase: Option<String>,
 }
 
 impl InboundMessage {
@@ -44,6 +51,34 @@ impl InboundMessage {
     pub fn session_key(&self) -> SessionKey {
         SessionKey::new(self.channel.clone(), &self.chat_id)
     }
+}
+
+/// Parse phase-override slash commands from message content.
+///
+/// Returns `Some((content_without_prefix, phase_name))` if the input matches
+/// a phase command like `/plan do something`, `None` otherwise.
+///
+/// Recognized commands:
+/// - `/plan <content>` → phase `"planning"`
+/// - `/execute <content>` → phase `"execute"`
+/// - `/research <content>` → phase `"research"`
+pub fn parse_phase_command(input: &str) -> Option<(String, String)> {
+    let input = input.trim();
+    let commands = [
+        ("/plan ", "planning"),
+        ("/execute ", "execute"),
+        ("/research ", "research"),
+    ];
+
+    for (prefix, phase) in commands {
+        if input.to_lowercase().starts_with(prefix) {
+            let content = input[prefix.len()..].trim().to_string();
+            if !content.is_empty() {
+                return Some((content, phase.to_string()));
+            }
+        }
+    }
+    None
 }
 
 // ── Target ──────────────────────────────────────────────────

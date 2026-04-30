@@ -89,7 +89,7 @@ impl Tool for WikiSearchTool {
             .map_err(|e| ToolError::ExecutionError(format!("Search failed: {}", e)))?;
 
         if hits.is_empty() {
-            return Ok(format!("No wiki pages found matching '{}'.", parsed.query));
+            return Ok(format!("No wiki pages found matching '{}'.", parsed.query).into());
         }
 
         let mut output = format!(
@@ -115,7 +115,7 @@ impl Tool for WikiSearchTool {
             ));
         }
 
-        Ok(output)
+        Ok(output.into())
     }
 }
 
@@ -222,10 +222,7 @@ impl Tool for WikiWriteTool {
             ToolError::ExecutionError(format!("Failed to write wiki page '{}': {}", path, e))
         })?;
 
-        Ok(format!(
-            "Wiki page written: {} [{}] at {}",
-            title, pt_str, path
-        ))
+        Ok(format!("Wiki page written: {} [{}] at {}", title, pt_str, path).into())
     }
 }
 
@@ -286,7 +283,7 @@ impl Tool for WikiDeleteTool {
             ToolError::ExecutionError(format!("Failed to delete wiki page '{}': {}", path, e))
         })?;
 
-        Ok(format!("Wiki page deleted: {}", path))
+        Ok(format!("Wiki page deleted: {}", path).into())
     }
 }
 
@@ -364,6 +361,7 @@ impl Tool for WikiReadTool {
                 .map(|c| format!("\nCategory: {}", c))
                 .unwrap_or_default(),
             page.content
-        ))
+        )
+        .into())
     }
 }

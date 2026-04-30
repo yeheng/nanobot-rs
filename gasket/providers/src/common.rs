@@ -461,6 +461,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             tool_calls,
             reasoning_content: choice.message.reasoning_content,
             usage,
+            finish_reason: None,
         })
     }
 

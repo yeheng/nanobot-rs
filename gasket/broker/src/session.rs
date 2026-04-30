@@ -61,12 +61,14 @@ pub trait MessageHandler: Send + Sync {
         &self,
         session_key: &SessionKey,
         message: &str,
+        override_phase: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn handle_streaming_message(
         &self,
         message: &str,
         session_key: &SessionKey,
+        override_phase: Option<&str>,
     ) -> Result<
         (
             mpsc::Receiver<ChatEvent>,
@@ -285,7 +287,7 @@ async fn process_message<H: MessageHandler + 'static>(
         let channel = msg.channel.clone();
         let chat_id = msg.chat_id.clone();
         let (mut event_rx, result_handle) = handler
-            .handle_streaming_message(&msg.content, session_key)
+            .handle_streaming_message(&msg.content, session_key, msg.override_phase.as_deref())
             .await?;
 
         // ChatEvent is already a clean WebSocketMessage — no translation needed.
@@ -297,7 +299,9 @@ async fn process_message<H: MessageHandler + 'static>(
 
         let _response = result_handle.await??;
     } else {
-        let content = handler.handle_message(session_key, &msg.content).await?;
+        let content = handler
+            .handle_message(session_key, &msg.content, msg.override_phase.as_deref())
+            .await?;
         let mut outbound = OutboundMessage::new(msg.channel, msg.chat_id.clone(), content);
         outbound.metadata = msg.metadata.clone();
         output.send(outbound).await?;

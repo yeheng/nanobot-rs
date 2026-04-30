@@ -15,6 +15,7 @@ impl session::MessageHandler for EchoHandler {
         &self,
         _: &SessionKey,
         message: &str,
+        _override_phase: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok(format!("Echo: {}", message))
     }
@@ -23,6 +24,7 @@ impl session::MessageHandler for EchoHandler {
         &self,
         _: &str,
         _: &SessionKey,
+        _override_phase: Option<&str>,
     ) -> Result<
         (
             tokio::sync::mpsc::Receiver<ChatEvent>,
@@ -46,6 +48,7 @@ fn make_inbound(content: &str) -> InboundMessage {
         metadata: None,
         timestamp: chrono::Utc::now(),
         trace_id: None,
+        override_phase: None,
     }
 }
 
@@ -138,6 +141,7 @@ async fn test_dead_session_respawn() {
         metadata: None,
         timestamp: chrono::Utc::now(),
         trace_id: None,
+        override_phase: None,
     };
     broker
         .publish(Envelope::new(Topic::Inbound, BrokerPayload::Inbound(msg2)))

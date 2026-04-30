@@ -450,17 +450,22 @@ impl WeComChannel {
                     message.from_user_name, content
                 );
 
+                let (content, override_phase) = gasket_types::parse_phase_command(content)
+                    .map(|(c, p)| (c, Some(p)))
+                    .unwrap_or_else(|| (content.to_string(), None));
+
                 let ctx_trace_id = None;
 
                 let inbound = InboundMessage {
                     channel: ChannelType::Wecom,
                     sender_id: message.from_user_name.clone(),
                     chat_id: message.from_user_name.clone(),
-                    content: content.to_string(),
+                    content,
                     media: None,
                     metadata: serde_json::to_value(&message).ok(),
                     timestamp: chrono::Utc::now(),
                     trace_id: ctx_trace_id,
+                    override_phase,
                 };
 
                 self.inbound_sender.send(inbound).await?;

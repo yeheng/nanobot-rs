@@ -163,10 +163,97 @@ impl ToolRegistry {
     pub fn list(&self) -> Vec<&str> {
         self.items.keys().map(|s| s.as_str()).collect()
     }
+
+    /// Return a new registry containing only the tools whose names appear in `allowed`.
+    ///
+    /// An empty `allowed` slice returns an **empty** registry (not all tools).
+    /// Callers that want "all tools" should clone the original registry instead.
+    pub fn filtered(&self, allowed: &[&str]) -> ToolRegistry {
+        let mut filtered = ToolRegistry::new();
+        for (name, entry) in &self.items {
+            if allowed.contains(&name.as_str()) {
+                filtered.items.insert(name.clone(), entry.clone());
+            }
+        }
+        filtered
+    }
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    struct FakeTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for FakeTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "fake"
+        }
+        fn parameters(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
+            Ok("ok".into())
+        }
+    }
+
+    fn make_registry() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(FakeTool {
+            name: "wiki_search",
+        }));
+        reg.register(Box::new(FakeTool { name: "wiki_read" }));
+        reg.register(Box::new(FakeTool { name: "shell" }));
+        reg.register(Box::new(FakeTool { name: "write_file" }));
+        reg.register(Box::new(FakeTool {
+            name: "phase_transition",
+        }));
+        reg
+    }
+
+    #[test]
+    fn test_filtered_returns_only_allowed_tools() {
+        let registry = make_registry();
+        let filtered = registry.filtered(&["wiki_search", "wiki_read", "phase_transition"]);
+        let names = filtered.list();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"wiki_search"));
+        assert!(names.contains(&"wiki_read"));
+        assert!(names.contains(&"phase_transition"));
+        assert!(!names.contains(&"shell"));
+        assert!(!names.contains(&"write_file"));
+    }
+
+    #[test]
+    fn test_filtered_empty_allowed_gives_empty_registry() {
+        let registry = make_registry();
+        let filtered = registry.filtered(&[]);
+        assert!(filtered.list().is_empty());
+    }
+
+    #[test]
+    fn test_filtered_preserves_definitions() {
+        let registry = make_registry();
+        let filtered = registry.filtered(&["shell"]);
+        let defs = filtered.get_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].function.name, "shell");
     }
 }
