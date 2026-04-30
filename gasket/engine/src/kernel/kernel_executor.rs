@@ -188,7 +188,10 @@ async fn run_loop(
 
         // --- Phase pre-step: limits, prompts, tool filtering ---
         let step_ctx = if let Some(ref mut p) = phase {
-            match p.pre_step(&mut state.messages, ctx.config.max_iterations, &event_tx).await {
+            match p
+                .pre_step(&mut state.messages, ctx.config.max_iterations, &event_tx)
+                .await
+            {
                 Some(ctx) => ctx,
                 None => {
                     // Done or global limit
@@ -223,12 +226,10 @@ async fn run_loop(
         // --- Phase post-step: classify, transitions ---
         if let Some(ref mut p) = phase {
             use crate::kernel::phased::phase_controller::PhaseAction;
-            match p.post_step(
-                &result,
-                &mut state.messages,
-                msg_count_before,
-                &event_tx,
-            ).await {
+            match p
+                .post_step(&result, &mut state.messages, msg_count_before, &event_tx)
+                .await
+            {
                 PhaseAction::Continue => {}
                 PhaseAction::Transition => continue,
                 PhaseAction::Interrupt(interrupted) => {
@@ -280,7 +281,11 @@ fn log_token_usage(ledger: &TokenLedger, iteration: u32) {
     }
 }
 
-fn log_response(response: &gasket_providers::ChatResponse, iteration: u32, vault_values: &[String]) {
+fn log_response(
+    response: &gasket_providers::ChatResponse,
+    iteration: u32,
+    vault_values: &[String],
+) {
     if let Some(ref reasoning) = response.reasoning_content {
         if !reasoning.is_empty() {
             let safe = redact_secrets(reasoning, vault_values);

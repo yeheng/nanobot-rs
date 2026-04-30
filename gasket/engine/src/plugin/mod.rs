@@ -574,7 +574,7 @@ parameters:
                         output_tokens: 5,
                         total_tokens: 15,
                     }),
-                finish_reason: None,
+                    finish_reason: None,
                 })
             }
         }

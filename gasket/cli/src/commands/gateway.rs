@@ -691,7 +691,7 @@ fn start_heartbeat_service(
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
-                    override_phase: None,
+                        override_phase: None,
                     };
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Inbound,
@@ -772,10 +772,15 @@ fn start_cron_checker(
                             tracing::info!("{}", result.content);
                             // Send result to output channel
                             let out_msg = if is_broadcast {
-                                gasket_engine::channels::OutboundMessage::broadcast(channel, result.content)
+                                gasket_engine::channels::OutboundMessage::broadcast(
+                                    channel,
+                                    result.content,
+                                )
                             } else {
                                 gasket_engine::channels::OutboundMessage::new(
-                                    channel, &chat_id, result.content,
+                                    channel,
+                                    &chat_id,
+                                    result.content,
                                 )
                             };
                             let envelope = gasket_engine::broker::Envelope::new(
@@ -826,7 +831,7 @@ fn start_cron_checker(
                         metadata: None,
                         timestamp: chrono::Utc::now(),
                         trace_id: None,
-                    override_phase: None,
+                        override_phase: None,
                     };
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Inbound,

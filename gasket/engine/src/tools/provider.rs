@@ -281,10 +281,7 @@ impl ToolProvider for WikiToolProvider {
         if let Some(ref prompt) = self.planning_prompt {
             reg!(
                 registry,
-                CreatePlanTool::new(
-                    store.clone(),
-                    Some(prompt.clone()),
-                ),
+                CreatePlanTool::new(store.clone(), Some(prompt.clone()),),
                 "Create Plan",
                 "system",
                 ["plan", "markdown"],
@@ -294,10 +291,7 @@ impl ToolProvider for WikiToolProvider {
         } else {
             reg!(
                 registry,
-                CreatePlanTool::new(
-                    store.clone(),
-                    None,
-                ),
+                CreatePlanTool::new(store.clone(), None,),
                 "Create Plan",
                 "system",
                 ["plan", "markdown"],

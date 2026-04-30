@@ -430,7 +430,8 @@ impl AgentSession {
         content: &str,
         session_key: &SessionKey,
     ) -> Result<AgentResponse, AgentError> {
-        self.process_direct_with_phase(content, session_key, None).await
+        self.process_direct_with_phase(content, session_key, None)
+            .await
     }
 
     /// Process a message with an explicit phase override.
@@ -469,7 +470,8 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        self.process_direct_streaming_with_phase(content, session_key, None).await
+        self.process_direct_streaming_with_phase(content, session_key, None)
+            .await
     }
 
     /// Process a message with streaming and an explicit phase override.
@@ -488,7 +490,9 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let (mut ctx, aborted) = self.preprocess(content, session_key, override_phase).await?;
+        let (mut ctx, aborted) = self
+            .preprocess(content, session_key, override_phase)
+            .await?;
 
         if let Some(msg) = aborted {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
@@ -554,8 +558,7 @@ impl AgentSession {
                     }
                 });
 
-            let exec_future =
-                Self::execute(&ctx.runtime_ctx, messages, kernel_tx, ctx.start_phase);
+            let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx, ctx.start_phase);
             let (result, _) = tokio::join!(exec_future, stream_future);
             let result = result?;
 

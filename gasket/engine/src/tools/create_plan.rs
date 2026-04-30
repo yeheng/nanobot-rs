@@ -25,10 +25,7 @@ pub struct CreatePlanTool {
 }
 
 impl CreatePlanTool {
-    pub fn new(
-        page_store: PageStore,
-        planning_prompt: Option<String>,
-    ) -> Self {
+    pub fn new(page_store: PageStore, planning_prompt: Option<String>) -> Self {
         Self {
             page_store,
             planning_prompt,
@@ -133,10 +130,7 @@ impl Tool for CreatePlanTool {
             .as_deref()
             .unwrap_or(DEFAULT_PLANNING_TASK);
 
-        let task = format!(
-            "{}Goal: {}\n\nContext: {}",
-            template, goal, context_section
-        );
+        let task = format!("{}Goal: {}\n\nContext: {}", template, goal, context_section);
 
         let result = ctx
             .spawner

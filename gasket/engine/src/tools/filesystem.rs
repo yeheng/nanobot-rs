@@ -291,7 +291,8 @@ impl Tool for WriteFileTool {
             "Successfully wrote {} bytes to {}",
             args.content.len(),
             args.file_path
-        ).into())
+        )
+        .into())
     }
 }
 

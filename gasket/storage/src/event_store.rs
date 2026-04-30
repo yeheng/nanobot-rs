@@ -409,14 +409,16 @@ impl EventStore {
     }
 
     /// Get the persisted current phase for a session (for re-entrant phased execution).
-    pub async fn get_current_phase(&self, session_key: &SessionKey) -> Result<Option<String>, StoreError> {
-        let phase: Option<String> = sqlx::query_scalar(
-            "SELECT current_phase FROM sessions_v2 WHERE key = ?",
-        )
-        .bind(session_key.to_string())
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
+    pub async fn get_current_phase(
+        &self,
+        session_key: &SessionKey,
+    ) -> Result<Option<String>, StoreError> {
+        let phase: Option<String> =
+            sqlx::query_scalar("SELECT current_phase FROM sessions_v2 WHERE key = ?")
+                .bind(session_key.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
         Ok(phase)
     }
 

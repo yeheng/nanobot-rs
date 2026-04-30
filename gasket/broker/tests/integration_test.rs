@@ -46,7 +46,7 @@ fn make_inbound(content: &str) -> InboundMessage {
         metadata: None,
         timestamp: chrono::Utc::now(),
         trace_id: None,
-    override_phase: None,
+        override_phase: None,
     }
 }
 
@@ -139,7 +139,7 @@ async fn test_dead_session_respawn() {
         metadata: None,
         timestamp: chrono::Utc::now(),
         trace_id: None,
-    override_phase: None,
+        override_phase: None,
     };
     broker
         .publish(Envelope::new(Topic::Inbound, BrokerPayload::Inbound(msg2)))

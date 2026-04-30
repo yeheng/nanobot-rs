@@ -131,10 +131,7 @@ pub enum StreamEventKind {
     Done,
 
     /// Phase transition in the phased agent loop
-    PhaseTransition {
-        from: Arc<str>,
-        to: Arc<str>,
-    },
+    PhaseTransition { from: Arc<str>, to: Arc<str> },
 
     /// Plain text message (legacy support for non-streaming channels)
     Text { content: Arc<str> },

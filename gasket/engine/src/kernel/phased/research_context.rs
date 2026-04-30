@@ -55,10 +55,7 @@ impl ResearchContext {
                 parts.push(format!("## 历史相关记录 ({}条)\n", history_hits.len()));
                 for hit in history_hits {
                     let preview = truncate_str(&hit.content, 100);
-                    parts.push(format!(
-                        "- [{}] {}: {}\n",
-                        hit.timestamp, hit.role, preview
-                    ));
+                    parts.push(format!("- [{}] {}: {}\n", hit.timestamp, hit.role, preview));
                 }
                 parts.push("\n".to_string());
             }

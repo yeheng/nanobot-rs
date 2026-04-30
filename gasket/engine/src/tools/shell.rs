@@ -252,7 +252,8 @@ impl Tool for ExecTool {
             Ok(format!(
                 "Command exited with code {:?}\nStdout:\n{}\nStderr:\n{}",
                 result.exit_code, result.stdout, result.stderr
-            ).into())
+            )
+            .into())
         }
     }
 }

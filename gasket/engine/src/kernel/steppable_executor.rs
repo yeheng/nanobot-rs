@@ -35,9 +35,7 @@ pub struct StepResult {
 impl StepResult {
     /// Extract the first control signal from tool results, if any.
     pub fn control_signal(&self) -> Option<&ToolControlSignal> {
-        self.tool_results
-            .iter()
-            .find_map(|r| r.signal.as_ref())
+        self.tool_results.iter().find_map(|r| r.signal.as_ref())
     }
 }
 

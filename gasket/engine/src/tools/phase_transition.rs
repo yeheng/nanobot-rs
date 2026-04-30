@@ -9,6 +9,12 @@ use super::{Tool, ToolContext, ToolControlSignal, ToolError, ToolOutput, ToolRes
 /// Tool for transitioning between agent working phases.
 pub struct PhaseTransitionTool;
 
+impl Default for PhaseTransitionTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PhaseTransitionTool {
     pub fn new() -> Self {
         Self

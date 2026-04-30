@@ -539,7 +539,11 @@ fn print_response_with_reasoning(response: &AgentResponse, render_md: bool) {
 /// like `/plan do something`, `None` otherwise.
 fn parse_phase_command(input: &str) -> Option<(String, String)> {
     let input = input.trim();
-    let commands = [("/plan ", "planning"), ("/execute ", "execute"), ("/research ", "research")];
+    let commands = [
+        ("/plan ", "planning"),
+        ("/execute ", "execute"),
+        ("/research ", "research"),
+    ];
 
     for (prefix, phase) in commands {
         if input.to_lowercase().starts_with(prefix) {

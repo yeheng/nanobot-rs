@@ -222,10 +222,7 @@ impl Tool for WikiWriteTool {
             ToolError::ExecutionError(format!("Failed to write wiki page '{}': {}", path, e))
         })?;
 
-        Ok(format!(
-            "Wiki page written: {} [{}] at {}",
-            title, pt_str, path
-        ).into())
+        Ok(format!("Wiki page written: {} [{}] at {}", title, pt_str, path).into())
     }
 }
 
@@ -364,6 +361,7 @@ impl Tool for WikiReadTool {
                 .map(|c| format!("\nCategory: {}", c))
                 .unwrap_or_default(),
             page.content
-        ).into())
+        )
+        .into())
     }
 }

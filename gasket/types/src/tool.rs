@@ -127,7 +127,12 @@ pub trait SubagentSpawner: Send + Sync {
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let (tx, result_rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(result);
-        Ok((String::new(), rx, result_rx, tokio_util::sync::CancellationToken::new()))
+        Ok((
+            String::new(),
+            rx,
+            result_rx,
+            tokio_util::sync::CancellationToken::new(),
+        ))
     }
 }
 

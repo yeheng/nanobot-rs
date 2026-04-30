@@ -165,7 +165,9 @@ impl PhaseController {
                         "[PhaseController] Hard limit in {}, forcing to {}",
                         from, to
                     );
-                    messages.push(ChatMessage::system(PhasePrompt::hard_limit_prompt(from, to)));
+                    messages.push(ChatMessage::system(PhasePrompt::hard_limit_prompt(
+                        from, to,
+                    )));
                     messages.push(ChatMessage::system(PhasePrompt::entry_prompt(
                         to,
                         self.state.context(),
@@ -204,7 +206,10 @@ impl PhaseController {
         let action = StepAction::classify(result);
 
         match action {
-            StepAction::PhaseTransition { to, context_summary } => {
+            StepAction::PhaseTransition {
+                to,
+                context_summary,
+            } => {
                 let from = self.state.current_phase();
                 info!("[PhaseController] Phase transition: {} -> {}", from, to);
 
@@ -236,10 +241,7 @@ impl PhaseController {
             }
             StepAction::WaitForUserInput => {
                 let current = self.state.current_phase();
-                debug!(
-                    "[PhaseController] WaitForUserInput in phase {}",
-                    current
-                );
+                debug!("[PhaseController] WaitForUserInput in phase {}", current);
 
                 if current == AgentPhase::Execute {
                     self.state.transition(AgentPhase::Done).ok();
@@ -288,7 +290,9 @@ impl PhaseController {
             )
             .await
         {
-            Ok(output) if !output.content.starts_with("No wiki pages found") => Some(output.content),
+            Ok(output) if !output.content.starts_with("No wiki pages found") => {
+                Some(output.content)
+            }
             _ => None,
         };
 

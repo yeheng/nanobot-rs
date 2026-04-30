@@ -172,10 +172,7 @@ impl ToolRegistry {
         let mut filtered = ToolRegistry::new();
         for (name, entry) in &self.items {
             if allowed.contains(&name.as_str()) {
-                filtered.items.insert(
-                    name.clone(),
-                    entry.clone(),
-                );
+                filtered.items.insert(name.clone(), entry.clone());
             }
         }
         filtered
@@ -212,22 +209,22 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
-        async fn execute(
-            &self,
-            _args: Value,
-            _ctx: &ToolContext,
-        ) -> ToolResult {
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> ToolResult {
             Ok("ok".into())
         }
     }
 
     fn make_registry() -> ToolRegistry {
         let mut reg = ToolRegistry::new();
-        reg.register(Box::new(FakeTool { name: "wiki_search" }));
+        reg.register(Box::new(FakeTool {
+            name: "wiki_search",
+        }));
         reg.register(Box::new(FakeTool { name: "wiki_read" }));
         reg.register(Box::new(FakeTool { name: "shell" }));
         reg.register(Box::new(FakeTool { name: "write_file" }));
-        reg.register(Box::new(FakeTool { name: "phase_transition" }));
+        reg.register(Box::new(FakeTool {
+            name: "phase_transition",
+        }));
         reg
     }
 

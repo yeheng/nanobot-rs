@@ -246,7 +246,7 @@ mod tests {
                 tool_calls: vec![],
                 reasoning_content: None,
                 usage: None,
-            finish_reason: None,
+                finish_reason: None,
             })
         }
 

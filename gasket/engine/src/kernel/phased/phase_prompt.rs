@@ -37,12 +37,11 @@ impl PhasePrompt {
             format!("{}\n\n", ctx_block)
         };
         match phase {
-            AgentPhase::Research => format!(
-                "[Phase: Research]\n\n\
+            AgentPhase::Research => "[Phase: Research]\n\n\
                  你现在处于研究阶段。使用 wiki_search 和 wiki_read 搜索知识库，\
                  用 history_search 查找历史对话。\n\
                  信息充分后向用户总结发现的内容。"
-            ),
+                .to_string(),
             AgentPhase::Planning => format!(
                 "[Phase: Planning]\n\n\
                  {ctx_section}\

@@ -1,6 +1,6 @@
+use super::agent_phase::AgentPhase;
 use crate::kernel::steppable_executor::StepResult;
 use crate::tools::ToolControlSignal;
-use super::agent_phase::AgentPhase;
 use gasket_providers::FinishReason;
 
 /// Classification of a `StepResult` produced by one LLM iteration.
@@ -11,7 +11,10 @@ pub enum StepAction {
     /// LLM returned text without tool calls — pause for user input.
     WaitForUserInput,
     /// A tool emitted a `TransitionPhase` signal — switch to the indicated phase.
-    PhaseTransition { to: AgentPhase, context_summary: Option<String> },
+    PhaseTransition {
+        to: AgentPhase,
+        context_summary: Option<String>,
+    },
 }
 
 impl StepAction {
@@ -23,8 +26,10 @@ impl StepAction {
     /// (natural end) — NOT `Length` (truncation).
     pub fn classify(result: &StepResult) -> Self {
         // Phase transitions take priority — look for a control signal.
-        if let Some(ToolControlSignal::TransitionPhase { phase, context_summary }) =
-            result.control_signal()
+        if let Some(ToolControlSignal::TransitionPhase {
+            phase,
+            context_summary,
+        }) = result.control_signal()
         {
             if let Ok(to) = AgentPhase::try_from(phase.as_str()) {
                 return StepAction::PhaseTransition {
@@ -42,7 +47,7 @@ impl StepAction {
                 .response
                 .finish_reason
                 .as_ref()
-                .map_or(true, |r| matches!(r, FinishReason::Stop));
+                .is_none_or(|r| matches!(r, FinishReason::Stop));
             if is_natural_stop {
                 return StepAction::WaitForUserInput;
             }
@@ -127,14 +132,18 @@ mod tests {
     fn test_classify_phase_transition() {
         let result = make_step_result_with_signal("execute", None);
         let action = StepAction::classify(&result);
-        assert!(matches!(action, StepAction::PhaseTransition { to, .. } if to == AgentPhase::Execute));
+        assert!(
+            matches!(action, StepAction::PhaseTransition { to, .. } if to == AgentPhase::Execute)
+        );
     }
 
     #[test]
     fn test_classify_phase_transition_with_summary() {
         let result = make_step_result_with_signal("planning", Some("Found wiki pages"));
         let action = StepAction::classify(&result);
-        assert!(matches!(action, StepAction::PhaseTransition { to, context_summary: Some(s), .. } if to == AgentPhase::Planning && s == "Found wiki pages"));
+        assert!(
+            matches!(action, StepAction::PhaseTransition { to, context_summary: Some(s), .. } if to == AgentPhase::Planning && s == "Found wiki pages")
+        );
     }
 
     #[test]
@@ -146,9 +155,7 @@ mod tests {
 
     #[test]
     fn test_classify_other_tool_calls_continue() {
-        let result = make_step_result_with_tools(vec![
-            ("wiki_search", r#"{"query":"test"}"#),
-        ]);
+        let result = make_step_result_with_tools(vec![("wiki_search", r#"{"query":"test"}"#)]);
         let action = StepAction::classify(&result);
         assert!(matches!(action, StepAction::Continue));
     }
@@ -157,11 +164,13 @@ mod tests {
     fn test_no_hardcoded_tool_name() {
         // A step result with phase_transition tool call but NO signal
         // should NOT trigger PhaseTransition (kernel doesn't look at tool names).
-        let result = make_step_result_with_tools(vec![
-            ("phase_transition", r#"{"phase":"execute"}"#),
-        ]);
+        let result =
+            make_step_result_with_tools(vec![("phase_transition", r#"{"phase":"execute"}"#)]);
         // No signal in tool_results — should be Continue, not PhaseTransition
-        assert!(matches!(StepAction::classify(&result), StepAction::Continue));
+        assert!(matches!(
+            StepAction::classify(&result),
+            StepAction::Continue
+        ));
     }
 
     #[test]
@@ -178,6 +187,9 @@ mod tests {
             tool_results: vec![],
             should_continue: false,
         };
-        assert!(matches!(StepAction::classify(&result), StepAction::Continue));
+        assert!(matches!(
+            StepAction::classify(&result),
+            StepAction::Continue
+        ));
     }
 }

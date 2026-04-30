@@ -42,7 +42,7 @@ impl WikiRefreshTool {
         tokio::task::spawn_blocking(move || {
             let mut files = Vec::new();
             Self::scan_dir_recursive(&wiki_root, &wiki_root, &mut files)?;
-            Ok(files.into())
+            Ok(files)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Wiki scan task panicked: {}", e))?
@@ -146,7 +146,7 @@ impl WikiRefreshTool {
         }
 
         info!("WikiRefresh: synced {} changed pages", synced);
-        Ok(synced.into())
+        Ok(synced)
     }
 
     /// Full rebuild: sync SQLite from disk (removes stale records), then rebuild Tantivy.
@@ -161,7 +161,7 @@ impl WikiRefreshTool {
             .map_err(|e| ToolError::ExecutionError(format!("Tantivy rebuild failed: {}", e)))?;
 
         info!("WikiRefresh: full rebuild complete with {} pages", synced);
-        Ok(synced.into())
+        Ok(synced)
     }
 
     /// Gather statistics.
@@ -239,17 +239,15 @@ impl Tool for WikiRefreshTool {
         match args.action.as_str() {
             "sync" => {
                 let count = self.sync_changed().await?;
-                Ok(format!(
-                    "✓ Wiki sync complete\n\nSynced {} changed pages.",
-                    count
-                ).into())
+                Ok(format!("✓ Wiki sync complete\n\nSynced {} changed pages.", count).into())
             }
             "reindex" => {
                 let count = self.full_rebuild().await?;
                 Ok(format!(
                     "✓ Wiki reindex complete\n\nReindexed {} pages from Markdown files.",
                     count
-                ).into())
+                )
+                .into())
             }
             "stats" => self.stats().await,
             _ => Err(ToolError::InvalidArguments(format!(
