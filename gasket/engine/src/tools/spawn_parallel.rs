@@ -207,31 +207,33 @@ impl Tool for SpawnParallelTool {
                 .collect();
             let subagent_ids: Vec<String> =
                 spawned.iter().map(|(id, _, _, _)| id.clone()).collect();
-            let subagent_indices: Vec<u32> =
-                spawned.iter().map(|(_, _, idx, _)| *idx).collect();
-            let result_receivers: Vec<_> =
-                spawned.into_iter().map(|(_, _, _, rx)| rx).collect();
+            let subagent_indices: Vec<u32> = spawned.iter().map(|(_, _, idx, _)| *idx).collect();
+            let result_receivers: Vec<_> = spawned.into_iter().map(|(_, _, _, rx)| rx).collect();
 
             // Send startup events synchronously (before kernel sends Done)
-            spawn_common::send_startup_events(
-                &session_key,
-                &outbound_tx,
-                count,
-                &tasks_info,
-            )
-            .await;
+            spawn_common::send_startup_events(&session_key, &outbound_tx, count, &tasks_info).await;
 
             // Launch background aggregation
             let cancel_token = tokio_util::sync::CancellationToken::new();
+            if let Some(ref cancel) = ctx.aggregator_cancel {
+                if let Ok(mut guard) = cancel.try_lock() {
+                    if let Some(ref old) = *guard {
+                        old.cancel();
+                    }
+                    *guard = Some(cancel_token.clone());
+                }
+            }
             spawn_common::spawn_aggregator(
                 result_receivers,
                 subagent_ids,
                 subagent_indices,
                 callback,
                 cancel_token,
-                session_key,
-                outbound_tx,
-                ctx.ws_summary_limit,
+                spawn_common::AggregatorContext {
+                    session_key,
+                    outbound_tx,
+                    ws_summary_limit: ctx.ws_summary_limit,
+                },
             );
 
             return Ok(format!("已启动 {} 个并行任务，执行中...", count));

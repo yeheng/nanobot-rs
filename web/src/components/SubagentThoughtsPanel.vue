@@ -29,11 +29,13 @@ const hasAnySubagents = computed(() => props.subagents.length > 0);
 
 
 function toggleSubagent(id: string) {
-  if (expandedIds.value.has(id)) {
-    expandedIds.value.delete(id);
+  const next = new Set(expandedIds.value);
+  if (next.has(id)) {
+    next.delete(id);
   } else {
-    expandedIds.value.add(id);
+    next.add(id);
   }
+  expandedIds.value = next;
 }
 
 function isToolExpanded(toolId: string): boolean {

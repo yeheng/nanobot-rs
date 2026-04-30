@@ -75,7 +75,9 @@ impl MonitoredSpawner {
                 .model
                 .clone()
                 .unwrap_or_else(|| provider.default_model().to_string()),
-            max_iterations: spec.max_turns.unwrap_or(10),
+            max_iterations: spec
+                .max_turns
+                .unwrap_or(crate::session::config::DEFAULT_MAX_ITERATIONS),
             ..Default::default()
         };
         let kernel_config = config.to_kernel_config();

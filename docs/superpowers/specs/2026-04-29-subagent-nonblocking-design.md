@@ -80,7 +80,7 @@ SubagentSynthesizing {}
 | `gasket/engine/src/tools/spawn.rs` | 重构为非阻塞模式 |
 | `gasket/engine/src/tools/spawn_parallel.rs` | 重构为非阻塞模式 |
 | `gasket/engine/src/tools/spawn_common.rs` | 新增共享逻辑（Aggregator、event forwarding） |
-| `gasket/engine/src/kernel/steppable_executor.rs` | 构建 ToolContext 时注入 SynthesisCallback |
+| `gasket/engine/src/kernel/steppable_executor.rs` | 构建 ToolContext 时注入 `outbound_tx` + `SynthesisCallback` |
 
 ### 3.2 SynthesisCallback trait
 

@@ -114,15 +114,25 @@ impl Tool for SpawnTool {
 
             // Launch background aggregation
             let cancel_token = tokio_util::sync::CancellationToken::new();
+            if let Some(ref cancel) = ctx.aggregator_cancel {
+                if let Ok(mut guard) = cancel.try_lock() {
+                    if let Some(ref old) = *guard {
+                        old.cancel();
+                    }
+                    *guard = Some(cancel_token.clone());
+                }
+            }
             spawn_common::spawn_aggregator(
                 vec![result_rx],
                 vec![subagent_id],
                 vec![0],
                 callback,
                 cancel_token,
-                session_key,
-                outbound_tx,
-                ctx.ws_summary_limit,
+                spawn_common::AggregatorContext {
+                    session_key,
+                    outbound_tx,
+                    ws_summary_limit: ctx.ws_summary_limit,
+                },
             );
 
             return Ok("Subagent task dispatched. Results will stream in real-time.".to_string());

@@ -4,29 +4,29 @@ description: Summarize long content, conversations, or documents
 always: false
 ---
 
-# Content Summarization Skill
+# Summarize
 
-## When to Summarize
+## When
 
-- Content >1000 words or user requests "TL;DR"
-- Need to preserve information in memory
-- Extracting key decisions and action items
+- Content >1000 words or user asks "TL;DR"
+- Preserving info in memory
+- Extracting decisions and action items
 
 ## Formats
 
 ### Executive Summary
 ```
 ## Purpose
-One sentence about what this is about.
+One sentence.
 
 ## Key Points
-- 3-5 main findings
+- 3-5 findings
 
 ## Next Steps
 - 1-2 recommendations
 
 ## Impact
-Why it matters (1 sentence)
+Why it matters.
 ```
 
 ### Bullet Summary
@@ -34,64 +34,22 @@ Why it matters (1 sentence)
 Key Points:
 - Point 1
 - Point 2
-- Point 3
 
 Action Items:
 - [ ] Task 1
-- [ ] Task 2
 ```
-
-### Conversation Summary
-```
-## Topics
-1. Topic 1
-2. Topic 2
-
-## Decisions
-- Decision 1
-- Decision 2
-
-## Action Items
-- [ ] Task - @assignee
-
-## Status
-Current state summary
-```
-
-## Process
-
-1. **Analyze** - Understand full content
-2. **Extract** - Identify key ideas
-3. **Organize** - Group related points
-4. **Condense** - Rewrite concisely
-5. **Verify** - Check accuracy
-
-## Best Practices
-
-✅ Preserve meaning, use active voice
-✅ Be specific: "40% faster" not "improved"
-✅ Include context and numbers
-✅ Use clear structure
-
-❌ Too detailed or too vague
-❌ Missing key points
-❌ Adding new information
 
 ## Length Guidelines
 
 | Original | Summary |
 |----------|---------|
-| <500 words | 50-100 words |
-| 500-2000 | 100-200 words |
-| 2000-5000 | 200-400 words |
-| >5000 | 400-800 words |
+| <500 words | 50-100 |
+| 500-2000 | 100-200 |
+| 2000-5000 | 200-400 |
+| >5000 | 400-800 |
 
-## Memory Integration
+## Rules
 
-Store summaries in `/memories/` for future reference. Use memory tool to persist key information.
-
-## Related Skills
-
-- **memory** - Store summaries
-- **cron** - Schedule reports
-- **github** - Summarize PRs/issues
+- Preserve meaning, active voice, specific numbers.
+- Do not add new information.
+- Store key summaries in wiki (`topics/`).

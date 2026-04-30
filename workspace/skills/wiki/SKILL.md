@@ -1,74 +1,40 @@
 ---
 name: wiki
-description: Operational guide for gasket's wiki knowledge system
+description: Read, write, and manage wiki knowledge pages
 always: false
 ---
 
-# Wiki Skill
-
-Operational guide for reading, writing, and managing wiki knowledge pages.
+# Wiki Operations
 
 ## Path Conventions
 
-| Content Type | Path Pattern | page_type |
-|---|---|---|
+| Content | Path | page_type |
+|---------|------|-----------|
 | General knowledge | `topics/<slug>` | `topic` |
-| People, projects, teams | `entities/<slug>` | `entity` |
-| External references, URLs | `sources/<slug>` | `source` |
-| Step-by-step procedures | `sop/<slug>` | `sop` |
+| People, projects | `entities/<slug>` | `entity` |
+| References | `sources/<slug>` | `source` |
+| Procedures | `sops/<slug>` | `sop` |
 
-## Common Operations
-
-### Write a Page
+## Tools
 
 ```
-wiki_write(
-    path: "topics/rust-async-patterns",
-    title: "Rust Async Patterns",
-    content: "## Overview\n...",
-    page_type: "topic",
-    tags: ["rust", "async"]
-)
+wiki_search(query, limit=10)           # full-text search
+wiki_read(path)                        # read page
+wiki_write(path, title, content, page_type="topic", tags=[])  # write page
+wiki_refresh(action: "sync|reindex|stats")  # index management
 ```
 
-### Search Pages
+## Rules
 
-```
-wiki_search(query: "database design", limit: 10)
-```
+1. **Search before write** — avoid duplicates.
+2. **One concept per page** — easier retrieval.
+3. **≥2 tags** — improves search.
+4. **Entities for people/projects** — `entities/people/alice`, `entities/projects/gasket`.
 
-### Read a Page
-
-```
-wiki_read(path: "topics/rust-async-patterns")
-```
-
-### Refresh Index
-
-```
-wiki_refresh(action: "sync")     # Sync changed files only
-wiki_refresh(action: "reindex")  # Full rebuild
-wiki_refresh(action: "stats")    # Show statistics
-```
-
-## Best Practices
-
-1. **Search before write** — use `wiki_search` first to avoid duplicates.
-2. **One concept per page** — easier retrieval and lifecycle management.
-3. **Use descriptive paths** — `topics/event-sourcing-design` over `topics/note-1`.
-4. **At least 2 tags** — tags improve search quality.
-5. **Use entities for people/projects** — `entities/people/alice`, `entities/projects/gasket`.
-
-## Manual Operations
+## CLI
 
 ```bash
-# Browse wiki files
-ls ~/.gasket/wiki/topics/
-cat ~/.gasket/wiki/topics/rust-async-patterns.md
-
-# Search via CLI
 gasket wiki search <query>
-
-# Rebuild index after manual edits
 gasket wiki reindex
+ls ~/.gasket/wiki/topics/
 ```

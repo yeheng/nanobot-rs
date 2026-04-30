@@ -141,6 +141,8 @@ impl SessionBuilder {
             token_tracker: None,
             checkpoint_callback: None,
             session_key: None,
+            outbound_tx: None,
+            aggregator_cancel: None,
         };
 
         // ── 3. Context compactor ─────────────────────────────────────

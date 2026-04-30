@@ -5,7 +5,9 @@ use std::sync::Arc;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;
 use gasket_providers::LlmProvider;
+use gasket_types::events::OutboundMessage;
 use gasket_types::SessionKey;
+use tokio_util::sync::CancellationToken;
 
 /// Async callback for proactive working-memory checkpoint injection.
 ///
@@ -33,6 +35,12 @@ pub struct RuntimeContext {
     pub checkpoint_callback: Option<Arc<dyn CheckpointCallback>>,
     /// Session key for the current request (for routing WebSocket messages).
     pub session_key: Option<SessionKey>,
+    /// Outbound channel for sending WebSocket messages directly from tools.
+    /// When None, tools fall back to blocking mode (e.g., CLI/Telegram).
+    pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
+    /// Shared cancellation token for the current aggregator task.
+    /// Tools check/inject this to support user interruption.
+    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
 }
 
 impl RuntimeContext {
@@ -49,6 +57,8 @@ impl RuntimeContext {
             token_tracker: None,
             checkpoint_callback: None,
             session_key: None,
+            outbound_tx: None,
+            aggregator_cancel: None,
         }
     }
 }
@@ -63,6 +73,8 @@ impl Clone for RuntimeContext {
             token_tracker: self.token_tracker.clone(),
             checkpoint_callback: self.checkpoint_callback.clone(),
             session_key: self.session_key.clone(),
+            outbound_tx: self.outbound_tx.clone(),
+            aggregator_cancel: self.aggregator_cancel.clone(),
         }
     }
 }

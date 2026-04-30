@@ -12,12 +12,16 @@ import {
   ArrowRight,
 } from 'lucide-vue-next';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
-import type { Message, TimelineItem, ToolCall } from '../types';
+import type { Message, SubagentState, TimelineItem, ToolCall } from '../types';
+import SubagentGridPanel from './SubagentGridPanel.vue';
+import SubagentThoughtsPanel from './SubagentThoughtsPanel.vue';
 
 const props = defineProps<{
   message: Message;
   isThinking: boolean;
   isLastBotMessage: boolean;
+  subagents?: SubagentState[];
+  subagentPhase?: 'idle' | 'running' | 'synthesizing' | 'completed';
 }>();
 
 const expanded = ref(false);
@@ -257,6 +261,17 @@ function iconForStatus(status: ToolCall['status']) {
           {{ message.thinking }}
         </div>
       </div>
+
+      <!-- Subagent results -->
+      <SubagentGridPanel
+        v-if="subagents && subagents.length > 0 && ['running', 'synthesizing'].includes(subagentPhase || 'idle')"
+        :subagents="subagents"
+        :phase="(subagentPhase as 'running' | 'synthesizing') || 'running'"
+      />
+      <SubagentThoughtsPanel
+        v-if="subagents && subagents.length > 0 && !['running', 'synthesizing'].includes(subagentPhase || 'idle')"
+        :subagents="subagents"
+      />
     </div>
   </div>
 </template>

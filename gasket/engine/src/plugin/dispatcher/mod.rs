@@ -255,14 +255,13 @@ impl RpcHandler for ToolDelegateHandler {
         // Inject SynthesisCallback for streaming channels
         if ctx.engine.session_key.channel.supports_streaming() {
             let model = ctx.engine.provider.default_model().to_string();
-            let callback = std::sync::Arc::new(
-                crate::kernel::synthesis::WebSocketSynthesizer::new(
+            let callback =
+                std::sync::Arc::new(crate::kernel::synthesis::WebSocketSynthesizer::new(
                     ctx.engine.provider.clone(),
                     model,
                     ctx.engine.outbound_tx.clone(),
                     ctx.engine.session_key.clone(),
-                ),
-            );
+                ));
             tool_ctx = tool_ctx.synthesis_callback(callback);
         }
 

@@ -25,7 +25,10 @@ const sortedSubagents = computed(() =>
   [...props.subagents].sort((a, b) => a.index - b.index)
 );
 
-const gridCols = computed(() => Math.min(props.subagents.length, 4));
+const gridColsClass = computed(() => {
+  const map = ['grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'grid-cols-4'];
+  return map[Math.min(props.subagents.length, 4) - 1] || 'grid-cols-1';
+});
 
 function isToolExpanded(toolId: string): boolean {
   return toolExpandedMap.value[toolId] ?? false;
@@ -82,7 +85,7 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
     <div
       class="grid gap-2 transition-opacity duration-300"
       :class="[
-        `grid-cols-${gridCols}`,
+        gridColsClass,
         { 'opacity-0 pointer-events-none': phase === 'synthesizing' },
       ]"
     >

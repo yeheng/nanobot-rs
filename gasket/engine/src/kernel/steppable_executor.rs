@@ -167,6 +167,26 @@ impl SteppableExecutor {
         if let Some(ref session_key) = self.ctx.session_key {
             ctx = ctx.session_key(session_key.clone());
         }
+        if let Some(ref outbound_tx) = self.ctx.outbound_tx {
+            ctx = ctx.outbound_tx(outbound_tx.clone());
+            // Inject SynthesisCallback for WebSocket channels
+            let provider = &self.ctx.provider;
+            let model = provider.default_model().to_string();
+            let session_key = self.ctx.session_key.clone().unwrap_or_else(|| {
+                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
+            });
+            let callback =
+                std::sync::Arc::new(crate::kernel::synthesis::WebSocketSynthesizer::new(
+                    provider.clone(),
+                    model,
+                    outbound_tx.clone(),
+                    session_key,
+                ));
+            ctx = ctx.synthesis_callback(callback);
+        }
+        if let Some(ref cancel) = self.ctx.aggregator_cancel {
+            ctx = ctx.aggregator_cancel(cancel.clone());
+        }
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())
@@ -196,7 +216,16 @@ impl SteppableExecutor {
                             duration.as_millis()
                         );
 
-                        let display_output = truncate_for_display(&result.output, DISPLAY_MAX_LEN);
+                        let display_output = if self.ctx.config.max_tool_result_chars > 0
+                            && result.output.len() > self.ctx.config.max_tool_result_chars
+                        {
+                            truncate_for_display(
+                                &result.output,
+                                self.ctx.config.max_tool_result_chars,
+                            )
+                        } else {
+                            result.output.clone()
+                        };
 
                         if let Some(ref sender) = tx {
                             let _ = sender

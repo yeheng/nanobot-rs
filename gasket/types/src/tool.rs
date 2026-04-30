@@ -7,10 +7,18 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use std::sync::Arc;
+
 use crate::events::{OutboundMessage, SessionKey};
+use tokio_util::sync::CancellationToken;
 
 /// Result type for tool execution
 pub type ToolResult = Result<String, ToolError>;
+
+/// Future type returned by [`SynthesisCallback::synthesize`].
+pub type SynthesisFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>,
+>;
 
 /// Trait for spawning subagents without hard dependency on SubagentManager.
 ///
@@ -118,10 +126,7 @@ pub struct TokenUsage {
 /// The concrete implementation holds provider, outbound_tx, session_key etc.
 /// Returned Future is 'static so it can be safely moved into a tokio::spawn task.
 pub trait SynthesisCallback: Send + Sync {
-    fn synthesize(
-        &self,
-        results: Vec<SubagentResult>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>>;
+    fn synthesize(&self, results: Vec<SubagentResult>) -> SynthesisFuture;
 }
 
 /// Context passed to tool execution, providing request-scoped data.
@@ -146,6 +151,9 @@ pub struct ToolContext {
     /// Callback for triggering synthesis after all subagents complete.
     /// When None (CLI/Telegram/non-WebSocket mode), spawn tools use blocking mode.
     pub synthesis_callback: Option<std::sync::Arc<dyn SynthesisCallback>>,
+    /// Shared cancellation token for the current aggregator task.
+    /// Tools use this to cancel previous aggregators when spawning new ones.
+    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
 }
 
 impl Default for ToolContext {
@@ -158,6 +166,7 @@ impl Default for ToolContext {
             token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
             ws_summary_limit: 0,
             synthesis_callback: None,
+            aggregator_cancel: None,
         }
     }
 }
@@ -171,6 +180,7 @@ impl std::fmt::Debug for ToolContext {
             .field("token_tracker", &"TokenTracker")
             .field("ws_summary_limit", &self.ws_summary_limit)
             .field("synthesis_callback", &self.synthesis_callback.is_some())
+            .field("aggregator_cancel", &self.aggregator_cancel.is_some())
             .finish()
     }
 }
@@ -206,6 +216,14 @@ impl ToolContext {
 
     pub fn synthesis_callback(mut self, cb: std::sync::Arc<dyn SynthesisCallback>) -> Self {
         self.synthesis_callback = Some(cb);
+        self
+    }
+
+    pub fn aggregator_cancel(
+        mut self,
+        cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
+    ) -> Self {
+        self.aggregator_cancel = Some(cancel);
         self
     }
 }

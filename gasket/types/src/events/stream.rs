@@ -275,9 +275,7 @@ pub enum ChatEvent {
     },
 
     /// All subagents have been spawned, main agent turn ends
-    SubagentAllStarted {
-        count: u32,
-    },
+    SubagentAllStarted { count: u32 },
 
     /// All subagents completed, main agent begins synthesis
     SubagentSynthesizing {},

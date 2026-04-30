@@ -475,6 +475,32 @@ impl AgentSession {
         let (kernel_tx, kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
 
+        // Bridge: outbound messages from tools → ChatEvent → frontend
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<gasket_types::events::OutboundMessage>(64);
+        let chat_tx_bridge = chat_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = outbound_rx.recv().await {
+                if let gasket_types::events::OutboundPayload::Stream(chat_event) = msg.payload {
+                    let _ = chat_tx_bridge.send(chat_event).await;
+                }
+            }
+        });
+        ctx.runtime_ctx.outbound_tx = Some(outbound_tx);
+
+        // Cancel any previous aggregator for this session turn
+        if ctx.runtime_ctx.aggregator_cancel.is_none() {
+            ctx.runtime_ctx.aggregator_cancel = Some(Arc::new(tokio::sync::Mutex::new(None)));
+        }
+        if let Some(ref cancel) = ctx.runtime_ctx.aggregator_cancel {
+            if let Ok(mut guard) = cancel.try_lock() {
+                if let Some(ref token) = *guard {
+                    token.cancel();
+                }
+                *guard = None;
+            }
+        }
+
         // Extract messages so we can move them into the kernel without cloning.
         let messages = std::mem::take(&mut ctx.messages);
 

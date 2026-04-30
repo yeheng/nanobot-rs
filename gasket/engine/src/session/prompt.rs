@@ -12,10 +12,21 @@ use tracing::{debug, info, warn};
 use gasket_storage::count_tokens;
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile
+///
+/// Load order matters — later files appear closer to the conversation start,
+/// giving them more influence on the model's behavior.
+///
+/// | File        | Purpose                                       |
+/// |-------------|-----------------------------------------------|
+/// | PROFILE.md  | Agent identity + user profile                  |
+/// | SOUL.md     | Core behavioral rules & knowledge management   |
+/// | WIKI.md     | Wiki tool reference & writing rules            |
+/// | MEMORY.md   | Session memory (auto-truncated, may not exist) |
+/// | BOOTSTRAP.md| First-run onboarding ritual                    |
 pub const BOOTSTRAP_FILES_FULL: &[&str] = &[
     "PROFILE.md",
     "SOUL.md",
-    "AGENTS.md",
+    "WIKI.md",
     "MEMORY.md",
     "BOOTSTRAP.md",
 ];

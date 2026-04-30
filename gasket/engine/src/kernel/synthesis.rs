@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_types::{
     events::{ChatEvent, OutboundMessage, SessionKey},
@@ -46,7 +47,10 @@ impl SynthesisCallback for WebSocketSynthesizer {
         let session_key = self.session_key.clone();
 
         Box::pin(async move {
-            info!("[Synthesizer] Synthesizing {} subagent results", results.len());
+            info!(
+                "[Synthesizer] Synthesizing {} subagent results",
+                results.len()
+            );
 
             let mut prompt = format!(
                 "以下是 {} 个并行任务的结果，请综合分析并给出最终回复：\n\n",
@@ -56,10 +60,7 @@ impl SynthesisCallback for WebSocketSynthesizer {
                 prompt.push_str(&format!("## Task {}\n", idx + 1));
                 prompt.push_str(&format!("**任务**: {}\n", result.task));
                 if result.response.content.starts_with("Error:") {
-                    prompt.push_str(&format!(
-                        "**结果**: [错误] {}\n\n",
-                        result.response.content
-                    ));
+                    prompt.push_str(&format!("**结果**: [错误] {}\n\n", result.response.content));
                 } else {
                     prompt.push_str(&format!("**结果**: {}\n\n", result.response.content));
                 }
@@ -75,27 +76,40 @@ impl SynthesisCallback for WebSocketSynthesizer {
                 thinking: None,
             };
 
-            let response = provider
-                .chat(request)
+            let mut stream = provider
+                .chat_stream(request)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
 
-            if let Some(ref reasoning) = response.reasoning_content {
-                let msg = OutboundMessage::with_ws_message(
-                    session_key.channel.clone(),
-                    session_key.chat_id.clone(),
-                    ChatEvent::thinking(reasoning),
-                );
-                let _ = outbound_tx.send(msg).await;
+            let mut has_sent_thinking = false;
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        if let Some(ref reasoning) = chunk.delta.reasoning_content {
+                            if !has_sent_thinking {
+                                let msg = OutboundMessage::with_ws_message(
+                                    session_key.channel.clone(),
+                                    session_key.chat_id.clone(),
+                                    ChatEvent::thinking(reasoning),
+                                );
+                                let _ = outbound_tx.send(msg).await;
+                                has_sent_thinking = true;
+                            }
+                        }
+                        if let Some(ref content) = chunk.delta.content {
+                            let msg = OutboundMessage::with_ws_message(
+                                session_key.channel.clone(),
+                                session_key.chat_id.clone(),
+                                ChatEvent::content(content),
+                            );
+                            let _ = outbound_tx.send(msg).await;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(Box::new(e) as Box<dyn std::error::Error + Send>);
+                    }
+                }
             }
-
-            let content = response.content.unwrap_or_default();
-            let msg = OutboundMessage::with_ws_message(
-                session_key.channel.clone(),
-                session_key.chat_id.clone(),
-                ChatEvent::content(&content),
-            );
-            let _ = outbound_tx.send(msg).await;
 
             let msg = OutboundMessage::with_ws_message(
                 session_key.channel,

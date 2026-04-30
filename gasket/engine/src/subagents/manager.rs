@@ -139,7 +139,7 @@ pub fn spawn_subagent(
             model: model
                 .clone()
                 .unwrap_or_else(|| provider.default_model().to_string()),
-            max_iterations: 10,
+            max_iterations: crate::session::config::DEFAULT_MAX_ITERATIONS,
             ..Default::default()
         };
         let ctx = kernel::RuntimeContext {
@@ -150,6 +150,8 @@ pub fn spawn_subagent(
             token_tracker: token_tracker.clone(),
             checkpoint_callback: None,
             session_key: None,
+            outbound_tx: None,
+            aggregator_cancel: None,
         };
 
         // Execute with timeout, cancellable via token
