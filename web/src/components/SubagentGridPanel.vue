@@ -19,16 +19,25 @@ const props = defineProps<{
   phase: 'running' | 'synthesizing';
 }>();
 
+const expandedIds = ref<Set<string>>(new Set());
 const toolExpandedMap = ref<Record<string, boolean>>({});
 
+/** Filter out cancelled/errored subagents */
 const sortedSubagents = computed(() =>
-  [...props.subagents].sort((a, b) => a.index - b.index)
+  [...props.subagents]
+    .filter(s => s.status !== 'error')
+    .sort((a, b) => a.index - b.index)
 );
 
-const gridColsClass = computed(() => {
-  const map = ['grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'grid-cols-4'];
-  return map[Math.min(props.subagents.length, 4) - 1] || 'grid-cols-1';
-});
+function toggleSubagent(id: string) {
+  const next = new Set(expandedIds.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  expandedIds.value = next;
+}
 
 function isToolExpanded(toolId: string): boolean {
   return toolExpandedMap.value[toolId] ?? false;
@@ -81,13 +90,10 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
 
 <template>
   <div class="w-full my-1 relative">
-    <!-- Grid of subagent cards -->
+    <!-- List of subagent cards -->
     <div
-      class="grid gap-2 transition-opacity duration-300"
-      :class="[
-        gridColsClass,
-        { 'opacity-0 pointer-events-none': phase === 'synthesizing' },
-      ]"
+      class="flex flex-col gap-2 transition-opacity duration-300"
+      :class="{ 'opacity-0 pointer-events-none': phase === 'synthesizing' }"
     >
       <div
         v-for="subagent in sortedSubagents"
@@ -95,8 +101,11 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
         class="rounded-xl border overflow-hidden text-xs"
         :class="statusBadgeClasses(subagent.status)"
       >
-        <!-- Header -->
-        <div class="flex items-center justify-between gap-1.5 px-2.5 py-2">
+        <!-- Header (clickable to expand/collapse) -->
+        <button
+          @click="toggleSubagent(subagent.id)"
+          class="w-full flex items-center justify-between gap-1.5 px-2.5 py-2 text-left"
+        >
           <div class="flex items-center gap-1.5 min-w-0">
             <component
               :is="iconForStatus(subagent.status)"
@@ -106,97 +115,110 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
             <span class="font-medium text-[11px] shrink-0">Task {{ subagent.index }}</span>
             <span class="text-[10px] opacity-70 truncate">{{ subagent.task }}</span>
           </div>
-          <span
-            class="text-[10px] px-1.5 py-0.5 rounded-full border shrink-0"
-            :class="statusBadgeClasses(subagent.status)"
-          >
-            {{ statusLabel(subagent.status) }}
-          </span>
-        </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span
+              class="text-[10px] px-1.5 py-0.5 rounded-full border"
+              :class="statusBadgeClasses(subagent.status)"
+            >
+              {{ statusLabel(subagent.status) }}
+            </span>
+            <ChevronRight
+              class="w-3.5 h-3.5 opacity-60 transition-transform"
+              :class="{ 'rotate-90': expandedIds.has(subagent.id) }"
+            />
+          </div>
+        </button>
 
-        <!-- Thinking -->
-        <div v-if="subagent.thinking" class="px-2.5 pb-2">
-          <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider mb-1">
-            <Sparkles class="w-3 h-3" />
-            <span>Thinking</span>
+        <!-- Expanded content -->
+        <div
+          v-show="expandedIds.has(subagent.id)"
+          class="px-2.5 pb-2 space-y-2 border-t"
+          :class="statusBadgeClasses(subagent.status).split(' ')[0]"
+        >
+          <!-- Thinking -->
+          <div v-if="subagent.thinking" class="pt-2">
+            <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider mb-1">
+              <Sparkles class="w-3 h-3" />
+              <span>Thinking</span>
+            </div>
+            <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-32 overflow-y-auto">
+              {{ subagent.thinking }}
+            </div>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-32 overflow-y-auto">
-            {{ subagent.thinking }}
-          </div>
-        </div>
 
-        <!-- Tool Calls -->
-        <div v-if="subagent.toolCalls.length > 0" class="px-2.5 pb-2 space-y-1">
-          <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
-            <Wrench class="w-3 h-3" />
-            <span>Tool Calls</span>
-          </div>
-          <Collapsible
-            v-for="tool in subagent.toolCalls"
-            :key="tool.id"
-            :open="isToolExpanded(tool.id)"
-            class="rounded-lg border overflow-hidden"
-            :class="toolStatusClasses(tool.status)"
-          >
-            <CollapsibleTrigger as-child @click="toggleTool(tool.id)">
-              <button class="w-full flex items-center gap-2 px-2 py-1.5 text-left">
-                <component
-                  :is="toolIconForStatus(tool.status)"
-                  class="w-3 h-3 shrink-0"
-                  :class="{ 'animate-spin': tool.status === 'running' }"
-                />
-                <span class="font-medium truncate flex-1 text-[11px]">{{ tool.name }}</span>
-                <span v-if="tool.duration" class="text-[10px] opacity-70 shrink-0">{{ tool.duration }}</span>
-                <ChevronRight
-                  class="w-3 h-3 shrink-0 opacity-60 transition-transform"
-                  :class="{ 'rotate-90': isToolExpanded(tool.id) }"
-                />
-              </button>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div class="px-2 pb-2 space-y-1.5">
-                <div v-if="tool.arguments" class="space-y-0.5">
-                  <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
-                    <Terminal class="w-2.5 h-2.5" />
-                    <span>Input</span>
+          <!-- Tool Calls -->
+          <div v-if="subagent.toolCalls.length > 0" class="space-y-1">
+            <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
+              <Wrench class="w-3 h-3" />
+              <span>Tool Calls</span>
+            </div>
+            <Collapsible
+              v-for="tool in subagent.toolCalls"
+              :key="tool.id"
+              :open="isToolExpanded(tool.id)"
+              class="rounded-lg border overflow-hidden"
+              :class="toolStatusClasses(tool.status)"
+            >
+              <CollapsibleTrigger as-child @click="toggleTool(tool.id)">
+                <button class="w-full flex items-center gap-2 px-2 py-1.5 text-left">
+                  <component
+                    :is="toolIconForStatus(tool.status)"
+                    class="w-3 h-3 shrink-0"
+                    :class="{ 'animate-spin': tool.status === 'running' }"
+                  />
+                  <span class="font-medium truncate flex-1 text-[11px]">{{ tool.name }}</span>
+                  <span v-if="tool.duration" class="text-[10px] opacity-70 shrink-0">{{ tool.duration }}</span>
+                  <ChevronRight
+                    class="w-3 h-3 shrink-0 opacity-60 transition-transform"
+                    :class="{ 'rotate-90': isToolExpanded(tool.id) }"
+                  />
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div class="px-2 pb-2 space-y-1.5">
+                  <div v-if="tool.arguments" class="space-y-0.5">
+                    <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
+                      <Terminal class="w-2.5 h-2.5" />
+                      <span>Input</span>
+                    </div>
+                    <div class="font-mono text-[10px] bg-black/5 dark:bg-white/5 rounded p-1.5 whitespace-pre-wrap break-all max-h-32 overflow-auto">
+                      {{ tool.arguments }}
+                    </div>
                   </div>
-                  <div class="font-mono text-[10px] bg-black/5 dark:bg-white/5 rounded p-1.5 whitespace-pre-wrap break-all max-h-32 overflow-auto">
-                    {{ tool.arguments }}
+                  <div v-if="tool.output" class="space-y-0.5">
+                    <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
+                      <ArrowRight class="w-2.5 h-2.5" />
+                      <span>Output</span>
+                    </div>
+                    <div class="font-mono text-[10px] bg-black/5 dark:bg-white/5 rounded p-1.5 whitespace-pre-wrap break-words max-h-40 overflow-auto">
+                      {{ tool.output }}
+                    </div>
                   </div>
                 </div>
-                <div v-if="tool.output" class="space-y-0.5">
-                  <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider">
-                    <ArrowRight class="w-2.5 h-2.5" />
-                    <span>Output</span>
-                  </div>
-                  <div class="font-mono text-[10px] bg-black/5 dark:bg-white/5 rounded p-1.5 whitespace-pre-wrap break-words max-h-40 overflow-auto">
-                    {{ tool.output }}
-                  </div>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
 
-        <!-- Content -->
-        <div v-if="subagent.content" class="px-2.5 pb-2">
-          <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider mb-1">
-            <Users class="w-3 h-3" />
-            <span>Response</span>
+          <!-- Content -->
+          <div v-if="subagent.content" class="pt-1">
+            <div class="flex items-center gap-1 text-[10px] opacity-70 uppercase tracking-wider mb-1">
+              <Users class="w-3 h-3" />
+              <span>Response</span>
+            </div>
+            <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-48 overflow-y-auto">
+              {{ subagent.content }}
+            </div>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-48 overflow-y-auto">
-            {{ subagent.content }}
-          </div>
-        </div>
 
-        <!-- Error -->
-        <div v-if="subagent.error" class="px-2.5 pb-2">
-          <div class="flex items-center gap-1 text-[10px] text-destructive uppercase tracking-wider mb-1">
-            <XCircle class="w-3 h-3" />
-            <span>Error</span>
-          </div>
-          <div class="text-destructive whitespace-pre-wrap leading-relaxed text-[11px]">
-            {{ subagent.error }}
+          <!-- Error -->
+          <div v-if="subagent.error" class="pt-1">
+            <div class="flex items-center gap-1 text-[10px] text-destructive uppercase tracking-wider mb-1">
+              <XCircle class="w-3 h-3" />
+              <span>Error</span>
+            </div>
+            <div class="text-destructive whitespace-pre-wrap leading-relaxed text-[11px]">
+              {{ subagent.error }}
+            </div>
           </div>
         </div>
       </div>

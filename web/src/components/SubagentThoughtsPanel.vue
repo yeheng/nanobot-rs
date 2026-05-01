@@ -22,10 +22,12 @@ const expandedIds = ref<Set<string>>(new Set());
 const toolExpandedMap = ref<Record<string, boolean>>({});
 
 const sortedSubagents = computed(() =>
-  [...props.subagents].sort((a, b) => a.index - b.index)
+  [...props.subagents]
+    .filter(s => s.status !== 'error')
+    .sort((a, b) => a.index - b.index)
 );
 
-const hasAnySubagents = computed(() => props.subagents.length > 0);
+const hasAnySubagents = computed(() => sortedSubagents.value.length > 0);
 
 
 function toggleSubagent(id: string) {
