@@ -70,12 +70,13 @@ Max 10/call, 5 concurrent LLM calls. Same dual-mode as `spawn`.
 
 ### Rules
 
-1. I/O-bound → `spawn_parallel`; reasoning → `spawn` + strong model.
-2. No nested spawning. Subagents cannot call spawn tools.
-3. Aggregate yourself. Merge, dedupe, present. No re-spawning.
-4. Retry once on failure. Fail twice → report error.
-5. Subagents have fresh context — no SOUL.md rules. Parent persists wiki if needed.
-6. >10 tasks: batch 10 → aggregate → next batch.
+1. **Batch spawn. Plan all tasks first, then call `spawn_parallel` once.** Never chain multiple `spawn` calls. If you have N independent tasks, pack them into a single `spawn_parallel` call.
+2. I/O-bound → `spawn_parallel`; reasoning → `spawn` + strong model.
+3. No nested spawning. Subagents cannot call spawn tools.
+4. Aggregate yourself. Merge, dedupe, present. No re-spawning.
+5. Retry once on failure. Fail twice → report error.
+6. Subagents have fresh context — no SOUL.md rules. Parent persists wiki if needed.
+7. >10 tasks: batch 10 → aggregate → next batch.
 
 ## 6. Async & Cross-Channel
 
