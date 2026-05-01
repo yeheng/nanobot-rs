@@ -177,6 +177,17 @@ impl ToolRegistry {
         }
         filtered
     }
+
+    /// Return a new registry with the specified tools removed.
+    pub fn without(&self, excluded: &[&str]) -> ToolRegistry {
+        let mut filtered = ToolRegistry::new();
+        for (name, entry) in &self.items {
+            if !excluded.contains(&name.as_str()) {
+                filtered.items.insert(name.clone(), entry.clone());
+            }
+        }
+        filtered
+    }
 }
 
 impl Default for ToolRegistry {

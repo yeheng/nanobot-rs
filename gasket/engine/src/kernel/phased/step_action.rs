@@ -104,6 +104,7 @@ mod tests {
             tool_results: vec![ToolCallResult {
                 tool_call_id: "call_0".into(),
                 tool_name: "phase_transition".into(),
+                arguments: serde_json::json!({"phase": phase}),
                 output: format!("Phase transition to {} acknowledged.", phase),
                 signal: Some(ToolControlSignal::TransitionPhase {
                     phase: phase.to_string(),

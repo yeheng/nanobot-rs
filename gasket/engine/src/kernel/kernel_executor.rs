@@ -247,6 +247,11 @@ async fn run_loop(
                         interrupted,
                     ));
                 }
+                PhaseAction::Reject(reason) => {
+                    // Inject rejection reason as system message so LLM can self-correct
+                    state.messages.push(ChatMessage::system(reason));
+                    continue;
+                }
             }
         } else {
             // Non-phased: simple should_continue check

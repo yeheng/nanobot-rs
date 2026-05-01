@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{ToolContext, ToolControlSignal, ToolRegistry};
@@ -12,6 +13,10 @@ use gasket_providers::ToolCall;
 pub struct ToolCallResult {
     pub tool_call_id: String,
     pub tool_name: String,
+    /// Arguments the LLM passed to the tool — preserved so downstream consumers
+    /// (e.g. phase tracking, audit) can inspect inputs without re-parsing the
+    /// chat message that triggered the call.
+    pub arguments: Value,
     pub output: String,
     pub signal: Option<ToolControlSignal>,
 }
@@ -94,6 +99,7 @@ impl<'a> ToolExecutor<'a> {
         ToolCallResult {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.function.name.clone(),
+            arguments: tool_call.function.arguments.clone(),
             output: result_str,
             signal,
         }

@@ -245,7 +245,14 @@ impl SteppableExecutor {
                                 .await;
                         }
 
-                        (idx, tool_call.id, tool_name, result.output, result.signal)
+                        (
+                            idx,
+                            tool_call.id,
+                            tool_name,
+                            tool_call.function.arguments.clone(),
+                            result.output,
+                            result.signal,
+                        )
                     }
                 })
                 .buffer_unordered(5)
@@ -253,10 +260,10 @@ impl SteppableExecutor {
                 .await;
 
         let mut results = results;
-        results.sort_by_key(|(idx, _, _, _, _)| *idx);
+        results.sort_by_key(|(idx, _, _, _, _, _)| *idx);
 
         let mut tool_results = Vec::new();
-        for (_, tool_call_id, tool_name, output, signal) in results {
+        for (_, tool_call_id, tool_name, arguments, output, signal) in results {
             tracing::info!(
                 "[Steppable] Pushing tool result: id={} name={} output_len={}",
                 tool_call_id,
@@ -271,6 +278,7 @@ impl SteppableExecutor {
             tool_results.push(ToolCallResult {
                 tool_call_id,
                 tool_name,
+                arguments,
                 output,
                 signal,
             });

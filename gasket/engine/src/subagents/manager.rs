@@ -376,9 +376,11 @@ impl SubagentSpawner for SimpleSpawner {
         let _task_desc = task_spec.task.clone();
 
         let spawner: Arc<dyn gasket_types::SubagentSpawner> = Arc::new(self.clone());
+        // Subagents cannot recursively spawn — strip spawn tools from their context
+        let subagent_tools = Arc::new(self.tools.without(&["spawn", "spawn_parallel"]));
         spawn_subagent(
             provider,
-            self.tools.clone(),
+            subagent_tools,
             self.workspace.clone(),
             task_spec,
             Some(event_tx),
@@ -456,9 +458,11 @@ impl SubagentSpawner for SimpleSpawner {
         let task_desc = task_spec.task.clone();
 
         let spawner: Arc<dyn gasket_types::SubagentSpawner> = Arc::new(self.clone());
+        // Subagents cannot recursively spawn — strip spawn tools from their context
+        let subagent_tools = Arc::new(self.tools.without(&["spawn", "spawn_parallel"]));
         spawn_subagent(
             provider,
-            self.tools.clone(),
+            subagent_tools,
             self.workspace.clone(),
             task_spec,
             Some(event_tx),
