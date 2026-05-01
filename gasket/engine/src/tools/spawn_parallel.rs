@@ -272,6 +272,7 @@ impl Tool for SpawnParallelTool {
                             subagent_id.clone(),
                             spec.task.clone(),
                             idx as u32,
+                            true,
                         ),
                     ))
                     .await;

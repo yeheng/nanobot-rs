@@ -84,14 +84,14 @@ pub async fn send_startup_events(
     send_ws_event(
         session_key,
         outbound_tx,
-        ChatEvent::subagent_all_started(count as u32),
+        ChatEvent::subagent_all_started(count as u32, "list"),
     )
     .await;
     for (id, task, index) in tasks {
         send_ws_event(
             session_key,
             outbound_tx,
-            ChatEvent::subagent_started(id, task, *index),
+            ChatEvent::subagent_started(id, task, *index, true),
         )
         .await;
     }
@@ -139,7 +139,7 @@ pub fn spawn_aggregator(
                     send_ws_event(
                         &session_key,
                         &outbound_tx,
-                        ChatEvent::subagent_error(id, index, "Cancelled"),
+                        ChatEvent::subagent_cancelled(id, index),
                     )
                     .await;
                 }

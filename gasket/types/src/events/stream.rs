@@ -42,6 +42,9 @@ pub enum InternalSignal {
         index: u32,
         error: Arc<str>,
     },
+
+    /// Subagent was cancelled (e.g. replaced by new aggregator)
+    SubagentCancelled { agent_id: Arc<str>, index: u32 },
 }
 
 impl InternalSignal {
@@ -93,6 +96,14 @@ impl InternalSignal {
             agent_id: Arc::from(id.into()),
             index,
             error: Arc::from(error.into()),
+        }
+    }
+
+    /// Create a subagent_cancelled signal
+    pub fn subagent_cancelled(id: impl Into<String>, index: u32) -> Self {
+        Self::SubagentCancelled {
+            agent_id: Arc::from(id.into()),
+            index,
         }
     }
 }
@@ -253,6 +264,8 @@ pub enum ChatEvent {
         id: Arc<str>,
         task: Arc<str>,
         index: u32,
+        /// Hint for frontend: whether the panel should be collapsed by default
+        collapsed: bool,
     },
 
     /// Subagent thinking/reasoning content
@@ -292,8 +305,15 @@ pub enum ChatEvent {
         error: Arc<str>,
     },
 
+    /// Subagent was cancelled — frontend should remove its panel instead of showing an error
+    SubagentCancelled { id: Arc<str>, index: u32 },
+
     /// All subagents have been spawned, main agent turn ends
-    SubagentAllStarted { count: u32 },
+    SubagentAllStarted {
+        count: u32,
+        /// Layout hint: "list" (vertical stack, like main-agent tool calls) or "grid" (horizontal tiles)
+        layout: Arc<str>,
+    },
 
     /// All subagents completed, main agent begins synthesis
     SubagentSynthesizing {},
@@ -381,11 +401,17 @@ impl ChatEvent {
     }
 
     /// Create a subagent_started message
-    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
+    pub fn subagent_started(
+        id: impl Into<String>,
+        task: impl Into<String>,
+        index: u32,
+        collapsed: bool,
+    ) -> Self {
         Self::SubagentStarted {
             id: Arc::from(id.into()),
             task: Arc::from(task.into()),
             index,
+            collapsed,
         }
     }
 
@@ -455,9 +481,20 @@ impl ChatEvent {
         }
     }
 
+    /// Create a subagent_cancelled message
+    pub fn subagent_cancelled(id: impl Into<String>, index: u32) -> Self {
+        Self::SubagentCancelled {
+            id: Arc::from(id.into()),
+            index,
+        }
+    }
+
     /// Create a subagent_all_started message
-    pub fn subagent_all_started(count: u32) -> Self {
-        Self::SubagentAllStarted { count }
+    pub fn subagent_all_started(count: u32, layout: impl Into<String>) -> Self {
+        Self::SubagentAllStarted {
+            count,
+            layout: Arc::from(layout.into()),
+        }
     }
 
     /// Create a subagent_synthesizing message
@@ -841,10 +878,11 @@ mod tests {
 
     #[test]
     fn test_subagent_all_started() {
-        let event = ChatEvent::subagent_all_started(5);
+        let event = ChatEvent::subagent_all_started(5, "list");
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"subagent_all_started"#));
         assert!(json.contains(r#""count":5"#));
+        assert!(json.contains(r#""layout":"list"#));
 
         // Round-trip
         let de: ChatEvent = serde_json::from_str(&json).unwrap();

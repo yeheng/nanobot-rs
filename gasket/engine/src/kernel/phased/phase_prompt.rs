@@ -65,10 +65,10 @@ impl PhasePrompt {
                  {ctx_section}\
                  你现在处于计划阶段。基于以上信息和用户的需求，制定详细的执行计划。\n\n\
                  你的工作流程：\n\
-                 1. 如果信息不足（目标不清晰、缺少关键上下文、用户意图模糊），请直接向用户提问澄清\n\
+                 1. 如果信息不足（目标不清晰、缺少关键上下文、用户意图模糊），请直接向用户提问澄清， 至少两三个问题.\n\
                  2. 信息充分时，直接输出结构化的执行计划（使用标题、步骤、依赖关系）\n\
-                 3. 使用 wiki_write 工具将计划保存到 topics/plans/<slug> 路径下\n\
-                 4. 保存成功后，调用 phase_transition(\"execute\") 进入执行阶段"
+                 3. 使用 write_file 工具将计划保存到 topics/plans/<slug> 路径下\n\
+                 4. 计划输出并保存后，必须立即调用 phase_transition(\"execute\") 进入执行阶段，不要等待用户确认或询问是否开始执行"
             ),
             AgentPhase::Execute => format!(
                 "[Phase: Execute]\n\n\
@@ -77,8 +77,7 @@ impl PhasePrompt {
                  你的工作流程：\n\
                  1. 按照计划逐步执行\n\
                  2. 如果需要向用户汇报进度或请示，直接输出文本（AI 会暂停等你回复）\n\
-                 3. 执行完成后，调用 phase_transition(\"review\") 进入审查阶段，\
-                 或 phase_transition(\"done\") 如果无需审查"
+                 3. 执行完成后，调用 phase_transition(\"review\") 进入审查阶段"
             ),
             AgentPhase::Review => format!(
                 "[Phase: Review]\n\n\
@@ -91,7 +90,7 @@ impl PhasePrompt {
                  1. 审查结果，必要时调用 wiki_write 写入知识（每次最多 3 条）\n\
                  2. 如果发现问题需要修正，调用 phase_transition(\"planning\") 重新规划\
                  或 phase_transition(\"execute\") 补充执行\n\
-                 3. 审查通过且无遗留问题后，调用 phase_transition(\"done\") 结束任务"
+                 3. 审查通过且无遗留问题后，调用 phase_transition(\"done\") 结束任务并输出本次任务的总结和经验教训"
             ),
             AgentPhase::Done => String::new(),
         }

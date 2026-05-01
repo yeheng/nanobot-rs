@@ -317,11 +317,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 eprintln!("\n{}", msg.yellow());
                             }
                             ChatEvent::ToolStart { name, .. } => {
-                                eprintln!(
-                                    "{} {}",
-                                    "🔧".dimmed(),
-                                    format!("[{}]", name).dimmed()
-                                );
+                                eprintln!("{} {}", "🔧".dimmed(), format!("[{}]", name).dimmed());
                             }
                             ChatEvent::ToolEnd { name, .. } => {
                                 eprintln!(

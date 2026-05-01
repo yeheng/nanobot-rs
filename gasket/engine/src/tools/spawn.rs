@@ -153,6 +153,7 @@ impl Tool for SpawnTool {
                     subagent_id.clone(),
                     args.task.clone(),
                     0,
+                    true,
                 ),
             ))
             .await;
