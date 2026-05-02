@@ -1,28 +1,35 @@
 # Flow Command System — Design Spec
 
-**Date**: 2026-05-03
-**Status**: Draft
+**Date**: 2026-05-03 (revised 2026-05-04 after Linus review)
+**Status**: Revised — ready for implementation
 **Supersedes**: `2026-04-30-phased-agent-loop-design.md`
-**Scope**: Slash-command-gated, YAML-templated, persistable plan-act-review flow engine for complex tasks
+**Scope**: Two-batch delivery — (v1) wiki-write deferred queue, (v2) slash-command-gated YAML flow engine on top of v1
 
 ---
 
 ## 1. Overview
 
-Replace the always-on phased agent loop with a **command-gated flow engine**. Plain conversation continues to use the existing `AgentSession` path unchanged. When the user enters a slash command (`/flow start`, `/design`, `/brainstorm`, etc.), a new `FlowOrchestrator` takes over and drives a YAML-defined sequence of phases with user-confirm gates at each boundary.
+Two delivery batches with independent shippable value:
 
-The default flow has five phases — `brainstorm → design → plan → execute → verify` — each with its own prompt, allowed tool subset, iteration cap, and optional review gate. Templates are stored as YAML files in `~/.gasket/flows/` (user-level) and `gasket/engine/flows/` (built-in fallbacks). Phase-boundary snapshots in a new `flow_runs` SQLite table enable `/flow resume`. Wiki writes attempted during a flow are intercepted and only committed at flow end with explicit user approval, eliminating the current over-write problem.
+**Batch v1 — Wiki Write Guard** (the user's most acute pain point):
+A `WikiGuard` sits in front of `WikiWriteTool` and applies a `WikiPolicy` (`Allowed` / `Deferred` / `Blocked`). With `Deferred`, every `wiki_write` call is queued instead of executed, and the user reviews the queue with `/wiki review` before any page is committed. Default policy stays `Allowed` so existing behavior is unchanged.
+
+**Batch v2 — Flow Engine** (built on v1):
+When the user enters a slash command (`/flow start <template>`, `/brainstorm`, etc.), a new `FlowOrchestrator` drives a YAML-defined sequence of phases through the existing kernel. Plain text input continues to use `AgentSession` unchanged. Each phase has its own prompt, allowed-tool subset, optional iteration cap, and optional review gate. The orchestrator sets `WikiPolicy::Deferred` (from v1) for the duration of the flow, then prompts the user for write approval at flow end.
+
+The default flow is `brainstorm → design → plan → execute → verify`. Templates live in `~/.gasket/flows/` (user) and `gasket/engine/flows/` (built-in fallback). Phase-boundary snapshots in a new `flow_runs` SQLite table enable `/flow resume`. The snapshot stores a copy of the template YAML so resume is reproducible even if the user edits the file mid-flow.
 
 ### Key Differences vs. Superseded Design
 
 | Dimension | Old (`phased-agent-loop`) | New (this spec) |
 |---|---|---|
-| Entry | Config flag, every user message goes phased | Slash command only — plain text bypasses |
+| Entry | Config flag, every user message goes phased | Slash command only (v2) — plain text bypasses |
 | Phases | Hard-coded 4 (Research/Planning/Execute/Review) | YAML-defined, default 5 (Brainstorm/Design/Plan/Execute/Verify) |
 | Customization | None | Per-phase prompt, tools, max_iter, gate; multi-template |
-| Review/wiki write | LLM-driven `wiki_write` in Review phase | Deferred queue, end-of-flow user confirmation |
-| Persistence | None | `flow_runs` table, phase-boundary snapshots, resume |
-| Gate | None | Explicit per-phase user confirm with edit/redo/back |
+| Wiki write reduction | LLM-driven `wiki_write` in Review phase | **v1**: deferred queue + `/wiki review`; **v2**: orchestrator auto-enables Deferred during flows |
+| Persistence | None | `flow_runs` table with `template_yaml` snapshot |
+| Gate | None | Explicit per-phase user confirm with `edit/redo/back` |
+| Versioning | Single drop | Two batches, v1 ships independently |
 
 ---
 
@@ -70,11 +77,16 @@ The default flow has five phases — `brainstorm → design → plan → execute
 
 ### 2.3 Touch Points with Existing Code
 
-1. `gasket/engine/src/lib.rs` — add `pub mod command;` and `pub mod flow;`
-2. CLI entry (`gasket/cli/src/commands/agent.rs`) and gateway entry — route raw user input through `CommandDispatcher::route()` first
-3. `gasket/engine/src/tools/wiki_tools.rs::WikiWriteTool` — accept an injectable `Arc<dyn WikiWriteGuard>`; default impl is `AllowAllGuard`
-4. `gasket/storage/src/` — add `flow_run_store.rs` and a migration in `migrations/`
-5. `gasket/types/src/events/stream.rs` — add `FlowStarted`, `PhaseChanged`, `GatePending`, `FlowFinished` `ChatEvent` variants
+**v1 batch:**
+1. `gasket/engine/src/flow/wiki_guard.rs` — new file (single struct + policy enum)
+2. `gasket/engine/src/tools/wiki_tools.rs::WikiWriteTool` — hold `Arc<WikiGuard>` (no dyn); default `WikiPolicy::Allowed` keeps existing behavior
+3. `gasket/cli/src/commands/wiki.rs` — extend with `/wiki review` subcommand
+
+**v2 batch (additionally):**
+4. `gasket/engine/src/lib.rs` — add `pub mod command;` and `pub mod flow;`
+5. CLI entry (`gasket/cli/src/commands/agent.rs`) and gateway entry — route raw user input through `CommandDispatcher::route()` first
+6. `gasket/storage/src/` — add `flow_run_store.rs` and a `migrations/flow_run.rs` with the `template_yaml` column
+7. `gasket/types/src/events/stream.rs` — add `FlowStarted`, `PhaseChanged`, `GatePending`, `FlowFinished` `ChatEvent` variants
 
 No changes to `kernel/`, `bus/`, `providers/`, `channels/` impl crates.
 
@@ -102,25 +114,28 @@ Built-in templates and their `prompt_file` references are shipped inside the `ga
 
 ### 3.2 Template YAML Schema
 
+Linus simplifications applied: every special-case sentinel is replaced with absence-as-meaning.
+
 ```yaml
 # ~/.gasket/flows/new-feature.yaml
 name: new-feature
 description: Full new-feature workflow with design + plan review gates
 version: 1
 
-# Global policy
+# Global wiki policy for this flow. Defaults to `deferred` — orchestrator
+# enables WikiGuard's Deferred policy for the flow's lifetime.
 wiki_policy: deferred          # deferred | blocked | allowed
-                               # deferred = intercept during flow, ask user at end (default)
 
 phases:
   - id: brainstorm
     label: "Brainstorm"
     prompt_file: prompts/brainstorm.md      # path relative to template file's dir
+    # `allowed_tools` absent → all tools allowed.
+    # Present → whitelist only the listed tools.
     allowed_tools: [wiki_search, wiki_read, history_search]
-    max_iterations: 5
-    gate:
-      required: true
-      prompt: "Brainstorm direction looks right? (y/n/edit)"
+    max_iterations: 5                       # absent → unlimited
+    gate:                                   # absent → no gate, auto-advance
+      prompt: "Brainstorm direction looks right? (y/n/edit/redo/back)"
 
   - id: design
     label: "Design"
@@ -128,8 +143,7 @@ phases:
     allowed_tools: [wiki_search, wiki_read, file_read, file_search]
     max_iterations: 8
     gate:
-      required: true
-      prompt: "Design accepted? (y/n/edit)"
+      prompt: "Design accepted?"
 
   - id: plan
     label: "Plan"
@@ -137,26 +151,30 @@ phases:
     allowed_tools: [wiki_search, file_read, file_search]
     max_iterations: 5
     gate:
-      required: true
-      prompt: "Plan looks executable? (y/n/edit)"
+      prompt: "Plan looks executable?"
 
   - id: execute
     label: "Execute"
     prompt_file: prompts/execute.md
-    allowed_tools: ["*"]        # full tool set
-    max_iterations: 0           # 0 means unlimited; positive integer is the cap
-    gate:
-      required: false           # auto-advance to verify
+    # `allowed_tools` omitted → full tool set
+    # `max_iterations` omitted → unlimited
+    # `gate` omitted → auto-advance to verify
 
   - id: verify
     label: "Verify"
     prompt_file: prompts/verify.md
-    allowed_tools: [shell, file_read, test_runner]
+    allowed_tools: [shell, file_read]
     max_iterations: 5
     gate:
-      required: true
-      prompt: "Verification passed? End flow? (y/n/redo-execute)"
+      prompt: "Verification passed? End flow?"
 ```
+
+Removed from prior draft:
+- `gate.required: bool` — gate now `Option<GateConfig>`; absence = no gate
+- `max_iterations: 0` magic value — now `Option<u32>`; absence = unlimited
+- `allowed_tools: ["*"]` magic value — now `Option<Vec<String>>`; absence = all tools
+
+Phase ids are plain strings. Built-in template ids are `brainstorm` / `design` / `plan` / `execute` / `verify`; users can name custom phases anything. There is no special enum distinguishing built-in vs custom — code that needs it calls a small `is_builtin_phase(&str) -> bool` helper.
 
 ### 3.3 Prompt Template Variables
 
@@ -267,20 +285,31 @@ pub struct FlowState {
     pub flow_id: Uuid,                    // v7 (time-ordered)
     pub template: Arc<FlowTemplate>,      // loaded YAML
     pub user_request: String,
-    pub current_phase: PhaseId,
-    pub status: FlowStatus,
+    pub current_phase: PhaseId,           // single source of truth for "where are we"
+    pub status: FlowStatus,               // does NOT carry phase
     pub completed_phases: BTreeMap<PhaseId, PhaseOutput>,
     pub pending_wiki_writes: Vec<PendingWikiWrite>,
+    /// Set when the user picks `edit <text>` at a gate; consumed and cleared
+    /// by the next PhaseRunner invocation.
+    pub edit_feedback: Option<String>,
     pub session_key: SessionKey,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-pub enum PhaseId { Brainstorm, Design, Plan, Execute, Verify, Custom(String) }
+/// Phase identifier — just a string. No enum-vs-custom distinction.
+/// Built-in phase ids: "brainstorm", "design", "plan", "execute", "verify".
+/// User templates can use any string.
+pub type PhaseId = String;
 
+pub fn is_builtin_phase(s: &str) -> bool {
+    matches!(s, "brainstorm" | "design" | "plan" | "execute" | "verify")
+}
+
+/// Status of a single flow run. Phase information lives in `FlowState.current_phase`.
 pub enum FlowStatus {
     Running,
-    AwaitingGate { phase: PhaseId },
+    AwaitingGate,        // no phase field — read FlowState.current_phase
     Paused,
     Done,
     Aborted,
@@ -294,6 +323,11 @@ pub struct PhaseOutput {
 }
 ```
 
+Linus simplifications applied:
+- **`PhaseId = String`** instead of `enum { Builtin(BuiltinPhase) | Custom(String) }`. The enum had no behavioral differentiation; serialization went through string anyway.
+- **`FlowStatus::AwaitingGate` carries no `phase` field**. Phase is read from `FlowState.current_phase`. Eliminates the prior bug where `Back` had to update two fields with the same value.
+- **`edit_feedback: Option<String>`** makes `GateResponse::Edit(text)` actually work. The orchestrator sets this on `Edit`; `PhaseRunner` injects it as a user message on the next phase invocation and clears it.
+
 ### 4.3 SQLite Schema
 
 A new `flow_run` migration is added under `gasket/storage/src/migrations/` (Rust module, mirroring existing `cron.rs` / `kv.rs` / `session.rs`):
@@ -304,12 +338,14 @@ CREATE TABLE IF NOT EXISTS flow_runs (
   flow_id            TEXT PRIMARY KEY,         -- UUID v7
   template_name      TEXT NOT NULL,
   template_version   INTEGER NOT NULL,
+  template_yaml      TEXT NOT NULL,            -- snapshot of YAML at flow start
   user_request       TEXT NOT NULL,
   session_key        TEXT NOT NULL,
   status             TEXT NOT NULL,            -- running|awaiting_gate|paused|done|aborted
   current_phase      TEXT NOT NULL,
   completed_phases   TEXT NOT NULL DEFAULT '{}', -- JSON: {phase_id: PhaseOutput}
   pending_wiki       TEXT NOT NULL DEFAULT '[]', -- JSON: [PendingWikiWrite]
+  edit_feedback      TEXT,                     -- nullable; pending edit feedback from a gate
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL
 );
@@ -318,54 +354,86 @@ CREATE INDEX idx_flow_runs_session ON flow_runs(session_key, updated_at DESC);
 CREATE INDEX idx_flow_runs_status ON flow_runs(status, updated_at DESC);
 ```
 
+The `template_yaml` column stores the exact YAML text that was on disk when the flow was started. Resume uses this snapshot by default — the user editing the file mid-flow does not retroactively change a running flow's behavior. A `GASKET_FLOWS_FORCE_RELOAD=1` environment variable opts into the alternative behavior (reload from disk on resume).
+
 ### 4.4 State Machine Transitions
 
-| From `status` | Trigger | To `status` |
-|---|---|---|
-| `Running` | PhaseRunner finished, `gate.required=true` | `AwaitingGate{phase}` |
-| `Running` | PhaseRunner finished, `gate.required=false` | `Running` (auto-advance) |
-| `Running` | PhaseRunner finished, last phase | `Done` |
-| `Running` | PhaseRunner errored | `Paused` |
-| `AwaitingGate` | user input `y` | `Running` (advance) |
-| `AwaitingGate` | user input `n` | `Aborted` |
-| `AwaitingGate` | user input `edit <text>` | `Running` (iterate same phase, inject text) |
-| `AwaitingGate` | user input `redo` | `Running` (clear phase output, re-run) |
-| `AwaitingGate` | user input `back` | `AwaitingGate{prev_phase}` |
-| `Paused` / `AwaitingGate` | `/flow resume <id>` | restore prior status |
-| any non-`Done` | `/flow abort` | `Aborted` |
+`AwaitingGate` no longer carries a `phase` field. The phase being gated is always `FlowState.current_phase`.
+
+| From `status` | Trigger | To `status` | Side effects |
+|---|---|---|---|
+| `Running` | PhaseRunner finished, current phase has a `gate` | `AwaitingGate` | record `PhaseOutput`; phase unchanged |
+| `Running` | PhaseRunner finished, no gate, more phases follow | `Running` | record `PhaseOutput`; advance `current_phase` |
+| `Running` | PhaseRunner finished, no gate, last phase | `Done` | record `PhaseOutput` |
+| `Running` | PhaseRunner errored | `Paused` | error logged; flow recoverable via `/flow resume` |
+| `AwaitingGate` | user input `y` | `Running` (or `Done` if last) | advance `current_phase` if more |
+| `AwaitingGate` | user input `n` | `Aborted` | — |
+| `AwaitingGate` | user input `edit <text>` | `Running` | set `edit_feedback = Some(text)`; phase unchanged |
+| `AwaitingGate` | user input `redo` | `Running` | clear `completed_phases[current_phase]`; phase unchanged |
+| `AwaitingGate` | user input `back` | `AwaitingGate` | set `current_phase = phases[idx-1]` (no-op if idx=0) |
+| `Paused` | `/flow resume <id>` | restore prior status | re-issue PhaseRunner from `current_phase` start |
+| any non-`Done` | `/flow abort` | `Aborted` | — |
+
+Each transition updates one piece of state at a time. `Back` only changes `current_phase`; status stays `AwaitingGate`. `Edit` only sets `edit_feedback`; the next `PhaseRunner::run` consumes it (prepends a `ChatMessage::user(text)` to the messages list) and clears it.
 
 ### 4.5 Resume Behavior
 
 `/flow resume <flow_id>`:
 1. `SELECT * FROM flow_runs WHERE flow_id = ?`
-2. Rebuild `FlowState` (template reloaded — may have changed)
-3. If `status = AwaitingGate` → re-print phase summary + gate prompt
-4. If `status = Paused` and `current_phase = X` → re-run phase X from scratch (no step-level snapshot — this is the explicit trade-off chosen with phase-boundary granularity)
+2. Reconstruct `FlowState` from `template_yaml` (the snapshot taken at flow start). The on-disk file may have changed; the snapshot is authoritative.
+3. If `GASKET_FLOWS_FORCE_RELOAD=1` and the on-disk file's `template_version` differs from the snapshot's, warn the user and reload from disk.
+4. If `status = AwaitingGate` → re-print phase summary + gate prompt
+5. If `status = Paused` and `current_phase = X` → re-run phase X from scratch (no step-level snapshot — phase-boundary granularity by design)
 
 ### 4.6 WikiGuard
+
+Linus simplification: one struct, one `match`, no trait. Replaces the prior trio of `AllowAllGuard` / `BlockingGuard` / `DeferringGuard`.
 
 ```rust
 // engine/src/flow/wiki_guard.rs
 
-#[async_trait]
-pub trait WikiWriteGuard: Send + Sync {
-    async fn intercept(&self, args: WriteArgs) -> GuardDecision;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WikiPolicy { Allowed, Deferred, Blocked }
+
+pub struct WikiGuard {
+    policy: WikiPolicy,
+    pending: Mutex<Vec<PendingWikiWrite>>,
 }
 
 pub enum GuardDecision {
-    Allow,                    // pass through (no flow / wiki_policy=allowed)
-    Defer(WriteArgs),         // queue into FlowState.pending_wiki_writes
-    Reject(String),           // reject, return error string to LLM
+    Allow,                    // pass through to PageStore::write
+    Defer,                    // queued; tool returns "deferred for review"
+    Reject(String),           // tool returns this string to LLM as error
 }
 
-pub struct DeferringGuard {
-    pending: Arc<Mutex<Vec<PendingWikiWrite>>>,
+impl WikiGuard {
+    pub fn new(policy: WikiPolicy) -> Self {
+        Self { policy, pending: Mutex::new(Vec::new()) }
+    }
+
+    pub async fn intercept(&self, args: WriteArgsView) -> GuardDecision {
+        match self.policy {
+            WikiPolicy::Allowed => GuardDecision::Allow,
+            WikiPolicy::Blocked => GuardDecision::Reject("blocked".into()),
+            WikiPolicy::Deferred => {
+                self.pending.lock().unwrap().push(args.into());
+                GuardDecision::Defer
+            }
+        }
+    }
+
+    pub fn drain_pending(&self) -> Vec<PendingWikiWrite> {
+        std::mem::take(&mut self.pending.lock().unwrap())
+    }
 }
-pub struct AllowAllGuard;
-pub struct BlockingGuard;
 ```
 
-`WikiWriteTool::execute` first line: `match guard.intercept(args).await { ... }`. The plain-conversation path uses `AllowAllGuard`, so behavior outside flows is unchanged.
+`WikiWriteTool` holds `Arc<WikiGuard>` (no `dyn`, no trait dispatch). Default constructor uses `WikiPolicy::Allowed` so existing call-sites are unchanged.
+
+Usage:
+- **v1** — A new `/wiki review` command toggles `policy` to `Deferred`, lets queued writes accumulate, and prompts the user to approve/discard.
+- **v2** — `FlowOrchestrator::start_new` reads `wiki_policy` from the template, builds a fresh `WikiGuard`, and swaps it into `WikiWriteTool` for the flow's lifetime. On `Done` it drains the queue and prompts the user.
 
 ---
 
@@ -404,7 +472,7 @@ These should be encoded as `debug_assert!` in dev builds and as test assertions 
 |---|---|---|---|
 | Unit | `TemplateLoader` | `flow/template_test.rs` | valid/invalid YAML, user override built-in |
 | Unit | State machine | `flow/state_test.rs` | All §4.4 transitions exhaustively |
-| Unit | `WikiGuard` | `flow/wiki_guard_test.rs` | Allow / Defer / Reject branches |
+| Unit | `WikiGuard` | `flow/wiki_guard_test.rs` | All three `WikiPolicy` branches (`Allowed`/`Deferred`/`Blocked`); drain queue idempotency |
 | Unit | `CommandDispatcher` parse | `command/parser_test.rs` | `/flow start ...`, shortcuts, quoted args, unknown `/cmd`, plain text |
 | Integration | `flow_run_store` | `storage/flow_run_store_test.rs` | insert/update/load/list, JSON round-trip |
 | Integration | E2E flow with mock provider | `flow/orchestrator_test.rs` | scripted 5-phase run with programmatic gate inputs |
@@ -440,29 +508,33 @@ let provider = MockLlmProvider::new()
 
 ## 7. Implementation Order
 
-1. **`gasket/types/src/flow.rs`** — `FlowStatus`, `PhaseId`, `PhaseOutput`, `PendingWikiWrite` types
-2. **`gasket/types/src/events/stream.rs`** — new `ChatEvent` variants
-3. **`gasket/storage/src/flow_run_store.rs`** + migration — CRUD for `flow_runs` table
-4. **`gasket/engine/src/flow/template.rs`** — YAML loader, default `default.yaml` shipped
-5. **`gasket/engine/src/flow/state.rs`** — `FlowState` + state machine transitions (pure)
-6. **`gasket/engine/src/flow/wiki_guard.rs`** — `WikiWriteGuard` trait + 3 impls
-7. **`gasket/engine/src/tools/wiki_tools.rs`** — wire `WikiWriteGuard` into `WikiWriteTool`
-8. **`gasket/engine/src/flow/phase_runner.rs`** — single-phase kernel call wrapper
-9. **`gasket/engine/src/flow/gate.rs`** — gate controller (CLI + Web variants)
-10. **`gasket/engine/src/flow/orchestrator.rs`** — `FlowOrchestrator` tying it all together
-11. **`gasket/engine/src/command/`** — dispatcher + parser
-12. **CLI / gateway entry wiring** — route through dispatcher
-13. **Web frontend** — handle new events, render gate UI
-14. **Built-in templates** — ship `default.yaml`, `debug.yaml`, `docs.yaml` with prompts
-15. **Documentation** — user guide for writing custom templates
+Two independent batches. Batch v1 ships first, gets ~1 week of real use, then batch v2 starts. Each batch produces a working, testable system on its own.
+
+### Batch v1 — Wiki Write Guard (4 tasks)
+
+1. **`gasket/engine/src/flow/wiki_guard.rs`** — single `WikiGuard` struct + `WikiPolicy` enum + `GuardDecision` enum
+2. **`gasket/engine/src/tools/wiki_tools.rs`** — `WikiWriteTool::with_policy(policy)` builder; default `Allowed` keeps existing behavior
+3. **`gasket/cli/src/commands/wiki.rs`** — `/wiki review` subcommand: toggle to Deferred, list queue, approve/discard interactively
+4. **End-to-end smoke** — confirm Allowed still writes immediately; Deferred queues; review approves
+
+### Batch v2 — Flow Engine (4 tasks, depends on v1's `WikiGuard`)
+
+5. **`gasket/types/src/flow.rs`** — `PhaseId = String`, `FlowStatus` (no phase field), `PhaseOutput`, `PendingWikiWrite`; **`gasket/engine/src/flow/state.rs`** — `FlowState` with `edit_feedback`, pure state-machine transitions
+6. **`gasket/storage/src/migrations/flow_run.rs`** + **`gasket/storage/src/flow_run_store.rs`** — DDL with `template_yaml` column + CRUD
+7. **`gasket/engine/src/flow/{template,phase_runner,gate,orchestrator}.rs`** — YAML loader; `PhaseRunner` that **really calls `kernel::execute_streaming`** (no stub); `CliGate` for stdin; `FlowOrchestrator` ties them together
+8. **`gasket/engine/src/command/{parser,dispatcher}.rs`** + **`gasket/cli/src/commands/agent.rs`** — slash-command parser + dispatcher + CLI wiring (real, not stub); built-in templates ship with the binary
+
+After v2 lands: web frontend gate UI is a follow-up plan (not gating v2 ship).
 
 ---
 
-## 8. Out of Scope (v1)
+## 8. Out of Scope (v1 + v2)
 
-- Conditional phase branching ("if execute fails go back to plan"). Templates are linear in v1.
+- Conditional phase branching ("if execute fails go back to plan"). Templates are linear.
 - Step-level resume (only phase-boundary).
 - Concurrent flows in a single session (one active flow per session).
 - Multi-user gate approval.
-- Web UI gate buttons polish — events emitted v1, full UI may be v1.1.
-- Editing a running flow's template hot. Templates load at flow start; resume reloads.
+- Web UI gate buttons polish — events emitted, full UI is a follow-up.
+- Editing a running flow's template hot. Snapshot in `template_yaml` column makes this safe-by-default; opt-in reload via `GASKET_FLOWS_FORCE_RELOAD=1`.
+
+**Not in this list (intentionally):** Per-phase kernel invocation with `allowed_tools` filter is **mandatory** in batch v2 — the orchestrator's `PhaseRunner` calls `kernel::execute_streaming` for real, with the phase's tool-filtered registry. Earlier draft deferred this to v1.1; the Linus review correctly flagged that as shipping vapor. Batch v2 has no such carve-out.
