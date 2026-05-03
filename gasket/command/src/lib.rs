@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod host;
+pub mod parser;
 pub mod types;
 
 pub use error::BuildError;
