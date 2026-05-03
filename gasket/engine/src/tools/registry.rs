@@ -111,6 +111,28 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Like `get_definitions` but optionally filters by an allowlist.
+    ///
+    /// `None` returns every registered tool (same as `get_definitions`).
+    /// `Some(slice)` returns only those whose name appears in the slice.
+    /// `Some(&[])` returns no tools at all — explicit "forbid all".
+    pub fn get_definitions_filtered(&self, filter: Option<&[String]>) -> Vec<ToolDefinition> {
+        self.items
+            .iter()
+            .filter(|(name, _)| match filter {
+                None => true,
+                Some(set) => set.iter().any(|s| s == *name),
+            })
+            .map(|(_, entry)| {
+                ToolDefinition::function(
+                    entry.tool.name(),
+                    entry.tool.description(),
+                    entry.tool.parameters(),
+                )
+            })
+            .collect()
+    }
+
     /// Execute a tool by name with context
     #[instrument(skip(self, args, ctx))]
     pub async fn execute(&self, name: &str, args: Value, ctx: &ToolContext) -> ToolResult {
@@ -168,5 +190,66 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    struct Stub(&'static str);
+
+    #[async_trait]
+    impl Tool for Stub {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn parameters(&self) -> Value {
+            serde_json::json!({})
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        async fn execute(&self, _: Value, _: &ToolContext) -> ToolResult {
+            unreachable!()
+        }
+    }
+
+    fn make_registry() -> ToolRegistry {
+        let mut r = ToolRegistry::new();
+        r.register(Box::new(Stub("alpha")));
+        r.register(Box::new(Stub("beta")));
+        r.register(Box::new(Stub("gamma")));
+        r
+    }
+
+    #[test]
+    fn none_filter_returns_all() {
+        let r = make_registry();
+        let defs = r.get_definitions_filtered(None);
+        assert_eq!(defs.len(), 3);
+    }
+
+    #[test]
+    fn empty_filter_returns_no_tools() {
+        let r = make_registry();
+        let defs = r.get_definitions_filtered(Some(&[]));
+        assert_eq!(defs.len(), 0);
+    }
+
+    #[test]
+    fn whitelist_filters_to_named() {
+        let r = make_registry();
+        let names = vec!["alpha".to_string(), "gamma".to_string()];
+        let defs = r.get_definitions_filtered(Some(&names));
+        let got: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+        assert!(got.contains(&"alpha"));
+        assert!(got.contains(&"gamma"));
+        assert!(!got.contains(&"beta"));
     }
 }

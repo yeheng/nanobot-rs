@@ -32,7 +32,10 @@ impl<'a> RequestHandler<'a> {
         let request = ChatRequest {
             model: self.config.model.clone(),
             messages: messages.to_vec(),
-            tools: Some(self.tools.get_definitions()),
+            tools: Some(
+                self.tools
+                    .get_definitions_filtered(self.config.tool_filter.as_deref()),
+            ),
             temperature: Some(self.config.temperature),
             max_tokens: Some(self.config.max_tokens),
             thinking: if self.config.thinking_enabled {
