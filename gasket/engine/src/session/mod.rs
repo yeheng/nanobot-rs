@@ -348,6 +348,28 @@ impl AgentSession {
         }
     }
 
+    /// List recent sessions for the `/sessions` built-in.
+    ///
+    /// Day-1: returns an empty vec. A future commit can scan the event store
+    /// to enumerate distinct session keys; see TODO in
+    /// docs/superpowers/specs/2026-05-03-command-system-design.md §11.
+    pub async fn list_sessions(&self) -> Vec<gasket_types::SessionSummary> {
+        Vec::new()
+    }
+
+    /// Switch the active model for the `/model <id>` built-in.
+    ///
+    /// Day-1: not implemented because `AgentSession::config` is held by value
+    /// behind `&self` (no interior mutability). Wrapping the config in
+    /// `Arc<Mutex<…>>` is a session-wide change tracked separately. The
+    /// `/model` no-arg path still works through `current_model`.
+    pub async fn switch_model(
+        &self,
+        _new: &str,
+    ) -> Result<gasket_types::ModelSwitchInfo, String> {
+        Err("model switching is not supported in this build".into())
+    }
+
     /// Force-trigger context compaction.
     pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
         self.compactor
