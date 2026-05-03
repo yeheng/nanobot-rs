@@ -4,6 +4,7 @@
 //! handlers that need engine capabilities receive them through the
 //! [`CommandHost`] trait, whose implementation lives in the consuming crate.
 
+pub mod builtins;
 pub mod dispatcher;
 pub mod error;
 pub mod host;
