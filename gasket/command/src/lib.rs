@@ -16,4 +16,6 @@ pub mod yaml_loader;
 pub use dispatcher::{Dispatcher, DispatcherBuilder};
 pub use error::BuildError;
 pub use host::CommandHost;
-pub use types::{BuiltinHandler, Command, CommandKind, CommandResult, RouteOutcome};
+pub use types::{
+    BuiltinHandler, Command, CommandKind, CommandResult, HelpEntry, HelpSource, RouteOutcome,
+};

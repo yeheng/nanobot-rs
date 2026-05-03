@@ -47,6 +47,21 @@ pub enum CommandResult {
     Error(String),
 }
 
+/// One row in the `/help` output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpEntry {
+    pub name: String,
+    pub description: String,
+    pub aliases: Vec<String>,
+    pub source: HelpSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HelpSource {
+    Builtin,
+    User,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

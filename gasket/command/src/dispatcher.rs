@@ -2,14 +2,24 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::error::BuildError;
 use crate::host::CommandHost;
 use crate::parser::{parse, ParsedInput};
 use crate::template::render;
-use crate::types::{Command, CommandKind, CommandResult, RouteOutcome};
+use crate::types::{Command, CommandKind, CommandResult, HelpEntry, HelpSource, RouteOutcome};
 use crate::yaml_loader::load_user_commands;
+
+/// Lazily-filled snapshot of registered commands. The builder writes once
+/// after all commands are known; the `/help` builtin reads from it.
+pub type HelpSnapshot = OnceLock<Vec<HelpEntry>>;
+
+/// Construct a fresh, empty help snapshot to share between the builder and
+/// the `/help` builtin.
+pub fn shared_help_snapshot() -> Arc<HelpSnapshot> {
+    Arc::new(OnceLock::new())
+}
 
 pub struct Dispatcher {
     pub(crate) commands: HashMap<String, Arc<Command>>,
@@ -63,6 +73,7 @@ pub struct DispatcherBuilder {
     builtins: Vec<Command>,
     user_yaml_dir: Option<PathBuf>,
     host: Option<Arc<dyn CommandHost>>,
+    help_snapshot: Option<Arc<HelpSnapshot>>,
 }
 
 impl Dispatcher {
@@ -77,6 +88,7 @@ impl DispatcherBuilder {
             builtins: Vec::new(),
             user_yaml_dir: None,
             host: None,
+            help_snapshot: None,
         }
     }
 
@@ -92,6 +104,11 @@ impl DispatcherBuilder {
 
     pub fn host(mut self, h: Arc<dyn CommandHost>) -> Self {
         self.host = Some(h);
+        self
+    }
+
+    pub fn help_snapshot(mut self, slot: Arc<HelpSnapshot>) -> Self {
+        self.help_snapshot = Some(slot);
         self
     }
 
@@ -143,6 +160,24 @@ impl DispatcherBuilder {
                 }
                 commands.insert(arc.name.clone(), arc);
             }
+        }
+
+        // 3. If the caller wants a help snapshot, fill it now.
+        if let Some(slot) = self.help_snapshot.clone() {
+            let mut entries: Vec<HelpEntry> = commands
+                .values()
+                .map(|c| HelpEntry {
+                    name: c.name.clone(),
+                    description: c.description.clone(),
+                    aliases: c.aliases.clone(),
+                    source: match &c.kind {
+                        CommandKind::Builtin(_) => HelpSource::Builtin,
+                        CommandKind::Yaml { .. } => HelpSource::User,
+                    },
+                })
+                .collect();
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            let _ = slot.set(entries);
         }
 
         Ok(Dispatcher {
