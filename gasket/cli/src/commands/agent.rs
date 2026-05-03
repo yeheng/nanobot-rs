@@ -8,6 +8,9 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
+use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
+use gasket_command::dispatcher::shared_help_snapshot;
+use gasket_command::{CommandCompleter, CommandResult, DispatcherBuilder, RouteOutcome};
 use gasket_engine::channels::ChatEvent;
 use gasket_engine::channels::SessionKey;
 use gasket_engine::config::{load_config, ModelRegistry};
@@ -20,6 +23,7 @@ use gasket_engine::SqliteStore;
 
 use gasket_engine::broker::MemoryBroker;
 
+use super::command_host::CliCommandHost;
 use super::registry::CliModelResolver;
 use crate::cli::AgentOptions;
 use crate::provider::setup_vault;
@@ -263,6 +267,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     .with_pricing(pricing)
     .with_spawner(subagent_spawner);
 
+    // Wrap once. Existing &self method calls pass through via Arc::Deref;
+    // CliCommandHost needs an owned Arc clone for shared ownership.
+    let agent = Arc::new(agent);
+
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
 
@@ -307,12 +315,39 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             // Interactive mode
             println!("🐈 gasket interactive mode. Type '/help' for commands, '/exit' to quit.\n");
 
-            let mut line_editor = Reedline::create();
-            let prompt =
-                DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
-
             let interactive_session =
                 SessionKey::new(gasket_engine::channels::ChannelType::Cli, "interactive");
+
+            // Build the slash-command dispatcher: built-ins, user YAML files,
+            // help snapshot. The CLI is the only path through this dispatcher;
+            // bot channels (Telegram, Discord, Slack) keep their existing
+            // passthrough behavior — they never see this code.
+            let host = Arc::new(CliCommandHost::new(agent.clone()));
+            let session_key_for_new = Arc::new(interactive_session.clone());
+            let help_snap = shared_help_snapshot();
+            let user_dir = dirs::home_dir().map(|h| h.join(".gasket/commands"));
+
+            let mut builder = DispatcherBuilder::new()
+                .host(host)
+                .help_snapshot(help_snap.clone())
+                .register_builtin(exit())
+                .register_builtin(clear())
+                .register_builtin(help(help_snap.clone()))
+                .register_builtin(builtin_new(session_key_for_new.clone()))
+                .register_builtin(sessions())
+                .register_builtin(model());
+            if let Some(p) = user_dir {
+                builder = builder.user_dir(p);
+            }
+            let dispatcher = builder
+                .build()
+                .await
+                .context("failed to build slash-command dispatcher")?;
+
+            let completer = CommandCompleter::from_dispatcher(&dispatcher);
+            let mut line_editor = Reedline::create().with_completer(Box::new(completer));
+            let prompt =
+                DefaultPrompt::new(DefaultPromptSegment::Empty, DefaultPromptSegment::Empty);
 
             loop {
                 match line_editor.read_line(&prompt) {
@@ -323,79 +358,53 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             continue;
                         }
 
-                        // Check for exit commands
-                        if matches!(line, "exit" | "quit" | "/exit" | "/quit" | ":q") {
+                        // Backward-compat: bare-word exit/quit terminators that
+                        // existed before the dispatcher landed. Slash forms go
+                        // through dispatcher's /exit alias chain instead.
+                        if matches!(line, "exit" | "quit" | ":q") {
                             println!("Goodbye! 🐈");
                             break;
                         }
 
-                        // Handle CLI-specific slash commands locally
-                        // (these must NOT reach the agent core — other channels
-                        //  like Telegram should treat "/new" as normal LLM input)
-                        let cmd = line.to_lowercase();
-                        if cmd == "/new" {
-                            agent.clear_session(&interactive_session).await;
-                            println!("New session started.");
-                            continue;
-                        }
-                        if cmd == "/help" {
-                            println!(
-                                "🐈 gasket commands:\n\
-                                 /new  — Start a new conversation\n\
-                                 /help — Show available commands\n\
-                                 /exit — Exit the REPL"
-                            );
-                            continue;
-                        }
-
-                        // Process the message
-                        if use_streaming {
-                            println!();
-                            // Use channel-based streaming API
-                            let streaming_result = agent
-                                .process_direct_streaming_with_channel(line, &interactive_session, None)
-                                .await;
-
-                            match streaming_result {
-                                Ok((mut event_rx, result_handle)) => {
-                                    // Forward events to callback
-                                    let forward_handle = tokio::spawn(async move {
-                                        while let Some(event) = event_rx.recv().await {
-                                            match event {
-                                                ChatEvent::Content { content } => {
-                                                    print!("{}", content);
-                                                    std::io::stdout().flush().ok();
-                                                }
-                                                ChatEvent::Thinking { content } => {
-                                                    eprint!("{}", content.dimmed().italic());
-                                                    std::io::stderr().flush().ok();
-                                                }
-                                                ChatEvent::Done => {}
-                                                _ => {}
-                                            }
-                                        }
-                                    });
-
-                                    // Wait for streaming to complete
-                                    let (result, _) = tokio::join!(result_handle, forward_handle);
-                                    if result.is_ok() {
-                                        println!("\n");
-                                    } else if let Err(e) = result {
-                                        println!("\n{} {}\n", "Error:".red(), e);
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("\n{} {}\n", "Error:".red(), e);
-                                }
+                        match dispatcher.route(line).await {
+                            RouteOutcome::Handled(CommandResult::Quit) => {
+                                println!("Goodbye! 🐈");
+                                break;
                             }
-                        } else {
-                            match agent.process_direct(line, &interactive_session, None).await {
-                                Ok(response) => {
-                                    println!();
-                                    print_response_with_reasoning(&response, render_md);
-                                    println!();
-                                }
-                                Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                            RouteOutcome::Handled(CommandResult::Print(s)) => {
+                                println!("{}", s);
+                                continue;
+                            }
+                            RouteOutcome::Handled(CommandResult::Error(s)) => {
+                                eprintln!("{}", s.red());
+                                continue;
+                            }
+                            RouteOutcome::Rewrite {
+                                prompt: rewritten,
+                                tool_filter,
+                            } => {
+                                run_llm_input(
+                                    &agent,
+                                    &interactive_session,
+                                    &rewritten,
+                                    tool_filter,
+                                    use_streaming,
+                                    render_md,
+                                )
+                                .await;
+                                continue;
+                            }
+                            RouteOutcome::Passthrough(text) => {
+                                run_llm_input(
+                                    &agent,
+                                    &interactive_session,
+                                    &text,
+                                    None,
+                                    use_streaming,
+                                    render_md,
+                                )
+                                .await;
+                                continue;
                             }
                         }
                     }
@@ -413,6 +422,65 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Send a line of text (passthrough or rewritten) to the LLM and render
+/// the response. Errors are printed inline; this function never propagates
+/// them to keep the REPL responsive.
+async fn run_llm_input(
+    agent: &AgentSession,
+    session_key: &SessionKey,
+    text: &str,
+    tool_filter: Option<Vec<String>>,
+    use_streaming: bool,
+    render_md: bool,
+) {
+    if use_streaming {
+        println!();
+        let streaming_result = agent
+            .process_direct_streaming_with_channel(text, session_key, tool_filter)
+            .await;
+
+        match streaming_result {
+            Ok((mut event_rx, result_handle)) => {
+                let forward_handle = tokio::spawn(async move {
+                    while let Some(event) = event_rx.recv().await {
+                        match event {
+                            ChatEvent::Content { content } => {
+                                print!("{}", content);
+                                std::io::stdout().flush().ok();
+                            }
+                            ChatEvent::Thinking { content } => {
+                                eprint!("{}", content.dimmed().italic());
+                                std::io::stderr().flush().ok();
+                            }
+                            ChatEvent::Done => {}
+                            _ => {}
+                        }
+                    }
+                });
+
+                let (result, _) = tokio::join!(result_handle, forward_handle);
+                if result.is_ok() {
+                    println!("\n");
+                } else if let Err(e) = result {
+                    println!("\n{} {}\n", "Error:".red(), e);
+                }
+            }
+            Err(e) => {
+                println!("\n{} {}\n", "Error:".red(), e);
+            }
+        }
+    } else {
+        match agent.process_direct(text, session_key, tool_filter).await {
+            Ok(response) => {
+                println!();
+                print_response_with_reasoning(&response, render_md);
+                println!();
+            }
+            Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+        }
+    }
 }
 
 /// Print response with optional Markdown rendering
