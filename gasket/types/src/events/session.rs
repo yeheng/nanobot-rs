@@ -1,5 +1,7 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use super::channel::ChannelType;
 
 /// Strongly-typed session identifier.
@@ -39,6 +41,29 @@ impl SessionKey {
 impl fmt::Display for SessionKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.channel, self.chat_id)
+    }
+}
+
+// String-form serialization mirroring `Display` + `parse`:
+// `"telegram:chat-123"` rather than a struct. Consistent with `ChannelType`'s
+// custom serde impl in `channel.rs` and keeps the round-trip symmetric with
+// `to_string()` / `try_parse()`.
+impl Serialize for SessionKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::try_parse(&s).map_err(serde::de::Error::custom)
     }
 }
 

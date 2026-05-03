@@ -10,11 +10,13 @@
 //! By keeping these types in a separate crate, we avoid circular dependencies
 //! between `gasket-core` and other crates.
 
+pub mod command;
 pub mod events;
 pub mod session_event;
 pub mod token_tracker;
 pub mod tool;
 
+pub use command::{ModelSwitchInfo, SessionSummary};
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, OutboundPayload, SessionKey,
     SessionKeyParseError, StreamEvent, StreamEventKind, Target, WebSocketMessage,
