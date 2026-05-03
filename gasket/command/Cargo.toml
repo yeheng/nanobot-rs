@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "sync", "macros"] }
 tracing = { workspace = true }
 futures = { workspace = true }
+reedline = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

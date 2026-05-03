@@ -5,6 +5,7 @@
 //! [`CommandHost`] trait, whose implementation lives in the consuming crate.
 
 pub mod builtins;
+pub mod completer;
 pub mod dispatcher;
 pub mod error;
 pub mod host;
@@ -13,6 +14,7 @@ pub mod template;
 pub mod types;
 pub mod yaml_loader;
 
+pub use completer::CommandCompleter;
 pub use dispatcher::{Dispatcher, DispatcherBuilder};
 pub use error::BuildError;
 pub use host::CommandHost;
