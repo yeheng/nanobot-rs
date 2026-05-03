@@ -4,12 +4,14 @@
 //! handlers that need engine capabilities receive them through the
 //! [`CommandHost`] trait, whose implementation lives in the consuming crate.
 
+pub mod dispatcher;
 pub mod error;
 pub mod host;
 pub mod parser;
 pub mod template;
 pub mod types;
 
+pub use dispatcher::Dispatcher;
 pub use error::BuildError;
 pub use host::CommandHost;
 pub use types::{BuiltinHandler, Command, CommandKind, CommandResult, RouteOutcome};
