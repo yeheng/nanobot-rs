@@ -10,6 +10,7 @@ pub mod host;
 pub mod parser;
 pub mod template;
 pub mod types;
+pub mod yaml_loader;
 
 pub use dispatcher::Dispatcher;
 pub use error::BuildError;
