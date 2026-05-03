@@ -1,12 +1,15 @@
 //! Slash-command dispatcher.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::error::BuildError;
 use crate::host::CommandHost;
 use crate::parser::{parse, ParsedInput};
 use crate::template::render;
 use crate::types::{Command, CommandKind, CommandResult, RouteOutcome};
+use crate::yaml_loader::load_user_commands;
 
 pub struct Dispatcher {
     pub(crate) commands: HashMap<String, Arc<Command>>,
@@ -53,6 +56,106 @@ impl Dispatcher {
         let mut v: Vec<&Command> = self.commands.values().map(|a| a.as_ref()).collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
+    }
+}
+
+pub struct DispatcherBuilder {
+    builtins: Vec<Command>,
+    user_yaml_dir: Option<PathBuf>,
+    host: Option<Arc<dyn CommandHost>>,
+}
+
+impl Dispatcher {
+    pub fn builder() -> DispatcherBuilder {
+        DispatcherBuilder::new()
+    }
+}
+
+impl DispatcherBuilder {
+    pub fn new() -> Self {
+        Self {
+            builtins: Vec::new(),
+            user_yaml_dir: None,
+            host: None,
+        }
+    }
+
+    pub fn register_builtin(mut self, cmd: Command) -> Self {
+        self.builtins.push(cmd);
+        self
+    }
+
+    pub fn user_dir(mut self, p: PathBuf) -> Self {
+        self.user_yaml_dir = Some(p);
+        self
+    }
+
+    pub fn host(mut self, h: Arc<dyn CommandHost>) -> Self {
+        self.host = Some(h);
+        self
+    }
+
+    pub async fn build(self) -> Result<Dispatcher, BuildError> {
+        let host = self.host.ok_or(BuildError::MissingHost)?;
+
+        let mut commands: HashMap<String, Arc<Command>> = HashMap::new();
+        let mut aliases: HashMap<String, String> = HashMap::new();
+
+        // 1. Built-ins first; duplicates are programmer bugs and fail the build.
+        for cmd in self.builtins {
+            if commands.contains_key(&cmd.name) {
+                return Err(BuildError::DuplicateBuiltin(cmd.name.clone()));
+            }
+            for a in &cmd.aliases {
+                aliases.insert(a.clone(), cmd.name.clone());
+            }
+            commands.insert(cmd.name.clone(), Arc::new(cmd));
+        }
+
+        // 2. User commands; collisions warn-and-drop, never fatal.
+        if let Some(dir) = self.user_yaml_dir {
+            for cmd in load_user_commands(&dir).await {
+                if commands.contains_key(&cmd.name) || aliases.contains_key(&cmd.name) {
+                    tracing::warn!(
+                        name = cmd.name,
+                        "user command name collides with a built-in or earlier user command; dropping"
+                    );
+                    continue;
+                }
+                let mut conflicting_alias = false;
+                for a in &cmd.aliases {
+                    if commands.contains_key(a) || aliases.contains_key(a) {
+                        tracing::warn!(
+                            name = cmd.name,
+                            alias = a,
+                            "user command alias collides with an earlier registration; dropping"
+                        );
+                        conflicting_alias = true;
+                        break;
+                    }
+                }
+                if conflicting_alias {
+                    continue;
+                }
+                let arc = Arc::new(cmd);
+                for a in &arc.aliases {
+                    aliases.insert(a.clone(), arc.name.clone());
+                }
+                commands.insert(arc.name.clone(), arc);
+            }
+        }
+
+        Ok(Dispatcher {
+            commands,
+            aliases,
+            host,
+        })
+    }
+}
+
+impl Default for DispatcherBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -231,5 +334,93 @@ mod tests {
                 tool_filter: None,
             }
         );
+    }
+
+    use crate::error::BuildError;
+    use tempfile::TempDir;
+
+    fn make_builtin(name: &str, alias: &[&str]) -> Command {
+        Command {
+            name: name.into(),
+            description: format!("desc-{name}"),
+            aliases: alias.iter().map(|s| s.to_string()).collect(),
+            kind: CommandKind::Builtin(Arc::new(|_, _| {
+                async { CommandResult::Print("ok".into()) }.boxed()
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_fails_without_host() {
+        let res = DispatcherBuilder::new()
+            .register_builtin(make_builtin("help", &[]))
+            .build()
+            .await;
+        assert!(matches!(res, Err(BuildError::MissingHost)));
+    }
+
+    #[tokio::test]
+    async fn build_fails_on_duplicate_builtin() {
+        let res = DispatcherBuilder::new()
+            .host(Arc::new(MockCommandHost::new()))
+            .register_builtin(make_builtin("help", &[]))
+            .register_builtin(make_builtin("help", &[]))
+            .build()
+            .await;
+        assert!(matches!(res, Err(BuildError::DuplicateBuiltin(_))));
+    }
+
+    #[tokio::test]
+    async fn user_yaml_colliding_with_builtin_is_dropped() {
+        let dir = TempDir::new().unwrap();
+        let yaml_help = "---\nname: help\ndescription: bogus help\n---\nbody\n";
+        tokio::fs::write(dir.path().join("help.md"), yaml_help)
+            .await
+            .unwrap();
+
+        let d = DispatcherBuilder::new()
+            .host(Arc::new(MockCommandHost::new()))
+            .user_dir(dir.path().to_path_buf())
+            .register_builtin(make_builtin("help", &[]))
+            .build()
+            .await
+            .unwrap();
+
+        let help = d.commands.get("help").unwrap();
+        assert_eq!(help.description, "desc-help");
+    }
+
+    #[tokio::test]
+    async fn two_user_yamls_with_same_name_first_wins() {
+        let dir = TempDir::new().unwrap();
+        let body_a = "---\nname: foo\ndescription: from-a\n---\nbody-a\n";
+        let body_z = "---\nname: foo\ndescription: from-z\n---\nbody-z\n";
+        tokio::fs::write(dir.path().join("a.md"), body_a)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("z.md"), body_z)
+            .await
+            .unwrap();
+
+        let d = DispatcherBuilder::new()
+            .host(Arc::new(MockCommandHost::new()))
+            .user_dir(dir.path().to_path_buf())
+            .build()
+            .await
+            .unwrap();
+
+        let foo = d.commands.get("foo").unwrap();
+        assert_eq!(foo.description, "from-a");
+    }
+
+    #[tokio::test]
+    async fn build_smoke_with_host_and_one_builtin() {
+        let d = DispatcherBuilder::new()
+            .host(Arc::new(MockCommandHost::new()))
+            .register_builtin(make_builtin("ping", &[]))
+            .build()
+            .await
+            .unwrap();
+        assert!(d.commands.contains_key("ping"));
     }
 }

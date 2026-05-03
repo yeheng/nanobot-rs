@@ -12,7 +12,7 @@ pub mod template;
 pub mod types;
 pub mod yaml_loader;
 
-pub use dispatcher::Dispatcher;
+pub use dispatcher::{Dispatcher, DispatcherBuilder};
 pub use error::BuildError;
 pub use host::CommandHost;
 pub use types::{BuiltinHandler, Command, CommandKind, CommandResult, RouteOutcome};
