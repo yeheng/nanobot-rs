@@ -274,7 +274,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             if use_streaming {
                 // Use channel-based streaming API
                 let (mut event_rx, result_handle) = agent
-                    .process_direct_streaming_with_channel(&msg, &session_key)
+                    .process_direct_streaming_with_channel(&msg, &session_key, None)
                     .await?;
 
                 // Forward events to callback
@@ -299,7 +299,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                     return Err(anyhow::anyhow!("Task join error: {}", e));
                 }
             } else {
-                let response = agent.process_direct(&msg, &session_key).await?;
+                let response = agent.process_direct(&msg, &session_key, None).await?;
                 print_response_with_reasoning(&response, render_md);
             }
         }
@@ -353,7 +353,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             println!();
                             // Use channel-based streaming API
                             let streaming_result = agent
-                                .process_direct_streaming_with_channel(line, &interactive_session)
+                                .process_direct_streaming_with_channel(line, &interactive_session, None)
                                 .await;
 
                             match streaming_result {
@@ -389,7 +389,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                                 }
                             }
                         } else {
-                            match agent.process_direct(line, &interactive_session).await {
+                            match agent.process_direct(line, &interactive_session, None).await {
                                 Ok(response) => {
                                     println!();
                                     print_response_with_reasoning(&response, render_md);

@@ -427,9 +427,10 @@ impl AgentSession {
         &self,
         content: &str,
         session_key: &SessionKey,
+        tool_filter: Option<Vec<String>>,
     ) -> Result<AgentResponse, AgentError> {
         let (_event_rx, handle) = self
-            .process_direct_streaming_with_channel(content, session_key)
+            .process_direct_streaming_with_channel(content, session_key, tool_filter)
             .await?;
 
         // Discard streaming events, await final result
@@ -447,6 +448,7 @@ impl AgentSession {
         &self,
         content: &str,
         session_key: &SessionKey,
+        tool_filter: Option<Vec<String>>,
     ) -> Result<
         (
             tokio::sync::mpsc::Receiver<ChatEvent>,
@@ -487,6 +489,10 @@ impl AgentSession {
             }
         });
         ctx.runtime_ctx.outbound_tx = Some(outbound_tx);
+
+        // Per-call tool filter: a YAML command may have requested a tool whitelist
+        // for this single invocation. None preserves the existing 'all tools' default.
+        ctx.runtime_ctx.config.tool_filter = tool_filter;
 
         // Cancel any previous aggregator for this session turn
         if ctx.runtime_ctx.aggregator_cancel.is_none() {
