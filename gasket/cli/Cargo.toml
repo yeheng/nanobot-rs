@@ -53,6 +53,7 @@ gasket-engine = { path = "../engine" }
 gasket-storage = { path = "../storage" }
 gasket-sandbox = { path = "../sandbox" }
 gasket-types = { path = "../types" }
+gasket-command = { path = "../command" }
 
 # Async
 tokio.workspace = true

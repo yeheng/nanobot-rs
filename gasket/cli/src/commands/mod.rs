@@ -3,6 +3,7 @@
 mod agent;
 mod auth;
 mod channels;
+mod command_host;
 mod cron;
 mod embedding;
 mod gateway;

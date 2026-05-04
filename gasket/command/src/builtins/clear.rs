@@ -1,0 +1,65 @@
+use std::sync::Arc;
+
+use futures::FutureExt;
+
+use crate::host::CommandHost;
+use crate::types::{Command, CommandKind, CommandResult};
+
+const ANSI_CLEAR: &str = "\x1B[2J\x1B[H";
+
+pub fn clear() -> Command {
+    Command {
+        name: "clear".into(),
+        description: "Clear the terminal screen".into(),
+        aliases: vec![],
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost| {
+            async { CommandResult::Print(ANSI_CLEAR.to_string()) }.boxed()
+        })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use std::sync::Arc;
+
+    use crate::dispatcher::DispatcherBuilder;
+    use crate::types::RouteOutcome;
+
+    struct H;
+
+    #[async_trait]
+    impl CommandHost for H {
+        async fn clear_session(&self, _: &SessionKey) {}
+        async fn list_sessions(&self) -> Vec<SessionSummary> {
+            vec![]
+        }
+        async fn current_model(&self) -> String {
+            "m".into()
+        }
+        async fn switch_model(&self, _: &str) -> Result<ModelSwitchInfo, String> {
+            Ok(ModelSwitchInfo {
+                previous: "m".into(),
+                current: "m".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn clear_emits_ansi_sequence() {
+        let d = DispatcherBuilder::new()
+            .host(Arc::new(H))
+            .register_builtin(clear())
+            .build()
+            .await
+            .unwrap();
+        match d.route("/clear").await {
+            RouteOutcome::Handled(CommandResult::Print(s)) => {
+                assert_eq!(s, "\x1B[2J\x1B[H");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+}

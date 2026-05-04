@@ -36,7 +36,7 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let response = self
             .session
-            .process_direct(message, session_key)
+            .process_direct(message, session_key, None)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         Ok(response.content)
@@ -64,7 +64,7 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         // No more StreamEvent -> BrokerEvent translation layers.
         let (chat_rx, result_handle) = self
             .session
-            .process_direct_streaming_with_channel(message, session_key)
+            .process_direct_streaming_with_channel(message, session_key, None)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 

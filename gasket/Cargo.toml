@@ -21,6 +21,7 @@ members = [
     "channels",
     "sandbox",
     "wiki",
+    "command",
 ]
 
 [profile.release]
@@ -40,6 +41,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = { version = "0.7", features = ["rt", "codec"] }
 async-trait = "0.1"
+futures = "0.3"
 futures-util = "0.3.32"
 
 # Serialization
@@ -135,3 +137,6 @@ readability = "0.3"
 
 # Concurrent data structures
 dashmap = "6"
+
+# Test utilities
+tempfile = "3"

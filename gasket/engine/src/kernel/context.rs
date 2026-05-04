@@ -92,6 +92,9 @@ pub struct KernelConfig {
     pub tool_timeout_secs: u64,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
+    /// Optional whitelist of tool names visible to the LLM for this run.
+    /// `None` exposes all registered tools; `Some(vec![])` forbids all tools.
+    pub tool_filter: Option<Vec<String>>,
 }
 
 impl KernelConfig {
@@ -106,6 +109,7 @@ impl KernelConfig {
             thinking_enabled: false,
             tool_timeout_secs: 120,
             ws_summary_limit: 0,
+            tool_filter: None,
         }
     }
 }
