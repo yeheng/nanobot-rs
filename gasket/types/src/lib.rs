@@ -14,6 +14,7 @@ pub mod agent;
 pub mod command;
 pub mod events;
 pub mod session_event;
+pub mod spawn_budget;
 pub mod token_tracker;
 pub mod tool;
 
@@ -26,6 +27,7 @@ pub use events::{
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,
 };
+pub use spawn_budget::SpawnBudget;
 pub use token_tracker::{
     calculate_cost, format_cost, format_token_usage, ModelPricing, SessionTokenStats, TokenTracker,
     TokenUsage,
