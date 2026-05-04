@@ -348,44 +348,86 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                     Message::Text(text) => {
                         debug!("incoming messages: {}", text);
 
-                        // Try to parse as an approval_response first
-                        let is_approval_response = {
-                            let router_guard = manager.approval_router.read().ok();
-                            if let Some(Some(ref router)) = router_guard.as_deref() {
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                                    if json.get("type").and_then(|t| t.as_str())
-                                        == Some("approval_response")
-                                    {
-                                        if let Ok(response) =
-                                            serde_json::from_value::<
-                                                gasket_types::ToolApprovalResponse,
-                                            >(json)
-                                        {
-                                            debug!(
-                                                "Routing approval_response for request {}",
-                                                response.request_id
-                                            );
-                                            router.resolve(&response);
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        };
+                        // Try to parse as JSON first (modern wire format with trace_id)
+                        let json_payload: Option<serde_json::Value> =
+                            serde_json::from_str(&text).ok();
 
-                        if is_approval_response {
-                            continue;
+                        if let Some(ref json) = json_payload {
+                            let msg_type = json.get("type").and_then(|t| t.as_str());
+
+                            // Approval response
+                            if msg_type == Some("approval_response") {
+                                let router_guard = manager.approval_router.read().ok();
+                                if let Some(Some(ref router)) = router_guard.as_deref() {
+                                    if let Ok(response) =
+                                        serde_json::from_value::<
+                                            gasket_types::ToolApprovalResponse,
+                                        >(json.clone())
+                                    {
+                                        debug!(
+                                            "Routing approval_response for request {}",
+                                            response.request_id
+                                        );
+                                        router.resolve(&response);
+                                    }
+                                }
+                                continue;
+                            }
+
+                            // Structured message with trace_id
+                            if msg_type == Some("message") {
+                                let content = json
+                                    .get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&text)
+                                    .to_string();
+                                let trace_id = json
+                                    .get("trace_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
+
+                                tracing::info!(
+                                    target: "gasket::websocket",
+                                    connection_id = %connection_id,
+                                    user_id = %user_id,
+                                    trace_id = ?trace_id,
+                                    "WebSocket received message"
+                                );
+
+                                let inbound = InboundMessage {
+                                    channel: WebSocketChannel,
+                                    sender_id: user_id.clone(),
+                                    chat_id: user_id.clone(),
+                                    content,
+                                    media: None,
+                                    metadata: None,
+                                    timestamp: chrono::Utc::now(),
+                                    trace_id,
+                                };
+
+                                if let Err(e) = manager.send_inbound(inbound).await {
+                                    error!("Failed to forward inbound message: {}", e);
+                                    break;
+                                }
+                                continue;
+                            }
                         }
 
-                        // Create InboundMessage and send to bus
+                        // Fallback: plain text (legacy or unknown JSON)
+                        let trace_id = json_payload
+                            .as_ref()
+                            .and_then(|j| j.get("trace_id"))
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+
+                        tracing::info!(
+                            target: "gasket::websocket",
+                            connection_id = %connection_id,
+                            user_id = %user_id,
+                            trace_id = ?trace_id,
+                            "WebSocket received plain-text message"
+                        );
+
                         let inbound = InboundMessage {
                             channel: WebSocketChannel,
                             sender_id: user_id.clone(),
@@ -394,7 +436,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
-                            trace_id: None,
+                            trace_id,
                         };
 
                         if let Err(e) = manager.send_inbound(inbound).await {

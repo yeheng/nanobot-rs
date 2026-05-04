@@ -243,6 +243,14 @@ impl InboundSender {
     pub async fn send(&self, msg: InboundMessage) -> anyhow::Result<()> {
         log_inbound(&msg);
 
+        tracing::info!(
+            target: "gasket::middleware",
+            sender_id = %msg.sender_id,
+            chat_id = %msg.chat_id,
+            trace_id = ?msg.trace_id,
+            "Middleware forwarding inbound message"
+        );
+
         if let Some(ref auth) = self.auth_checker {
             if !auth.check_and_log(&msg) {
                 return Ok(()); // silently drop

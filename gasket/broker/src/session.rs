@@ -177,6 +177,13 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
         let key = msg.session_key().clone();
         let mut needs_respawn = true;
 
+        tracing::info!(
+            target: "gasket::broker",
+            session_key = %key,
+            trace_id = ?msg.trace_id,
+            "Dispatching message to session"
+        );
+
         if let Some(tx) = self.sessions.get(&key) {
             if tx.send(msg.clone()).await.is_ok() {
                 needs_respawn = false;
@@ -228,6 +235,14 @@ async fn run_session_task<H: MessageHandler + 'static>(
             }
         };
 
+        tracing::info!(
+            target: "gasket::session",
+            session_key = %key_str,
+            trace_id = ?msg.trace_id,
+            content_len = msg.content.len(),
+            "Session processing message"
+        );
+
         // Check for control commands
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
             if json.get("type").and_then(|v| v.as_str()) == Some("force_compact") {
@@ -240,6 +255,7 @@ async fn run_session_task<H: MessageHandler + 'static>(
                                 event,
                             );
                             outbound.metadata = msg.metadata.clone();
+                            outbound.trace_id = msg.trace_id.clone();
                             if let Err(e) = broker
                                 .publish(Envelope::new(
                                     Topic::Outbound,
@@ -284,14 +300,16 @@ async fn process_message<H: MessageHandler + 'static>(
     if msg.channel.supports_streaming() {
         let channel = msg.channel.clone();
         let chat_id = msg.chat_id.clone();
+        let trace_id = msg.trace_id.clone();
         let (mut event_rx, result_handle) = handler
             .handle_streaming_message(&msg.content, session_key)
             .await?;
 
         // ChatEvent is already a clean WebSocketMessage — no translation needed.
         while let Some(event) = event_rx.recv().await {
-            let outbound =
+            let mut outbound =
                 OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), event);
+            outbound.trace_id = trace_id.clone();
             output.send(outbound).await?;
         }
 
@@ -300,6 +318,7 @@ async fn process_message<H: MessageHandler + 'static>(
         let content = handler.handle_message(session_key, &msg.content).await?;
         let mut outbound = OutboundMessage::new(msg.channel, msg.chat_id.clone(), content);
         outbound.metadata = msg.metadata.clone();
+        outbound.trace_id = msg.trace_id.clone();
         output.send(outbound).await?;
     }
     Ok(())

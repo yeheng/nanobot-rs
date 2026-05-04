@@ -409,6 +409,10 @@ export function useChatSession(chatId: { value: string }) {
     pendingApprovals.value.delete(requestId);
   };
 
+  const generateTraceId = () => {
+    return Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 11);
+  };
+
   const sendMessage = (text: string) => {
     if (!text.trim() || !isConnected.value || isSending.value || (isReceiving.value && subagentPhase.value !== 'running')) return false;
 
@@ -430,7 +434,12 @@ export function useChatSession(chatId: { value: string }) {
 
     isSending.value = true;
     try {
-      send(text);
+      const payload = JSON.stringify({
+        type: 'message',
+        content: text,
+        trace_id: generateTraceId(),
+      });
+      send(payload);
       chatStore.updateMessageStatus(chatId.value, msgId, 'sent');
       // Refresh context after sending since backend may have updated token usage
       fetchContext();
@@ -445,7 +454,12 @@ export function useChatSession(chatId: { value: string }) {
     if (!isConnected.value) return;
     chatStore.updateMessageStatus(chatId.value, msgId, 'sending');
     try {
-      send(content);
+      const payload = JSON.stringify({
+        type: 'message',
+        content,
+        trace_id: generateTraceId(),
+      });
+      send(payload);
       chatStore.updateMessageStatus(chatId.value, msgId, 'sent');
     } catch (e) {
       chatStore.updateMessageStatus(chatId.value, msgId, 'error');

@@ -31,6 +31,11 @@ use crate::provider::setup_vault;
 use axum::response::IntoResponse;
 use tower_http::cors::CorsLayer;
 
+use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
+use gasket_command::dispatcher::shared_help_snapshot;
+use gasket_command::DispatcherBuilder;
+use super::command_host::CliCommandHost;
+
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
@@ -104,8 +109,35 @@ pub async fn cmd_gateway() -> Result<()> {
     )
     .await?;
 
+    // Build the slash-command dispatcher for WebSocket clients.
+    // Built-ins are registered here; user YAML commands are loaded from ~/.gasket/commands.
+    let host = Arc::new(CliCommandHost::new(agent.clone()));
+    let help_snap = shared_help_snapshot();
+    let user_dir = dirs::home_dir().map(|h| h.join(".gasket/commands"));
+    let mut dispatcher_builder = DispatcherBuilder::new()
+        .host(host)
+        .help_snapshot(help_snap.clone())
+        .register_builtin(exit())
+        .register_builtin(clear())
+        .register_builtin(help(help_snap.clone()))
+        .register_builtin(builtin_new(Arc::new(SessionKey::new(
+            gasket_engine::channels::ChannelType::WebSocket,
+            "default",
+        ))))
+        .register_builtin(sessions())
+        .register_builtin(model());
+    if let Some(p) = user_dir {
+        dispatcher_builder = dispatcher_builder.user_dir(p);
+    }
+    let dispatcher = Arc::new(
+        dispatcher_builder
+            .build()
+            .await
+            .context("failed to build slash-command dispatcher")?,
+    );
+
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    setup_http_server(&providers, &agent, &mut tasks).await;
+    setup_http_server(&providers, &agent, &dispatcher, &mut tasks).await;
     setup_broker_pipeline(broker.clone(), &providers, &agent, &mut tasks);
     start_heartbeat_service(broker.clone(), &workspace, &mut tasks);
     // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
@@ -478,6 +510,7 @@ fn build_extra_tools(
 async fn setup_http_server(
     providers: &Arc<gasket_engine::channels::ImProviders>,
     agent: &Arc<AgentSession>,
+    dispatcher: &Arc<gasket_command::Dispatcher>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     #[cfg(any(
@@ -489,6 +522,7 @@ async fn setup_http_server(
     {
         let providers_for_http = providers.clone();
         let agent_for_http = agent.clone();
+        let dispatcher_for_http = dispatcher.clone();
         tasks.push(tokio::spawn(async move {
             let mut app = axum::Router::new();
             for provider in providers_for_http.iter() {
@@ -496,7 +530,7 @@ async fn setup_http_server(
                     app = app.merge(router);
                 }
             }
-            app = add_context_routes(app, agent_for_http);
+            app = add_context_routes(app, agent_for_http, dispatcher_for_http);
             app = app.layer(CorsLayer::permissive());
 
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -521,7 +555,11 @@ async fn setup_http_server(
     feature = "feishu",
     feature = "wecom"
 ))]
-fn add_context_routes(mut app: axum::Router, agent: Arc<AgentSession>) -> axum::Router {
+fn add_context_routes(
+    mut app: axum::Router,
+    agent: Arc<AgentSession>,
+    dispatcher: Arc<gasket_command::Dispatcher>,
+) -> axum::Router {
     let agent_for_context = agent.clone();
     let agent_for_compact = agent;
     app = app
@@ -542,6 +580,13 @@ fn add_context_routes(mut app: axum::Router, agent: Arc<AgentSession>) -> axum::
                     async move { handle_context_compact(agent, session_key).await }
                 },
             ),
+        )
+        .route(
+            "/api/commands",
+            axum::routing::get(move || {
+                let dispatcher = dispatcher.clone();
+                async move { handle_commands_list(dispatcher).await }
+            }),
         );
     app
 }
@@ -644,6 +689,24 @@ async fn handle_context_compact(
         )
             .into_response(),
     }
+}
+
+async fn handle_commands_list(
+    dispatcher: Arc<gasket_command::Dispatcher>,
+) -> axum::response::Response {
+    let commands: Vec<serde_json::Value> = dispatcher
+        .list_commands()
+        .into_iter()
+        .filter(|cmd| cmd.name != "exit")
+        .map(|cmd| {
+            serde_json::json!({
+                "name": cmd.name,
+                "description": cmd.description,
+                "aliases": cmd.aliases,
+            })
+        })
+        .collect();
+    (axum::http::StatusCode::OK, axum::Json(commands)).into_response()
 }
 
 fn setup_broker_pipeline(
