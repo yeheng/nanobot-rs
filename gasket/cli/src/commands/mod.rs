@@ -5,6 +5,7 @@ mod auth;
 mod channels;
 mod command_host;
 mod cron;
+mod dispatching_handler;
 mod embedding;
 mod gateway;
 mod onboard;

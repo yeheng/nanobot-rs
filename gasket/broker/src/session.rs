@@ -67,6 +67,7 @@ pub trait MessageHandler: Send + Sync {
         &self,
         message: &str,
         session_key: &SessionKey,
+        tool_filter: Option<Vec<String>>,
     ) -> Result<
         (
             mpsc::Receiver<ChatEvent>,
@@ -302,7 +303,7 @@ async fn process_message<H: MessageHandler + 'static>(
         let chat_id = msg.chat_id.clone();
         let trace_id = msg.trace_id.clone();
         let (mut event_rx, result_handle) = handler
-            .handle_streaming_message(&msg.content, session_key)
+            .handle_streaming_message(&msg.content, session_key, None)
             .await?;
 
         // ChatEvent is already a clean WebSocketMessage — no translation needed.

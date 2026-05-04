@@ -23,6 +23,7 @@ impl session::MessageHandler for EchoHandler {
         &self,
         _: &str,
         _: &SessionKey,
+        _tool_filter: Option<Vec<String>>,
     ) -> Result<
         (
             tokio::sync::mpsc::Receiver<ChatEvent>,

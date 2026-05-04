@@ -35,6 +35,7 @@ use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, ses
 use gasket_command::dispatcher::shared_help_snapshot;
 use gasket_command::DispatcherBuilder;
 use super::command_host::CliCommandHost;
+use super::dispatching_handler::DispatchingEngineHandler;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -138,7 +139,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     setup_http_server(&providers, &agent, &dispatcher, &mut tasks).await;
-    setup_broker_pipeline(broker.clone(), &providers, &agent, &mut tasks);
+    setup_broker_pipeline(broker.clone(), &providers, &agent, &dispatcher, &mut tasks);
     start_heartbeat_service(broker.clone(), &workspace, &mut tasks);
     // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
@@ -713,12 +714,14 @@ fn setup_broker_pipeline(
     broker: Arc<gasket_engine::broker::MemoryBroker>,
     providers: &Arc<gasket_engine::channels::ImProviders>,
     agent: &Arc<AgentSession>,
+    dispatcher: &Arc<gasket_command::Dispatcher>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     let outbound_dispatcher = OutboundDispatcher::new(broker.clone(), providers.clone());
     tasks.push(tokio::spawn(outbound_dispatcher.run()));
 
-    let handler = Arc::new(EngineHandler::new(agent.clone()));
+    let engine_handler = EngineHandler::new(agent.clone());
+    let handler = Arc::new(DispatchingEngineHandler::new(engine_handler, dispatcher.clone()));
     let session_mgr = SessionManager::new(broker, handler, std::time::Duration::from_secs(3600));
     tasks.push(tokio::spawn(session_mgr.run()));
 }
