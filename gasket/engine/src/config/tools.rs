@@ -18,6 +18,30 @@ pub struct ToolsConfig {
     /// Exec tool configuration
     #[serde(default)]
     pub exec: ExecToolConfig,
+
+    /// Subagent spawn subsystem config (concurrency budget).
+    #[serde(default)]
+    pub spawn: SpawnToolConfig,
+}
+
+/// Configuration for the subagent spawn subsystem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnToolConfig {
+    /// Global concurrency cap on subagent spawning. All spawn paths
+    /// (`spawn`, `spawn_parallel`) share this single budget.
+    /// Values below 1 are clamped to 1 by `SpawnBudget::new`.
+    #[serde(default = "default_spawn_max_concurrency")]
+    pub max_concurrency: usize,
+}
+
+impl Default for SpawnToolConfig {
+    fn default() -> Self {
+        Self { max_concurrency: 1 }
+    }
+}
+
+fn default_spawn_max_concurrency() -> usize {
+    1
 }
 
 // ── Web Tools ─────────────────────────────────────────────────────────────
@@ -284,5 +308,30 @@ exec:
         assert!(tools.restrict_to_workspace);
         assert_eq!(tools.web.search_provider, Some("brave".to_string()));
         assert_eq!(tools.exec.timeout, 60);
+    }
+
+    #[test]
+    fn spawn_config_default_is_one() {
+        let cfg = SpawnToolConfig::default();
+        assert_eq!(cfg.max_concurrency, 1);
+    }
+
+    #[test]
+    fn spawn_config_parses_from_yaml() {
+        let yaml = r#"
+spawn:
+  max_concurrency: 4
+"#;
+        let tools: ToolsConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(tools.spawn.max_concurrency, 4);
+    }
+
+    #[test]
+    fn spawn_config_omitted_uses_default() {
+        let yaml = r#"
+restrict_to_workspace: true
+"#;
+        let tools: ToolsConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(tools.spawn.max_concurrency, 1);
     }
 }

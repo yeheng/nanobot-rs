@@ -223,7 +223,16 @@ tools:
   web:
     user_agent: "Mozilla/5.0"
     timeout_seconds: 30
+    # search_provider: tavily
+    # brave_api_key: null
+    # tavily_api_key: null
+    # exa_api_key: null
+    # firecrawl_api_key: null
   exec:
     enabled: true
     timeout_seconds: 60
-  mcp_servers: []
+  spawn:
+    # Global subagent concurrency cap. All spawn paths share this budget.
+    # Default 1: the main agent runs only one subagent at a time; further
+    # spawn requests queue until the running one finishes.
+    max_concurrency: 1
