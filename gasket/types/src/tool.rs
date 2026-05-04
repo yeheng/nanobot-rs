@@ -71,27 +71,6 @@ pub trait SubagentSpawner: Send + Sync {
     }
 }
 
-/// No-op spawner that always returns an error.
-///
-/// Used as the default `ToolContext::spawner` when no real spawner is available
-/// (e.g., in CLI mode or unit tests). This eliminates `Option` wrapping and
-/// ensures `SpawnTool` gets a clear runtime error instead of a `None` panic.
-pub struct NoopSpawner;
-
-#[async_trait]
-impl SubagentSpawner for NoopSpawner {
-    async fn spawn(
-        &self,
-        _task: String,
-        _model_id: Option<String>,
-    ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Subagent spawning is not available in this context",
-        )))
-    }
-}
-
 /// Subagent execution result.
 ///
 /// This is a minimal result type containing only what tools need.
@@ -142,9 +121,9 @@ pub struct ToolContext {
     pub session_key: SessionKey,
     /// Channel to send outbound WebSocket messages in real-time.
     pub outbound_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
-    /// Subagent spawner for tools that need to spawn subagents.
-    /// Always present — defaults to `NoopSpawner` when spawning is unavailable.
-    pub spawner: std::sync::Arc<dyn SubagentSpawner>,
+    /// Subagent spawner. `None` = this context cannot spawn workers
+    /// (e.g. CLI mode, unit tests, or any Worker context).
+    pub spawner: Option<std::sync::Arc<dyn SubagentSpawner>>,
     /// Token tracker for budget enforcement across parent and subagents.
     /// Always present — defaults to an unlimited tracker when not configured.
     pub token_tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
@@ -164,7 +143,7 @@ impl Default for ToolContext {
         Self {
             session_key: SessionKey::new(crate::events::ChannelType::Cli, "default"),
             outbound_tx,
-            spawner: std::sync::Arc::new(NoopSpawner),
+            spawner: None,
             token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
             ws_summary_limit: 0,
             synthesis_callback: None,
@@ -199,7 +178,7 @@ impl ToolContext {
     }
 
     pub fn spawner(mut self, s: std::sync::Arc<dyn SubagentSpawner>) -> Self {
-        self.spawner = s;
+        self.spawner = Some(s);
         self
     }
 
@@ -398,4 +377,15 @@ pub trait ApprovalCallback: Send + Sync {
         session_key: &SessionKey,
         request: ToolApprovalRequest,
     ) -> Result<bool, String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_tool_context_has_no_spawner() {
+        let ctx = ToolContext::default();
+        assert!(ctx.spawner.is_none(), "default ToolContext must not auto-attach a spawner");
+    }
 }

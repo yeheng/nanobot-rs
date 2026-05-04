@@ -116,8 +116,11 @@ impl Tool for SpawnParallelTool {
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Get spawner from context (always present, may be NoopSpawner)
-        let spawner = &ctx.spawner;
+        let spawner = ctx.spawner.as_ref().ok_or_else(|| {
+            ToolError::ExecutionError(
+                "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+            )
+        })?;
 
         // Normalize tasks to TaskSpec format
         let task_specs: Vec<TaskSpec> = match args.tasks {

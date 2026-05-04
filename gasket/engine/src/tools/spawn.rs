@@ -79,8 +79,11 @@ impl Tool for SpawnTool {
             ));
         }
 
-        // Get spawner from context (always present, may be NoopSpawner)
-        let spawner = &ctx.spawner;
+        let spawner = ctx.spawner.as_ref().ok_or_else(|| {
+            ToolError::ExecutionError(
+                "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+            )
+        })?;
 
         info!("[Spawn] Starting subagent for task: {}", args.task);
 

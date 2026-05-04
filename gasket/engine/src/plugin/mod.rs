@@ -98,7 +98,11 @@ impl PluginTool {
             engine: Arc::new(EngineHandle {
                 session_key: ctx.session_key.clone(),
                 outbound_tx: ctx.outbound_tx.clone(),
-                spawner: ctx.spawner.clone(),
+                spawner: ctx.spawner.as_ref().ok_or_else(|| {
+                    ToolError::ExecutionError(
+                        "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+                    )
+                })?.clone(),
                 token_tracker: ctx.token_tracker.clone(),
                 tool_registry: resources.tool_registry.clone(),
                 provider: resources.provider.clone(),
