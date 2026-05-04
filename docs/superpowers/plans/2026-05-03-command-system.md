@@ -23,7 +23,7 @@ thiserror, tracing, reedline (CLI), tempfile (tests).
 ## Spec Reference
 
 - Spec: `docs/superpowers/specs/2026-05-03-command-system-design.md`
-- Personas / coding standards: `ROLE.md`, project `CLAUDE.md`
+- Personas / coding standards: `CLAUDE.md`
 
 ## Scope Check
 

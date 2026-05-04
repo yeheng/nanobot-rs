@@ -3,7 +3,7 @@
 **Date**: 2026-05-03
 **Status**: Draft — pending implementation plan
 **Scope**: Slash-command dispatcher for CLI (and future Web), bot channels untouched
-**Persona**: Designed under the Linus Torvalds role defined in `ROLE.md`
+**Persona**: Designed under the Linus Torvalds role defined in `CLAUDE.md`
 
 ---
 
