@@ -86,6 +86,7 @@ pub struct ToolRegistryConfig {
 
 /// Parameters needed to construct the `history_search` tool.
 #[cfg(feature = "embedding")]
+#[derive(Clone)]
 pub struct HistorySearchParams {
     pub searcher: std::sync::Arc<gasket_embedding::RecallSearcher>,
     pub config: gasket_embedding::RecallConfig,

@@ -541,7 +541,6 @@ impl SubagentSpawner for SimpleSpawner {
 
 #[cfg(test)]
 mod budget_tests {
-    use super::*;
     use gasket_types::SpawnBudget;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
