@@ -38,7 +38,14 @@ impl MessageHandler for DispatchingEngineHandler {
         session_key: &SessionKey,
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        match self.dispatcher.route(message, session_key).await {
+        let outcome = self.dispatcher.route(message, session_key).await;
+        tracing::debug!(
+            session_key = %session_key,
+            message = message,
+            outcome = ?outcome,
+            "Dispatcher routing result"
+        );
+        match outcome {
             RouteOutcome::Handled(CommandResult::Print(s)) => Ok(s),
             RouteOutcome::Handled(CommandResult::Error(s)) => Ok(s),
             RouteOutcome::Handled(CommandResult::Quit) => {
@@ -60,6 +67,18 @@ impl MessageHandler for DispatchingEngineHandler {
                     })
             }
             RouteOutcome::Passthrough(text) => {
+                if message.trim_start().starts_with('/') {
+                    tracing::warn!(
+                        session_key = %session_key,
+                        message = message,
+                        "Message looks like a slash command but was parsed as passthrough; \
+                         this usually means the message content was malformed"
+                    );
+                    return Ok(format!(
+                        "Unknown command format: {:?}. Please send commands as plain text.",
+                        message
+                    ));
+                }
                 self.engine.handle_message(session_key, &text).await
             }
         }
@@ -81,7 +100,14 @@ impl MessageHandler for DispatchingEngineHandler {
     > {
         let session_key_owned = session_key.clone();
 
-        match self.dispatcher.route(message, session_key).await {
+        let outcome = self.dispatcher.route(message, session_key).await;
+        tracing::debug!(
+            session_key = %session_key,
+            message = message,
+            outcome = ?outcome,
+            "Dispatcher routing result (streaming)"
+        );
+        match outcome {
             RouteOutcome::Handled(CommandResult::Print(text)) => {
                 let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(2);
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -153,6 +179,31 @@ impl MessageHandler for DispatchingEngineHandler {
                     .await
             }
             RouteOutcome::Passthrough(text) => {
+                if message.trim_start().starts_with('/') {
+                    tracing::warn!(
+                        session_key = %session_key,
+                        message = message,
+                        "Message looks like a slash command but was parsed as passthrough; \
+                         this usually means the message content was malformed"
+                    );
+                    let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(2);
+                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                    let msg = format!(
+                        "Unknown command format: {:?}. Please send commands as plain text.",
+                        message
+                    );
+                    tokio::spawn(async move {
+                        let _ = chat_tx.send(ChatEvent::error(&msg)).await;
+                        let _ = chat_tx.send(ChatEvent::done()).await;
+                        let outbound = OutboundMessage::new(
+                            ChannelType::WebSocket,
+                            session_key_owned.to_string(),
+                            msg,
+                        );
+                        let _ = result_tx.send(Ok(outbound));
+                    });
+                    return Ok((chat_rx, result_rx));
+                }
                 self.engine
                     .handle_streaming_message(&text, session_key, None)
                     .await
