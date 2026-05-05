@@ -26,11 +26,14 @@ pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
 
 /// Patterns blocked only when running without sandbox (fallback mode).
 ///
-/// Only redirection (`>`, `<`) is blocked because fallback mode has no
-/// filesystem containment — without isolation, these can overwrite arbitrary
-/// files. All shell operators (`&&`, `||`, `|`, `;`, `$(`, etc.) are allowed
-/// since the denylist (substring match) covers dangerous sub-commands.
-const FALLBACK_DANGEROUS_PATTERNS: &[&str] = &[">", "<"];
+/// Redirection (`>`, `<`) is blocked because fallback mode has no filesystem
+/// containment — without isolation, these can overwrite arbitrary files.
+///
+/// Shell operators (`&&`, `||`, `|`, `;`) are also blocked in fallback mode
+/// to prevent command chaining that could bypass the denylist. On Windows,
+/// `cmd /C` will execute chained commands even if the second command is on
+/// the denylist, because the denylist only does substring matching.
+const FALLBACK_DANGEROUS_PATTERNS: &[&str] = &[">", "<", "&", "|", ";"];
 
 /// Shell execution tool with optional sandboxing.
 ///
@@ -375,18 +378,44 @@ mod tests {
     }
 
     #[test]
-    fn test_shell_operators_allowed() {
+    fn test_shell_operators_blocked_on_fallback() {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        // Shell operators should be allowed — the denylist covers dangerous sub-commands
+        // In fallback mode (no filesystem isolation), shell operators that
+        // enable command chaining are blocked to prevent denylist bypass.
+        let blocked_commands = vec![
+            ("echo hello && echo world", "&&"),
+            ("echo hello || echo fallback", "||"),
+            ("echo hello; echo world", ";"),
+            ("echo hello | cat", "|"),
+            ("echo hello & echo world", "&"),
+        ];
+
+        for (cmd, operator) in blocked_commands {
+            let result = rt.block_on(
+                tool.execute(serde_json::json!({"command": cmd}), &ToolContext::default()),
+            );
+            assert!(
+                result.is_err(),
+                "Command '{}' containing '{}' should be blocked on fallback",
+                cmd,
+                operator
+            );
+        }
+    }
+
+    #[test]
+    fn test_simple_commands_allowed_on_fallback() {
+        let tool = ExecTool::default().with_enabled(true);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Simple commands without chaining operators are still allowed
         let allowed_commands = vec![
-            "echo hello && echo world",
-            "echo hello || echo fallback",
-            "echo hello; echo world",
-            "echo hello | cat",
+            "echo hello world",
             "echo $(echo nested)",
             "echo ${HOME}",
+            "ls -la",
         ];
 
         for cmd in allowed_commands {

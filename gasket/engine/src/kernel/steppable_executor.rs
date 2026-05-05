@@ -5,7 +5,8 @@
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tokio::time::{timeout, Duration};
+use tracing::{debug, warn};
 
 use crate::kernel::{
     context::RuntimeContext,
@@ -107,20 +108,64 @@ impl SteppableExecutor {
     ) -> Result<ChatResponse, KernelError> {
         let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
 
+        // Defense against infinite streams: if no chunk arrives within 30s,
+        // or if we receive an unreasonably large number of chunks, abort.
+        const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+        const MAX_STREAM_CHUNKS: usize = 100_000;
+
         if let Some(tx) = event_tx {
             let mut event_count = 0usize;
-            while let Some(event) = event_stream.next().await {
-                event_count += 1;
-                if event_count == 1 {
-                    debug!("[Steppable] Received first event from LLM stream");
-                }
-                if tx.send(event).await.is_err() {
-                    debug!("[Steppable] Channel closed after {} events", event_count);
+            loop {
+                if event_count >= MAX_STREAM_CHUNKS {
+                    warn!(
+                        "[Steppable] Stream exceeded {} chunks; aborting to prevent hang",
+                        MAX_STREAM_CHUNKS
+                    );
                     break;
+                }
+                match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
+                    Ok(Some(event)) => {
+                        event_count += 1;
+                        if event_count == 1 {
+                            debug!("[Steppable] Received first event from LLM stream");
+                        }
+                        if tx.send(event).await.is_err() {
+                            debug!("[Steppable] Channel closed after {} events", event_count);
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!(
+                            "[Steppable] No stream chunk for {}s; treating as hung stream",
+                            STREAM_CHUNK_TIMEOUT.as_secs()
+                        );
+                        break;
+                    }
                 }
             }
         } else {
-            while event_stream.next().await.is_some() {}
+            let mut drain_count = 0usize;
+            loop {
+                if drain_count >= MAX_STREAM_CHUNKS {
+                    warn!(
+                        "[Steppable] Drain exceeded {} chunks; aborting to prevent hang",
+                        MAX_STREAM_CHUNKS
+                    );
+                    break;
+                }
+                match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
+                    Ok(Some(_)) => drain_count += 1,
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!(
+                            "[Steppable] No stream chunk for {}s while draining; aborting",
+                            STREAM_CHUNK_TIMEOUT.as_secs()
+                        );
+                        break;
+                    }
+                }
+            }
         }
 
         let response = response_future
