@@ -4,20 +4,21 @@ use futures::FutureExt;
 
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult};
+use gasket_types::SessionKey;
 
 pub fn model() -> Command {
     Command {
         name: "model".into(),
         description: "Show or switch the active model".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|args: &str, host: &dyn CommandHost| {
+        kind: CommandKind::Builtin(Arc::new(|args: &str, host: &dyn CommandHost, session_key: &SessionKey| {
             let target = args.trim().to_string();
             async move {
                 if target.is_empty() {
-                    let id = host.current_model().await;
+                    let id = host.current_model(session_key).await;
                     return CommandResult::Print(format!("Current model: {id}"));
                 }
-                match host.switch_model(&target).await {
+                match host.switch_model(session_key, &target).await {
                     Ok(info) => CommandResult::Print(format!(
                         "Switched: {} → {}",
                         info.previous, info.current
@@ -34,7 +35,7 @@ pub fn model() -> Command {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use gasket_types::{ChannelType, ModelSwitchInfo, SessionKey, SessionSummary};
     use std::sync::{Arc, Mutex};
 
     use crate::dispatcher::DispatcherBuilder;
@@ -50,10 +51,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             self.current.lock().unwrap().clone()
         }
-        async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
             match self.switch {
                 Ok(()) => {
                     let mut g = self.current.lock().unwrap();
@@ -84,7 +85,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/model").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/model", &key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => {
                 assert!(s.contains("openai/gpt-4.1"));
             }
@@ -100,7 +102,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/model anthropic/claude-4.5-sonnet").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/model anthropic/claude-4.5-sonnet", &key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => {
                 assert!(s.contains("openai/gpt-4.1"));
                 assert!(s.contains("anthropic/claude-4.5-sonnet"));
@@ -122,7 +125,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/model bogus").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/model bogus", &key).await {
             RouteOutcome::Handled(CommandResult::Error(s)) => {
                 assert!(s.contains("unknown model"));
             }

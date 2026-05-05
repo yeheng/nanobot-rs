@@ -4,6 +4,7 @@ use futures::FutureExt;
 
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult};
+use gasket_types::SessionKey;
 
 const ANSI_CLEAR: &str = "\x1B[2J\x1B[H";
 
@@ -12,7 +13,7 @@ pub fn clear() -> Command {
         name: "clear".into(),
         description: "Clear the terminal screen".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
             async { CommandResult::Print(ANSI_CLEAR.to_string()) }.boxed()
         })),
     }
@@ -22,7 +23,7 @@ pub fn clear() -> Command {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use gasket_types::{ChannelType, ModelSwitchInfo, SessionKey, SessionSummary};
     use std::sync::Arc;
 
     use crate::dispatcher::DispatcherBuilder;
@@ -36,10 +37,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),
@@ -55,7 +56,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/clear").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/clear", &key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => {
                 assert_eq!(s, "\x1B[2J\x1B[H");
             }

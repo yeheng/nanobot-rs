@@ -29,11 +29,11 @@ impl CommandHost for CliCommandHost {
         self.agent.list_sessions().await
     }
 
-    async fn current_model(&self) -> String {
+    async fn current_model(&self, _key: &SessionKey) -> String {
         self.agent.model().to_string()
     }
 
-    async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String> {
+    async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
         self.agent.switch_model(new).await
     }
 }

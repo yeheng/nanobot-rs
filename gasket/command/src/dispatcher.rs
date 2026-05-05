@@ -8,6 +8,7 @@ use crate::error::BuildError;
 use crate::host::CommandHost;
 use crate::parser::{parse, ParsedInput};
 use crate::template::render;
+use gasket_types::SessionKey;
 use crate::types::{Command, CommandKind, CommandResult, HelpEntry, HelpSource, RouteOutcome};
 use crate::yaml_loader::load_user_commands;
 
@@ -28,14 +29,14 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub async fn route(&self, line: &str) -> RouteOutcome {
+    pub async fn route(&self, line: &str, session_key: &SessionKey) -> RouteOutcome {
         match parse(line) {
             ParsedInput::NotCommand => RouteOutcome::Passthrough(line.to_string()),
-            ParsedInput::Command { name, args } => self.dispatch(name, args).await,
+            ParsedInput::Command { name, args } => self.dispatch(name, args, session_key).await,
         }
     }
 
-    async fn dispatch(&self, name: &str, args: &str) -> RouteOutcome {
+    async fn dispatch(&self, name: &str, args: &str, session_key: &SessionKey) -> RouteOutcome {
         let canonical = self
             .aliases
             .get(name)
@@ -50,7 +51,7 @@ impl Dispatcher {
 
         match &cmd.kind {
             CommandKind::Builtin(handler) => {
-                RouteOutcome::Handled(handler(args, self.host.as_ref()).await)
+                RouteOutcome::Handled(handler(args, self.host.as_ref(), session_key).await)
             }
             CommandKind::Yaml {
                 prompt_template,
@@ -200,7 +201,7 @@ mod tests {
     use crate::types::BuiltinHandler;
     use async_trait::async_trait;
     use futures::FutureExt;
-    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use gasket_types::{ChannelType, ModelSwitchInfo, SessionKey, SessionSummary};
     use std::sync::Mutex;
 
     pub struct MockCommandHost {
@@ -223,10 +224,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "test-model".into()
         }
-        async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "test-model".into(),
                 current: new.into(),
@@ -235,7 +236,7 @@ mod tests {
     }
 
     fn echo_handler() -> BuiltinHandler {
-        Arc::new(|args: &str, _host: &dyn CommandHost| {
+        Arc::new(|args: &str, _host: &dyn CommandHost, _key: &SessionKey| {
             let s = format!("echo: {}", args);
             async move { CommandResult::Print(s) }.boxed()
         })
@@ -262,8 +263,9 @@ mod tests {
             kind: CommandKind::Builtin(echo_handler()),
         };
         let d = make_dispatcher_with(vec![cmd]);
+        let key = SessionKey::new(ChannelType::Cli, "test");
 
-        let outcome = d.route("/echo hello world").await;
+        let outcome = d.route("/echo hello world", &key).await;
 
         assert_eq!(
             outcome,
@@ -274,7 +276,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_command_returns_error() {
         let d = make_dispatcher_with(vec![]);
-        let outcome = d.route("/whatisthis").await;
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        let outcome = d.route("/whatisthis", &key).await;
         match outcome {
             RouteOutcome::Handled(CommandResult::Error(msg)) => {
                 assert!(msg.contains("/whatisthis"), "msg = {msg}");
@@ -287,7 +290,8 @@ mod tests {
     #[tokio::test]
     async fn non_command_text_passes_through_verbatim() {
         let d = make_dispatcher_with(vec![]);
-        let outcome = d.route("hello world").await;
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        let outcome = d.route("hello world", &key).await;
         assert_eq!(outcome, RouteOutcome::Passthrough("hello world".into()));
     }
 
@@ -297,7 +301,7 @@ mod tests {
             name: "exit".into(),
             description: "exit".into(),
             aliases: vec!["q".into(), "quit".into()],
-            kind: CommandKind::Builtin(Arc::new(|_, _| {
+            kind: CommandKind::Builtin(Arc::new(|_, _, _| {
                 async { CommandResult::Quit }.boxed()
             })),
         };
@@ -312,13 +316,14 @@ mod tests {
             aliases,
             host: Arc::new(MockCommandHost::new()),
         };
+        let key = SessionKey::new(ChannelType::Cli, "test");
 
         assert_eq!(
-            d.route("/q").await,
+            d.route("/q", &key).await,
             RouteOutcome::Handled(CommandResult::Quit)
         );
         assert_eq!(
-            d.route("/quit").await,
+            d.route("/quit", &key).await,
             RouteOutcome::Handled(CommandResult::Quit)
         );
     }
@@ -335,8 +340,9 @@ mod tests {
             },
         };
         let d = make_dispatcher_with(vec![cmd]);
+        let key = SessionKey::new(ChannelType::Cli, "test");
 
-        let outcome = d.route("/translate Hello world").await;
+        let outcome = d.route("/translate Hello world", &key).await;
 
         assert_eq!(
             outcome,
@@ -359,8 +365,9 @@ mod tests {
             },
         };
         let d = make_dispatcher_with(vec![cmd]);
+        let key = SessionKey::new(ChannelType::Cli, "test");
 
-        let outcome = d.route("/review my code").await;
+        let outcome = d.route("/review my code", &key).await;
 
         assert_eq!(
             outcome,
@@ -379,7 +386,7 @@ mod tests {
             name: name.into(),
             description: format!("desc-{name}"),
             aliases: alias.iter().map(|s| s.to_string()).collect(),
-            kind: CommandKind::Builtin(Arc::new(|_, _| {
+            kind: CommandKind::Builtin(Arc::new(|_, _, _| {
                 async { CommandResult::Print("ok".into()) }.boxed()
             })),
         }

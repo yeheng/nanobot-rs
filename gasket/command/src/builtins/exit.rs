@@ -4,13 +4,14 @@ use futures::FutureExt;
 
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult};
+use gasket_types::SessionKey;
 
 pub fn exit() -> Command {
     Command {
         name: "exit".into(),
         description: "Exit the REPL".into(),
         aliases: vec!["quit".into(), "q".into(), ":q".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
             async { CommandResult::Quit }.boxed()
         })),
     }
@@ -24,7 +25,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use gasket_types::{ChannelType, ModelSwitchInfo, SessionKey, SessionSummary};
 
     struct H;
 
@@ -34,10 +35,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, _new: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),
@@ -53,8 +54,9 @@ mod tests {
             .build()
             .await
             .unwrap();
+        let key = SessionKey::new(ChannelType::Cli, "test");
         assert_eq!(
-            d.route("/exit").await,
+            d.route("/exit", &key).await,
             RouteOutcome::Handled(CommandResult::Quit)
         );
     }
@@ -67,9 +69,10 @@ mod tests {
             .build()
             .await
             .unwrap();
+        let key = SessionKey::new(ChannelType::Cli, "test");
         for s in &["/quit", "/q", "/:q"] {
             assert_eq!(
-                d.route(s).await,
+                d.route(s, &key).await,
                 RouteOutcome::Handled(CommandResult::Quit),
                 "alias {s}"
             );

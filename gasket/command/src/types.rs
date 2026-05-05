@@ -5,6 +5,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 
 use crate::host::CommandHost;
+use gasket_types::SessionKey;
 
 /// A registered command, either a built-in Rust handler or a user YAML entry.
 pub struct Command {
@@ -23,7 +24,7 @@ pub enum CommandKind {
 }
 
 pub type BuiltinHandler = Arc<
-    dyn for<'a> Fn(&'a str, &'a dyn CommandHost) -> BoxFuture<'a, CommandResult>
+    dyn for<'a> Fn(&'a str, &'a dyn CommandHost, &'a SessionKey) -> BoxFuture<'a, CommandResult>
         + Send
         + Sync,
 >;

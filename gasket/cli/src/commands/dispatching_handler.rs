@@ -38,7 +38,7 @@ impl MessageHandler for DispatchingEngineHandler {
         session_key: &SessionKey,
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        match self.dispatcher.route(message).await {
+        match self.dispatcher.route(message, session_key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => Ok(s),
             RouteOutcome::Handled(CommandResult::Error(s)) => Ok(s),
             RouteOutcome::Handled(CommandResult::Quit) => {
@@ -81,7 +81,7 @@ impl MessageHandler for DispatchingEngineHandler {
     > {
         let session_key_owned = session_key.clone();
 
-        match self.dispatcher.route(message).await {
+        match self.dispatcher.route(message, session_key).await {
             RouteOutcome::Handled(CommandResult::Print(text)) => {
                 let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(2);
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();

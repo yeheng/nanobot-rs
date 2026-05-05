@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::FutureExt;
-use gasket_types::SessionSummary;
+use gasket_types::{SessionKey, SessionSummary};
 
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult};
@@ -11,7 +11,7 @@ pub fn sessions() -> Command {
         name: "sessions".into(),
         description: "List recent sessions".into(),
         aliases: vec!["ls".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: &dyn CommandHost| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: &dyn CommandHost, _session_key: &SessionKey| {
             async move {
                 let rows = host.list_sessions().await;
                 CommandResult::Print(render(&rows))
@@ -65,10 +65,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             self.rows.clone()
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),
@@ -84,7 +84,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/sessions").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/sessions", &key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => {
                 assert!(s.starts_with("No sessions"));
             }
@@ -105,7 +106,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        match d.route("/sessions").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/sessions", &key).await {
             RouteOutcome::Handled(CommandResult::Print(s)) => {
                 assert!(s.contains("SESSION KEY"));
                 assert!(s.contains("42"));

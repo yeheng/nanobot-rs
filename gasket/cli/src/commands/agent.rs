@@ -341,7 +341,6 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             // bot channels (Telegram, Discord, Slack) keep their existing
             // passthrough behavior — they never see this code.
             let host = Arc::new(CliCommandHost::new(agent.clone()));
-            let session_key_for_new = Arc::new(interactive_session.clone());
             let help_snap = shared_help_snapshot();
             let user_dir = dirs::home_dir().map(|h| h.join(".gasket/commands"));
 
@@ -351,7 +350,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 .register_builtin(exit())
                 .register_builtin(clear())
                 .register_builtin(help(help_snap.clone()))
-                .register_builtin(builtin_new(session_key_for_new.clone()))
+                .register_builtin(builtin_new())
                 .register_builtin(sessions())
                 .register_builtin(model());
             if let Some(p) = user_dir {
@@ -384,7 +383,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             break;
                         }
 
-                        match dispatcher.route(line).await {
+                        match dispatcher.route(line, &interactive_session).await {
                             RouteOutcome::Handled(CommandResult::Quit) => {
                                 println!("Goodbye! 🐈");
                                 break;

@@ -5,13 +5,14 @@ use futures::FutureExt;
 use crate::dispatcher::HelpSnapshot;
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult, HelpEntry, HelpSource};
+use gasket_types::SessionKey;
 
 pub fn help(snapshot: Arc<HelpSnapshot>) -> Command {
     Command {
         name: "help".into(),
         description: "Show available commands".into(),
         aliases: vec!["?".into()],
-        kind: CommandKind::Builtin(Arc::new(move |_args: &str, _host: &dyn CommandHost| {
+        kind: CommandKind::Builtin(Arc::new(move |_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
             let snap = snapshot.clone();
             async move {
                 let entries: &[HelpEntry] = match snap.get() {
@@ -62,7 +63,7 @@ mod tests {
     use crate::host::CommandHost;
     use crate::types::RouteOutcome;
     use async_trait::async_trait;
-    use gasket_types::{ModelSwitchInfo, SessionKey, SessionSummary};
+    use gasket_types::{ChannelType, ModelSwitchInfo, SessionKey, SessionSummary};
     use std::sync::Arc;
 
     struct H;
@@ -72,10 +73,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),
@@ -96,7 +97,8 @@ mod tests {
             .await
             .unwrap();
 
-        match d.route("/help").await {
+        let key = SessionKey::new(ChannelType::Cli, "test");
+        match d.route("/help", &key).await {
             RouteOutcome::Handled(CommandResult::Print(text)) => {
                 assert!(text.contains("/clear"), "missing /clear: {text}");
                 assert!(text.contains("/exit"), "missing /exit: {text}");

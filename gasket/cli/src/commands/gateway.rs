@@ -121,10 +121,7 @@ pub async fn cmd_gateway() -> Result<()> {
         .register_builtin(exit())
         .register_builtin(clear())
         .register_builtin(help(help_snap.clone()))
-        .register_builtin(builtin_new(Arc::new(SessionKey::new(
-            gasket_engine::channels::ChannelType::WebSocket,
-            "default",
-        ))))
+        .register_builtin(builtin_new())
         .register_builtin(sessions())
         .register_builtin(model());
     if let Some(p) = user_dir {

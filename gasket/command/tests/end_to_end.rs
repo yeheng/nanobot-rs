@@ -19,10 +19,10 @@ impl CommandHost for H {
     async fn list_sessions(&self) -> Vec<SessionSummary> {
         vec![]
     }
-    async fn current_model(&self) -> String {
+    async fn current_model(&self, _key: &SessionKey) -> String {
         self.current.lock().unwrap().clone()
     }
-    async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String> {
+    async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
         let mut g = self.current.lock().unwrap();
         let prev = g.clone();
         *g = new.to_string();
@@ -63,7 +63,7 @@ Translate to Mandarin: {{user_input}}\n",
         .register_builtin(exit())
         .register_builtin(clear())
         .register_builtin(help(snap.clone()))
-        .register_builtin(builtin_new(Arc::new(key.clone())))
+        .register_builtin(builtin_new())
         .register_builtin(sessions())
         .register_builtin(model())
         .build()
@@ -72,19 +72,19 @@ Translate to Mandarin: {{user_input}}\n",
 
     // Built-in match
     assert_eq!(
-        d.route("/exit").await,
+        d.route("/exit", &key).await,
         RouteOutcome::Handled(CommandResult::Quit)
     );
 
     // Alias
     assert_eq!(
-        d.route("/q").await,
+        d.route("/q", &key).await,
         RouteOutcome::Handled(CommandResult::Quit)
     );
 
     // YAML rewrite
     assert_eq!(
-        d.route("/translate Hello").await,
+        d.route("/translate Hello", &key).await,
         RouteOutcome::Rewrite {
             prompt: "Translate to Mandarin: Hello\n".into(),
             tool_filter: None,
@@ -93,7 +93,7 @@ Translate to Mandarin: {{user_input}}\n",
 
     // Alias on YAML command
     assert_eq!(
-        d.route("/tr World").await,
+        d.route("/tr World", &key).await,
         RouteOutcome::Rewrite {
             prompt: "Translate to Mandarin: World\n".into(),
             tool_filter: None,
@@ -101,7 +101,7 @@ Translate to Mandarin: {{user_input}}\n",
     );
 
     // Unknown command
-    match d.route("/whatisthis").await {
+    match d.route("/whatisthis", &key).await {
         RouteOutcome::Handled(CommandResult::Error(msg)) => {
             assert!(msg.contains("/whatisthis"));
         }
@@ -110,12 +110,12 @@ Translate to Mandarin: {{user_input}}\n",
 
     // Passthrough
     assert_eq!(
-        d.route("plain text").await,
+        d.route("plain text", &key).await,
         RouteOutcome::Passthrough("plain text".into())
     );
 
     // /help lists built-ins and the user command
-    match d.route("/help").await {
+    match d.route("/help", &key).await {
         RouteOutcome::Handled(CommandResult::Print(text)) => {
             for needle in [
                 "/exit",
@@ -133,11 +133,11 @@ Translate to Mandarin: {{user_input}}\n",
     }
 
     // /new triggers host.clear_session
-    let _ = d.route("/new").await;
+    let _ = d.route("/new", &key).await;
     assert_eq!(host.cleared.lock().unwrap().len(), 1);
 
     // /model with no args shows current
-    match d.route("/model").await {
+    match d.route("/model", &key).await {
         RouteOutcome::Handled(CommandResult::Print(s)) => {
             assert!(s.contains("openai/gpt-4.1"));
         }
@@ -145,7 +145,7 @@ Translate to Mandarin: {{user_input}}\n",
     }
 
     // /model <id> switches
-    match d.route("/model anthropic/claude-4.5-sonnet").await {
+    match d.route("/model anthropic/claude-4.5-sonnet", &key).await {
         RouteOutcome::Handled(CommandResult::Print(s)) => {
             assert!(s.contains("openai/gpt-4.1"));
             assert!(s.contains("anthropic/claude-4.5-sonnet"));

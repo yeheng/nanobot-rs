@@ -16,11 +16,11 @@ pub trait CommandHost: Send + Sync {
     /// Recent sessions visible to this host, newest first.
     async fn list_sessions(&self) -> Vec<SessionSummary>;
 
-    /// The currently active model id (e.g. "openai/gpt-4.1").
-    async fn current_model(&self) -> String;
+    /// The currently active model id for the given session (e.g. "openai/gpt-4.1").
+    async fn current_model(&self, key: &SessionKey) -> String;
 
-    /// Switch the active model. Returns previous and current ids on success.
-    async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String>;
+    /// Switch the active model for the given session. Returns previous and current ids on success.
+    async fn switch_model(&self, key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String>;
 }
 
 #[cfg(test)]
@@ -42,10 +42,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             self.current.lock().unwrap().clone()
         }
-        async fn switch_model(&self, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
             let mut g = self.current.lock().unwrap();
             let previous = g.clone();
             *g = new.to_string();
@@ -62,11 +62,11 @@ mod tests {
             current: Mutex::new("a".into()),
             cleared: Mutex::new(vec![]),
         };
-        let info = host.switch_model("b").await.unwrap();
+        let key = SessionKey::new(ChannelType::Cli, "x");
+        let info = host.switch_model(&key, "b").await.unwrap();
         assert_eq!(info.previous, "a");
         assert_eq!(info.current, "b");
-        assert_eq!(host.current_model().await, "b");
-        let key = SessionKey::new(ChannelType::Cli, "x");
+        assert_eq!(host.current_model(&key).await, "b");
         host.clear_session(&key).await;
         assert_eq!(host.cleared.lock().unwrap().len(), 1);
     }

@@ -6,16 +6,15 @@ use gasket_types::SessionKey;
 use crate::host::CommandHost;
 use crate::types::{Command, CommandKind, CommandResult};
 
-pub fn new(session_key: Arc<SessionKey>) -> Command {
+pub fn new() -> Command {
     Command {
         name: "new".into(),
         description: "Start a new conversation".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(move |_args: &str, host: &dyn CommandHost| {
-            let key = session_key.clone();
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: &dyn CommandHost, session_key: &SessionKey| {
             async move {
-                host.clear_session(&key).await;
-                CommandResult::Print(format!("✓ Session cleared ({})", key))
+                host.clear_session(session_key).await;
+                CommandResult::Print(format!("✓ Session cleared ({})", session_key))
             }
             .boxed()
         })),
@@ -43,10 +42,10 @@ mod tests {
         async fn list_sessions(&self) -> Vec<SessionSummary> {
             vec![]
         }
-        async fn current_model(&self) -> String {
+        async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),
@@ -62,12 +61,12 @@ mod tests {
         });
         let d = DispatcherBuilder::new()
             .host(host.clone())
-            .register_builtin(new(Arc::new(key.clone())))
+            .register_builtin(new())
             .build()
             .await
             .unwrap();
 
-        let outcome = d.route("/new").await;
+        let outcome = d.route("/new", &key).await;
 
         match outcome {
             RouteOutcome::Handled(CommandResult::Print(msg)) => {
