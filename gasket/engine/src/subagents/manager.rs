@@ -308,8 +308,10 @@ use gasket_types::{SubagentResponse, SubagentResult as TypesSubagentResult, Suba
 #[derive(Clone)]
 pub struct SimpleSpawner {
     provider: Arc<dyn LlmProvider>,
-    tools: Arc<ToolRegistry>,
+    /// Worker-flavour tool registry, pre-built without `spawn` / `spawn_parallel`.
+    worker_tools: Arc<ToolRegistry>,
     workspace: std::path::PathBuf,
+    budget: gasket_types::SpawnBudget,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     model_resolver: Option<Arc<dyn ModelResolver>>,
 }
@@ -317,13 +319,15 @@ pub struct SimpleSpawner {
 impl SimpleSpawner {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
-        tools: Arc<ToolRegistry>,
+        worker_tools: Arc<ToolRegistry>,
         workspace: std::path::PathBuf,
+        budget: gasket_types::SpawnBudget,
     ) -> Self {
         Self {
             provider,
-            tools,
+            worker_tools,
             workspace,
+            budget,
             token_tracker: None,
             model_resolver: None,
         }
@@ -349,6 +353,8 @@ impl SubagentSpawner for SimpleSpawner {
     ) -> Result<TypesSubagentResult, Box<dyn std::error::Error + Send>> {
         use super::tracker::SubagentTracker;
 
+        let permit = self.budget.acquire().await;
+
         let mut tracker = SubagentTracker::new();
         let result_tx = tracker.result_sender();
         let event_tx = tracker.event_sender();
@@ -371,9 +377,9 @@ impl SubagentSpawner for SimpleSpawner {
         };
         let _task_desc = task_spec.task.clone();
 
-        spawn_subagent(
+        let join_handle = spawn_subagent(
             provider,
-            self.tools.clone(),
+            self.worker_tools.clone(),
             self.workspace.clone(),
             task_spec,
             Some(event_tx),
@@ -381,6 +387,11 @@ impl SubagentSpawner for SimpleSpawner {
             self.token_tracker.clone(),
             tracker.cancellation_token(),
         );
+        // Hold the permit until the worker's tokio task ends.
+        tokio::spawn(async move {
+            let _permit = permit;        // RAII: drops on guard-task exit
+            let _ = join_handle.await;   // wait for worker
+        });
 
         let result = tracker
             .wait_for_all(1)
@@ -427,6 +438,8 @@ impl SubagentSpawner for SimpleSpawner {
     > {
         use super::tracker::SubagentTracker;
 
+        let permit = self.budget.acquire().await;
+
         let mut tracker = SubagentTracker::new();
         let result_tx = tracker.result_sender();
         let event_tx = tracker.event_sender();
@@ -451,7 +464,7 @@ impl SubagentSpawner for SimpleSpawner {
 
         spawn_subagent(
             provider,
-            self.tools.clone(),
+            self.worker_tools.clone(),
             self.workspace.clone(),
             task_spec,
             Some(event_tx),
@@ -469,6 +482,7 @@ impl SubagentSpawner for SimpleSpawner {
         let cancel_token = tracker.cancellation_token();
 
         tokio::spawn(async move {
+            let _permit = permit;        // RAII: drops on guard-task exit
             let types_result = match tracker.wait_for_all(1).await {
                 Ok(results) => match results.into_iter().next() {
                     Some(result) => TypesSubagentResult {
@@ -522,5 +536,48 @@ impl SubagentSpawner for SimpleSpawner {
         });
 
         Ok((subagent_id, event_rx, completion_rx, cancel_token))
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use gasket_types::SpawnBudget;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// Verifies that `SpawnBudget` with limit=1 serializes concurrent acquires.
+    /// Co-located with SimpleSpawner to ensure the contract stays wired.
+    #[tokio::test]
+    async fn budget_gate_serializes_concurrent_acquires() {
+        let budget = SpawnBudget::new(1);
+        let inflight = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+
+        let mut tasks = vec![];
+        for _ in 0..3 {
+            let b = budget.clone();
+            let inflight = inflight.clone();
+            let peak = peak.clone();
+            tasks.push(tokio::spawn(async move {
+                let _permit = b.acquire().await;
+                let cur = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                inflight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let elapsed = start.elapsed();
+
+        assert_eq!(peak.load(Ordering::SeqCst), 1, "budget=1 must enforce inflight==1");
+        assert!(
+            elapsed >= Duration::from_millis(280),
+            "3 sequential 100ms tasks should take ≥280ms; took {:?}",
+            elapsed
+        );
     }
 }
