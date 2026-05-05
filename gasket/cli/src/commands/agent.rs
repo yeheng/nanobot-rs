@@ -356,6 +356,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             if let Some(p) = user_dir {
                 builder = builder.user_dir(p);
             }
+            // Register all tools (including plugins) as slash commands
+            builder = super::plugin_commands::register_tool_commands(builder, agent.tools());
             let dispatcher = builder
                 .build()
                 .await

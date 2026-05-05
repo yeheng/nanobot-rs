@@ -35,7 +35,7 @@ mod registry;
 mod search_sops;
 mod shell;
 mod spawn;
-mod spawn_common;
+pub(crate) mod spawn_common;
 mod spawn_parallel;
 mod web_fetch;
 mod web_search;

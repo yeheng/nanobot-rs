@@ -7,6 +7,7 @@ mod command_host;
 mod cron;
 mod dispatching_handler;
 mod embedding;
+mod plugin_commands;
 mod gateway;
 mod onboard;
 pub mod registry;

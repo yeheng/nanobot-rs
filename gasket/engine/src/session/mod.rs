@@ -325,6 +325,11 @@ impl AgentSession {
         self
     }
 
+    /// Access the tool registry.
+    pub fn tools(&self) -> Arc<ToolRegistry> {
+        self.runtime_ctx.tools.clone()
+    }
+
     /// Get the model name.
     pub fn model(&self) -> &str {
         &self.config.model

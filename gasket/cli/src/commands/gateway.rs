@@ -127,6 +127,9 @@ pub async fn cmd_gateway() -> Result<()> {
     if let Some(p) = user_dir {
         dispatcher_builder = dispatcher_builder.user_dir(p);
     }
+    // Register all tools (including plugins) as slash commands
+    dispatcher_builder =
+        super::plugin_commands::register_tool_commands(dispatcher_builder, tools.clone());
     let dispatcher = Arc::new(
         dispatcher_builder
             .build()
