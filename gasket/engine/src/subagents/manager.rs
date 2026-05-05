@@ -142,16 +142,14 @@ pub fn spawn_subagent(
             max_iterations: crate::session::config::DEFAULT_MAX_ITERATIONS,
             ..Default::default()
         };
-        let ctx = kernel::RuntimeContext {
-            provider,
-            tools,
-            config: config.to_kernel_config(),
-            spawner: None,
-            token_tracker: token_tracker.clone(),
-            checkpoint_callback: None,
-            session_key: None,
-            outbound_tx: None,
-            aggregator_cancel: None,
+        let ctx = {
+            let mut c = kernel::RuntimeContext::new_worker(
+                provider,
+                tools,
+                config.to_kernel_config(),
+            );
+            c.token_tracker = token_tracker.clone();
+            c
         };
 
         // Execute with timeout, cancellable via token

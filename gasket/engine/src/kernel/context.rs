@@ -28,6 +28,7 @@ pub struct RuntimeContext {
     pub provider: Arc<dyn LlmProvider>,
     pub tools: Arc<ToolRegistry>,
     pub config: KernelConfig,
+    pub role: gasket_types::AgentRole,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     /// Optional checkpoint callback for proactive working-memory injection.
@@ -44,6 +45,7 @@ pub struct RuntimeContext {
 }
 
 impl RuntimeContext {
+    /// Constructs an Orchestrator context (main agent, may attach a spawner).
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         tools: Arc<ToolRegistry>,
@@ -53,6 +55,28 @@ impl RuntimeContext {
             provider,
             tools,
             config,
+            role: gasket_types::AgentRole::Orchestrator,
+            spawner: None,
+            token_tracker: None,
+            checkpoint_callback: None,
+            session_key: None,
+            outbound_tx: None,
+            aggregator_cancel: None,
+        }
+    }
+
+    /// Constructs a Worker context (subagent leaf). `spawner` is forced to None
+    /// to enforce the type invariant: workers cannot dispatch further workers.
+    pub fn new_worker(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        config: KernelConfig,
+    ) -> Self {
+        Self {
+            provider,
+            tools,
+            config,
+            role: gasket_types::AgentRole::Worker,
             spawner: None,
             token_tracker: None,
             checkpoint_callback: None,
@@ -69,6 +93,7 @@ impl Clone for RuntimeContext {
             provider: self.provider.clone(),
             tools: self.tools.clone(),
             config: self.config.clone(),
+            role: self.role,
             spawner: self.spawner.clone(),
             token_tracker: self.token_tracker.clone(),
             checkpoint_callback: self.checkpoint_callback.clone(),
@@ -124,5 +149,15 @@ mod tests {
         assert_eq!(config.model, "test-model");
         assert_eq!(config.max_iterations, 100);
         assert_eq!(config.max_retries, 3);
+    }
+
+    #[test]
+    fn role_default_is_orchestrator() {
+        use gasket_types::AgentRole;
+        assert_eq!(default_role(), AgentRole::Orchestrator);
+    }
+
+    fn default_role() -> gasket_types::AgentRole {
+        gasket_types::AgentRole::Orchestrator
     }
 }
