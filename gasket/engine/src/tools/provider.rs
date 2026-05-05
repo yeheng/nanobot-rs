@@ -53,6 +53,7 @@ pub struct CoreToolProvider {
     web_config: crate::config::WebToolsConfig,
     exec_config: crate::config::ExecToolConfig,
     _subagent_spawner: Option<Arc<dyn SubagentSpawner>>,
+    role: gasket_types::AgentRole,
 }
 
 impl CoreToolProvider {
@@ -60,6 +61,7 @@ impl CoreToolProvider {
         config: &Config,
         workspace: &Path,
         subagent_spawner: Option<Arc<dyn SubagentSpawner>>,
+        role: gasket_types::AgentRole,
     ) -> Self {
         let restrict = config.tools.restrict_to_workspace;
         let allowed_dir = if restrict {
@@ -75,6 +77,7 @@ impl CoreToolProvider {
             web_config: config.tools.web.clone(),
             exec_config: config.tools.exec.clone(),
             _subagent_spawner: subagent_spawner,
+            role,
         }
     }
 }
@@ -158,25 +161,27 @@ impl ToolProvider for CoreToolProvider {
             true
         );
 
-        // Spawn tools
-        reg!(
-            registry,
-            SpawnTool::new(),
-            "Spawn Subagent",
-            "system",
-            ["spawn", "agent"],
-            false,
-            false
-        );
-        reg!(
-            registry,
-            SpawnParallelTool::new(),
-            "Spawn Parallel",
-            "system",
-            ["spawn", "parallel", "agent"],
-            false,
-            false
-        );
+        // Spawn tools — only the Orchestrator gets these; Workers see neither.
+        if self.role.can_spawn() {
+            reg!(
+                registry,
+                SpawnTool::new(),
+                "Spawn Subagent",
+                "system",
+                ["spawn", "agent"],
+                false,
+                false
+            );
+            reg!(
+                registry,
+                SpawnParallelTool::new(),
+                "Spawn Parallel",
+                "system",
+                ["spawn", "parallel", "agent"],
+                false,
+                false
+            );
+        }
     }
 }
 
@@ -398,5 +403,38 @@ impl ToolProvider for SystemToolProvider {
                 true
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::registry::ToolRegistry;
+    use gasket_types::AgentRole;
+
+    #[test]
+    fn worker_provider_does_not_register_spawn_tools() {
+        let cfg = crate::config::Config::default();
+        let mut registry = ToolRegistry::new();
+        CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Worker)
+            .register_tools(&mut registry);
+        assert!(registry.get("spawn").is_none(), "Worker registry must not contain `spawn`");
+        assert!(
+            registry.get("spawn_parallel").is_none(),
+            "Worker registry must not contain `spawn_parallel`"
+        );
+    }
+
+    #[test]
+    fn orchestrator_provider_registers_spawn_tools() {
+        let cfg = crate::config::Config::default();
+        let mut registry = ToolRegistry::new();
+        CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Orchestrator)
+            .register_tools(&mut registry);
+        assert!(registry.get("spawn").is_some(), "Orchestrator registry must contain `spawn`");
+        assert!(
+            registry.get("spawn_parallel").is_some(),
+            "Orchestrator registry must contain `spawn_parallel`"
+        );
     }
 }

@@ -84,6 +84,7 @@ pub async fn cmd_tool_execute(name: String, args: String) -> Result<()> {
         model: Some(provider_info.model.clone()),
         #[cfg(feature = "embedding")]
         history_search,
+        role: gasket_types::AgentRole::Orchestrator,
     });
 
     let args_json: serde_json::Value = serde_json::from_str(&args)

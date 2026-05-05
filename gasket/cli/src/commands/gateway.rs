@@ -362,6 +362,7 @@ async fn setup_agent_pipeline(
         model: Some(provider_info.model.clone()),
         #[cfg(feature = "embedding")]
         history_search,
+        role: gasket_types::AgentRole::Orchestrator,
     });
 
     let subagent_tools = Arc::new(common_tools.clone());

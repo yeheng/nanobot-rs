@@ -192,6 +192,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             model: Some(provider_info.model.clone()),
             #[cfg(feature = "embedding")]
             history_search,
+            role: gasket_types::AgentRole::Orchestrator,
         });
 
     let tools = Arc::new(common_tools.clone());

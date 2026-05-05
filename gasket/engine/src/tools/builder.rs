@@ -79,6 +79,9 @@ pub struct ToolRegistryConfig {
     /// Optional semantic history search (embedding feature).
     #[cfg(feature = "embedding")]
     pub history_search: Option<HistorySearchParams>,
+    /// Determines whether spawn tools (`spawn`, `spawn_parallel`) are registered.
+    /// Worker contexts must use `AgentRole::Worker` to omit them.
+    pub role: gasket_types::AgentRole,
 }
 
 /// Parameters needed to construct the `history_search` tool.
@@ -104,6 +107,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         model,
         #[cfg(feature = "embedding")]
         history_search,
+        role,
     } = registry_config;
 
     let config = crate::config::get_config();
@@ -113,7 +117,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     let mut tools = ToolRegistry::new();
 
     // ── Core tools (filesystem, web, exec, spawn) ─────────────
-    CoreToolProvider::new(config, &workspace, subagent_spawner).register_tools(&mut tools);
+    CoreToolProvider::new(config, &workspace, subagent_spawner, role).register_tools(&mut tools);
 
     // ── Wiki + memory tools (conditional on page_store) ───────
     let prompts = &config.agents.defaults.prompts;
