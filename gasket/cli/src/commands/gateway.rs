@@ -353,7 +353,7 @@ async fn setup_agent_pipeline(
         };
     // (non-embedding builds skip semantic recall initialization)
 
-    let common_tools = build_tool_registry(ToolRegistryConfig {
+    let orchestrator_tools = build_tool_registry(ToolRegistryConfig {
         subagent_spawner: None,
         extra_tools: vec![],
         page_store: page_store.clone(),
@@ -361,16 +361,33 @@ async fn setup_agent_pipeline(
         provider: Some(provider_info.provider.clone()),
         model: Some(provider_info.model.clone()),
         #[cfg(feature = "embedding")]
-        history_search,
+        history_search: history_search.clone(),
+        role: gasket_types::AgentRole::Orchestrator,
     });
 
-    let subagent_tools = Arc::new(common_tools.clone());
+    let worker_tools = build_tool_registry(ToolRegistryConfig {
+        subagent_spawner: None,
+        extra_tools: vec![],
+        page_store: page_store.clone(),
+        page_index: page_index.clone(),
+        provider: Some(provider_info.provider.clone()),
+        model: Some(provider_info.model.clone()),
+        #[cfg(feature = "embedding")]
+        history_search: None, // workers don't need to search history
+        role: gasket_types::AgentRole::Worker,
+    });
+    let worker_tools = Arc::new(worker_tools);
+
+    let spawn_budget = gasket_types::SpawnBudget::new(
+        gasket_engine::config::get_config().tools.spawn.max_concurrency,
+    );
 
     let subagent_spawner: Arc<dyn SubagentSpawner> = Arc::new(
         SimpleSpawner::new(
             provider_info.provider.clone(),
-            subagent_tools,
+            worker_tools,
             workspace.clone(),
+            spawn_budget,
         )
         .with_model_resolver(Arc::new(CliModelResolver {
             provider_registry: {
@@ -386,7 +403,7 @@ async fn setup_agent_pipeline(
 
     let extra_tools = build_extra_tools(cron_service, &provider_info, &agent_config, sqlite_store);
 
-    let mut tools = common_tools.clone();
+    let mut tools = orchestrator_tools.clone();
     for (tool, metadata) in extra_tools {
         tools.register_with_metadata(tool, metadata);
     }

@@ -181,8 +181,23 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         };
     // (non-embedding builds skip semantic recall initialization)
 
-    // Build common tool registry once and share it between agent and subagent
-    let common_tools =
+    // Build Orchestrator (main agent) tool registry — includes spawn tools.
+    let orchestrator_tools =
+        gasket_engine::tools::build_tool_registry(gasket_engine::tools::ToolRegistryConfig {
+            subagent_spawner: None,
+            extra_tools: vec![],
+            page_store: page_store.clone(),
+            page_index: page_index.clone(),
+            provider: Some(provider_info.provider.clone()),
+            model: Some(provider_info.model.clone()),
+            #[cfg(feature = "embedding")]
+            history_search: history_search.clone(),
+            role: gasket_types::AgentRole::Orchestrator,
+        });
+    let tools = Arc::new(orchestrator_tools);
+
+    // Build Worker (subagent) tool registry — excludes spawn tools.
+    let worker_tools =
         gasket_engine::tools::build_tool_registry(gasket_engine::tools::ToolRegistryConfig {
             subagent_spawner: None,
             extra_tools: vec![],
@@ -191,15 +206,17 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             provider: Some(provider_info.provider.clone()),
             model: Some(provider_info.model.clone()),
             #[cfg(feature = "embedding")]
-            history_search,
+            history_search: None, // workers don't need to search history
+            role: gasket_types::AgentRole::Worker,
         });
+    let worker_tools = Arc::new(worker_tools);
 
-    let tools = Arc::new(common_tools.clone());
+    // Build SpawnBudget from config.
+    let spawn_budget = gasket_types::SpawnBudget::new(
+        gasket_engine::config::get_config().tools.spawn.max_concurrency,
+    );
 
-    // Create spawner for spawn/spawn_parallel tools
-    let subagent_tools = Arc::new(common_tools.clone());
-
-    // Create model resolver for subagent spawner to support model_id switching in spawn tools
+    // Create model resolver for subagent spawner to support model_id switching.
     let mut resolver_registry = ProviderRegistry::from_config(&config);
     if let Some(ref v) = vault {
         resolver_registry.with_vault(v.clone());
@@ -212,8 +229,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
         SimpleSpawner::new(
             provider_info.provider.clone(),
-            subagent_tools,
+            worker_tools,
             workspace.clone(),
+            spawn_budget,
         )
         .with_model_resolver(model_resolver),
     );

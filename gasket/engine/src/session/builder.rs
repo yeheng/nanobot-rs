@@ -137,6 +137,7 @@ impl SessionBuilder {
             provider: self.provider.clone(),
             tools: self.tools.clone(),
             config: kernel_config,
+            role: gasket_types::AgentRole::Orchestrator,
             spawner: None,
             token_tracker: None,
             checkpoint_callback: None,

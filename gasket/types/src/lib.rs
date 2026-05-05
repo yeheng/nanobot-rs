@@ -10,12 +10,15 @@
 //! By keeping these types in a separate crate, we avoid circular dependencies
 //! between `gasket-core` and other crates.
 
+pub mod agent;
 pub mod command;
 pub mod events;
 pub mod session_event;
+pub mod spawn_budget;
 pub mod token_tracker;
 pub mod tool;
 
+pub use agent::AgentRole;
 pub use command::{ModelSwitchInfo, SessionSummary};
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, OutboundPayload, SessionKey,
@@ -24,12 +27,13 @@ pub use events::{
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,
 };
+pub use spawn_budget::SpawnBudget;
 pub use token_tracker::{
     calculate_cost, format_cost, format_token_usage, ModelPricing, SessionTokenStats, TokenTracker,
     TokenUsage,
 };
 pub use tool::{
-    simple_schema, ApprovalCallback, NoopSpawner, SubagentResponse, SubagentResult,
+    simple_schema, ApprovalCallback, SubagentResponse, SubagentResult,
     SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
     ToolContext, ToolError, ToolMetadata, ToolResult,
 };

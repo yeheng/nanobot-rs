@@ -4,8 +4,6 @@
 //! non-blocking mode: it spawns all subagents, starts background event forwarding
 //! and aggregation, then returns immediately.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -116,8 +114,11 @@ impl Tool for SpawnParallelTool {
         let args: SpawnParallelArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Get spawner from context (always present, may be NoopSpawner)
-        let spawner = &ctx.spawner;
+        let spawner = ctx.spawner.as_ref().ok_or_else(|| {
+            ToolError::ExecutionError(
+                "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+            )
+        })?;
 
         // Normalize tasks to TaskSpec format
         let task_specs: Vec<TaskSpec> = match args.tasks {
@@ -169,18 +170,11 @@ impl Tool for SpawnParallelTool {
             let session_key = ctx.session_key.clone();
             let outbound_tx = ctx.outbound_tx.clone();
 
-            // Spawn tasks with bounded concurrency
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
             let mut spawned = Vec::with_capacity(task_specs.len());
             let mut cancel_tokens = Vec::with_capacity(task_specs.len());
 
             for (idx, spec) in task_specs.into_iter().enumerate() {
                 let spawner_clone = spawner.clone();
-                let sem = semaphore.clone();
-
-                let _permit = sem.acquire().await.map_err(|e| {
-                    ToolError::ExecutionError(format!("Semaphore acquire error: {}", e))
-                })?;
 
                 let (subagent_id, event_rx, result_rx, cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id)
@@ -243,18 +237,13 @@ impl Tool for SpawnParallelTool {
         }
 
         // ── Blocking mode: no synthesis_callback ───────────────────────
-        // Spawn tasks with bounded concurrency to avoid API rate limits (429).
-        // Max 5 concurrent LLM calls is a safe default across most providers.
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
         let mut handles = Vec::with_capacity(task_specs.len());
         for (idx, spec) in task_specs.into_iter().enumerate() {
             let spawner_clone = spawner.clone();
-            let sem = semaphore.clone();
             let session_key = ctx.session_key.clone();
             let outbound_tx = ctx.outbound_tx.clone();
             let ws_summary_limit = ctx.ws_summary_limit;
             let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
 
                 let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id)

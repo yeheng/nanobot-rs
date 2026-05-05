@@ -31,7 +31,7 @@ pub async fn run_subagent(
     info!("Running subagent with model={}", config.model);
     let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
     let kernel_config = config.to_kernel_config();
-    let ctx = RuntimeContext::new(provider, tools, kernel_config);
+    let ctx = RuntimeContext::new_worker(provider, tools, kernel_config);
     let executor = KernelExecutor::new(ctx);
     executor
         .execute_with_options(messages, &crate::kernel::ExecutorOptions::new())

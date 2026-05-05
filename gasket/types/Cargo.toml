@@ -30,3 +30,4 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

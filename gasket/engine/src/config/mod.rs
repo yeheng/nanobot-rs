@@ -14,8 +14,8 @@ pub use app_config::{
 };
 pub use global::{get_config, init_config};
 pub use tools::{
-    CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
-    WebToolsConfig,
+    CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, SpawnToolConfig,
+    ToolsConfig, WebToolsConfig,
 };
 
 // Re-export channel config types (merged from gasket-core facade)
