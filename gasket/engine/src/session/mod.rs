@@ -30,11 +30,32 @@ use async_trait::async_trait;
 use gasket_providers::ChatMessage;
 use gasket_storage::SqliteStore;
 use gasket_types::events::ChatEvent;
+use gasket_types::pending_ask::PendingAskRegistry;
 use gasket_types::SessionKey;
 
 use futures_util::StreamExt;
 use history::builder::BuildOutcome;
 use tokio_stream::wrappers::ReceiverStream;
+
+/// Outcome of `handle_inbound` (blocking variant).
+pub enum HandleOutcome {
+    /// Inbound was consumed by a pending `ask_user`. No reply emitted.
+    Consumed,
+    /// Inbound triggered a normal LLM turn.
+    Replied(AgentResponse),
+}
+
+/// Outcome of `handle_inbound_streaming_with_channel` (streaming variant).
+pub enum HandleOutcomeStreaming {
+    /// Inbound was consumed by a pending `ask_user`. No reply emitted.
+    Consumed,
+    /// Inbound triggered a normal LLM turn; consumer can stream events and
+    /// await the result.
+    Replied {
+        events: tokio::sync::mpsc::Receiver<gasket_types::events::ChatEvent>,
+        result: tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+    },
+}
 
 /// Response from agent processing
 #[derive(Debug, Clone)]
@@ -246,6 +267,8 @@ pub struct AgentSession {
     /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
     /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
     pending_done: tokio_util::task::TaskTracker,
+    /// Pending-ask registry shared with tools through `RuntimeContext`.
+    pending_asks: Arc<PendingAskRegistryImpl>,
     /// Background embedding indexer (kept alive for the session lifetime).
     #[allow(dead_code)]
     #[cfg(feature = "embedding")]
@@ -446,6 +469,57 @@ impl AgentSession {
             );
         }
         self.pending_done.wait().await;
+    }
+
+    /// Inbound entry: try to deliver to a pending ask first, otherwise run
+    /// `process_direct`.
+    pub async fn handle_inbound(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        tool_filter: Option<Vec<String>>,
+    ) -> Result<HandleOutcome, AgentError> {
+        let synthetic = gasket_types::events::InboundMessage {
+            channel: session_key.channel.clone(),
+            sender_id: session_key.chat_id.clone(),
+            chat_id: session_key.chat_id.clone(),
+            content: content.to_string(),
+            media: None,
+            metadata: None,
+            timestamp: chrono::Utc::now(),
+            trace_id: None,
+        };
+        if self.pending_asks.try_fulfill(session_key, synthetic).is_ok() {
+            return Ok(HandleOutcome::Consumed);
+        }
+        let resp = self.process_direct(content, session_key, tool_filter).await?;
+        Ok(HandleOutcome::Replied(resp))
+    }
+
+    /// Streaming variant.
+    pub async fn handle_inbound_streaming_with_channel(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        tool_filter: Option<Vec<String>>,
+    ) -> Result<HandleOutcomeStreaming, AgentError> {
+        let synthetic = gasket_types::events::InboundMessage {
+            channel: session_key.channel.clone(),
+            sender_id: session_key.chat_id.clone(),
+            chat_id: session_key.chat_id.clone(),
+            content: content.to_string(),
+            media: None,
+            metadata: None,
+            timestamp: chrono::Utc::now(),
+            trace_id: None,
+        };
+        if self.pending_asks.try_fulfill(session_key, synthetic).is_ok() {
+            return Ok(HandleOutcomeStreaming::Consumed);
+        }
+        let (events, result) = self
+            .process_direct_streaming_with_channel(content, session_key, tool_filter)
+            .await?;
+        Ok(HandleOutcomeStreaming::Replied { events, result })
     }
 
     /// Process a message and return response.
