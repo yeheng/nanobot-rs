@@ -108,9 +108,12 @@ impl SteppableExecutor {
     ) -> Result<ChatResponse, KernelError> {
         let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
 
-        // Defense against infinite streams: if no chunk arrives within 30s,
-        // or if we receive an unreasonably large number of chunks, abort.
-        const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+        // LLM providers may pause for extended reasoning without emitting
+        // chunks.  We keep the event-forwarding loop alive so that when the
+        // model finally produces output (or tool calls) the client sees it.
+        // The true hung-stream defense is the HTTP/TCP timeout at the
+        // provider level; breaking here only causes frontend stalls.
+        const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
         const MAX_STREAM_CHUNKS: usize = 100_000;
 
         if let Some(tx) = event_tx {
@@ -137,10 +140,10 @@ impl SteppableExecutor {
                     Ok(None) => break,
                     Err(_) => {
                         warn!(
-                            "[Steppable] No stream chunk for {}s; treating as hung stream",
+                            "[Steppable] No stream chunk for {}s; model may be reasoning — continuing to wait",
                             STREAM_CHUNK_TIMEOUT.as_secs()
                         );
-                        break;
+                        continue;
                     }
                 }
             }
@@ -159,10 +162,10 @@ impl SteppableExecutor {
                     Ok(None) => break,
                     Err(_) => {
                         warn!(
-                            "[Steppable] No stream chunk for {}s while draining; aborting",
+                            "[Steppable] No stream chunk for {}s while draining; continuing",
                             STREAM_CHUNK_TIMEOUT.as_secs()
                         );
-                        break;
+                        continue;
                     }
                 }
             }

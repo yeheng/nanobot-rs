@@ -13,11 +13,14 @@ def main() -> None:
     name = args.get("name", "world")
 
     # Exercise the engine callback path
-    chat = plugin.llm_chat(
-        model="glm-5",
-        messages=[{"role": "user", "content": "hi"}],
-    )
-    llm_called = bool(chat)
+    try:
+        chat = plugin.llm_chat(
+            model="glm-5",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        llm_called = bool(chat)
+    except RuntimeError:
+        llm_called = False
 
     plugin.return_result({"greeting": f"Hello, {name}!", "llm_called": llm_called})
 
