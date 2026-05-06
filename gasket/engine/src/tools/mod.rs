@@ -16,6 +16,7 @@
 //! - `script`: External script tools with YAML manifests
 //! - `new_session`: Generate a new session key and clear history
 
+mod ask_user;
 mod builder;
 mod clear_session;
 mod context;
@@ -50,6 +51,7 @@ pub use gasket_types::{
 };
 
 // Re-export tool implementations
+pub use ask_user::AskUserTool;
 #[cfg(feature = "embedding")]
 pub use builder::HistorySearchParams;
 pub use builder::{build_tool_registry, resolve_exec_workspace, ToolRegistryConfig};
