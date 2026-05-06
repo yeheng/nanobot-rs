@@ -97,52 +97,15 @@ impl InternalSignal {
     }
 }
 
-// ── Stream Event Kind ─────────────────────────────────────
-
-/// Pure event kind without agent identity.
-///
-/// Extracted from `StreamEvent` to eliminate the `agent_id` repetition
-/// across all six variants. Agent identity is carried by the `StreamEvent`
-/// wrapper struct.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StreamEventKind {
-    /// Thinking/reasoning content from the LLM
-    Thinking { content: Arc<str> },
-
-    /// A tool call has started
-    ToolStart {
-        name: Arc<str>,
-        #[serde(default)]
-        arguments: Option<Arc<str>>,
-    },
-
-    /// A tool call has completed
-    ToolEnd {
-        name: Arc<str>,
-        #[serde(default)]
-        output: Option<Arc<str>>,
-    },
-
-    /// Streaming content chunk
-    Content { content: Arc<str> },
-
-    /// Stream has completed for this iteration
-    Done,
-
-    /// Plain text message (legacy support for non-streaming channels)
-    Text { content: Arc<str> },
-}
-
 // ── Unified Stream Event ────────────────────────────────────
 
 /// Unified stream event for real-time streaming across the entire pipeline.
 ///
-/// Wraps [`StreamEventKind`] with an optional `agent_id` to distinguish
+/// Wraps a [`ChatEvent`] with an optional `agent_id` to distinguish
 /// between main agent events (`None`) and subagent events (`Some(uuid)`).
 ///
-/// Uses `#[serde(flatten)]` to produce the same JSON wire format as the
-/// original flat enum.
+/// Uses `#[serde(flatten)]` to produce the same JSON wire format as a
+/// flat enum.
 ///
 /// # Protocol (JSON representation for WebSocket)
 ///
@@ -170,9 +133,9 @@ pub struct StreamEvent {
     /// Agent ID (None for main agent, Some(uuid) for subagent)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_id: Option<Arc<str>>,
-    /// The event kind (flattened into JSON output)
+    /// The event payload (flattened into JSON output)
     #[serde(flatten)]
-    pub kind: StreamEventKind,
+    pub event: ChatEvent,
 }
 
 /// Clean user-facing event for WebSocket and outbound channels.
@@ -477,9 +440,7 @@ impl StreamEvent {
     pub fn thinking(content: impl Into<String>) -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::Thinking {
-                content: Arc::from(content.into()),
-            },
+            event: ChatEvent::thinking(content),
         }
     }
 
@@ -487,10 +448,7 @@ impl StreamEvent {
     pub fn tool_start(name: impl Into<String>, arguments: Option<String>) -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::ToolStart {
-                name: Arc::from(name.into()),
-                arguments: arguments.map(Arc::from),
-            },
+            event: ChatEvent::tool_start(name, arguments),
         }
     }
 
@@ -498,10 +456,7 @@ impl StreamEvent {
     pub fn tool_end(name: impl Into<String>, output: Option<String>) -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::ToolEnd {
-                name: Arc::from(name.into()),
-                output: output.map(Arc::from),
-            },
+            event: ChatEvent::tool_end(name, output),
         }
     }
 
@@ -509,9 +464,7 @@ impl StreamEvent {
     pub fn content(content: impl Into<String>) -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::Content {
-                content: Arc::from(content.into()),
-            },
+            event: ChatEvent::content(content),
         }
     }
 
@@ -519,7 +472,7 @@ impl StreamEvent {
     pub fn done() -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::Done,
+            event: ChatEvent::done(),
         }
     }
 
@@ -527,9 +480,7 @@ impl StreamEvent {
     pub fn text(content: impl Into<String>) -> Self {
         Self {
             agent_id: None,
-            kind: StreamEventKind::Text {
-                content: Arc::from(content.into()),
-            },
+            event: ChatEvent::text(content),
         }
     }
 
@@ -539,9 +490,7 @@ impl StreamEvent {
     pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             agent_id: Some(Arc::from(id.into())),
-            kind: StreamEventKind::Thinking {
-                content: Arc::from(content.into()),
-            },
+            event: ChatEvent::thinking(content),
         }
     }
 
@@ -553,10 +502,7 @@ impl StreamEvent {
     ) -> Self {
         Self {
             agent_id: Some(Arc::from(id.into())),
-            kind: StreamEventKind::ToolStart {
-                name: Arc::from(name.into()),
-                arguments: arguments.map(Arc::from),
-            },
+            event: ChatEvent::tool_start(name, arguments),
         }
     }
 
@@ -568,10 +514,7 @@ impl StreamEvent {
     ) -> Self {
         Self {
             agent_id: Some(Arc::from(id.into())),
-            kind: StreamEventKind::ToolEnd {
-                name: Arc::from(name.into()),
-                output: output.map(Arc::from),
-            },
+            event: ChatEvent::tool_end(name, output),
         }
     }
 
@@ -579,9 +522,7 @@ impl StreamEvent {
     pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             agent_id: Some(Arc::from(id.into())),
-            kind: StreamEventKind::Content {
-                content: Arc::from(content.into()),
-            },
+            event: ChatEvent::content(content),
         }
     }
 
@@ -615,7 +556,7 @@ impl StreamEvent {
         if self.agent_id.is_some() {
             return None;
         }
-        self.to_chat_event_unconditional()
+        Some(self.event.clone())
     }
 
     /// Convert to a user-facing `ChatEvent`, regardless of `agent_id`.
@@ -624,26 +565,7 @@ impl StreamEvent {
     /// out subagent events.  Useful when the caller explicitly wants to forward
     /// subagent reasoning / tool calls to the WebSocket.
     pub fn to_chat_event_unconditional(&self) -> Option<ChatEvent> {
-        Some(match &self.kind {
-            StreamEventKind::Thinking { content } => ChatEvent::Thinking {
-                content: Arc::clone(content),
-            },
-            StreamEventKind::ToolStart { name, arguments } => ChatEvent::ToolStart {
-                name: Arc::clone(name),
-                arguments: arguments.as_ref().map(Arc::clone),
-            },
-            StreamEventKind::ToolEnd { name, output } => ChatEvent::ToolEnd {
-                name: Arc::clone(name),
-                output: output.as_ref().map(Arc::clone),
-            },
-            StreamEventKind::Content { content } => ChatEvent::Content {
-                content: Arc::clone(content),
-            },
-            StreamEventKind::Done => ChatEvent::Done,
-            StreamEventKind::Text { content } => ChatEvent::Text {
-                content: Arc::clone(content),
-            },
-        })
+        Some(self.event.clone())
     }
 
     /// Serialize to JSON string

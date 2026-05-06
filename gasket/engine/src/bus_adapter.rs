@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gasket_types::SessionKey;
 
-use crate::session::AgentSession;
+use crate::session::{AgentSession, HandleOutcome};
 
 /// Engine handler for broker integration.
 pub struct EngineHandler {
@@ -34,16 +34,23 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         session_key: &SessionKey,
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::session::HandleOutcome;
         let outcome = self
             .session
             .handle_inbound(message, session_key, None)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        Ok(match outcome {
-            HandleOutcome::Consumed => String::new(),
-            HandleOutcome::Replied(resp) => resp.content,
-        })
+        let (mut events, handle) = match outcome {
+            HandleOutcome::Consumed => return Ok(String::new()),
+            HandleOutcome::Replied { events, result } => (events, result),
+        };
+        // Drain events; in blocking mode we only care about the final result.
+        tokio::spawn(async move {
+            while events.recv().await.is_some() {}
+        });
+        let resp = handle
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;
+        Ok(resp.content)
     }
 
     async fn handle_streaming_message(
@@ -65,15 +72,14 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
     > {
         let session_key_owned = session_key.clone();
 
-        use crate::session::HandleOutcomeStreaming;
         let outcome = self
             .session
-            .handle_inbound_streaming_with_channel(message, session_key, tool_filter)
+            .handle_inbound(message, session_key, tool_filter)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         let (chat_rx, result_handle) = match outcome {
-            HandleOutcomeStreaming::Consumed => {
+            HandleOutcome::Consumed => {
                 let (_chat_tx, chat_rx) = tokio::sync::mpsc::channel(1);
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 let outbound_msg = gasket_types::events::OutboundMessage::new(
@@ -84,7 +90,7 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
                 let _ = result_tx.send(Ok(outbound_msg));
                 return Ok((chat_rx, result_rx));
             }
-            HandleOutcomeStreaming::Replied { events, result } => (events, result),
+            HandleOutcome::Replied { events, result } => (events, result),
         };
 
         // Spawn a task to wrap the final result

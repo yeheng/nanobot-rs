@@ -32,9 +32,11 @@ tracing.workspace = true
 dashmap = "6"
 tiktoken-rs.workspace = true
 parking_lot = "0.12"
-regex = "1"
+
 which = "8.0"
-readability = "0.3"
+dom_smoothie = "0.17"
+fast_html2md = "0.0.62"
+regex = "1"
 bytes = "1"
 cron.workspace = true
 chrono.workspace = true

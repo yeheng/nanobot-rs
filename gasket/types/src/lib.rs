@@ -23,7 +23,7 @@ pub use agent::AgentRole;
 pub use command::{ModelSwitchInfo, SessionSummary};
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, OutboundPayload, SessionKey,
-    SessionKeyParseError, StreamEvent, StreamEventKind, Target, WebSocketMessage,
+    SessionKeyParseError, StreamEvent, Target, WebSocketMessage,
 };
 pub use pending_ask::{
     AskAnswer, AskError, AskRegistration, DynPendingAskRegistry, PendingAskRegistry,

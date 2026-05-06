@@ -49,7 +49,7 @@ impl SteppableExecutor {
         &self,
         messages: &mut Vec<ChatMessage>,
         ledger: &mut crate::kernel::kernel_executor::TokenLedger,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        event_tx: &mpsc::Sender<StreamEvent>,
     ) -> Result<StepResult, KernelError> {
         // Proactive checkpoint injection (before LLM call)
         if let Some(ref cb) = self.ctx.checkpoint_callback {
@@ -103,7 +103,7 @@ impl SteppableExecutor {
     async fn get_response(
         &self,
         stream_result: ChatStream,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        event_tx: &mpsc::Sender<StreamEvent>,
         ledger: &mut crate::kernel::kernel_executor::TokenLedger,
     ) -> Result<ChatResponse, KernelError> {
         let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
@@ -116,57 +116,33 @@ impl SteppableExecutor {
         const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
         const MAX_STREAM_CHUNKS: usize = 100_000;
 
-        if let Some(tx) = event_tx {
-            let mut event_count = 0usize;
-            loop {
-                if event_count >= MAX_STREAM_CHUNKS {
-                    warn!(
-                        "[Steppable] Stream exceeded {} chunks; aborting to prevent hang",
-                        MAX_STREAM_CHUNKS
-                    );
-                    break;
-                }
-                match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
-                    Ok(Some(event)) => {
-                        event_count += 1;
-                        if event_count == 1 {
-                            debug!("[Steppable] Received first event from LLM stream");
-                        }
-                        if tx.send(event).await.is_err() {
-                            debug!("[Steppable] Channel closed after {} events", event_count);
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => {
-                        warn!(
-                            "[Steppable] No stream chunk for {}s; model may be reasoning — continuing to wait",
-                            STREAM_CHUNK_TIMEOUT.as_secs()
-                        );
-                        continue;
-                    }
-                }
+        let mut event_count = 0usize;
+        loop {
+            if event_count >= MAX_STREAM_CHUNKS {
+                warn!(
+                    "[Steppable] Stream exceeded {} chunks; aborting to prevent hang",
+                    MAX_STREAM_CHUNKS
+                );
+                break;
             }
-        } else {
-            let mut drain_count = 0usize;
-            loop {
-                if drain_count >= MAX_STREAM_CHUNKS {
-                    warn!(
-                        "[Steppable] Drain exceeded {} chunks; aborting to prevent hang",
-                        MAX_STREAM_CHUNKS
-                    );
-                    break;
-                }
-                match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
-                    Ok(Some(_)) => drain_count += 1,
-                    Ok(None) => break,
-                    Err(_) => {
-                        warn!(
-                            "[Steppable] No stream chunk for {}s while draining; continuing",
-                            STREAM_CHUNK_TIMEOUT.as_secs()
-                        );
-                        continue;
+            match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
+                Ok(Some(event)) => {
+                    event_count += 1;
+                    if event_count == 1 {
+                        debug!("[Steppable] Received first event from LLM stream");
                     }
+                    if event_tx.send(event).await.is_err() {
+                        debug!("[Steppable] Channel closed after {} events", event_count);
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    warn!(
+                        "[Steppable] No stream chunk for {}s; model may be reasoning — continuing to wait",
+                        STREAM_CHUNK_TIMEOUT.as_secs()
+                    );
+                    continue;
                 }
             }
         }
@@ -189,7 +165,7 @@ impl SteppableExecutor {
         response: &ChatResponse,
         executor: &ToolExecutor<'_>,
         messages: &mut Vec<ChatMessage>,
-        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        event_tx: &mpsc::Sender<StreamEvent>,
     ) -> Vec<ToolCallResult> {
         // Note: caller already checked `has_tool_calls()`, so `tool_calls` is non-empty.
         for tc in &response.tool_calls {
@@ -245,7 +221,7 @@ impl SteppableExecutor {
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())
                 .map(|(idx, tool_call)| {
                     let ctx = ctx.clone();
-                    let tx = event_tx.cloned();
+                    let tx = event_tx.clone();
                     async move {
                         let tool_name = tool_call.function.name.clone();
                         let tool_args = tool_call.function.arguments.to_string();
@@ -253,11 +229,9 @@ impl SteppableExecutor {
                         const DISPLAY_MAX_LEN: usize = 100;
                         let display_args = truncate_for_display(&tool_args, DISPLAY_MAX_LEN);
 
-                        if let Some(ref sender) = tx {
-                            let _ = sender
-                                .send(StreamEvent::tool_start(&tool_name, Some(display_args)))
-                                .await;
-                        }
+                        let _ = tx
+                            .send(StreamEvent::tool_start(&tool_name, Some(display_args)))
+                            .await;
 
                         let start = std::time::Instant::now();
                         let result = executor.execute_one(&tool_call, &ctx).await;
@@ -280,11 +254,9 @@ impl SteppableExecutor {
                             result.output.clone()
                         };
 
-                        if let Some(ref sender) = tx {
-                            let _ = sender
-                                .send(StreamEvent::tool_end(&tool_name, Some(display_output)))
-                                .await;
-                        }
+                        let _ = tx
+                            .send(StreamEvent::tool_end(&tool_name, Some(display_output)))
+                            .await;
 
                         (idx, tool_call.id, tool_name, result.output)
                     }

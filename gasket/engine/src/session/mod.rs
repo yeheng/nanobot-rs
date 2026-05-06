@@ -37,16 +37,8 @@ use futures_util::StreamExt;
 use history::builder::BuildOutcome;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// Outcome of `handle_inbound` (blocking variant).
+/// Outcome of `handle_inbound`.
 pub enum HandleOutcome {
-    /// Inbound was consumed by a pending `ask_user`. No reply emitted.
-    Consumed,
-    /// Inbound triggered a normal LLM turn.
-    Replied(AgentResponse),
-}
-
-/// Outcome of `handle_inbound_streaming_with_channel` (streaming variant).
-pub enum HandleOutcomeStreaming {
     /// Inbound was consumed by a pending `ask_user`. No reply emitted.
     Consumed,
     /// Inbound triggered a normal LLM turn; consumer can stream events and
@@ -469,7 +461,7 @@ impl AgentSession {
     }
 
     /// Inbound entry: try to deliver to a pending ask first, otherwise run
-    /// `process_direct`.
+    /// the streaming pipeline.
     pub async fn handle_inbound(
         &self,
         content: &str,
@@ -493,60 +485,10 @@ impl AgentSession {
         {
             return Ok(HandleOutcome::Consumed);
         }
-        let resp = self
-            .process_direct(content, session_key, tool_filter)
-            .await?;
-        Ok(HandleOutcome::Replied(resp))
-    }
-
-    /// Streaming variant.
-    pub async fn handle_inbound_streaming_with_channel(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        tool_filter: Option<Vec<String>>,
-    ) -> Result<HandleOutcomeStreaming, AgentError> {
-        let synthetic = gasket_types::events::InboundMessage {
-            channel: session_key.channel.clone(),
-            sender_id: session_key.chat_id.clone(),
-            chat_id: session_key.chat_id.clone(),
-            content: content.to_string(),
-            media: None,
-            metadata: None,
-            timestamp: chrono::Utc::now(),
-            trace_id: None,
-        };
-        if self
-            .pending_asks
-            .try_fulfill(session_key, synthetic)
-            .is_ok()
-        {
-            return Ok(HandleOutcomeStreaming::Consumed);
-        }
         let (events, result) = self
             .process_direct_streaming_with_channel(content, session_key, tool_filter)
             .await?;
-        Ok(HandleOutcomeStreaming::Replied { events, result })
-    }
-
-    /// Process a message and return response.
-    ///
-    /// Thin wrapper around the streaming pipeline — events are silently discarded
-    /// and only the final `AgentResponse` is returned.
-    pub async fn process_direct(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        tool_filter: Option<Vec<String>>,
-    ) -> Result<AgentResponse, AgentError> {
-        let (_event_rx, handle) = self
-            .process_direct_streaming_with_channel(content, session_key, tool_filter)
-            .await?;
-
-        // Discard streaming events, await final result
-        handle
-            .await
-            .map_err(|e| AgentError::SessionError(format!("Task join error: {}", e)))?
+        Ok(HandleOutcome::Replied { events, result })
     }
 
     /// Process a message with streaming.

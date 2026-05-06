@@ -1,7 +1,7 @@
 //! Kernel executor — core LLM loop.
 //!
 //! Thin wrapper around `SteppableExecutor` providing high-level
-//! `execute_with_options` / `execute_stream_with_options` entry points.
+//! `execute` entry point.
 //! The multi-turn loop logic lives here; single-step logic is in `SteppableExecutor`.
 
 use tokio::sync::mpsc;
@@ -108,9 +108,8 @@ impl TokenLedger {
 
 /// Kernel executor — thin convenience wrapper.
 ///
-/// Holds a `RuntimeContext` and provides `execute_with_options` /
-/// `execute_stream_with_options`. The actual loop logic is in
-/// `run_loop` at module scope.
+/// Holds a `RuntimeContext` and provides `execute`. The actual loop
+/// logic is in `run_loop` at module scope.
 pub struct KernelExecutor {
     ctx: RuntimeContext,
 }
@@ -120,21 +119,13 @@ impl KernelExecutor {
         Self { ctx }
     }
 
-    pub async fn execute_with_options(
-        &self,
-        messages: Vec<ChatMessage>,
-        options: &ExecutorOptions<'_>,
-    ) -> Result<ExecutionResult, KernelError> {
-        run_loop(&self.ctx, messages, None, options).await
-    }
-
-    pub async fn execute_stream_with_options(
+    pub async fn execute(
         &self,
         messages: Vec<ChatMessage>,
         event_tx: mpsc::Sender<StreamEvent>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, KernelError> {
-        run_loop(&self.ctx, messages, Some(event_tx), options).await
+        run_loop(&self.ctx, messages, event_tx, options).await
     }
 }
 
@@ -145,7 +136,7 @@ impl KernelExecutor {
 async fn run_loop(
     ctx: &RuntimeContext,
     messages: Vec<ChatMessage>,
-    event_tx: Option<mpsc::Sender<StreamEvent>>,
+    event_tx: mpsc::Sender<StreamEvent>,
     options: &ExecutorOptions<'_>,
 ) -> Result<ExecutionResult, KernelError> {
     let mut state = ExecutionState::new(messages);
@@ -156,7 +147,7 @@ async fn run_loop(
         debug!("[Kernel] iteration {}", iteration);
 
         let result = steppable
-            .step(&mut state.messages, &mut ledger, event_tx.as_ref())
+            .step(&mut state.messages, &mut ledger, &event_tx)
             .await?;
 
         for tr in &result.tool_results {
@@ -174,9 +165,7 @@ async fn run_loop(
                 .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string());
             let reasoning = result.response.reasoning_content.clone();
 
-            if let Some(ref tx) = event_tx {
-                let _ = tx.send(StreamEvent::done()).await;
-            }
+            let _ = event_tx.send(StreamEvent::done()).await;
 
             return Ok(state.to_result(content, reasoning, &ledger));
         }
@@ -187,9 +176,7 @@ async fn run_loop(
         ctx.config.max_iterations
     );
 
-    if let Some(ref tx) = event_tx {
-        let _ = tx.send(StreamEvent::done()).await;
-    }
+    let _ = event_tx.send(StreamEvent::done()).await;
 
     Err(KernelError::MaxIterations(ctx.config.max_iterations))
 }

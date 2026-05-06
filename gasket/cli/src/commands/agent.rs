@@ -301,19 +301,21 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             // Single message mode
             info!("Processing message: {}", msg);
             let session_key = SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
-            if use_streaming {
-                use gasket_engine::session::HandleOutcomeStreaming;
-                let outcome = agent
-                    .handle_inbound_streaming_with_channel(&msg, &session_key, None)
-                    .await?;
-                match outcome {
-                    HandleOutcomeStreaming::Consumed => {
+            use gasket_engine::session::HandleOutcome;
+            let outcome = agent
+                .handle_inbound(&msg, &session_key, None)
+                .await?;
+            match outcome {
+                HandleOutcome::Consumed => {
+                    if use_streaming {
                         println!("(answered)");
                     }
-                    HandleOutcomeStreaming::Replied {
-                        events: mut event_rx,
-                        result: result_handle,
-                    } => {
+                }
+                HandleOutcome::Replied {
+                    events: mut event_rx,
+                    result: result_handle,
+                } => {
+                    if use_streaming {
                         let forward_handle = tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
                                 match event {
@@ -331,16 +333,16 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         if let Err(e) = result {
                             return Err(anyhow::anyhow!("Task join error: {}", e));
                         }
-                    }
-                }
-            } else {
-                use gasket_engine::session::HandleOutcome;
-                match agent.handle_inbound(&msg, &session_key, None).await {
-                    Ok(HandleOutcome::Consumed) => {}
-                    Ok(HandleOutcome::Replied(resp)) => {
+                    } else {
+                        // Drain events in non-streaming mode; only the final result matters.
+                        tokio::spawn(async move {
+                            while event_rx.recv().await.is_some() {}
+                        });
+                        let resp = result_handle
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
                         print_response_with_reasoning(&resp, render_md);
                     }
-                    Err(e) => return Err(anyhow::anyhow!("{}", e)),
                 }
             }
         }
@@ -474,20 +476,21 @@ async fn run_llm_input(
     use_streaming: bool,
     render_md: bool,
 ) {
-    if use_streaming {
-        println!();
-        let outcome = agent
-            .handle_inbound_streaming_with_channel(text, session_key, tool_filter)
-            .await;
+    println!();
+    use gasket_engine::session::HandleOutcome;
+    let outcome = agent
+        .handle_inbound(text, session_key, tool_filter)
+        .await;
 
-        match outcome {
-            Ok(gasket_engine::session::HandleOutcomeStreaming::Consumed) => {
-                println!();
-            }
-            Ok(gasket_engine::session::HandleOutcomeStreaming::Replied {
-                events: mut event_rx,
-                result: result_handle,
-            }) => {
+    match outcome {
+        Ok(HandleOutcome::Consumed) => {
+            println!();
+        }
+        Ok(HandleOutcome::Replied {
+            events: mut event_rx,
+            result: result_handle,
+        }) => {
+            if use_streaming {
                 let forward_handle = tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
                         match event {
@@ -511,21 +514,23 @@ async fn run_llm_input(
                 } else if let Err(e) = result {
                     println!("\n{} {}\n", "Error:".red(), e);
                 }
-            }
-            Err(e) => {
-                println!("\n{} {}\n", "Error:".red(), e);
+            } else {
+                // Drain events in non-streaming mode; only the final result matters.
+                tokio::spawn(async move {
+                    while event_rx.recv().await.is_some() {}
+                });
+                match result_handle.await {
+                    Ok(Ok(resp)) => {
+                        print_response_with_reasoning(&resp, render_md);
+                        println!();
+                    }
+                    Ok(Err(e)) => println!("\n{} {}\n", "Error:".red(), e),
+                    Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                }
             }
         }
-    } else {
-        use gasket_engine::session::HandleOutcome;
-        match agent.handle_inbound(text, session_key, tool_filter).await {
-            Ok(HandleOutcome::Consumed) => {}
-            Ok(HandleOutcome::Replied(resp)) => {
-                println!();
-                print_response_with_reasoning(&resp, render_md);
-                println!();
-            }
-            Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+        Err(e) => {
+            println!("\n{} {}\n", "Error:".red(), e);
         }
     }
 }

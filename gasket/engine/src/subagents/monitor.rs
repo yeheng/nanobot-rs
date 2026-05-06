@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use crate::kernel::{StepResult, SteppableExecutor, TokenLedger};
+use crate::kernel::{StepResult, SteppableExecutor, TokenLedger, StreamEvent};
 use crate::session::config::AgentConfigExt;
 use crate::session::AgentResponse;
 use crate::tools::ToolRegistry;
@@ -120,6 +120,9 @@ struct MonitoredRunner {
     progress: mpsc::Sender<ProgressUpdate>,
     intervention: mpsc::Receiver<Intervention>,
     max_turns: u32,
+    /// Dummy event sink — kernel is streaming-only, but MonitoredRunner
+    /// reports progress via its own `progress` channel.
+    event_sink: mpsc::Sender<StreamEvent>,
 }
 
 impl MonitoredRunner {
@@ -135,6 +138,7 @@ impl MonitoredRunner {
         } else {
             vec![ChatMessage::system(&system), ChatMessage::user(&spec.task)]
         };
+        let (event_sink, _event_rx) = mpsc::channel(1);
 
         Self {
             spec,
@@ -144,6 +148,7 @@ impl MonitoredRunner {
             progress,
             intervention,
             max_turns: 10,
+            event_sink,
         }
     }
 
@@ -185,7 +190,7 @@ impl MonitoredRunner {
 
             let result = self
                 .steppable
-                .step(&mut self.messages, &mut self.ledger, None)
+                .step(&mut self.messages, &mut self.ledger, &self.event_sink)
                 .await
                 .map_err(|e| anyhow::anyhow!("Step failed: {}", e))?;
 

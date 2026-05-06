@@ -168,28 +168,27 @@ impl Tool for SpawnTool {
         let forward_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 use gasket_types::events::ChatEvent;
-                use gasket_types::StreamEventKind;
 
-                let chat_event = match &event.kind {
-                    StreamEventKind::Thinking { content } => Some(ChatEvent::subagent_thinking(
+                let chat_event = match &event.event {
+                    ChatEvent::Thinking { content } => Some(ChatEvent::subagent_thinking(
                         fwd_subagent_id.clone(),
                         content.as_ref(),
                     )),
-                    StreamEventKind::ToolStart { name, arguments } => {
+                    ChatEvent::ToolStart { name, arguments } => {
                         Some(ChatEvent::subagent_tool_start(
                             fwd_subagent_id.clone(),
                             name.as_ref(),
                             arguments.as_ref().map(|s| s.to_string()),
                         ))
                     }
-                    StreamEventKind::ToolEnd { name, output } => {
+                    ChatEvent::ToolEnd { name, output } => {
                         Some(ChatEvent::subagent_tool_end(
                             fwd_subagent_id.clone(),
                             name.as_ref(),
                             output.as_ref().map(|s| s.to_string()),
                         ))
                     }
-                    StreamEventKind::Content { content } => Some(ChatEvent::subagent_content(
+                    ChatEvent::Content { content } => Some(ChatEvent::subagent_content(
                         fwd_subagent_id.clone(),
                         content.as_ref(),
                     )),

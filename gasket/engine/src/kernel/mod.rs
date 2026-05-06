@@ -34,18 +34,6 @@ fn build_executor(ctx: &RuntimeContext) -> KernelExecutor {
     KernelExecutor::new(ctx.clone())
 }
 
-/// Pure function: execute LLM conversation loop (non-streaming).
-///
-/// Internally delegates to the streaming kernel — events are silently drained.
-pub async fn execute(
-    ctx: &RuntimeContext,
-    messages: Vec<ChatMessage>,
-) -> Result<ExecutionResult, KernelError> {
-    let exec = build_executor(ctx);
-    exec.execute_with_options(messages, &ExecutorOptions::new())
-        .await
-}
-
 /// Pure function: streaming LLM conversation loop.
 pub async fn execute_streaming(
     ctx: &RuntimeContext,
@@ -53,6 +41,5 @@ pub async fn execute_streaming(
     event_tx: mpsc::Sender<StreamEvent>,
 ) -> Result<ExecutionResult, KernelError> {
     let exec = build_executor(ctx);
-    exec.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
-        .await
+    exec.execute(messages, event_tx, &ExecutorOptions::new()).await
 }

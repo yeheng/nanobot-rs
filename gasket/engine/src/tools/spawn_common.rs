@@ -24,25 +24,24 @@ pub fn spawn_event_forwarder(
     outbound_tx: mpsc::Sender<OutboundMessage>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        use gasket_types::StreamEventKind;
         while let Some(event) = event_rx.recv().await {
-            let chat_event = match &event.kind {
-                StreamEventKind::Thinking { content } => {
+            let chat_event = match &event.event {
+                ChatEvent::Thinking { content } => {
                     Some(ChatEvent::subagent_thinking(&subagent_id, content.as_ref()))
                 }
-                StreamEventKind::ToolStart { name, arguments } => {
+                ChatEvent::ToolStart { name, arguments } => {
                     Some(ChatEvent::subagent_tool_start(
                         &subagent_id,
                         name.as_ref(),
                         arguments.as_ref().map(|s| s.to_string()),
                     ))
                 }
-                StreamEventKind::ToolEnd { name, output } => Some(ChatEvent::subagent_tool_end(
+                ChatEvent::ToolEnd { name, output } => Some(ChatEvent::subagent_tool_end(
                     &subagent_id,
                     name.as_ref(),
                     output.as_ref().map(|s| s.to_string()),
                 )),
-                StreamEventKind::Content { content } => {
+                ChatEvent::Content { content } => {
                     Some(ChatEvent::subagent_content(&subagent_id, content.as_ref()))
                 }
                 _ => None,

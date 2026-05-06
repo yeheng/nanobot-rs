@@ -1,13 +1,10 @@
 //! Web fetch tool for downloading web content
 
 use async_trait::async_trait;
-use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::Cursor;
 use tracing::{info, instrument, warn};
-use url::Url;
 
 use super::{build_client_with_proxy, simple_schema, Tool, ToolContext, ToolError, ToolResult};
 
@@ -164,51 +161,55 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Extract core content from HTML using Readability algorithm.
+/// Extract core content from HTML.
 ///
-/// Offloaded to `spawn_blocking` because DOM parsing is CPU-intensive
-/// and must not block the async runtime.
+/// 1. Primary: `dom_smoothie` — Mozilla Readability algorithm, finds the main
+///    article content and strips navigation/ads/sidebars.
+/// 2. Fallback: `fast_html2md` — streaming HTML→Markdown rewriter (lol_html),
+///    extremely fast and memory-efficient, preserves headings/lists/links.
+///
+/// Offloaded to `spawn_blocking` because DOM parsing is CPU-intensive.
 async fn extract_core_content(url_str: &str, html: String) -> Result<String, anyhow::Error> {
     let url_clone = url_str.to_string();
 
     tokio::task::spawn_blocking(move || {
-        let parsed_url =
-            Url::parse(&url_clone).map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
-
-        let mut cursor = Cursor::new(html.as_bytes());
-
-        match readability::extractor::extract(&mut cursor, &parsed_url) {
-            Ok(product) => {
-                let title = product.title.trim();
-                let text = product.text.trim();
-
-                if text.len() < 100 {
-                    Ok(fallback_extract(&html))
-                } else {
-                    Ok(format!("Title: {}\n\n{}", title, text))
-                }
+        // ── Primary: dom_smoothie ───────────────────────────────────────
+        let dom_result = (|| -> anyhow::Result<String> {
+            let cfg = dom_smoothie::Config::default();
+            let mut readability = dom_smoothie::Readability::new(html.clone(), Some(url_clone.as_str()), Some(cfg))
+                .map_err(|e| anyhow::anyhow!("Readability init failed: {}", e))?;
+            let article = readability
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Readability parse failed: {}", e))?;
+            let text = article.text_content.trim();
+            if text.len() < 100 {
+                return Err(anyhow::anyhow!(
+                    "Extracted text too short ({} chars)",
+                    text.len()
+                ));
             }
-            Err(_) => Ok(fallback_extract(&html)),
+            let title = article.title.trim();
+            Ok(format!("Title: {}\n\n{}", title, text))
+        })();
+
+        match dom_result {
+            Ok(text) => return Ok(text),
+            Err(e) => {
+                tracing::warn!("dom_smoothie extraction failed: {}", e);
+            }
+        }
+
+        // ── Fallback: fast_html2md ──────────────────────────────────────
+        let md = html2md::rewrite_html(&html, false);
+        let md = md.trim();
+        if md.len() >= 50 {
+            Ok(md.to_string())
+        } else {
+            Err(anyhow::anyhow!(
+                "Both extractors failed (dom_smoothie + fast_html2md)"
+            ))
         }
     })
     .await
     .map_err(|e| anyhow::anyhow!("HTML extraction task panicked: {}", e))?
-}
-
-/// Brute-force fallback: strip scripts/styles/HTML tags via regex.
-fn fallback_extract(html: &str) -> String {
-    static RE_SCRIPT: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static RE_STYLE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static RE_TAGS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static RE_WS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-
-    let re_script = RE_SCRIPT.get_or_init(|| Regex::new(r"(?is)<script.*?>.*?</script>").unwrap());
-    let re_style = RE_STYLE.get_or_init(|| Regex::new(r"(?is)<style.*?>.*?</style>").unwrap());
-    let re_tags = RE_TAGS.get_or_init(|| Regex::new(r"(?is)<.*?>").unwrap());
-    let re_ws = RE_WS.get_or_init(|| Regex::new(r"\s+").unwrap());
-
-    let no_scripts = re_script.replace_all(html, " ");
-    let no_styles = re_style.replace_all(&no_scripts, " ");
-    let raw_text = re_tags.replace_all(&no_styles, " ");
-    re_ws.replace_all(&raw_text, " ").trim().to_string()
 }

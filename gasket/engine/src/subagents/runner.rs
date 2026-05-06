@@ -33,11 +33,16 @@ pub async fn run_subagent(
     let kernel_config = config.to_kernel_config();
     let ctx = RuntimeContext::new_worker(provider, tools, kernel_config);
     let executor = KernelExecutor::new(ctx);
-    executor
-        .execute_with_options(messages, &crate::kernel::ExecutorOptions::new())
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let opts = crate::kernel::ExecutorOptions::new();
+    let result = executor
+        .execute(messages, event_tx, &opts)
         .await
         .map_err(|e| {
             warn!("Subagent execution failed: {}", e);
             anyhow::anyhow!("{}", e)
-        })
+        })?;
+    // Drain remaining events so the kernel task doesn't hang
+    while event_rx.recv().await.is_some() {}
+    Ok(result)
 }
