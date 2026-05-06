@@ -242,17 +242,17 @@ async fn execute_with_streaming(
     if let Some(tx) = event_tx {
         let agent_id: Arc<str> = Arc::from(subagent_id);
         while let Some(event) = kernel_rx.recv().await {
-            if tx
-                .try_send(event.with_agent_id(Arc::clone(&agent_id)))
-                .is_err()
-            {
-                tracing::debug!(
-                    "[Subagent {}] Client channel closed, draining kernel events...",
-                    subagent_id
-                );
-                // Drain remaining events to unblock the kernel task.
-                while kernel_rx.recv().await.is_some() {}
-                break;
+            match tx.send(event.with_agent_id(Arc::clone(&agent_id))).await {
+                Ok(()) => {}
+                Err(_) => {
+                    tracing::debug!(
+                        "[Subagent {}] Event channel closed, draining kernel events...",
+                        subagent_id
+                    );
+                    // Drain remaining events to unblock the kernel task.
+                    while kernel_rx.recv().await.is_some() {}
+                    break;
+                }
             }
         }
     } else {

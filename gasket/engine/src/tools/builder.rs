@@ -165,9 +165,11 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     }
 
     // Discover native workflows — only when subagent spawning is available.
-    if subagent_spawner.is_some() {
-        let workflows_dir = std::path::Path::new("workspace/workflows");
-        match super::discover_workflows(workflows_dir) {
+    if role.can_spawn() {
+        let workflows_dir = workspace
+            .join("workflows");
+        tracing::info!("Looking for native workflows in {:?}", workflows_dir);
+        match super::discover_workflows(workflows_dir.as_path()) {
             Ok(workflow_tools) => {
                 for tool in workflow_tools {
                     tools.register(Box::new(tool));

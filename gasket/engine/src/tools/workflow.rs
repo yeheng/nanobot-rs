@@ -185,11 +185,25 @@ impl WorkflowTool {
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
+        // Notify frontend that subagent has started.
+        let _ = ctx
+            .outbound_tx
+            .send(gasket_types::events::OutboundMessage::with_ws_message(
+                ctx.session_key.channel.clone(),
+                ctx.session_key.chat_id.clone(),
+                gasket_types::events::ChatEvent::subagent_started(
+                    subagent_id.clone(),
+                    step_name,
+                    0,
+                ),
+            ))
+            .await;
+
         // Forward streaming events to WebSocket in the background.
         let fwd_session_key = ctx.session_key.clone();
         let fwd_outbound_tx = ctx.outbound_tx.clone();
         let fwd_subagent_id = subagent_id.clone();
-        let _forward_handle = tokio::spawn(async move {
+        let forward_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 use gasket_types::events::{ChatEvent, OutboundMessage};
 
@@ -216,6 +230,8 @@ impl WorkflowTool {
                         &fwd_subagent_id,
                         content.as_ref(),
                     )),
+                    ChatEvent::Done => None,
+                    ChatEvent::Text { .. } => None,
                     _ => None,
                 };
 
@@ -235,12 +251,30 @@ impl WorkflowTool {
             ToolError::ExecutionError(format!("Subagent result channel closed: {}", e))
         })?;
 
+        // Ensure event forwarding completes (or channel is closed) before returning.
+        let _ = forward_handle.await;
+
         info!(
             "[Workflow {}] Step '{}' completed (tools_used: {})",
             self.manifest.name,
             step_name,
             result.response.tools_used.len()
         );
+
+        // Notify frontend that subagent has completed.
+        let _ = ctx
+            .outbound_tx
+            .send(gasket_types::events::OutboundMessage::with_ws_message(
+                ctx.session_key.channel.clone(),
+                ctx.session_key.chat_id.clone(),
+                gasket_types::events::ChatEvent::subagent_completed(
+                    subagent_id,
+                    0,
+                    result.response.content.clone(),
+                    result.response.tools_used.len() as u32,
+                ),
+            ))
+            .await;
 
         Ok(result.response.content)
     }

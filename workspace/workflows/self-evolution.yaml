@@ -1,0 +1,209 @@
+name: "self_evolution"
+description: "LLM自我进化学习流程 - Research → Execute → Evaluate → Diagnose → Refine → Validate → Distill 闭环系统"
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: "任务描述"
+    context:
+      type: string
+      description: "相关上下文信息"
+      default: ""
+    constraints:
+      type: string
+      description: "约束条件"
+      default: ""
+    max_cycles:
+      type: integer
+      description: "②→⑤ 最大循环次数 (default 3)"
+      default: 3
+    min_accept_score:
+      type: number
+      description: "最终接受阈值 (default 7)"
+      default: 7
+    reasoner_model:
+      type: string
+      description: "Model for evaluation/diagnosis. Optional; engine default if omitted."
+    executor_model:
+      type: string
+      description: "Model for execution/refinement. Optional; engine default if omitted."
+  required: ["task"]
+start_step: "execute"
+steps:
+  execute:
+    prompt: |
+      You are solving the following task. Provide your best attempt with full reasoning.
+
+      Task: {{input.task}}
+      Context: {{input.context}}
+      Constraints: {{input.constraints}}
+
+      Output format:
+      - Solution: [your answer]
+      - Reasoning: [step-by-step reasoning chain]
+      - Confidence: [0-1, self-assessed]
+      - Assumptions: [list any assumptions made]
+    next: "evaluate"
+
+  evaluate:
+    prompt: |
+      You are a strict evaluator. Critically assess the following output on these dimensions:
+
+      Original Task: {{input.task}}
+      Output to Evaluate: {{execute}}
+
+      Rate each dimension (1-10) with specific evidence:
+
+      1. **Correctness**: Is the answer factually/logically correct? Where are errors?
+      2. **Completeness**: Does it address ALL parts of the task? What's missing?
+      3. **Reasoning Quality**: Is the logic sound? Any gaps or leaps?
+      4. **Efficiency**: Is the approach optimal? Any unnecessary complexity?
+      5. **Robustness**: Would this work under edge cases?
+
+      For EACH dimension scored < 7:
+      - LOCATE the specific problematic segment
+      - EXPLAIN why it's insufficient
+      - SUGGEST a concrete improvement instruction
+
+      Output format (JSON):
+      {
+        "scores": {"correctness": N, "completeness": N, "reasoning": N, "efficiency": N, "robustness": N},
+        "overall_score": N,
+        "critical_issues": [
+          {"dimension": "...", "location": "...", "problem": "...", "improvement": "..."}
+        ],
+        "pass_gate": true/false
+      }
+    evaluate:
+      on_pass: "validate"
+      on_fail: "diagnose"
+      condition: "overall_score >= 10"
+
+  diagnose:
+    prompt: |
+      Based on the evaluation below, perform root cause analysis.
+
+      Original Task: {{input.task}}
+      Original Output: {{execute}}
+      Evaluation: {{evaluate}}
+
+      For each critical issue, classify the root cause:
+
+      1. **Knowledge Gap** — Missing or incorrect factual knowledge
+      2. **Reasoning Gap** — Logical errors, missing steps, flawed deduction
+      3. **Strategy Gap** — Wrong approach chosen, poor planning, suboptimal decomposition
+      4. **Instruction Misunderstanding** — Misread the task requirements
+
+      For each classified issue, produce:
+      - Root cause category
+      - Specific description
+      - Learning principle (abstract, reusable — like EvolveR's strategic principles)
+
+      Output format (JSON):
+      {
+        "diagnoses": [
+          {
+            "issue": "...",
+            "category": "knowledge_gap|reasoning_gap|strategy_gap|misunderstanding",
+            "root_cause": "...",
+            "learning_principle": "abstract reusable principle in one sentence"
+          }
+        ],
+        "fix_plan": ["ordered list of specific fixes to apply"]
+      }
+    next: "refine"
+
+  refine:
+    prompt: |
+      Refine the original output by applying the diagnosed fixes IN ORDER.
+
+      Original Task: {{input.task}}
+      Original Output: {{execute}}
+      Fix Plan: {{diagnose.fix_plan}}
+      Learning Principles: {{diagnose.learning_principles}}
+
+      Rules:
+      - Apply fixes sequentially. After each fix, briefly state what changed and why.
+      - Preserve any part of the original output NOT affected by the fixes.
+      - Do NOT introduce new issues while fixing existing ones.
+      - If a fix conflicts with another, explain the trade-off and choose the better option.
+
+      Output format:
+      - Refined Solution: [updated answer]
+      - Change Log: [{fix_applied, what_changed, rationale}]
+      - New Confidence: [0-1]
+      - Remaining Concerns: [any issues you couldn't fully resolve]
+    next: "validate"
+
+  validate:
+    prompt: |
+      You are an independent validator. Evaluate the refined output WITHOUT seeing the previous iterations.
+
+      Original Task: {{input.task}}
+      Refined Output: {{refine}}
+      Previously Identified Issues: {{evaluate.critical_issues}}
+
+      Validation checklist:
+      □ 1. Does it correctly solve the task? (verify against task requirements)
+      □ 2. Are all previously identified issues resolved?
+      □ 3. Are there any NEW issues introduced?
+      □ 4. Is the reasoning chain complete and sound?
+      □ 5. Would an expert in this domain approve this output?
+
+      For each item: PASS / FAIL + evidence
+
+      Final verdict (JSON):
+      {
+        "validation_passed": true/false,
+        "items": {"1": "PASS/FAIL: evidence", "2": "...", "3": "...", "4": "...", "5": "..."},
+        "quality_delta": "improved|unchanged|degraded vs expected baseline",
+        "recommendation": "accept|re_refine|escalate_to_human"
+      }
+    evaluate:
+      on_pass: "distill"
+      on_fail: "diagnose"
+      max_retries: 3
+
+  distill:
+    prompt: |
+      Distill the learning from this task execution into reusable knowledge.
+
+      Task Summary: {{input.task}}
+      Final Output: {{refine}}
+      Learning Principles from Diagnosis: {{diagnose.learning_principles}}
+
+      Produce:
+
+      1. **Skill Update**: If this task revealed a transferable skill pattern, describe it as a reusable procedure.
+         - Skill name
+         - When to apply
+         - Step-by-step procedure
+         - Example
+
+      2. **Knowledge Update**: If this task contained new facts or corrected misconceptions.
+         - What was known (or wrongly assumed)
+         - What is now known
+         - Confidence in new knowledge
+
+      3. **Anti-Pattern**: If this task revealed a common mistake to avoid.
+         - The mistake
+         - How to detect it
+         - How to avoid it
+
+      4. **Meta-Observation**: What does this evolution cycle reveal about the agent's overall capability gaps?
+
+      Output format (JSON):
+      {
+        "skill_updates": [...],
+        "knowledge_updates": [...],
+        "anti_patterns": [...],
+        "meta_observation": "...",
+        "evolution_metrics": {
+          "confidence_delta": N,
+          "issues_resolved": N,
+          "new_issues_introduced": N,
+          "cycles_used": N
+        }
+      }
+    next: "DONE"
