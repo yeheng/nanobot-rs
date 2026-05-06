@@ -34,12 +34,16 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         session_key: &SessionKey,
         message: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let response = self
+        use crate::session::HandleOutcome;
+        let outcome = self
             .session
-            .process_direct(message, session_key, None)
+            .handle_inbound(message, session_key, None)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        Ok(response.content)
+        Ok(match outcome {
+            HandleOutcome::Consumed => String::new(),
+            HandleOutcome::Replied(resp) => resp.content,
+        })
     }
 
     async fn handle_streaming_message(
@@ -61,13 +65,27 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
     > {
         let session_key_owned = session_key.clone();
 
-        // AgentSession now returns clean ChatEvents directly.
-        // No more StreamEvent -> BrokerEvent translation layers.
-        let (chat_rx, result_handle) = self
+        use crate::session::HandleOutcomeStreaming;
+        let outcome = self
             .session
-            .process_direct_streaming_with_channel(message, session_key, tool_filter)
+            .handle_inbound_streaming_with_channel(message, session_key, tool_filter)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+        let (chat_rx, result_handle) = match outcome {
+            HandleOutcomeStreaming::Consumed => {
+                let (_chat_tx, chat_rx) = tokio::sync::mpsc::channel(1);
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                let outbound_msg = gasket_types::events::OutboundMessage::new(
+                    gasket_types::events::ChannelType::Cli,
+                    session_key.to_string(),
+                    String::new(),
+                );
+                let _ = result_tx.send(Ok(outbound_msg));
+                return Ok((chat_rx, result_rx));
+            }
+            HandleOutcomeStreaming::Replied { events, result } => (events, result),
+        };
 
         // Spawn a task to wrap the final result
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
