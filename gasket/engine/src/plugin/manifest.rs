@@ -118,6 +118,9 @@ pub enum Permission {
 
     /// Permission to send messages to channels
     MessageSend,
+
+    /// Permission to ask the user a question and wait for their reply
+    UserAsk,
 }
 
 impl Permission {
@@ -133,6 +136,7 @@ impl Permission {
             Permission::WikiDecay => "wiki/decay",
             Permission::SubagentSpawn => "subagent/spawn",
             Permission::MessageSend => "message/send",
+            Permission::UserAsk => "user/ask",
         }
     }
 }
@@ -282,5 +286,15 @@ parameters:
         assert_eq!(Permission::WikiWrite.method_name(), "wiki/write");
         assert_eq!(Permission::WikiDecay.method_name(), "wiki/decay");
         assert_eq!(Permission::SubagentSpawn.method_name(), "subagent/spawn");
+        assert_eq!(Permission::UserAsk.method_name(), "user/ask");
+    }
+
+    #[test]
+    fn test_permission_user_ask_serde_roundtrip() {
+        let perms = vec![Permission::UserAsk];
+        let yaml = serde_yaml::to_string(&perms).expect("serialize");
+        assert!(yaml.contains("user_ask"));
+        let parsed: Vec<Permission> = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(parsed, vec![Permission::UserAsk]);
     }
 }

@@ -315,6 +315,12 @@ pub fn build_dispatcher() -> RpcDispatcher {
         "send_message",
     )))
     .unwrap();
+    d.register(Arc::new(ToolDelegateHandler::new(
+        "user/ask",
+        Permission::UserAsk,
+        "ask_user",
+    )))
+    .unwrap();
     d
 }
 
