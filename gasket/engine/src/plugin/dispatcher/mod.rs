@@ -85,6 +85,9 @@ pub struct EngineHandle {
 
     /// LLM provider for direct chat completions
     pub provider: Arc<dyn LlmProvider>,
+
+    /// Pending-ask registry. None in contexts that don't support user prompting.
+    pub pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
 }
 
 /// Context provided to RPC handlers during execution.
@@ -255,6 +258,10 @@ impl RpcHandler for ToolDelegateHandler {
             tool_ctx = tool_ctx.spawner(spawner.clone());
         }
 
+        if let Some(registry) = &ctx.engine.pending_asks {
+            tool_ctx = tool_ctx.pending_asks(registry.clone());
+        }
+
         // Inject SynthesisCallback for streaming channels
         if ctx.engine.session_key.channel.supports_streaming() {
             let model = ctx.engine.provider.default_model().to_string();
@@ -385,6 +392,7 @@ mod tests {
                 )),
                 tool_registry: Arc::new(ToolRegistry::new()),
                 provider: Arc::new(MockProvider),
+                pending_asks: None,
             }),
         }
     }

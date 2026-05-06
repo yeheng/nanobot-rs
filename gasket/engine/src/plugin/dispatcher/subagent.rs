@@ -218,6 +218,7 @@ mod tests {
                 )),
                 tool_registry: Arc::new(ToolRegistry::new()),
                 provider: Arc::new(MockProvider),
+                pending_asks: None,
             }),
         };
         (ctx, rx)

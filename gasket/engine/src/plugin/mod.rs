@@ -102,6 +102,7 @@ impl PluginTool {
                 token_tracker: ctx.token_tracker.clone(),
                 tool_registry: resources.tool_registry.clone(),
                 provider: resources.provider.clone(),
+                pending_asks: ctx.pending_asks.clone(),
             }),
         })
     }
