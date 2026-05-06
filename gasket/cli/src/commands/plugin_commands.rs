@@ -179,9 +179,7 @@ fn format_dev_workflow_output(output: &str) -> Option<String> {
     let reason = result.get("last_review_reason")?.as_str().unwrap_or("");
 
     let status = if passed { "✅ PASS" } else { "❌ FAIL" };
-    let mut md = format!(
-        "## Dev Workflow Result: {status}\n\n"
-    );
+    let mut md = format!("## Dev Workflow Result: {status}\n\n");
     md.push_str(&format!("- **Iterations**: {iterations}\n"));
     if !reason.is_empty() {
         md.push_str(&format!("- **Review**: {reason}\n"));

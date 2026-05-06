@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::events::{OutboundMessage, SessionKey};
+use crate::pending_ask::DynPendingAskRegistry;
 use tokio_util::sync::CancellationToken;
 
 /// Result type for tool execution
@@ -67,7 +68,12 @@ pub trait SubagentSpawner: Send + Sync {
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let (tx, result_rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(result);
-        Ok((String::new(), rx, result_rx, tokio_util::sync::CancellationToken::new()))
+        Ok((
+            String::new(),
+            rx,
+            result_rx,
+            tokio_util::sync::CancellationToken::new(),
+        ))
     }
 }
 
@@ -135,6 +141,9 @@ pub struct ToolContext {
     /// Shared cancellation token for the current aggregator task.
     /// Tools use this to cancel previous aggregators when spawning new ones.
     pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    /// Pending-ask registry for the `ask_user` tool. None in contexts that
+    /// don't need user prompting (CLI white-box, unit tests).
+    pub pending_asks: Option<DynPendingAskRegistry>,
 }
 
 impl Default for ToolContext {
@@ -148,6 +157,7 @@ impl Default for ToolContext {
             ws_summary_limit: 0,
             synthesis_callback: None,
             aggregator_cancel: None,
+            pending_asks: None,
         }
     }
 }
@@ -162,6 +172,7 @@ impl std::fmt::Debug for ToolContext {
             .field("ws_summary_limit", &self.ws_summary_limit)
             .field("synthesis_callback", &self.synthesis_callback.is_some())
             .field("aggregator_cancel", &self.aggregator_cancel.is_some())
+            .field("pending_asks", &self.pending_asks.is_some())
             .finish()
     }
 }
@@ -205,6 +216,11 @@ impl ToolContext {
         cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
     ) -> Self {
         self.aggregator_cancel = Some(cancel);
+        self
+    }
+
+    pub fn pending_asks(mut self, registry: DynPendingAskRegistry) -> Self {
+        self.pending_asks = Some(registry);
         self
     }
 }
@@ -386,6 +402,9 @@ mod tests {
     #[test]
     fn default_tool_context_has_no_spawner() {
         let ctx = ToolContext::default();
-        assert!(ctx.spawner.is_none(), "default ToolContext must not auto-attach a spawner");
+        assert!(
+            ctx.spawner.is_none(),
+            "default ToolContext must not auto-attach a spawner"
+        );
     }
 }

@@ -12,17 +12,21 @@ pub fn help(snapshot: Arc<HelpSnapshot>) -> Command {
         name: "help".into(),
         description: "Show available commands".into(),
         aliases: vec!["?".into()],
-        kind: CommandKind::Builtin(Arc::new(move |_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
-            let snap = snapshot.clone();
-            async move {
-                let entries: &[HelpEntry] = match snap.get() {
-                    Some(v) => v,
-                    None => return CommandResult::Error("help snapshot not initialised".into()),
-                };
-                CommandResult::Print(render_help(entries))
-            }
-            .boxed()
-        })),
+        kind: CommandKind::Builtin(Arc::new(
+            move |_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
+                let snap = snapshot.clone();
+                async move {
+                    let entries: &[HelpEntry] = match snap.get() {
+                        Some(v) => v,
+                        None => {
+                            return CommandResult::Error("help snapshot not initialised".into())
+                        }
+                    };
+                    CommandResult::Print(render_help(entries))
+                }
+                .boxed()
+            },
+        )),
     }
 }
 
@@ -76,7 +80,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            _: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),

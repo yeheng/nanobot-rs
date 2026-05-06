@@ -232,6 +232,9 @@ impl SteppableExecutor {
         if let Some(ref cancel) = self.ctx.aggregator_cancel {
             ctx = ctx.aggregator_cancel(cancel.clone());
         }
+        if let Some(ref registry) = self.ctx.pending_asks {
+            ctx = ctx.pending_asks(registry.clone());
+        }
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())

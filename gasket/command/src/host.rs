@@ -55,7 +55,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             self.current.lock().unwrap().clone()
         }
-        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            new: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             let mut g = self.current.lock().unwrap();
             let previous = g.clone();
             *g = new.to_string();

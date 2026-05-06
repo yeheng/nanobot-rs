@@ -133,6 +133,8 @@ impl SessionBuilder {
 
         // ── 2. Kernel runtime context ────────────────────────────────
         let kernel_config = self.config.to_kernel_config();
+        let pending_asks = Arc::new(crate::session::PendingAskRegistryImpl::new());
+
         let runtime_ctx = RuntimeContext {
             provider: self.provider.clone(),
             tools: self.tools.clone(),
@@ -144,6 +146,9 @@ impl SessionBuilder {
             session_key: None,
             outbound_tx: None,
             aggregator_cancel: None,
+            pending_asks: Some(
+                pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
+            ),
         };
 
         // ── 3. Context compactor ─────────────────────────────────────
@@ -253,6 +258,7 @@ impl SessionBuilder {
             pricing: None,
             finalizer,
             pending_done,
+            pending_asks,
             #[cfg(feature = "embedding")]
             embedding_indexer,
         })

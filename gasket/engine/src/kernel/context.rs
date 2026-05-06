@@ -42,6 +42,8 @@ pub struct RuntimeContext {
     /// Shared cancellation token for the current aggregator task.
     /// Tools check/inject this to support user interruption.
     pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    /// Pending-ask registry for the `ask_user` tool. None disables user prompting.
+    pub pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
 }
 
 impl RuntimeContext {
@@ -62,6 +64,7 @@ impl RuntimeContext {
             session_key: None,
             outbound_tx: None,
             aggregator_cancel: None,
+            pending_asks: None,
         }
     }
 
@@ -83,6 +86,7 @@ impl RuntimeContext {
             session_key: None,
             outbound_tx: None,
             aggregator_cancel: None,
+            pending_asks: None,
         }
     }
 }
@@ -100,6 +104,7 @@ impl Clone for RuntimeContext {
             session_key: self.session_key.clone(),
             outbound_tx: self.outbound_tx.clone(),
             aggregator_cancel: self.aggregator_cancel.clone(),
+            pending_asks: self.pending_asks.clone(),
         }
     }
 }

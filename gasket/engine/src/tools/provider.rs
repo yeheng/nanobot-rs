@@ -12,11 +12,11 @@ use crate::{MaintenanceStore, SessionStore};
 use gasket_wiki::{PageIndex, PageStore};
 
 use super::{
-    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
-    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool, ReadFileTool,
-    SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool,
-    WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
-    WriteFileTool,
+    registry::ToolRegistry, AskUserTool, ClearSessionTool, CreatePlanTool, EditFileTool,
+    EvolutionConfig, EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool,
+    ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool,
+    WebSearchTool, WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool,
+    WikiWriteTool, WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.
@@ -124,6 +124,17 @@ impl ToolProvider for CoreToolProvider {
             "Web Search",
             "web",
             ["search", "web"],
+            false,
+            false
+        );
+
+        // User interaction
+        reg!(
+            registry,
+            AskUserTool::new(),
+            "Ask User",
+            "interaction",
+            ["user", "prompt"],
             false,
             false
         );
@@ -418,7 +429,10 @@ mod tests {
         let mut registry = ToolRegistry::new();
         CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Worker)
             .register_tools(&mut registry);
-        assert!(registry.get("spawn").is_none(), "Worker registry must not contain `spawn`");
+        assert!(
+            registry.get("spawn").is_none(),
+            "Worker registry must not contain `spawn`"
+        );
         assert!(
             registry.get("spawn_parallel").is_none(),
             "Worker registry must not contain `spawn_parallel`"
@@ -429,9 +443,17 @@ mod tests {
     fn orchestrator_provider_registers_spawn_tools() {
         let cfg = crate::config::Config::default();
         let mut registry = ToolRegistry::new();
-        CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Orchestrator)
-            .register_tools(&mut registry);
-        assert!(registry.get("spawn").is_some(), "Orchestrator registry must contain `spawn`");
+        CoreToolProvider::new(
+            &cfg,
+            std::path::Path::new("/tmp"),
+            None,
+            AgentRole::Orchestrator,
+        )
+        .register_tools(&mut registry);
+        assert!(
+            registry.get("spawn").is_some(),
+            "Orchestrator registry must contain `spawn`"
+        );
         assert!(
             registry.get("spawn_parallel").is_some(),
             "Orchestrator registry must contain `spawn_parallel`"

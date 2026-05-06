@@ -24,10 +24,7 @@ pub struct DispatchingEngineHandler {
 
 impl DispatchingEngineHandler {
     pub fn new(engine: EngineHandler, dispatcher: Arc<Dispatcher>) -> Self {
-        Self {
-            engine,
-            dispatcher,
-        }
+        Self { engine, dispatcher }
     }
 }
 

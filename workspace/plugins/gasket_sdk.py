@@ -74,6 +74,22 @@ class GasketPlugin:
             {"channel": channel, "chat_id": chat_id, "content": content},
         )
 
+    def ask_user(self, prompt: str, timeout_secs: int) -> dict:
+        """Ask the user a question and block until they reply.
+
+        Returns:
+            {"content": str, "sender_id": str, "channel": str,
+             "timestamp": str, "media": Optional[list]}
+
+        Raises:
+            RuntimeError: on timeout, already-pending, missing registry, or
+            session shutdown.
+        """
+        return self._call("user/ask", {
+            "prompt": prompt,
+            "timeout_secs": timeout_secs,
+        })
+
     # -- internals ----------------------------------------------------------
     def _call(self, method: str, params: dict) -> dict:
         rid = self._next_id

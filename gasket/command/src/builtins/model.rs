@@ -11,23 +11,25 @@ pub fn model() -> Command {
         name: "model".into(),
         description: "Show or switch the active model".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
-            let target = args.trim().to_string();
-            async move {
-                if target.is_empty() {
-                    let id = host.current_model(session_key).await;
-                    return CommandResult::Print(format!("Current model: {id}"));
+        kind: CommandKind::Builtin(Arc::new(
+            |args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
+                let target = args.trim().to_string();
+                async move {
+                    if target.is_empty() {
+                        let id = host.current_model(session_key).await;
+                        return CommandResult::Print(format!("Current model: {id}"));
+                    }
+                    match host.switch_model(session_key, &target).await {
+                        Ok(info) => CommandResult::Print(format!(
+                            "Switched: {} → {}",
+                            info.previous, info.current
+                        )),
+                        Err(e) => CommandResult::Error(format!("model switch failed: {e}")),
+                    }
                 }
-                match host.switch_model(session_key, &target).await {
-                    Ok(info) => CommandResult::Print(format!(
-                        "Switched: {} → {}",
-                        info.previous, info.current
-                    )),
-                    Err(e) => CommandResult::Error(format!("model switch failed: {e}")),
-                }
-            }
-            .boxed()
-        })),
+                .boxed()
+            },
+        )),
     }
 }
 
@@ -54,7 +56,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             self.current.lock().unwrap().clone()
         }
-        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            new: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             match self.switch {
                 Ok(()) => {
                     let mut g = self.current.lock().unwrap();

@@ -213,7 +213,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Build SpawnBudget from config.
     let spawn_budget = gasket_types::SpawnBudget::new(
-        gasket_engine::config::get_config().tools.spawn.max_concurrency,
+        gasket_engine::config::get_config()
+            .tools
+            .spawn
+            .max_concurrency,
     );
 
     // Create model resolver for subagent spawner to support model_id switching.
@@ -299,35 +302,46 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             info!("Processing message: {}", msg);
             let session_key = SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
             if use_streaming {
-                // Use channel-based streaming API
-                let (mut event_rx, result_handle) = agent
-                    .process_direct_streaming_with_channel(&msg, &session_key, None)
+                use gasket_engine::session::HandleOutcomeStreaming;
+                let outcome = agent
+                    .handle_inbound_streaming_with_channel(&msg, &session_key, None)
                     .await?;
-
-                // Forward events to callback
-                let forward_handle = tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        match event {
-                            ChatEvent::Content { content } => print!("{}", content),
-                            ChatEvent::Thinking { content } => {
-                                eprint!("{}", content.dimmed().italic());
-                                std::io::stderr().flush().ok();
+                match outcome {
+                    HandleOutcomeStreaming::Consumed => {
+                        println!("(answered)");
+                    }
+                    HandleOutcomeStreaming::Replied {
+                        events: mut event_rx,
+                        result: result_handle,
+                    } => {
+                        let forward_handle = tokio::spawn(async move {
+                            while let Some(event) = event_rx.recv().await {
+                                match event {
+                                    ChatEvent::Content { content } => print!("{}", content),
+                                    ChatEvent::Thinking { content } => {
+                                        eprint!("{}", content.dimmed().italic());
+                                        std::io::stderr().flush().ok();
+                                    }
+                                    ChatEvent::Done => println!(),
+                                    _ => {}
+                                }
                             }
-                            ChatEvent::Done => println!(),
-                            // TokenStats are handled internally; skip other non-user events
-                            _ => {}
+                        });
+                        let (result, _) = tokio::join!(result_handle, forward_handle);
+                        if let Err(e) = result {
+                            return Err(anyhow::anyhow!("Task join error: {}", e));
                         }
                     }
-                });
-
-                // Wait for streaming to complete
-                let (result, _) = tokio::join!(result_handle, forward_handle);
-                if let Err(e) = result {
-                    return Err(anyhow::anyhow!("Task join error: {}", e));
                 }
             } else {
-                let response = agent.process_direct(&msg, &session_key, None).await?;
-                print_response_with_reasoning(&response, render_md);
+                use gasket_engine::session::HandleOutcome;
+                match agent.handle_inbound(&msg, &session_key, None).await {
+                    Ok(HandleOutcome::Consumed) => {}
+                    Ok(HandleOutcome::Replied(resp)) => {
+                        print_response_with_reasoning(&resp, render_md);
+                    }
+                    Err(e) => return Err(anyhow::anyhow!("{}", e)),
+                }
             }
         }
         None => {
@@ -462,12 +476,18 @@ async fn run_llm_input(
 ) {
     if use_streaming {
         println!();
-        let streaming_result = agent
-            .process_direct_streaming_with_channel(text, session_key, tool_filter)
+        let outcome = agent
+            .handle_inbound_streaming_with_channel(text, session_key, tool_filter)
             .await;
 
-        match streaming_result {
-            Ok((mut event_rx, result_handle)) => {
+        match outcome {
+            Ok(gasket_engine::session::HandleOutcomeStreaming::Consumed) => {
+                println!();
+            }
+            Ok(gasket_engine::session::HandleOutcomeStreaming::Replied {
+                events: mut event_rx,
+                result: result_handle,
+            }) => {
                 let forward_handle = tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
                         match event {
@@ -497,10 +517,12 @@ async fn run_llm_input(
             }
         }
     } else {
-        match agent.process_direct(text, session_key, tool_filter).await {
-            Ok(response) => {
+        use gasket_engine::session::HandleOutcome;
+        match agent.handle_inbound(text, session_key, tool_filter).await {
+            Ok(HandleOutcome::Consumed) => {}
+            Ok(HandleOutcome::Replied(resp)) => {
                 println!();
-                print_response_with_reasoning(&response, render_md);
+                print_response_with_reasoning(&resp, render_md);
                 println!();
             }
             Err(e) => println!("\n{} {}\n", "Error:".red(), e),

@@ -11,13 +11,15 @@ pub fn new() -> Command {
         name: "new".into(),
         description: "Start a new conversation".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
-            async move {
-                host.clear_session(session_key).await;
-                CommandResult::Print(format!("✓ Session cleared ({})", session_key))
-            }
-            .boxed()
-        })),
+        kind: CommandKind::Builtin(Arc::new(
+            |_args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
+                async move {
+                    host.clear_session(session_key).await;
+                    CommandResult::Print(format!("✓ Session cleared ({})", session_key))
+                }
+                .boxed()
+            },
+        )),
     }
 }
 
@@ -45,7 +47,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            _: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),

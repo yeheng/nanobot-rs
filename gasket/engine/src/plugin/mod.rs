@@ -102,6 +102,7 @@ impl PluginTool {
                 token_tracker: ctx.token_tracker.clone(),
                 tool_registry: resources.tool_registry.clone(),
                 provider: resources.provider.clone(),
+                pending_asks: ctx.pending_asks.clone(),
             }),
         })
     }
@@ -212,10 +213,7 @@ impl Tool for PluginTool {
                 let mut init_args = args.clone();
                 let default_model = dispatch_ctx.engine.provider.default_model();
                 if let Some(obj) = init_args.as_object_mut() {
-                    obj.insert(
-                        "_gasket_default_model".to_string(),
-                        default_model.into(),
-                    );
+                    obj.insert("_gasket_default_model".to_string(), default_model.into());
                     obj.insert(
                         "_gasket_channel".to_string(),
                         ctx.session_key.channel.to_string().into(),

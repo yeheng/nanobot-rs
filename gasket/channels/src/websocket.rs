@@ -359,11 +359,11 @@ async fn handle_socket(socket: WebSocket, manager: Arc<WebSocketManager>, query:
                             if msg_type == Some("approval_response") {
                                 let router_guard = manager.approval_router.read().ok();
                                 if let Some(Some(ref router)) = router_guard.as_deref() {
-                                    if let Ok(response) =
-                                        serde_json::from_value::<
-                                            gasket_types::ToolApprovalResponse,
-                                        >(json.clone())
-                                    {
+                                    if let Ok(response) = serde_json::from_value::<
+                                        gasket_types::ToolApprovalResponse,
+                                    >(
+                                        json.clone()
+                                    ) {
                                         debug!(
                                             "Routing approval_response for request {}",
                                             response.request_id

@@ -116,7 +116,8 @@ impl Tool for SpawnParallelTool {
 
         let spawner = ctx.spawner.as_ref().ok_or_else(|| {
             ToolError::ExecutionError(
-                "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+                "Subagent spawning is not available in this context (no spawner configured)"
+                    .to_string(),
             )
         })?;
 
@@ -244,7 +245,6 @@ impl Tool for SpawnParallelTool {
             let outbound_tx = ctx.outbound_tx.clone();
             let ws_summary_limit = ctx.ws_summary_limit;
             let handle = tokio::spawn(async move {
-
                 let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id)
                     .await
