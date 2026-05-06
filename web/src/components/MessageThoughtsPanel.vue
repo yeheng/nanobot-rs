@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   Sparkles,
   ChevronDown,
@@ -28,6 +28,22 @@ const expanded = ref(false);
 
 const hasThinking = computed(() => !!props.message.thinking);
 const hasTools = computed(() => (props.message.toolCalls?.length || 0) > 0);
+const hasSubagents = computed(() => (props.subagents?.length || 0) > 0);
+
+// Auto-expand when subagents are active so users see real-time progress
+watch(
+  () => props.subagents,
+  (subagents) => {
+    if (
+      subagents &&
+      subagents.length > 0 &&
+      (props.subagentPhase === 'running' || props.subagentPhase === 'synthesizing')
+    ) {
+      expanded.value = true;
+    }
+  },
+  { immediate: true, deep: true }
+);
 const runningToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'running').length || 0);
 const completedToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'complete').length || 0);
 const errorToolCount = computed(() => props.message.toolCalls?.filter(t => t.status === 'error').length || 0);
@@ -117,7 +133,7 @@ function iconForStatus(status: ToolCall['status']) {
 </script>
 
 <template>
-  <div v-if="hasThinking || hasTools" class="w-full my-1">
+  <div v-if="hasThinking || hasTools || hasSubagents" class="w-full my-1">
     <!-- Collapsible header -->
     <button
       @click="expanded = !expanded"

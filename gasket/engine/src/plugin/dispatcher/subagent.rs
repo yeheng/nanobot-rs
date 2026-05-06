@@ -92,6 +92,23 @@ impl RpcHandler for SubagentSpawnHandler {
             .await
             .map_err(|e| RpcError::internal_error(format!("Subagent result dropped: {}", e)))?;
 
+        // Notify frontend that the subagent has completed
+        let summary = result.response.content.chars().take(500).collect::<String>();
+        let _ = ctx
+            .engine
+            .outbound_tx
+            .send(gasket_types::events::OutboundMessage::with_ws_message(
+                ctx.engine.session_key.channel.clone(),
+                ctx.engine.session_key.chat_id.clone(),
+                gasket_types::events::ChatEvent::subagent_completed(
+                    subagent_id.clone(),
+                    0,
+                    summary,
+                    result.response.tools_used.len() as u32,
+                ),
+            ))
+            .await;
+
         let response = SpawnResponse {
             id: result.id,
             task: result.task,

@@ -66,6 +66,9 @@ export function useChatSession(chatId: { value: string }) {
     };
     activeSubagents.value.set(msg.id, state);
     chatStore.pushSubagent(chatId.value, botMsg.id, { ...state });
+    if (subagentPhase.value !== 'running' && subagentPhase.value !== 'synthesizing') {
+      subagentPhase.value = 'running';
+    }
 
     // Client-side timeout: if backend never sends completed/error, force-finish the task
     if (subagentTimers.value[msg.id]) clearTimeout(subagentTimers.value[msg.id]);
@@ -154,7 +157,7 @@ export function useChatSession(chatId: { value: string }) {
   const checkAndFinalizeSubagents = () => {
     const allCompleted = [...activeSubagents.value.values()].every(s => s.status !== 'running');
     if (allCompleted && activeSubagents.value.size > 0) {
-      // Phase transition handled by subagent_synthesizing event
+      subagentPhase.value = 'completed';
     }
   };
 
