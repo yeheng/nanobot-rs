@@ -8,9 +8,11 @@ pub mod compactor;
 pub mod config;
 pub mod finalizer;
 pub mod history;
+pub mod pending_ask;
 pub mod prompt;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
+pub use pending_ask::PendingAskRegistryImpl;
 pub use config::{AgentConfig, EvolutionConfig};
 
 use std::path::{Path, PathBuf};

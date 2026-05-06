@@ -56,6 +56,14 @@ pub struct AskRegistration {
     pub answer_rx: oneshot::Receiver<AskAnswer>,
 }
 
+impl std::fmt::Debug for AskRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AskRegistration")
+            .field("ask_id", &self.ask_id)
+            .finish()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
     #[error("session {0} already has a pending ask")]
