@@ -21,6 +21,17 @@ use lancedb::DistanceType;
 
 use crate::vector_store::{SearchResult, StoredEmbedding, VectorRecord, VectorStore};
 
+/// Expand leading `~` in a path to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    }
+}
+
 /// Approximate row count above which an IVF-PQ index is worth building.
 /// Below this, brute force scan is fast enough and IVF-PQ training is
 /// unstable.
@@ -34,8 +45,11 @@ pub struct LanceVectorStore {
 
 impl LanceVectorStore {
     /// Open (or create) a LanceDB table at the given path.
+    ///
+    /// Supports tilde expansion for `~` (home directory).
     pub async fn open(db_path: &str, table_name: &str, dim: usize) -> Result<Self> {
-        let db = lancedb::connect(db_path)
+        let db_path = expand_tilde(db_path);
+        let db = lancedb::connect(&db_path)
             .execute()
             .await
             .map_err(|e| anyhow!("failed to open LanceDB at {db_path}: {e}"))?;

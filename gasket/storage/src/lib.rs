@@ -42,7 +42,6 @@ pub use query::{
 pub use sqlx::sqlite::SqliteRow;
 pub use sqlx::{query as sql_query, query_as, Row, SqlitePool};
 
-/// Get the default configuration directory (`~/.gasket`).
 pub fn config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -63,7 +62,6 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
-    /// (`~/.gasket/gasket.db`).
     pub async fn new() -> anyhow::Result<Self> {
         let path = config_dir().join("gasket.db");
         Self::with_path(path).await

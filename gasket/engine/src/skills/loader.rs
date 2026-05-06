@@ -106,7 +106,7 @@ async fn parse_frontmatter(
 
 /// Skills loader that loads skills from directories
 pub struct SkillsLoader {
-    /// User skills directory (e.g., ~/.gasket/skills/)
+    /// User skills directory
     user_skills_dir: PathBuf,
 
     /// Built-in skills directory (None when not found)

@@ -179,7 +179,6 @@ pub struct VaultStore {
 }
 
 impl VaultStore {
-    /// Default storage path: ~/.gasket/vault/secrets.json
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
             .expect("Could not find home directory")

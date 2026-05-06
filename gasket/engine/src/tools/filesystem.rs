@@ -16,7 +16,7 @@ use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
 pub struct PathValidator {
     /// Canonicalized allowed directory (all symlinks resolved)
     pub allowed_dir: Option<PathBuf>,
-    /// Additional canonicalized directories always allowed (e.g. ~/.gasket)
+    /// Additional canonicalized directories always allowed
     pub extra_allowed_dirs: Vec<PathBuf>,
 }
 
@@ -31,7 +31,7 @@ impl PathValidator {
         }
     }
 
-    /// Build the default list of extra allowed directories (e.g. ~/.gasket).
+    /// Build the default list of extra allowed directories
     ///
     /// Stores raw paths (not canonicalized) so that bootstrap-created
     /// directories are recognised even if they did not exist when the
@@ -52,7 +52,6 @@ impl PathValidator {
                 return true;
             }
         }
-        // Check extra allowed dirs (e.g. ~/.gasket).
         // When the directory exists we canonicalize it. When it does not yet
         // exist (bootstrap) we canonicalize its parent and append the basename,
         // so that the check stays consistent with `path.canonicalize()` on
