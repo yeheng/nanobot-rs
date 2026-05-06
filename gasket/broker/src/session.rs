@@ -236,7 +236,7 @@ async fn run_session_task<H: MessageHandler + 'static>(
             }
         };
 
-        tracing::info!(
+        tracing::debug!(
             target: "gasket::session",
             session_key = %key_str,
             trace_id = ?msg.trace_id,

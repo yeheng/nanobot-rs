@@ -302,6 +302,12 @@ pub fn build_dispatcher() -> RpcDispatcher {
     )))
     .unwrap();
     d.register(Arc::new(SubagentSpawnHandler)).unwrap();
+    d.register(Arc::new(ToolDelegateHandler::new(
+        "message/send",
+        Permission::MessageSend,
+        "send_message",
+    )))
+    .unwrap();
     d
 }
 

@@ -235,6 +235,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         )
         .with_model_resolver(model_resolver),
     );
+    let subagent_spawner_for_commands = subagent_spawner.clone();
 
     // Convert pricing info to ModelPricing
     let pricing = provider_info
@@ -340,7 +341,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             // help snapshot. The CLI is the only path through this dispatcher;
             // bot channels (Telegram, Discord, Slack) keep their existing
             // passthrough behavior — they never see this code.
-            let host = Arc::new(CliCommandHost::new(agent.clone()));
+            let host = Arc::new(CliCommandHost::new(agent.clone(), Some(broker.clone())));
             let help_snap = shared_help_snapshot();
             let user_dir = dirs::home_dir().map(|h| h.join(".gasket/commands"));
 
@@ -357,7 +358,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 builder = builder.user_dir(p);
             }
             // Register all tools (including plugins) as slash commands
-            builder = super::plugin_commands::register_tool_commands(builder, agent.tools());
+            builder = super::plugin_commands::register_tool_commands(
+                builder,
+                agent.tools(),
+                Some(subagent_spawner_for_commands.clone()),
+                Some(broker.clone()),
+            );
             let dispatcher = builder
                 .build()
                 .await

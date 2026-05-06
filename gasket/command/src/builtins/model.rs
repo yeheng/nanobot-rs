@@ -11,7 +11,7 @@ pub fn model() -> Command {
         name: "model".into(),
         description: "Show or switch the active model".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|args: &str, host: &dyn CommandHost, session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(|args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
             let target = args.trim().to_string();
             async move {
                 if target.is_empty() {

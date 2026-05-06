@@ -51,7 +51,7 @@ impl Dispatcher {
 
         match &cmd.kind {
             CommandKind::Builtin(handler) => {
-                RouteOutcome::Handled(handler(args, self.host.as_ref(), session_key).await)
+                RouteOutcome::Handled(handler(args, self.host.clone(), session_key).await)
             }
             CommandKind::Yaml {
                 prompt_template,
@@ -236,7 +236,7 @@ mod tests {
     }
 
     fn echo_handler() -> BuiltinHandler {
-        Arc::new(|args: &str, _host: &dyn CommandHost, _key: &SessionKey| {
+        Arc::new(|args: &str, _host: Arc<dyn CommandHost>, _key: &SessionKey| {
             let s = format!("echo: {}", args);
             async move { CommandResult::Print(s) }.boxed()
         })

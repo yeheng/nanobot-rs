@@ -115,6 +115,9 @@ pub enum Permission {
 
     /// Permission to spawn subagents
     SubagentSpawn,
+
+    /// Permission to send messages to channels
+    MessageSend,
 }
 
 impl Permission {
@@ -129,6 +132,7 @@ impl Permission {
             Permission::WikiWrite => "wiki/write",
             Permission::WikiDecay => "wiki/decay",
             Permission::SubagentSpawn => "subagent/spawn",
+            Permission::MessageSend => "message/send",
         }
     }
 }

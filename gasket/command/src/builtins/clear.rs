@@ -13,7 +13,7 @@ pub fn clear() -> Command {
         name: "clear".into(),
         description: "Clear the terminal screen".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
             async { CommandResult::Print(ANSI_CLEAR.to_string()) }.boxed()
         })),
     }

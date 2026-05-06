@@ -112,7 +112,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // Build the slash-command dispatcher for WebSocket clients.
     // Built-ins are registered here; user YAML commands are loaded from ~/.gasket/commands.
-    let host = Arc::new(CliCommandHost::new(agent.clone()));
+    let host = Arc::new(CliCommandHost::new(agent.clone(), Some(broker.clone())));
     let help_snap = shared_help_snapshot();
     let user_dir = dirs::home_dir().map(|h| h.join(".gasket/commands"));
     let mut dispatcher_builder = DispatcherBuilder::new()
@@ -128,8 +128,12 @@ pub async fn cmd_gateway() -> Result<()> {
         dispatcher_builder = dispatcher_builder.user_dir(p);
     }
     // Register all tools (including plugins) as slash commands
-    dispatcher_builder =
-        super::plugin_commands::register_tool_commands(dispatcher_builder, tools.clone());
+    dispatcher_builder = super::plugin_commands::register_tool_commands(
+        dispatcher_builder,
+        tools.clone(),
+        Some(subagent_spawner.clone()),
+        Some(broker.clone()),
+    );
     let dispatcher = Arc::new(
         dispatcher_builder
             .build()

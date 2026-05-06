@@ -21,6 +21,16 @@ pub trait CommandHost: Send + Sync {
 
     /// Switch the active model for the given session. Returns previous and current ids on success.
     async fn switch_model(&self, key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String>;
+
+    /// Send a message to a specific channel/chat. Default returns an error.
+    async fn send_message(
+        &self,
+        _channel: &str,
+        _chat_id: &str,
+        _content: &str,
+    ) -> Result<(), String> {
+        Err("send_message not implemented for this host".to_string())
+    }
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ pub enum CommandKind {
 }
 
 pub type BuiltinHandler = Arc<
-    dyn for<'a> Fn(&'a str, &'a dyn CommandHost, &'a SessionKey) -> BoxFuture<'a, CommandResult>
+    dyn for<'a> Fn(&'a str, Arc<dyn CommandHost>, &'a SessionKey) -> BoxFuture<'a, CommandResult>
         + Send
         + Sync,
 >;

@@ -12,7 +12,7 @@ pub fn help(snapshot: Arc<HelpSnapshot>) -> Command {
         name: "help".into(),
         description: "Show available commands".into(),
         aliases: vec!["?".into()],
-        kind: CommandKind::Builtin(Arc::new(move |_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(move |_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
             let snap = snapshot.clone();
             async move {
                 let entries: &[HelpEntry] = match snap.get() {

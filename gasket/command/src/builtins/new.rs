@@ -11,7 +11,7 @@ pub fn new() -> Command {
         name: "new".into(),
         description: "Start a new conversation".into(),
         aliases: vec![],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: &dyn CommandHost, session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: Arc<dyn CommandHost>, session_key: &SessionKey| {
             async move {
                 host.clear_session(session_key).await;
                 CommandResult::Print(format!("✓ Session cleared ({})", session_key))

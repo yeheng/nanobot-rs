@@ -14,6 +14,9 @@ class GasketPlugin:
         self._next_id = 1
         self._args: Optional[dict] = None
         self._init_id: Any = None
+        self._default_model: Optional[str] = None
+        self._channel: Optional[str] = None
+        self._chat_id: Optional[str] = None
 
     # -- lifecycle ----------------------------------------------------------
     def get_args(self) -> dict:
@@ -24,7 +27,12 @@ class GasketPlugin:
         if req is None or req.get("method") != "initialize":
             raise RuntimeError(f"Expected initialize, got: {req}")
         self._init_id = req.get("id")
-        self._args = req.get("params", {}) or {}
+        params = req.get("params", {}) or {}
+        # Extract engine metadata injected at initialization
+        self._default_model = params.pop("_gasket_default_model", None)
+        self._channel = params.pop("_gasket_channel", None)
+        self._chat_id = params.pop("_gasket_chat_id", None)
+        self._args = params
         return self._args
 
     def return_result(self, result: dict) -> None:
@@ -48,9 +56,23 @@ class GasketPlugin:
         result = self._call("subagent/spawn", params)
         return result.get("content", "")
 
-    def llm_chat(self, model: str, messages: list, **kwargs: Any) -> dict:
+    def llm_chat(
+        self, model: Optional[str] = None, messages: Optional[list] = None, **kwargs: Any
+    ) -> dict:
         """Direct LLM chat completion via the engine."""
-        return self._call("llm/chat", {"model": model, "messages": messages, **kwargs})
+        if messages is None:
+            raise RuntimeError("messages is required")
+        resolved = model or self._default_model
+        if not resolved:
+            raise RuntimeError("model is required and no default model is configured")
+        return self._call("llm/chat", {"model": resolved, "messages": messages, **kwargs})
+
+    def send_message(self, channel: str, chat_id: str, content: str) -> dict:
+        """Send a message to a specific channel/chat via the engine."""
+        return self._call(
+            "message/send",
+            {"channel": channel, "chat_id": chat_id, "content": content},
+        )
 
     # -- internals ----------------------------------------------------------
     def _call(self, method: str, params: dict) -> dict:

@@ -27,3 +27,4 @@ runtime:
     PYTHONUNBUFFERED: "1"
 permissions:
   - subagent_spawn
+  - message_send

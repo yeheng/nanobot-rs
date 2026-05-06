@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::index::MemoryIndex;
 use crate::provider::EmbeddingProvider;
@@ -80,7 +80,7 @@ impl RecallSearcher {
         query: &str,
         config: &RecallConfig,
     ) -> Result<Vec<(String, f32)>> {
-        info!("Recalling with query: {:?}, config: {:?}", query, config);
+        debug!("Recalling with query: {:?}, config: {:?}", query, config);
         let query_vec = self.provider.embed(query).await?;
 
         // ── Tier 1: hot index (memory) ──────────────────────────────

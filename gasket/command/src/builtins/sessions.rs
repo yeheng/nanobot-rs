@@ -11,7 +11,7 @@ pub fn sessions() -> Command {
         name: "sessions".into(),
         description: "List recent sessions".into(),
         aliases: vec!["ls".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: &dyn CommandHost, _session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
             async move {
                 let rows = host.list_sessions().await;
                 CommandResult::Print(render(&rows))

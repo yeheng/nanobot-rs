@@ -11,7 +11,7 @@ pub fn exit() -> Command {
         name: "exit".into(),
         description: "Exit the REPL".into(),
         aliases: vec!["quit".into(), "q".into(), ":q".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: &dyn CommandHost, _session_key: &SessionKey| {
+        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
             async { CommandResult::Quit }.boxed()
         })),
     }

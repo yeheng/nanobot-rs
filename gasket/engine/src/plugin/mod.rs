@@ -208,7 +208,30 @@ impl Tool for PluginTool {
             PluginProtocol::JsonRpc => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx)?;
                 let daemon = self.get_or_spawn_daemon(&dispatch_ctx).await?;
-                daemon.call("initialize", Some(args)).await
+                // Inject default model so the SDK can fall back when plugin omits it
+                let mut init_args = args.clone();
+                let default_model = dispatch_ctx.engine.provider.default_model();
+                if let Some(obj) = init_args.as_object_mut() {
+                    obj.insert(
+                        "_gasket_default_model".to_string(),
+                        default_model.into(),
+                    );
+                    obj.insert(
+                        "_gasket_channel".to_string(),
+                        ctx.session_key.channel.to_string().into(),
+                    );
+                    obj.insert(
+                        "_gasket_chat_id".to_string(),
+                        ctx.session_key.chat_id.clone().into(),
+                    );
+                } else {
+                    init_args = serde_json::json!({
+                        "_gasket_default_model": default_model,
+                        "_gasket_channel": ctx.session_key.channel.to_string(),
+                        "_gasket_chat_id": ctx.session_key.chat_id.clone(),
+                    });
+                }
+                daemon.call("initialize", Some(init_args)).await
             }
         };
 
