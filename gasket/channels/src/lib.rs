@@ -3,15 +3,14 @@
 //! This crate provides:
 //! - Core channel types (`events`, `config`, `adapter`, `middleware`, `provider`)
 //! - Feature-gated IM adapter implementations (Telegram, Discord, Slack, etc.)
-//! - Platform-specific webhook handlers (DingTalk, Feishu, WeCom)
+//! - Platform-specific webhook handlers (Feishu)
 //!
 //! # Platform Modules
 //!
 //! Each platform module contains both adapter and webhook implementations:
 //!
-//! - [`dingtalk`] - DingTalk (钉钉) adapter and webhook
 //! - [`feishu`] - Feishu (飞书) adapter and webhook
-//! - [`wecom`] - WeCom (企业微信) adapter, webhook, and crypto
+
 //!
 //! # WebSocket & CLI
 //!
@@ -25,19 +24,8 @@ pub mod error;
 pub mod events;
 pub mod middleware;
 pub mod provider;
-// Webhook HTTP server infrastructure
-// Enabled when any platform that needs webhooks is enabled, or when webhook feature is explicitly enabled
-#[cfg(any(
-    feature = "websocket",
-    feature = "dingtalk",
-    feature = "feishu",
-    feature = "wecom"
-))]
-pub mod webhook;
 
 // Platform adapter implementations (feature-gated)
-#[cfg(feature = "dingtalk")]
-pub mod dingtalk;
 #[cfg(feature = "discord")]
 pub mod discord;
 #[cfg(feature = "feishu")]
@@ -50,15 +38,14 @@ pub mod telegram;
 pub mod websocket;
 #[cfg(feature = "wechat")]
 pub mod wechat;
-#[cfg(feature = "wecom")]
-pub mod wecom;
+
 
 // Convenience re-exports
 pub use adapter::ImAdapter;
 pub use approval_router::ApprovalRouter;
 pub use config::{
-    ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
-    WeComConfig, WebSocketConfig, WechatConfig,
+    ChannelsConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
+    WebSocketConfig, WechatConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{

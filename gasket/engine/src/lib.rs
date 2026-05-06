@@ -117,8 +117,6 @@ pub mod broker_outbound;
 
 // Channels
 pub mod channels {
-    #[cfg(feature = "dingtalk")]
-    pub use gasket_channels::dingtalk;
     #[cfg(feature = "discord")]
     pub use gasket_channels::discord;
 
@@ -128,25 +126,16 @@ pub mod channels {
     pub use gasket_channels::slack;
     #[cfg(feature = "telegram")]
     pub use gasket_channels::telegram;
-    #[cfg(any(
-        feature = "websocket",
-        feature = "dingtalk",
-        feature = "feishu",
-        feature = "wecom"
-    ))]
-    pub use gasket_channels::webhook;
     #[cfg(feature = "websocket")]
     pub use gasket_channels::websocket;
-    #[cfg(feature = "wecom")]
-    pub use gasket_channels::wecom;
     #[cfg(feature = "websocket")]
     pub use gasket_channels::WebSocketApprovalCallback;
     pub use gasket_channels::{
         adapter, log_inbound, middleware, ApprovalRouter, ChannelConfigError, ChannelType,
-        ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider,
+        ChannelsConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider,
         ImProviders, InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
-        WeComConfig, WebSocketMessage,
+        WebSocketMessage,
     };
     pub use gasket_types::events::ChatEvent;
 }

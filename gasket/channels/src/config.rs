@@ -24,14 +24,6 @@ pub struct ChannelsConfig {
     #[serde(default)]
     pub feishu: Option<FeishuConfig>,
 
-    /// DingTalk channel
-    #[serde(default)]
-    pub dingtalk: Option<DingTalkConfig>,
-
-    /// WeCom channel
-    #[serde(default)]
-    pub wecom: Option<WeComConfig>,
-
     /// WeChat channel
     #[serde(default)]
     pub wechat: Option<WechatConfig>,
@@ -188,96 +180,6 @@ impl std::fmt::Debug for FeishuConfig {
     }
 }
 
-// ── DingTalk ──────────────────────────────────────────────────────────────
-
-/// DingTalk channel configuration
-#[derive(Clone, Serialize, Deserialize)]
-pub struct DingTalkConfig {
-    /// Enable this channel
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Webhook URL (for outgoing messages)
-    #[serde(default, alias = "webhookUrl")]
-    pub webhook_url: String,
-
-    /// Secret key for signing (optional but recommended)
-    #[serde(default)]
-    pub secret: Option<String>,
-
-    /// Access token (alternative to webhook_url)
-    #[serde(default, alias = "accessToken")]
-    pub access_token: Option<String>,
-
-    /// Allowed users (empty = allow all)
-    #[serde(default, alias = "allowFrom")]
-    pub allow_from: Vec<String>,
-}
-
-impl std::fmt::Debug for DingTalkConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DingTalkConfig")
-            .field("enabled", &self.enabled)
-            .field("webhook_url", &"***REDACTED***")
-            .field("secret", &self.secret.as_ref().map(|_| "***REDACTED***"))
-            .field(
-                "access_token",
-                &self.access_token.as_ref().map(|_| "***REDACTED***"),
-            )
-            .field("allow_from", &self.allow_from)
-            .finish()
-    }
-}
-
-// ── WeCom ─────────────────────────────────────────────────────────────────
-
-/// WeCom channel configuration
-#[derive(Clone, Serialize, Deserialize)]
-pub struct WeComConfig {
-    /// Enable this channel
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Corp ID
-    pub corpid: String,
-
-    /// Corp Secret
-    pub corpsecret: String,
-
-    /// Agent ID for the bot application
-    #[serde(alias = "agentId")]
-    pub agent_id: i64,
-
-    /// Token for callback verification (optional)
-    #[serde(default, alias = "token")]
-    pub token: Option<String>,
-
-    /// EncodingAESKey for callback message encryption/decryption (optional, 43 chars)
-    #[serde(default, alias = "encodingAesKey")]
-    pub encoding_aes_key: Option<String>,
-
-    /// Allowed users (empty = allow all)
-    #[serde(default, alias = "allowFrom")]
-    pub allow_from: Vec<String>,
-}
-
-impl std::fmt::Debug for WeComConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WeComConfig")
-            .field("enabled", &self.enabled)
-            .field("corpid", &self.corpid)
-            .field("corpsecret", &"***REDACTED***")
-            .field("agent_id", &self.agent_id)
-            .field("token", &self.token.as_ref().map(|_| "***REDACTED***"))
-            .field(
-                "encoding_aes_key",
-                &self.encoding_aes_key.as_ref().map(|_| "***REDACTED***"),
-            )
-            .field("allow_from", &self.allow_from)
-            .finish()
-    }
-}
-
 // ── WeChat ────────────────────────────────────────────────────────────────
 
 /// WeChat channel configuration
@@ -334,19 +236,6 @@ impl ChannelsConfig {
     pub fn validate(&self) -> Vec<ChannelConfigError> {
         let mut errors = Vec::new();
 
-        // Validate DingTalk configuration
-        if let Some(ref dingtalk) = self.dingtalk {
-            if dingtalk.enabled {
-                // DingTalk requires either webhook_url or access_token
-                if dingtalk.webhook_url.is_empty() && dingtalk.access_token.is_none() {
-                    errors.push(ChannelConfigError::InvalidChannelConfig(
-                        "dingtalk".to_string(),
-                        "requires either webhook_url or access_token".to_string(),
-                    ));
-                }
-            }
-        }
-
         errors
     }
 
@@ -365,12 +254,6 @@ impl ChannelsConfig {
         if self.feishu.as_ref().is_some_and(|c| c.enabled) {
             count += 1;
         }
-        if self.dingtalk.as_ref().is_some_and(|c| c.enabled) {
-            count += 1;
-        }
-        if self.wecom.as_ref().is_some_and(|c| c.enabled) {
-            count += 1;
-        }
         if self.wechat.as_ref().is_some_and(|c| c.enabled) {
             count += 1;
         }
@@ -384,19 +267,6 @@ impl ChannelsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_dingtalk_config_parsing() {
-        let yaml = r#"
-enabled: true
-webhookUrl: https://oapi.dingtalk.com/robot/send?access_token=xxx
-secret: SECxxx
-"#;
-        let dingtalk: DingTalkConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(dingtalk.enabled);
-        assert!(!dingtalk.webhook_url.is_empty());
-        assert!(dingtalk.secret.is_some());
-    }
 
     #[test]
     fn test_channels_config_enabled_count() {
@@ -413,18 +283,4 @@ discord:
         assert_eq!(channels.enabled_count(), 1);
     }
 
-    #[test]
-    fn test_channels_validate_dingtalk() {
-        let yaml = r#"
-dingtalk:
-  enabled: true
-"#;
-        let channels: ChannelsConfig = serde_yaml::from_str(yaml).unwrap();
-        let errors = channels.validate();
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            errors[0],
-            ChannelConfigError::InvalidChannelConfig(_, _)
-        ));
-    }
 }

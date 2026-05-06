@@ -43,7 +43,7 @@ impl Tool for MessageTool {
                 "channel": {
                     "type": "string",
                     "description": "Target channel (e.g., 'telegram', 'discord', 'slack')",
-                    "enum": ["telegram", "discord", "slack", "dingtalk", "feishu", "websocket", "cli"]
+                    "enum": ["telegram", "discord", "slack", "feishu", "websocket", "cli"]
                 },
                 "chat_id": {
                     "type": "string",

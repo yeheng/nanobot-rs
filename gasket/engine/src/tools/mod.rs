@@ -43,6 +43,7 @@ mod web_search;
 mod wiki_decay;
 mod wiki_refresh;
 mod wiki_tools;
+mod workflow;
 
 // Re-export tool trait and base types from gasket-types
 pub use gasket_types::{
@@ -79,3 +80,4 @@ pub use web_search::WebSearchTool;
 pub use wiki_decay::WikiDecayTool;
 pub use wiki_refresh::WikiRefreshTool;
 pub use wiki_tools::{WikiDeleteTool, WikiReadTool, WikiSearchTool, WikiWriteTool};
+pub use workflow::{discover_workflows, WorkflowManifest, WorkflowStep, WorkflowTool};

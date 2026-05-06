@@ -20,7 +20,7 @@ pub use tools::{
 
 // Re-export channel config types (merged from gasket-core facade)
 pub use gasket_channels::{
-    ChannelsConfig, DingTalkConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
+    ChannelsConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
 };
 
 /// Get the gasket config directory

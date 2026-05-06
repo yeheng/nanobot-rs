@@ -64,12 +64,10 @@ telegram = ["gasket-channels/telegram"]
 discord = ["gasket-channels/discord"]
 slack = ["gasket-channels/slack"]
 
-dingtalk = ["gasket-channels/dingtalk"]
 feishu = ["gasket-channels/feishu"]
-wecom = ["gasket-channels/wecom"]
 wechat = ["gasket-channels/wechat"]
 websocket = ["gasket-channels/websocket"]
-all-channels = ["telegram", "discord", "slack", "dingtalk", "feishu", "wecom", "wechat", "websocket"]
+all-channels = ["telegram", "discord", "slack", "feishu", "wechat", "websocket"]
 
 embedding = ["gasket-embedding"]
 

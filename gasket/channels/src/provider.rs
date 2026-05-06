@@ -26,12 +26,8 @@ pub enum ImProvider {
     #[cfg(feature = "websocket")]
     WebSocket(crate::websocket::WebSocketAdapter),
     Cli(crate::websocket::CliAdapter), // re-use the no-op adapter
-    #[cfg(feature = "dingtalk")]
-    DingTalk(crate::dingtalk::DingTalkAdapter),
     #[cfg(feature = "feishu")]
     Feishu(crate::feishu::FeishuAdapter),
-    #[cfg(feature = "wecom")]
-    Wecom(crate::wecom::WeComAdapter),
     #[cfg(feature = "wechat")]
     Wechat(crate::wechat::WechatAdapter),
 }
@@ -48,12 +44,8 @@ impl ImProvider {
             #[cfg(feature = "websocket")]
             Self::WebSocket(_) => ChannelType::WebSocket,
             Self::Cli(_) => ChannelType::Cli,
-            #[cfg(feature = "dingtalk")]
-            Self::DingTalk(_) => ChannelType::Dingtalk,
             #[cfg(feature = "feishu")]
             Self::Feishu(_) => ChannelType::Feishu,
-            #[cfg(feature = "wecom")]
-            Self::Wecom(_) => ChannelType::Wecom,
             #[cfg(feature = "wechat")]
             Self::Wechat(_) => ChannelType::Wechat,
         }
@@ -70,12 +62,8 @@ impl ImProvider {
             #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.name(),
             Self::Cli(a) => a.name(),
-            #[cfg(feature = "dingtalk")]
-            Self::DingTalk(a) => a.name(),
             #[cfg(feature = "feishu")]
             Self::Feishu(a) => a.name(),
-            #[cfg(feature = "wecom")]
-            Self::Wecom(a) => a.name(),
             #[cfg(feature = "wechat")]
             Self::Wechat(a) => a.name(),
         }
@@ -92,12 +80,8 @@ impl ImProvider {
             #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.start(inbound).await,
             Self::Cli(a) => a.start(inbound).await,
-            #[cfg(feature = "dingtalk")]
-            Self::DingTalk(a) => a.start(inbound).await,
             #[cfg(feature = "feishu")]
             Self::Feishu(a) => a.start(inbound).await,
-            #[cfg(feature = "wecom")]
-            Self::Wecom(a) => a.start(inbound).await,
             #[cfg(feature = "wechat")]
             Self::Wechat(a) => a.start(inbound).await,
         }
@@ -108,12 +92,9 @@ impl ImProvider {
         match self {
             #[cfg(feature = "websocket")]
             Self::WebSocket(a) => Some(a.routes()),
-            #[cfg(feature = "dingtalk")]
-            Self::DingTalk(a) => Some(a.routes()),
             #[cfg(feature = "feishu")]
             Self::Feishu(a) => Some(a.routes()),
-            #[cfg(feature = "wecom")]
-            Self::Wecom(a) => Some(a.routes()),
+
             _ => None,
         }
     }
@@ -129,12 +110,8 @@ impl ImProvider {
             #[cfg(feature = "websocket")]
             Self::WebSocket(a) => a.send(msg).await,
             Self::Cli(a) => a.send(msg).await,
-            #[cfg(feature = "dingtalk")]
-            Self::DingTalk(a) => a.send(msg).await,
             #[cfg(feature = "feishu")]
             Self::Feishu(a) => a.send(msg).await,
-            #[cfg(feature = "wecom")]
-            Self::Wecom(a) => a.send(msg).await,
             #[cfg(feature = "wechat")]
             Self::Wechat(a) => a.send(msg).await,
         }
@@ -177,31 +154,12 @@ impl ImProviders {
             }
         }
 
-        #[cfg(feature = "dingtalk")]
-        if let Some(ref cfg) = config.dingtalk {
-            if cfg.enabled {
-                providers.push(ImProvider::DingTalk(
-                    crate::dingtalk::DingTalkAdapter::from_config(cfg, inbound.clone()),
-                ));
-            }
-        }
-
         #[cfg(feature = "feishu")]
         if let Some(ref cfg) = config.feishu {
             if cfg.enabled {
                 providers.push(ImProvider::Feishu(
                     crate::feishu::FeishuAdapter::from_config(cfg, inbound.clone()),
                 ));
-            }
-        }
-
-        #[cfg(feature = "wecom")]
-        if let Some(ref cfg) = config.wecom {
-            if cfg.enabled {
-                providers.push(ImProvider::Wecom(crate::wecom::WeComAdapter::from_config(
-                    cfg,
-                    inbound.clone(),
-                )));
             }
         }
 
@@ -265,12 +223,8 @@ impl ImProviders {
                 #[cfg(feature = "websocket")]
                 ImProvider::WebSocket(a) => ImProvider::WebSocket(a.clone()),
                 ImProvider::Cli(a) => ImProvider::Cli(*a),
-                #[cfg(feature = "dingtalk")]
-                ImProvider::DingTalk(a) => ImProvider::DingTalk(a.clone()),
                 #[cfg(feature = "feishu")]
                 ImProvider::Feishu(a) => ImProvider::Feishu(a.clone()),
-                #[cfg(feature = "wecom")]
-                ImProvider::Wecom(a) => ImProvider::Wecom(a.clone()),
                 #[cfg(feature = "wechat")]
                 ImProvider::Wechat(a) => ImProvider::Wechat(a.clone()),
             };

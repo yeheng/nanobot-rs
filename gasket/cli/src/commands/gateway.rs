@@ -196,7 +196,7 @@ fn print_no_channels_hint() {
 
 /// Warn when a channel is enabled in config but its compile-time feature is disabled.
 fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
-    let checks: [(&str, bool, bool); 8] = [
+    let checks: [(&str, bool, bool); 6] = [
         (
             "telegram",
             cfg!(feature = "telegram"),
@@ -213,19 +213,9 @@ fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
             channels.slack.as_ref().is_some_and(|c| c.enabled),
         ),
         (
-            "dingtalk",
-            cfg!(feature = "dingtalk"),
-            channels.dingtalk.as_ref().is_some_and(|c| c.enabled),
-        ),
-        (
             "feishu",
             cfg!(feature = "feishu"),
             channels.feishu.as_ref().is_some_and(|c| c.enabled),
-        ),
-        (
-            "wecom",
-            cfg!(feature = "wecom"),
-            channels.wecom.as_ref().is_some_and(|c| c.enabled),
         ),
         (
             "wechat",
@@ -540,9 +530,7 @@ async fn setup_http_server(
 ) {
     #[cfg(any(
         feature = "websocket",
-        feature = "dingtalk",
-        feature = "feishu",
-        feature = "wecom"
+        feature = "feishu"
     ))]
     {
         let providers_for_http = providers.clone();
@@ -576,9 +564,7 @@ async fn setup_http_server(
 
 #[cfg(any(
     feature = "websocket",
-    feature = "dingtalk",
-    feature = "feishu",
-    feature = "wecom"
+    feature = "feishu"
 ))]
 fn add_context_routes(
     mut app: axum::Router,

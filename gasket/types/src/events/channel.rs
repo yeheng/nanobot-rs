@@ -14,12 +14,8 @@ pub enum ChannelType {
     Discord,
     /// Slack channel
     Slack,
-    /// DingTalk (钉钉) channel
-    Dingtalk,
     /// Feishu (飞书) channel
     Feishu,
-    /// WeCom (企业微信) channel
-    Wecom,
     /// WeChat (个人微信) channel
     Wechat,
     /// WebSocket channel
@@ -58,9 +54,7 @@ impl ChannelType {
             ChannelType::Telegram => "telegram",
             ChannelType::Discord => "discord",
             ChannelType::Slack => "slack",
-            ChannelType::Dingtalk => "dingtalk",
             ChannelType::Feishu => "feishu",
-            ChannelType::Wecom => "wecom",
             ChannelType::Wechat => "wechat",
             ChannelType::WebSocket => "websocket",
             ChannelType::Cli => "cli",
@@ -75,9 +69,7 @@ impl ChannelType {
             "telegram" => ChannelType::Telegram,
             "discord" => ChannelType::Discord,
             "slack" => ChannelType::Slack,
-            "dingtalk" => ChannelType::Dingtalk,
             "feishu" => ChannelType::Feishu,
-            "wecom" => ChannelType::Wecom,
             "wechat" => ChannelType::Wechat,
             "websocket" => ChannelType::WebSocket,
             "cli" => ChannelType::Cli,
@@ -122,9 +114,7 @@ mod tests {
         assert_eq!(ChannelType::Telegram.as_str(), "telegram");
         assert_eq!(ChannelType::Discord.as_str(), "discord");
         assert_eq!(ChannelType::Slack.as_str(), "slack");
-        assert_eq!(ChannelType::Dingtalk.as_str(), "dingtalk");
         assert_eq!(ChannelType::Feishu.as_str(), "feishu");
-        assert_eq!(ChannelType::Wecom.as_str(), "wecom");
         assert_eq!(ChannelType::Wechat.as_str(), "wechat");
         assert_eq!(ChannelType::Cli.as_str(), "cli");
     }

@@ -118,7 +118,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     let mut tools = ToolRegistry::new();
 
     // ── Core tools (filesystem, web, exec, spawn) ─────────────
-    CoreToolProvider::new(config, &workspace, subagent_spawner, role).register_tools(&mut tools);
+    CoreToolProvider::new(config, &workspace, subagent_spawner.clone(), role).register_tools(&mut tools);
 
     // ── Wiki + memory tools (conditional on page_store) ───────
     let prompts = &config.agents.defaults.prompts;
@@ -160,6 +160,21 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
                 params.searcher,
                 params.config,
             )));
+        }
+    }
+
+    // Discover native workflows — only when subagent spawning is available.
+    if subagent_spawner.is_some() {
+        let workflows_dir = std::path::Path::new("workspace/workflows");
+        match super::discover_workflows(workflows_dir) {
+            Ok(workflow_tools) => {
+                for tool in workflow_tools {
+                    tools.register(Box::new(tool));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to discover workflows: {}", e);
+            }
         }
     }
 
