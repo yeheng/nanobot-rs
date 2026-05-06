@@ -234,9 +234,7 @@ fn default_true() -> bool {
 impl ChannelsConfig {
     /// Validate all enabled channels
     pub fn validate(&self) -> Vec<ChannelConfigError> {
-        let mut errors = Vec::new();
-
-        errors
+        Vec::new()
     }
 
     /// Count enabled channels
