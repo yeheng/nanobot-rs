@@ -93,6 +93,10 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         thinking_enabled: config.agents.defaults.thinking_enabled,
         streaming: config.agents.defaults.streaming,
         tool_timeout_secs: defaults.tool_timeout_secs,
+        plugin_timeout_secs: match config.agents.defaults.plugin_timeout_secs {
+            0 => defaults.plugin_timeout_secs,
+            v => v,
+        },
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
         ws_summary_limit: config.agents.defaults.ws_summary_limit,

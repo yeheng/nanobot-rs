@@ -120,6 +120,8 @@ pub struct KernelConfig {
     pub max_tool_result_chars: usize,
     pub thinking_enabled: bool,
     pub tool_timeout_secs: u64,
+    /// Plugin execution timeout in seconds (fallback when manifest omits it).
+    pub plugin_timeout_secs: u64,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
     /// Optional whitelist of tool names visible to the LLM for this run.
@@ -138,6 +140,7 @@ impl KernelConfig {
             max_tool_result_chars: 16000,
             thinking_enabled: false,
             tool_timeout_secs: 120,
+            plugin_timeout_secs: 120,
             ws_summary_limit: 0,
             tool_filter: None,
         }

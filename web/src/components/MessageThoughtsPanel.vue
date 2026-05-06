@@ -187,7 +187,7 @@ function iconForStatus(status: ToolCall['status']) {
         <!-- Thinking chunk -->
         <div v-if="item.type === 'thinking'" class="flex gap-2">
           <Sparkles class="w-3 h-3 text-primary shrink-0 mt-0.5" />
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed flex-1">
+          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed flex-1 min-w-0 break-words">
             {{ item.content }}
           </div>
         </div>
@@ -273,7 +273,7 @@ function iconForStatus(status: ToolCall['status']) {
       <!-- Fallback: if no timeline but has old-format thinking -->
       <div v-if="timeline.length === 0 && hasThinking" class="flex gap-2">
         <Sparkles class="w-3 h-3 text-primary shrink-0 mt-0.5" />
-        <div class="th-text-secondary whitespace-pre-wrap leading-relaxed flex-1">
+        <div class="th-text-secondary whitespace-pre-wrap leading-relaxed flex-1 min-w-0 break-words">
           {{ message.thinking }}
         </div>
       </div>

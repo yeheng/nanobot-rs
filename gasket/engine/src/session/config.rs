@@ -197,6 +197,8 @@ pub struct AgentConfig {
     pub streaming: bool,
     /// Tool execution timeout in seconds
     pub tool_timeout_secs: u64,
+    /// Plugin execution timeout in seconds (fallback when manifest omits it)
+    pub plugin_timeout_secs: u64,
     /// Subagent execution timeout in seconds
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
@@ -228,6 +230,7 @@ impl Default for AgentConfig {
             thinking_enabled: false,
             streaming: true,
             tool_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
+            plugin_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             ws_summary_limit: 0,
@@ -256,6 +259,7 @@ impl AgentConfigExt for AgentConfig {
             max_tool_result_chars: self.max_tool_result_chars,
             thinking_enabled: self.thinking_enabled,
             tool_timeout_secs: self.tool_timeout_secs,
+            plugin_timeout_secs: self.plugin_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
             tool_filter: None,
         }

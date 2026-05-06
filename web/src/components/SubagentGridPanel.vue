@@ -120,7 +120,7 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
             <Sparkles class="w-3 h-3" />
             <span>Thinking</span>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-32 overflow-y-auto">
+          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-32 overflow-y-auto break-words">
             {{ subagent.thinking }}
           </div>
         </div>
@@ -184,7 +184,7 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
             <Users class="w-3 h-3" />
             <span>Response</span>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-48 overflow-y-auto">
+          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] max-h-48 overflow-y-auto break-words">
             {{ subagent.content }}
           </div>
         </div>

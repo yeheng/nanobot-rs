@@ -111,6 +111,7 @@ impl PluginTool {
     async fn get_or_spawn_daemon(
         &self,
         dispatch_ctx: &DispatcherContext,
+        idle_timeout_secs: u64,
     ) -> Result<Arc<JsonRpcDaemon>, ToolError> {
         let daemon = self.daemon.as_ref().ok_or_else(|| {
             ToolError::ExecutionError(
@@ -144,7 +145,7 @@ impl PluginTool {
             JsonRpcDaemon::spawn(
                 &self.manifest,
                 &self.manifest_dir,
-                self.manifest.runtime.timeout_secs,
+                idle_timeout_secs,
                 &self.manifest.permissions,
                 dispatcher,
                 dispatch_ctx,
@@ -198,17 +199,21 @@ impl Tool for PluginTool {
 
         let result = match self.manifest.protocol {
             PluginProtocol::Simple => {
+                let timeout_secs = self.manifest.runtime.timeout_secs
+                    .unwrap_or(ctx.plugin_timeout_secs);
                 run_simple(
                     &self.manifest,
                     &self.manifest_dir,
                     &args,
-                    self.manifest.runtime.timeout_secs,
+                    timeout_secs,
                 )
                 .await
             }
             PluginProtocol::JsonRpc => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx)?;
-                let daemon = self.get_or_spawn_daemon(&dispatch_ctx).await?;
+                let idle_timeout_secs = self.manifest.runtime.timeout_secs
+                    .unwrap_or(ctx.plugin_timeout_secs);
+                let daemon = self.get_or_spawn_daemon(&dispatch_ctx, idle_timeout_secs).await?;
                 // Inject default model so the SDK can fall back when plugin omits it
                 let mut init_args = args.clone();
                 let default_model = dispatch_ctx.engine.provider.default_model();
@@ -441,7 +446,7 @@ mod tests {
                 command: command.to_string(),
                 args: vec![],
                 working_dir: ".".to_string(),
-                timeout_secs: 120,
+                timeout_secs: Some(120),
                 env: Default::default(),
             },
             protocol: PluginProtocol::Simple,
@@ -606,7 +611,7 @@ parameters:
                 command: "cat".to_string(),
                 args: vec![],
                 working_dir: ".".to_string(),
-                timeout_secs: 120,
+                timeout_secs: Some(120),
                 env: Default::default(),
             },
             protocol: PluginProtocol::JsonRpc,

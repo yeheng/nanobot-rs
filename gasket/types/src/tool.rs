@@ -135,6 +135,8 @@ pub struct ToolContext {
     pub token_tracker: std::sync::Arc<crate::token_tracker::TokenTracker>,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
+    /// Plugin execution timeout in seconds (fallback when manifest omits it).
+    pub plugin_timeout_secs: u64,
     /// Callback for triggering synthesis after all subagents complete.
     /// When None (CLI/Telegram/non-WebSocket mode), spawn tools use blocking mode.
     pub synthesis_callback: Option<std::sync::Arc<dyn SynthesisCallback>>,
@@ -155,6 +157,7 @@ impl Default for ToolContext {
             spawner: None,
             token_tracker: std::sync::Arc::new(crate::token_tracker::TokenTracker::default()),
             ws_summary_limit: 0,
+            plugin_timeout_secs: 120,
             synthesis_callback: None,
             aggregator_cancel: None,
             pending_asks: None,
@@ -170,6 +173,7 @@ impl std::fmt::Debug for ToolContext {
             .field("spawner", &"SubagentSpawner")
             .field("token_tracker", &"TokenTracker")
             .field("ws_summary_limit", &self.ws_summary_limit)
+            .field("plugin_timeout_secs", &self.plugin_timeout_secs)
             .field("synthesis_callback", &self.synthesis_callback.is_some())
             .field("aggregator_cancel", &self.aggregator_cancel.is_some())
             .field("pending_asks", &self.pending_asks.is_some())
@@ -203,6 +207,11 @@ impl ToolContext {
 
     pub fn ws_summary_limit(mut self, limit: usize) -> Self {
         self.ws_summary_limit = limit;
+        self
+    }
+
+    pub fn plugin_timeout_secs(mut self, secs: u64) -> Self {
+        self.plugin_timeout_secs = secs;
         self
     }
 

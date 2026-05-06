@@ -76,9 +76,10 @@ pub struct RuntimeConfig {
     #[serde(default = "default_working_dir")]
     pub working_dir: String,
 
-    /// Timeout in seconds (default: 120)
+    /// Timeout in seconds.
+    /// When omitted, the global `plugin_timeout_secs` from agent config is used.
     #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
+    pub timeout_secs: Option<u64>,
 
     /// Environment variables to pass to the script (default: {})
     #[serde(default)]
@@ -89,8 +90,8 @@ fn default_working_dir() -> String {
     ".".to_string()
 }
 
-fn default_timeout() -> u64 {
-    120
+fn default_timeout() -> Option<u64> {
+    None
 }
 
 /// Permission grants access to specific Gasket capabilities.
@@ -171,7 +172,7 @@ parameters:
         assert_eq!(manifest.runtime.command, "python");
         assert_eq!(manifest.runtime.args, vec!["script.py"]);
         assert_eq!(manifest.runtime.working_dir, ".");
-        assert_eq!(manifest.runtime.timeout_secs, 120);
+        assert_eq!(manifest.runtime.timeout_secs, None);
         assert_eq!(manifest.protocol, PluginProtocol::Simple);
         assert!(manifest.runtime.env.is_empty());
         assert!(manifest.permissions.is_empty());
@@ -213,7 +214,7 @@ permissions:
         assert_eq!(manifest.runtime.command, "node");
         assert_eq!(manifest.runtime.args, vec!["index.js", "--verbose"]);
         assert_eq!(manifest.runtime.working_dir, "./scripts");
-        assert_eq!(manifest.runtime.timeout_secs, 300);
+        assert_eq!(manifest.runtime.timeout_secs, Some(300));
         assert_eq!(manifest.runtime.env.len(), 2);
         assert_eq!(
             manifest.runtime.env.get("NODE_ENV"),
@@ -249,7 +250,7 @@ parameters:
         assert_eq!(manifest.version, "");
         assert_eq!(manifest.protocol, PluginProtocol::Simple);
         assert_eq!(manifest.runtime.working_dir, ".");
-        assert_eq!(manifest.runtime.timeout_secs, 120);
+        assert_eq!(manifest.runtime.timeout_secs, None);
         assert!(manifest.runtime.env.is_empty());
 
         // Verify default-deny: no permissions specified = empty vector

@@ -79,6 +79,9 @@ agents:
     thinking_enabled: false
     historyRecallK: 5
     streaming: true
+    # Plugin execution timeout in seconds (default: 120).
+    # Used when a plugin manifest omits its own timeout_secs.
+    plugin_timeout_secs: 120
     # Maximum characters for WebSocket subagent summary (0 = unlimited, default)
     ws_summary_limit: 0
     # Optional: override internal AI behavior prompts

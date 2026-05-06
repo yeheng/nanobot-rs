@@ -156,7 +156,7 @@ function formatDuration(start: number, end?: number) {
             <Sparkles class="w-3 h-3" />
             <span>Thinking</span>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px]">
+          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] break-words">
             {{ subagent.thinking }}
           </div>
         </div>
@@ -227,7 +227,7 @@ function formatDuration(start: number, end?: number) {
             <Users class="w-3 h-3" />
             <span>Response</span>
           </div>
-          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px]">
+          <div class="th-text-secondary whitespace-pre-wrap leading-relaxed text-[11px] break-words">
             {{ subagent.content }}
           </div>
         </div>

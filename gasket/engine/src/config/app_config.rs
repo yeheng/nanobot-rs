@@ -77,6 +77,8 @@ pub struct AgentDefaults {
     pub memory_budget: Option<gasket_storage::wiki::MemoryBudget>,
     #[serde(default, alias = "wsSummaryLimit")]
     pub ws_summary_limit: usize,
+    #[serde(default, alias = "pluginTimeoutSecs")]
+    pub plugin_timeout_secs: u64,
     #[serde(default)]
     pub prompts: PromptsConfig,
 }
@@ -93,6 +95,7 @@ impl Default for AgentDefaults {
             streaming: true,
             memory_budget: None,
             ws_summary_limit: 0,
+            plugin_timeout_secs: 0,
             prompts: PromptsConfig::default(),
         }
     }
