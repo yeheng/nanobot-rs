@@ -12,11 +12,11 @@ use crate::{MaintenanceStore, SessionStore};
 use gasket_wiki::{PageIndex, PageStore};
 
 use super::{
-    registry::ToolRegistry, ClearSessionTool, CreatePlanTool, EditFileTool, EvolutionConfig,
-    EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool, ReadFileTool,
-    SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool, WebSearchTool,
-    WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool, WikiWriteTool,
-    WriteFileTool,
+    registry::ToolRegistry, AskUserTool, ClearSessionTool, CreatePlanTool, EditFileTool,
+    EvolutionConfig, EvolutionTool, ExecTool, HistoryQueryTool, ListDirTool, NewSessionTool,
+    ReadFileTool, SearchSopsTool, SpawnParallelTool, SpawnTool, ToolMetadata, WebFetchTool,
+    WebSearchTool, WikiDecayTool, WikiDeleteTool, WikiReadTool, WikiRefreshTool, WikiSearchTool,
+    WikiWriteTool, WriteFileTool,
 };
 
 /// Trait for subsystems that provide tools to the registry.
@@ -124,6 +124,17 @@ impl ToolProvider for CoreToolProvider {
             "Web Search",
             "web",
             ["search", "web"],
+            false,
+            false
+        );
+
+        // User interaction
+        reg!(
+            registry,
+            AskUserTool::new(),
+            "Ask User",
+            "interaction",
+            ["user", "prompt"],
             false,
             false
         );
