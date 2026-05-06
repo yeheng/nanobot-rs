@@ -11,13 +11,15 @@ pub fn sessions() -> Command {
         name: "sessions".into(),
         description: "List recent sessions".into(),
         aliases: vec!["ls".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
-            async move {
-                let rows = host.list_sessions().await;
-                CommandResult::Print(render(&rows))
-            }
-            .boxed()
-        })),
+        kind: CommandKind::Builtin(Arc::new(
+            |_args: &str, host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
+                async move {
+                    let rows = host.list_sessions().await;
+                    CommandResult::Print(render(&rows))
+                }
+                .boxed()
+            },
+        )),
     }
 }
 
@@ -68,7 +70,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _key: &SessionKey, _: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            _: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),

@@ -13,10 +13,10 @@
 pub mod agent;
 pub mod command;
 pub mod events;
+pub mod pending_ask;
 pub mod session_event;
 pub mod spawn_budget;
 pub mod token_tracker;
-pub mod pending_ask;
 pub mod tool;
 
 pub use agent::AgentRole;
@@ -24,6 +24,9 @@ pub use command::{ModelSwitchInfo, SessionSummary};
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, OutboundPayload, SessionKey,
     SessionKeyParseError, StreamEvent, StreamEventKind, Target, WebSocketMessage,
+};
+pub use pending_ask::{
+    AskAnswer, AskError, AskRegistration, DynPendingAskRegistry, PendingAskRegistry,
 };
 pub use session_event::{
     EventMetadata, EventType, Session, SessionEvent, SessionMetadata, SummaryType,
@@ -33,11 +36,8 @@ pub use token_tracker::{
     calculate_cost, format_cost, format_token_usage, ModelPricing, SessionTokenStats, TokenTracker,
     TokenUsage,
 };
-pub use pending_ask::{
-    AskAnswer, AskError, AskRegistration, DynPendingAskRegistry, PendingAskRegistry,
-};
 pub use tool::{
-    simple_schema, ApprovalCallback, SubagentResponse, SubagentResult,
-    SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
-    ToolContext, ToolError, ToolMetadata, ToolResult,
+    simple_schema, ApprovalCallback, SubagentResponse, SubagentResult, SubagentSpawner,
+    SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse, ToolContext, ToolError,
+    ToolMetadata, ToolResult,
 };

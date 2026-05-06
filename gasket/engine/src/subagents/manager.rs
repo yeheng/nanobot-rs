@@ -143,11 +143,8 @@ pub fn spawn_subagent(
             ..Default::default()
         };
         let ctx = {
-            let mut c = kernel::RuntimeContext::new_worker(
-                provider,
-                tools,
-                config.to_kernel_config(),
-            );
+            let mut c =
+                kernel::RuntimeContext::new_worker(provider, tools, config.to_kernel_config());
             c.token_tracker = token_tracker.clone();
             c
         };
@@ -389,8 +386,8 @@ impl SubagentSpawner for SimpleSpawner {
         );
         // Hold the permit until the worker's tokio task ends.
         tokio::spawn(async move {
-            let _permit = permit;        // RAII: drops on guard-task exit
-            let _ = join_handle.await;   // wait for worker
+            let _permit = permit; // RAII: drops on guard-task exit
+            let _ = join_handle.await; // wait for worker
         });
 
         let result = tracker
@@ -482,7 +479,7 @@ impl SubagentSpawner for SimpleSpawner {
         let cancel_token = tracker.cancellation_token();
 
         tokio::spawn(async move {
-            let _permit = permit;        // RAII: drops on guard-task exit
+            let _permit = permit; // RAII: drops on guard-task exit
             let types_result = match tracker.wait_for_all(1).await {
                 Ok(results) => match results.into_iter().next() {
                     Some(result) => TypesSubagentResult {
@@ -572,7 +569,11 @@ mod budget_tests {
         }
         let elapsed = start.elapsed();
 
-        assert_eq!(peak.load(Ordering::SeqCst), 1, "budget=1 must enforce inflight==1");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "budget=1 must enforce inflight==1"
+        );
         assert!(
             elapsed >= Duration::from_millis(280),
             "3 sequential 100ms tasks should take ≥280ms; took {:?}",

@@ -81,7 +81,8 @@ impl Tool for SpawnTool {
 
         let spawner = ctx.spawner.as_ref().ok_or_else(|| {
             ToolError::ExecutionError(
-                "Subagent spawning is not available in this context (no spawner configured)".to_string(),
+                "Subagent spawning is not available in this context (no spawner configured)"
+                    .to_string(),
             )
         })?;
 

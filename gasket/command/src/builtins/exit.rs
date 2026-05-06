@@ -11,9 +11,11 @@ pub fn exit() -> Command {
         name: "exit".into(),
         description: "Exit the REPL".into(),
         aliases: vec!["quit".into(), "q".into(), ":q".into()],
-        kind: CommandKind::Builtin(Arc::new(|_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
-            async { CommandResult::Quit }.boxed()
-        })),
+        kind: CommandKind::Builtin(Arc::new(
+            |_args: &str, _host: Arc<dyn CommandHost>, _session_key: &SessionKey| {
+                async { CommandResult::Quit }.boxed()
+            },
+        )),
     }
 }
 
@@ -38,7 +40,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             "m".into()
         }
-        async fn switch_model(&self, _key: &SessionKey, _new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            _new: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "m".into(),
                 current: "m".into(),

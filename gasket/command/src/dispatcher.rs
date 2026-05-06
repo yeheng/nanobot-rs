@@ -8,9 +8,9 @@ use crate::error::BuildError;
 use crate::host::CommandHost;
 use crate::parser::{parse, ParsedInput};
 use crate::template::render;
-use gasket_types::SessionKey;
 use crate::types::{Command, CommandKind, CommandResult, HelpEntry, HelpSource, RouteOutcome};
 use crate::yaml_loader::load_user_commands;
+use gasket_types::SessionKey;
 
 /// Lazily-filled snapshot of registered commands. The builder writes once
 /// after all commands are known; the `/help` builtin reads from it.
@@ -37,11 +37,7 @@ impl Dispatcher {
     }
 
     async fn dispatch(&self, name: &str, args: &str, session_key: &SessionKey) -> RouteOutcome {
-        let canonical = self
-            .aliases
-            .get(name)
-            .map(String::as_str)
-            .unwrap_or(name);
+        let canonical = self.aliases.get(name).map(String::as_str).unwrap_or(name);
 
         let Some(cmd) = self.commands.get(canonical) else {
             return RouteOutcome::Handled(CommandResult::Error(format!(
@@ -227,7 +223,11 @@ mod tests {
         async fn current_model(&self, _key: &SessionKey) -> String {
             "test-model".into()
         }
-        async fn switch_model(&self, _key: &SessionKey, new: &str) -> Result<ModelSwitchInfo, String> {
+        async fn switch_model(
+            &self,
+            _key: &SessionKey,
+            new: &str,
+        ) -> Result<ModelSwitchInfo, String> {
             Ok(ModelSwitchInfo {
                 previous: "test-model".into(),
                 current: new.into(),
@@ -236,10 +236,12 @@ mod tests {
     }
 
     fn echo_handler() -> BuiltinHandler {
-        Arc::new(|args: &str, _host: Arc<dyn CommandHost>, _key: &SessionKey| {
-            let s = format!("echo: {}", args);
-            async move { CommandResult::Print(s) }.boxed()
-        })
+        Arc::new(
+            |args: &str, _host: Arc<dyn CommandHost>, _key: &SessionKey| {
+                let s = format!("echo: {}", args);
+                async move { CommandResult::Print(s) }.boxed()
+            },
+        )
     }
 
     fn make_dispatcher_with(commands: Vec<Command>) -> Dispatcher {
@@ -301,9 +303,7 @@ mod tests {
             name: "exit".into(),
             description: "exit".into(),
             aliases: vec!["q".into(), "quit".into()],
-            kind: CommandKind::Builtin(Arc::new(|_, _, _| {
-                async { CommandResult::Quit }.boxed()
-            })),
+            kind: CommandKind::Builtin(Arc::new(|_, _, _| async { CommandResult::Quit }.boxed())),
         };
         let mut map: HashMap<String, Arc<Command>> = HashMap::new();
         let arc = Arc::new(cmd);

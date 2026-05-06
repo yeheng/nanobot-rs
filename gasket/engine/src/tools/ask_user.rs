@@ -75,9 +75,7 @@ impl Tool for AskUserTool {
         let timeout_secs = args
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing/invalid 'timeout_secs'".into())
-            })?;
+            .ok_or_else(|| ToolError::InvalidArguments("missing/invalid 'timeout_secs'".into()))?;
         if !(1..=MAX_TIMEOUT_SECS).contains(&timeout_secs) {
             return Err(ToolError::InvalidArguments(format!(
                 "'timeout_secs' must be in [1, {}], got {}",
@@ -186,7 +184,9 @@ mod tests {
         let outbound = outbound_rx.recv().await.expect("outbound prompt sent");
         assert_eq!(outbound.content(), "what?");
 
-        registry.try_fulfill(&key, dummy_inbound("answer", &key)).unwrap();
+        registry
+            .try_fulfill(&key, dummy_inbound("answer", &key))
+            .unwrap();
 
         let result_str = task.await.unwrap().expect("ok result");
         let parsed: serde_json::Value = serde_json::from_str(&result_str).unwrap();
@@ -196,8 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_returns_error_and_clears_slot() {
-        let registry: Arc<dyn PendingAskRegistry> =
-            Arc::new(PendingAskRegistryImpl::new());
+        let registry: Arc<dyn PendingAskRegistry> = Arc::new(PendingAskRegistryImpl::new());
         let (ctx, _outbound_rx) = ctx_for_test(registry.clone());
         let key = ctx.session_key.clone();
 
@@ -211,14 +210,17 @@ mod tests {
 
         // Slot must be empty now — re-registering must succeed.
         let _again = registry
-            .register(key.clone(), "q2".into(), Instant::now() + Duration::from_secs(5))
+            .register(
+                key.clone(),
+                "q2".into(),
+                Instant::now() + Duration::from_secs(5),
+            )
             .expect("slot is free after timeout");
     }
 
     #[tokio::test]
     async fn cancellation_via_future_drop() {
-        let registry: Arc<dyn PendingAskRegistry> =
-            Arc::new(PendingAskRegistryImpl::new());
+        let registry: Arc<dyn PendingAskRegistry> = Arc::new(PendingAskRegistryImpl::new());
         let (ctx, _outbound_rx) = ctx_for_test(registry.clone());
         let key = ctx.session_key.clone();
 
@@ -234,14 +236,17 @@ mod tests {
         // The receiver was dropped along with the future. Registry recovers
         // either via try_fulfill stale-eviction OR via the next register call.
         let _re = registry
-            .register(key.clone(), "q2".into(), Instant::now() + Duration::from_secs(5))
+            .register(
+                key.clone(),
+                "q2".into(),
+                Instant::now() + Duration::from_secs(5),
+            )
             .expect("re-register after future abort");
     }
 
     #[tokio::test]
     async fn outbound_message_sent_with_prompt() {
-        let registry: Arc<dyn PendingAskRegistry> =
-            Arc::new(PendingAskRegistryImpl::new());
+        let registry: Arc<dyn PendingAskRegistry> = Arc::new(PendingAskRegistryImpl::new());
         let (ctx, mut outbound_rx) = ctx_for_test(registry.clone());
 
         let tool = AskUserTool::new();

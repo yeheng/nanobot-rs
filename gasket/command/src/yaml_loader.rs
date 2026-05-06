@@ -53,8 +53,7 @@ async fn load_one(path: &Path) -> Result<Command, String> {
         .await
         .map_err(|e| format!("read failed: {e}"))?;
     let (front, body) = split_front_matter(&raw).ok_or("missing front-matter")?;
-    let fm: FrontMatter =
-        serde_yaml::from_str(front).map_err(|e| format!("yaml parse: {e}"))?;
+    let fm: FrontMatter = serde_yaml::from_str(front).map_err(|e| format!("yaml parse: {e}"))?;
     if fm.name.trim().is_empty() {
         return Err("name field is empty".into());
     }

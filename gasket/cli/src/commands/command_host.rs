@@ -47,13 +47,12 @@ impl CommandHost for CliCommandHost {
     ) -> Result<(), String> {
         let broker = self.broker.as_ref().ok_or("Broker not available")?;
         let channel_type: gasket_types::events::ChannelType = channel.into();
-        let outbound = gasket_types::events::OutboundMessage::new(
-            channel_type,
-            chat_id,
-            content.to_string(),
+        let outbound =
+            gasket_types::events::OutboundMessage::new(channel_type, chat_id, content.to_string());
+        let envelope = gasket_engine::broker::Envelope::new(
+            Topic::Outbound,
+            BrokerPayload::Outbound(outbound),
         );
-        let envelope =
-            gasket_engine::broker::Envelope::new(Topic::Outbound, BrokerPayload::Outbound(outbound));
         broker
             .publish(envelope)
             .await

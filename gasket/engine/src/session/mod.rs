@@ -12,8 +12,8 @@ pub mod pending_ask;
 pub mod prompt;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
-pub use pending_ask::PendingAskRegistryImpl;
 pub use config::{AgentConfig, EvolutionConfig};
+pub use pending_ask::PendingAskRegistryImpl;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -393,10 +393,7 @@ impl AgentSession {
     /// behind `&self` (no interior mutability). Wrapping the config in
     /// `Arc<Mutex<…>>` is a session-wide change tracked separately. The
     /// `/model` no-arg path still works through `current_model`.
-    pub async fn switch_model(
-        &self,
-        _new: &str,
-    ) -> Result<gasket_types::ModelSwitchInfo, String> {
+    pub async fn switch_model(&self, _new: &str) -> Result<gasket_types::ModelSwitchInfo, String> {
         Err("model switching is not supported in this build".into())
     }
 
@@ -489,10 +486,16 @@ impl AgentSession {
             timestamp: chrono::Utc::now(),
             trace_id: None,
         };
-        if self.pending_asks.try_fulfill(session_key, synthetic).is_ok() {
+        if self
+            .pending_asks
+            .try_fulfill(session_key, synthetic)
+            .is_ok()
+        {
             return Ok(HandleOutcome::Consumed);
         }
-        let resp = self.process_direct(content, session_key, tool_filter).await?;
+        let resp = self
+            .process_direct(content, session_key, tool_filter)
+            .await?;
         Ok(HandleOutcome::Replied(resp))
     }
 
@@ -513,7 +516,11 @@ impl AgentSession {
             timestamp: chrono::Utc::now(),
             trace_id: None,
         };
-        if self.pending_asks.try_fulfill(session_key, synthetic).is_ok() {
+        if self
+            .pending_asks
+            .try_fulfill(session_key, synthetic)
+            .is_ok()
+        {
             return Ok(HandleOutcomeStreaming::Consumed);
         }
         let (events, result) = self

@@ -146,7 +146,9 @@ impl SessionBuilder {
             session_key: None,
             outbound_tx: None,
             aggregator_cancel: None,
-            pending_asks: Some(pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry),
+            pending_asks: Some(
+                pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
+            ),
         };
 
         // ── 3. Context compactor ─────────────────────────────────────

@@ -88,9 +88,9 @@ impl RpcHandler for SubagentSpawnHandler {
             ctx.engine.outbound_tx.clone(),
         );
 
-        let result = result_rx.await.map_err(|e| {
-            RpcError::internal_error(format!("Subagent result dropped: {}", e))
-        })?;
+        let result = result_rx
+            .await
+            .map_err(|e| RpcError::internal_error(format!("Subagent result dropped: {}", e)))?;
 
         let response = SpawnResponse {
             id: result.id,
@@ -193,7 +193,8 @@ mod tests {
             async fn chat(
                 &self,
                 _request: gasket_providers::ChatRequest,
-            ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError> {
+            ) -> Result<gasket_providers::ChatResponse, gasket_providers::ProviderError>
+            {
                 Ok(gasket_providers::ChatResponse {
                     content: Some("test".to_string()),
                     tool_calls: vec![],

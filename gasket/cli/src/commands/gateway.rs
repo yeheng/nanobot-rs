@@ -31,11 +31,11 @@ use crate::provider::setup_vault;
 use axum::response::IntoResponse;
 use tower_http::cors::CorsLayer;
 
+use super::command_host::CliCommandHost;
+use super::dispatching_handler::DispatchingEngineHandler;
 use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
 use gasket_command::dispatcher::shared_help_snapshot;
 use gasket_command::DispatcherBuilder;
-use super::command_host::CliCommandHost;
-use super::dispatching_handler::DispatchingEngineHandler;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -383,7 +383,10 @@ async fn setup_agent_pipeline(
     let worker_tools = Arc::new(worker_tools);
 
     let spawn_budget = gasket_types::SpawnBudget::new(
-        gasket_engine::config::get_config().tools.spawn.max_concurrency,
+        gasket_engine::config::get_config()
+            .tools
+            .spawn
+            .max_concurrency,
     );
 
     let subagent_spawner: Arc<dyn SubagentSpawner> = Arc::new(
@@ -742,7 +745,10 @@ fn setup_broker_pipeline(
     tasks.push(tokio::spawn(outbound_dispatcher.run()));
 
     let engine_handler = EngineHandler::new(agent.clone());
-    let handler = Arc::new(DispatchingEngineHandler::new(engine_handler, dispatcher.clone()));
+    let handler = Arc::new(DispatchingEngineHandler::new(
+        engine_handler,
+        dispatcher.clone(),
+    ));
     let session_mgr = SessionManager::new(broker, handler, std::time::Duration::from_secs(3600));
     tasks.push(tokio::spawn(session_mgr.run()));
 }

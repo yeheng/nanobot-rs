@@ -429,7 +429,10 @@ mod tests {
         let mut registry = ToolRegistry::new();
         CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Worker)
             .register_tools(&mut registry);
-        assert!(registry.get("spawn").is_none(), "Worker registry must not contain `spawn`");
+        assert!(
+            registry.get("spawn").is_none(),
+            "Worker registry must not contain `spawn`"
+        );
         assert!(
             registry.get("spawn_parallel").is_none(),
             "Worker registry must not contain `spawn_parallel`"
@@ -440,9 +443,17 @@ mod tests {
     fn orchestrator_provider_registers_spawn_tools() {
         let cfg = crate::config::Config::default();
         let mut registry = ToolRegistry::new();
-        CoreToolProvider::new(&cfg, std::path::Path::new("/tmp"), None, AgentRole::Orchestrator)
-            .register_tools(&mut registry);
-        assert!(registry.get("spawn").is_some(), "Orchestrator registry must contain `spawn`");
+        CoreToolProvider::new(
+            &cfg,
+            std::path::Path::new("/tmp"),
+            None,
+            AgentRole::Orchestrator,
+        )
+        .register_tools(&mut registry);
+        assert!(
+            registry.get("spawn").is_some(),
+            "Orchestrator registry must contain `spawn`"
+        );
         assert!(
             registry.get("spawn_parallel").is_some(),
             "Orchestrator registry must contain `spawn_parallel`"

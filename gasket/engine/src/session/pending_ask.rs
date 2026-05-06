@@ -45,7 +45,10 @@ impl PendingAskRegistry for PendingAskRegistryImpl {
         prompt: String,
         deadline: Instant,
     ) -> Result<AskRegistration, AskError> {
-        let mut guard = self.inner.lock().expect("PendingAskRegistry mutex poisoned");
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("PendingAskRegistry mutex poisoned");
 
         // Evict a stale slot if its receiver has been dropped.
         if let Some(existing) = guard.get(&key) {
@@ -74,7 +77,10 @@ impl PendingAskRegistry for PendingAskRegistryImpl {
     }
 
     fn cancel(&self, key: &SessionKey, ask_id: uuid::Uuid) {
-        let mut guard = self.inner.lock().expect("PendingAskRegistry mutex poisoned");
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("PendingAskRegistry mutex poisoned");
         if let Some(slot) = guard.get(key) {
             if slot.ask_id == ask_id {
                 guard.remove(key);
@@ -83,7 +89,10 @@ impl PendingAskRegistry for PendingAskRegistryImpl {
     }
 
     fn try_fulfill(&self, key: &SessionKey, msg: InboundMessage) -> Result<(), InboundMessage> {
-        let mut guard = self.inner.lock().expect("PendingAskRegistry mutex poisoned");
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("PendingAskRegistry mutex poisoned");
 
         // Evict a stale slot if its receiver has been dropped, then miss.
         if let Some(existing) = guard.get(key) {
@@ -155,7 +164,9 @@ mod tests {
         let reg = PendingAskRegistryImpl::new();
         let k = key("a");
         let _r1 = reg.register(k.clone(), "q1".into(), deadline()).unwrap();
-        let err = reg.register(k.clone(), "q2".into(), deadline()).unwrap_err();
+        let err = reg
+            .register(k.clone(), "q2".into(), deadline())
+            .unwrap_err();
         assert!(matches!(err, AskError::AlreadyPending(_)));
     }
 

@@ -213,7 +213,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Build SpawnBudget from config.
     let spawn_budget = gasket_types::SpawnBudget::new(
-        gasket_engine::config::get_config().tools.spawn.max_concurrency,
+        gasket_engine::config::get_config()
+            .tools
+            .spawn
+            .max_concurrency,
     );
 
     // Create model resolver for subagent spawner to support model_id switching.
@@ -307,7 +310,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                     HandleOutcomeStreaming::Consumed => {
                         println!("(answered)");
                     }
-                    HandleOutcomeStreaming::Replied { events: mut event_rx, result: result_handle } => {
+                    HandleOutcomeStreaming::Replied {
+                        events: mut event_rx,
+                        result: result_handle,
+                    } => {
                         let forward_handle = tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
                                 match event {
@@ -478,7 +484,10 @@ async fn run_llm_input(
             Ok(gasket_engine::session::HandleOutcomeStreaming::Consumed) => {
                 println!();
             }
-            Ok(gasket_engine::session::HandleOutcomeStreaming::Replied { events: mut event_rx, result: result_handle }) => {
+            Ok(gasket_engine::session::HandleOutcomeStreaming::Replied {
+                events: mut event_rx,
+                result: result_handle,
+            }) => {
                 let forward_handle = tokio::spawn(async move {
                     while let Some(event) = event_rx.recv().await {
                         match event {
