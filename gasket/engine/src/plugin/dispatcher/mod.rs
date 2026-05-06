@@ -74,8 +74,8 @@ pub struct EngineHandle {
     /// Channel for sending outbound messages
     pub outbound_tx: tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage>,
 
-    /// Subagent spawner for delegating to specialized agents
-    pub spawner: Arc<dyn gasket_types::SubagentSpawner>,
+    /// Subagent spawner. None in contexts that don't support subagents (CLI, tests).
+    pub spawner: Option<Arc<dyn gasket_types::SubagentSpawner>>,
 
     /// Token usage tracker for LLM calls
     pub token_tracker: Arc<gasket_types::token_tracker::TokenTracker>,
@@ -249,8 +249,11 @@ impl RpcHandler for ToolDelegateHandler {
         let mut tool_ctx = ToolContext::default()
             .session_key(ctx.engine.session_key.clone())
             .outbound_tx(ctx.engine.outbound_tx.clone())
-            .spawner(ctx.engine.spawner.clone())
             .token_tracker(ctx.engine.token_tracker.clone());
+
+        if let Some(spawner) = &ctx.engine.spawner {
+            tool_ctx = tool_ctx.spawner(spawner.clone());
+        }
 
         // Inject SynthesisCallback for streaming channels
         if ctx.engine.session_key.channel.supports_streaming() {
@@ -370,7 +373,7 @@ mod tests {
                     "test-chat",
                 ),
                 outbound_tx: tx,
-                spawner: Arc::new(MockSpawner),
+                spawner: Some(Arc::new(MockSpawner)),
                 token_tracker: Arc::new(gasket_types::token_tracker::TokenTracker::unlimited(
                     "USD",
                 )),

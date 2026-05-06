@@ -47,7 +47,12 @@ impl RpcHandler for SubagentSpawnHandler {
     }
 
     async fn handle(&self, params: Value, ctx: &DispatcherContext) -> Result<Value, RpcError> {
-        let spawner = &ctx.engine.spawner;
+        let spawner = ctx.engine.spawner.as_ref().ok_or_else(|| {
+            RpcError::internal_error(
+                "Subagent spawning is not available in this context (no spawner configured)"
+                    .to_string(),
+            )
+        })?;
 
         let request: SpawnRequest = serde_json::from_value(params).map_err(|e| {
             RpcError::invalid_params(format!("Failed to parse SpawnRequest: {}", e))
@@ -55,7 +60,7 @@ impl RpcHandler for SubagentSpawnHandler {
 
         // Use the streaming variant so the frontend receives live
         // thinking/content events instead of a frozen UI.
-        let (subagent_id, event_rx, result_rx, _cancel_token) = spawner
+        let (subagent_id, event_rx, result_rx, _cancel_token) = (*spawner)
             .spawn_with_stream(request.task.clone(), request.model_id.clone())
             .await
             .map_err(|e| RpcError::internal_error(format!("Subagent spawn failed: {}", e)))?;
@@ -205,9 +210,9 @@ mod tests {
                     "test-chat",
                 ),
                 outbound_tx: tx,
-                spawner: Arc::new(MockStreamingSpawner {
+                spawner: Some(Arc::new(MockStreamingSpawner {
                     scripted_events: std::sync::Mutex::new(scripted),
-                }),
+                })),
                 token_tracker: Arc::new(gasket_types::token_tracker::TokenTracker::unlimited(
                     "USD",
                 )),
