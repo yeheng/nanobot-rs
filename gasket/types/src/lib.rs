@@ -16,6 +16,7 @@ pub mod events;
 pub mod session_event;
 pub mod spawn_budget;
 pub mod token_tracker;
+pub mod pending_ask;
 pub mod tool;
 
 pub use agent::AgentRole;
@@ -31,6 +32,9 @@ pub use spawn_budget::SpawnBudget;
 pub use token_tracker::{
     calculate_cost, format_cost, format_token_usage, ModelPricing, SessionTokenStats, TokenTracker,
     TokenUsage,
+};
+pub use pending_ask::{
+    AskAnswer, AskError, AskRegistration, DynPendingAskRegistry, PendingAskRegistry,
 };
 pub use tool::{
     simple_schema, ApprovalCallback, SubagentResponse, SubagentResult,
