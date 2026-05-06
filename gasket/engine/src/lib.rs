@@ -132,8 +132,8 @@ pub mod channels {
     pub use gasket_channels::WebSocketApprovalCallback;
     pub use gasket_channels::{
         adapter, log_inbound, middleware, ApprovalRouter, ChannelConfigError, ChannelType,
-        ChannelsConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider,
-        ImProviders, InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
+        ChannelsConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider, ImProviders,
+        InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
         SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
         WebSocketMessage,
     };

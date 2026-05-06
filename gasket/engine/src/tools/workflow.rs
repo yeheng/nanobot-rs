@@ -101,8 +101,13 @@ fn parse_verdict(text: &str) -> Result<(String, String), String> {
         txt = txt.trim().trim_end_matches('`').trim();
     }
 
-    let obj: Value = serde_json::from_str(txt)
-        .map_err(|e| format!("JSON parse error: {} in text: {}", e, &text[..text.len().min(200)]))?;
+    let obj: Value = serde_json::from_str(txt).map_err(|e| {
+        format!(
+            "JSON parse error: {} in text: {}",
+            e,
+            &text[..text.len().min(200)]
+        )
+    })?;
 
     let verdict = obj
         .get("verdict")
@@ -169,7 +174,10 @@ impl WorkflowTool {
             )
         })?;
 
-        info!("[Workflow {}] Step '{}' spawning subagent", self.manifest.name, step_name);
+        info!(
+            "[Workflow {}] Step '{}' spawning subagent",
+            self.manifest.name, step_name
+        );
 
         // Spawn with streaming so the frontend sees real-time progress.
         let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner
@@ -187,9 +195,10 @@ impl WorkflowTool {
                 use gasket_types::StreamEventKind;
 
                 let chat_event = match &event.kind {
-                    StreamEventKind::Thinking { content } => {
-                        Some(ChatEvent::subagent_thinking(&fwd_subagent_id, content.as_ref()))
-                    }
+                    StreamEventKind::Thinking { content } => Some(ChatEvent::subagent_thinking(
+                        &fwd_subagent_id,
+                        content.as_ref(),
+                    )),
                     StreamEventKind::ToolStart { name, arguments } => {
                         Some(ChatEvent::subagent_tool_start(
                             &fwd_subagent_id,
@@ -204,9 +213,10 @@ impl WorkflowTool {
                             output.as_ref().map(|s| s.to_string()),
                         ))
                     }
-                    StreamEventKind::Content { content } => {
-                        Some(ChatEvent::subagent_content(&fwd_subagent_id, content.as_ref()))
-                    }
+                    StreamEventKind::Content { content } => Some(ChatEvent::subagent_content(
+                        &fwd_subagent_id,
+                        content.as_ref(),
+                    )),
                     _ => None,
                 };
 
@@ -265,7 +275,10 @@ impl Tool for WorkflowTool {
         let mut context_map: HashMap<String, String> = HashMap::new();
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
-                context_map.insert(format!("input.{}", k), v.to_string().trim_matches('"').to_string());
+                context_map.insert(
+                    format!("input.{}", k),
+                    v.to_string().trim_matches('"').to_string(),
+                );
             }
         }
 
@@ -281,10 +294,16 @@ impl Tool for WorkflowTool {
             let prompt = substitute_template(&step.prompt, &context_map);
 
             // Notify user of progress.
-            Self::notify(ctx, &format!("🔄 **{}**: {}", current_step, &self.manifest.name)).await;
+            Self::notify(
+                ctx,
+                &format!("🔄 **{}**: {}", current_step, &self.manifest.name),
+            )
+            .await;
 
             // Execute the step via subagent.
-            let result = self.run_step(&current_step, &prompt, step.model.clone(), ctx).await?;
+            let result = self
+                .run_step(&current_step, &prompt, step.model.clone(), ctx)
+                .await?;
 
             // Store result keyed by step name.
             context_map.insert(current_step.clone(), result);
@@ -293,7 +312,10 @@ impl Tool for WorkflowTool {
             if let Some(ref eval) = step.evaluate {
                 let review_text = context_map.get(&current_step).cloned().unwrap_or_default();
                 let (verdict, reason) = parse_verdict(&review_text).unwrap_or_else(|e| {
-                    warn!("[Workflow {}] Verdict parse failed for step '{}': {}", self.manifest.name, current_step, e);
+                    warn!(
+                        "[Workflow {}] Verdict parse failed for step '{}': {}",
+                        self.manifest.name, current_step, e
+                    );
                     ("FAIL".to_string(), e)
                 });
 
@@ -359,12 +381,20 @@ pub fn discover_workflows(workflows_dir: &Path) -> anyhow::Result<Vec<WorkflowTo
     }
 
     let entries = std::fs::read_dir(workflows_dir).map_err(|e| {
-        anyhow::anyhow!("Failed to read workflows directory {:?}: {}", workflows_dir, e)
+        anyhow::anyhow!(
+            "Failed to read workflows directory {:?}: {}",
+            workflows_dir,
+            e
+        )
     })?;
 
     for entry in entries {
         let entry = entry.map_err(|e| {
-            anyhow::anyhow!("Failed to read directory entry in {:?}: {}", workflows_dir, e)
+            anyhow::anyhow!(
+                "Failed to read directory entry in {:?}: {}",
+                workflows_dir,
+                e
+            )
         })?;
 
         let path = entry.path();
@@ -403,7 +433,10 @@ fn load_workflow(path: &Path) -> anyhow::Result<WorkflowManifest> {
         return Err(anyhow::anyhow!("Workflow from {:?} has empty name", path));
     }
     if manifest.description.is_empty() {
-        return Err(anyhow::anyhow!("Workflow from {:?} has empty description", path));
+        return Err(anyhow::anyhow!(
+            "Workflow from {:?} has empty description",
+            path
+        ));
     }
     if manifest.steps.is_empty() {
         return Err(anyhow::anyhow!("Workflow from {:?} has no steps", path));
@@ -508,7 +541,14 @@ steps:
         assert_eq!(manifest.name, "test_workflow");
         assert_eq!(manifest.start_step, "step1");
         assert_eq!(manifest.steps.len(), 2);
-        assert_eq!(manifest.steps["step2"].evaluate.as_ref().unwrap().max_retries, 2);
+        assert_eq!(
+            manifest.steps["step2"]
+                .evaluate
+                .as_ref()
+                .unwrap()
+                .max_retries,
+            2
+        );
     }
 
     #[test]

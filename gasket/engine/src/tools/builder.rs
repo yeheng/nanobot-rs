@@ -118,7 +118,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     let mut tools = ToolRegistry::new();
 
     // ── Core tools (filesystem, web, exec, spawn) ─────────────
-    CoreToolProvider::new(config, &workspace, subagent_spawner.clone(), role).register_tools(&mut tools);
+    CoreToolProvider::new(config, &workspace, subagent_spawner.clone(), role)
+        .register_tools(&mut tools);
 
     // ── Wiki + memory tools (conditional on page_store) ───────
     let prompts = &config.agents.defaults.prompts;

@@ -14,28 +14,17 @@ pub(super) fn extract_frontmatter_raw(content: &str) -> anyhow::Result<(String, 
         anyhow::bail!("Invalid markdown format: missing frontmatter start delimiter '---'");
     }
 
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
-        anyhow::bail!("Invalid markdown format: missing frontmatter end delimiter '---'");
-    }
-
-    let mut close_idx = None;
-    for (i, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            close_idx = Some(i);
-            break;
-        }
-    }
-
-    let close_idx = close_idx.ok_or_else(|| {
+    // Skip the opening "---" and find the closing "---" on its own line.
+    let after_open = &content[3..];
+    let close_pos = after_open.find("\n---").ok_or_else(|| {
         anyhow::anyhow!("Invalid markdown format: missing frontmatter end delimiter '---'")
     })?;
 
-    let yaml_lines = &lines[1..close_idx];
-    let body_lines = &lines[close_idx + 1..];
-
-    let yaml_str = yaml_lines.join("\n");
-    let body = body_lines.join("\n").trim_start().to_string();
+    let yaml_str = after_open[..close_pos].trim_start_matches('\n').to_string();
+    let body = after_open[close_pos + 4..]
+        .trim_start_matches('\n')
+        .trim_start()
+        .to_string();
 
     Ok((yaml_str, body))
 }

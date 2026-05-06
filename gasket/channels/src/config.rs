@@ -280,5 +280,4 @@ discord:
         // Telegram (enabled) = 1
         assert_eq!(channels.enabled_count(), 1);
     }
-
 }

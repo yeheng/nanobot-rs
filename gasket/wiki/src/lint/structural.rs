@@ -177,29 +177,19 @@ fn build_reference_set(pages: &[WikiPage]) -> HashSet<String> {
 /// Looks for patterns like `[[entities/projects/gasket]]` or `[[topics/rust]]`.
 fn extract_page_references(content: &str) -> Vec<String> {
     let mut refs = Vec::new();
-    let mut in_bracket = false;
-    let mut bracket_start = 0;
+    let mut rest = content;
 
-    let chars: Vec<char> = content.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '[' && chars[i + 1] == '[' {
-            in_bracket = true;
-            bracket_start = i + 2;
-            i += 2;
-            continue;
-        }
-        if in_bracket && i + 1 < chars.len() && chars[i] == ']' && chars[i + 1] == ']' {
-            let path: String = chars[bracket_start..i].iter().collect();
-            let path = path.trim().to_string();
+    while let Some(start) = rest.find("[[") {
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find("]]") {
+            let path = rest[..end].trim();
             if !path.is_empty() {
-                refs.push(path);
+                refs.push(path.to_string());
             }
-            in_bracket = false;
-            i += 2;
-            continue;
+            rest = &rest[end + 2..];
+        } else {
+            break;
         }
-        i += 1;
     }
     refs
 }

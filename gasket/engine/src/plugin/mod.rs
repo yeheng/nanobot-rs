@@ -199,21 +199,23 @@ impl Tool for PluginTool {
 
         let result = match self.manifest.protocol {
             PluginProtocol::Simple => {
-                let timeout_secs = self.manifest.runtime.timeout_secs
+                let timeout_secs = self
+                    .manifest
+                    .runtime
+                    .timeout_secs
                     .unwrap_or(ctx.plugin_timeout_secs);
-                run_simple(
-                    &self.manifest,
-                    &self.manifest_dir,
-                    &args,
-                    timeout_secs,
-                )
-                .await
+                run_simple(&self.manifest, &self.manifest_dir, &args, timeout_secs).await
             }
             PluginProtocol::JsonRpc => {
                 let dispatch_ctx = self.make_dispatch_ctx(ctx)?;
-                let idle_timeout_secs = self.manifest.runtime.timeout_secs
+                let idle_timeout_secs = self
+                    .manifest
+                    .runtime
+                    .timeout_secs
                     .unwrap_or(ctx.plugin_timeout_secs);
-                let daemon = self.get_or_spawn_daemon(&dispatch_ctx, idle_timeout_secs).await?;
+                let daemon = self
+                    .get_or_spawn_daemon(&dispatch_ctx, idle_timeout_secs)
+                    .await?;
                 // Inject default model so the SDK can fall back when plugin omits it
                 let mut init_args = args.clone();
                 let default_model = dispatch_ctx.engine.provider.default_model();

@@ -197,14 +197,18 @@ async fn extract_core_content(url_str: &str, html: String) -> Result<String, any
 
 /// Brute-force fallback: strip scripts/styles/HTML tags via regex.
 fn fallback_extract(html: &str) -> String {
-    let re_script = Regex::new(r"(?is)<script.*?>.*?</script>").unwrap();
+    static RE_SCRIPT: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_STYLE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_TAGS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_WS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let re_script = RE_SCRIPT.get_or_init(|| Regex::new(r"(?is)<script.*?>.*?</script>").unwrap());
+    let re_style = RE_STYLE.get_or_init(|| Regex::new(r"(?is)<style.*?>.*?</style>").unwrap());
+    let re_tags = RE_TAGS.get_or_init(|| Regex::new(r"(?is)<.*?>").unwrap());
+    let re_ws = RE_WS.get_or_init(|| Regex::new(r"\s+").unwrap());
+
     let no_scripts = re_script.replace_all(html, " ");
-    let re_style = Regex::new(r"(?is)<style.*?>.*?</style>").unwrap();
-    let no_scripts = re_style.replace_all(&no_scripts, " ");
-
-    let re_tags = Regex::new(r"(?is)<.*?>").unwrap();
-    let raw_text = re_tags.replace_all(&no_scripts, " ");
-
-    let re_ws = Regex::new(r"\s+").unwrap();
+    let no_styles = re_style.replace_all(&no_scripts, " ");
+    let raw_text = re_tags.replace_all(&no_styles, " ");
     re_ws.replace_all(&raw_text, " ").trim().to_string()
 }

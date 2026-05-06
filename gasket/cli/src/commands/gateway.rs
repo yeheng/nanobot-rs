@@ -528,10 +528,7 @@ async fn setup_http_server(
     dispatcher: &Arc<gasket_command::Dispatcher>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
-    #[cfg(any(
-        feature = "websocket",
-        feature = "feishu"
-    ))]
+    #[cfg(any(feature = "websocket", feature = "feishu"))]
     {
         let providers_for_http = providers.clone();
         let agent_for_http = agent.clone();
@@ -562,10 +559,7 @@ async fn setup_http_server(
     }
 }
 
-#[cfg(any(
-    feature = "websocket",
-    feature = "feishu"
-))]
+#[cfg(any(feature = "websocket", feature = "feishu"))]
 fn add_context_routes(
     mut app: axum::Router,
     agent: Arc<AgentSession>,

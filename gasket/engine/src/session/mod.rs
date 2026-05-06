@@ -637,7 +637,9 @@ impl AgentSession {
             let (result, _) = tokio::join!(exec_future, stream_future);
 
             if let Err(ref e) = result {
-                let _ = chat_tx_err.send(ChatEvent::error(format!("Agent error: {}", e))).await;
+                let _ = chat_tx_err
+                    .send(ChatEvent::error(format!("Agent error: {}", e)))
+                    .await;
                 let _ = chat_tx_err.send(ChatEvent::done()).await;
             }
 

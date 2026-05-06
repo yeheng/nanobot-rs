@@ -93,7 +93,12 @@ impl RpcHandler for SubagentSpawnHandler {
             .map_err(|e| RpcError::internal_error(format!("Subagent result dropped: {}", e)))?;
 
         // Notify frontend that the subagent has completed
-        let summary = result.response.content.chars().take(500).collect::<String>();
+        let summary = result
+            .response
+            .content
+            .chars()
+            .take(500)
+            .collect::<String>();
         let _ = ctx
             .engine
             .outbound_tx

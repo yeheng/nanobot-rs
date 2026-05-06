@@ -39,13 +39,12 @@ pub mod websocket;
 #[cfg(feature = "wechat")]
 pub mod wechat;
 
-
 // Convenience re-exports
 pub use adapter::ImAdapter;
 pub use approval_router::ApprovalRouter;
 pub use config::{
-    ChannelsConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
-    WebSocketConfig, WechatConfig,
+    ChannelsConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig, WebSocketConfig,
+    WechatConfig,
 };
 pub use error::ChannelConfigError;
 pub use events::{
