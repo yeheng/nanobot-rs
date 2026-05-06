@@ -158,6 +158,7 @@ export function useChatSession(chatId: { value: string }) {
     const allCompleted = [...activeSubagents.value.values()].every(s => s.status !== 'running');
     if (allCompleted && activeSubagents.value.size > 0) {
       subagentPhase.value = 'completed';
+      activeSubagents.value.clear();
     }
   };
 
@@ -250,6 +251,11 @@ export function useChatSession(chatId: { value: string }) {
         break;
       case 'error':
         isThinking.value = false;
+        isReceiving.value = false;
+        subagentPhase.value = 'idle';
+        activeSubagents.value.clear();
+        Object.values(subagentTimers.value).forEach(clearTimeout);
+        subagentTimers.value = {};
         showError(msg.content || msg.message || 'An error occurred');
         break;
       case 'done':

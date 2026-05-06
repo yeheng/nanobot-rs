@@ -622,6 +622,7 @@ impl AgentSession {
 
         // Spawn via TaskTracker so graceful shutdown can await this task.
         // T3: Stream combinator replaces manual loop + extra spawn.
+        let chat_tx_err = chat_tx.clone();
         let result_handle = self.pending_done.spawn(async move {
             let stream_future = ReceiverStream::new(kernel_rx)
                 .filter_map(|event| futures_util::future::ready(event.to_chat_event()))
@@ -634,8 +635,13 @@ impl AgentSession {
 
             let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx);
             let (result, _) = tokio::join!(exec_future, stream_future);
-            let result = result?;
 
+            if let Err(ref e) = result {
+                let _ = chat_tx_err.send(ChatEvent::error(format!("Agent error: {}", e))).await;
+                let _ = chat_tx_err.send(ChatEvent::done()).await;
+            }
+
+            let result = result?;
             let response = Self::postprocess(result, &ctx).await;
 
             Ok(response)

@@ -72,6 +72,10 @@ const formatDate = (ts?: number) => {
   if (!ts) return '';
   return new Date(ts).toLocaleDateString();
 };
+
+const truncateTitle = (name: string) => {
+  return name.slice(0, 9) + '...';
+};
 </script>
 
 <template>
@@ -154,7 +158,7 @@ const formatDate = (ts?: number) => {
                     />
                   </template>
                   <template v-else>
-                    <span class="text-sm font-medium th-text-secondary truncate">{{ chat.name }}</span>
+                    <span class="text-sm font-medium th-text-secondary">{{ truncateTitle(chat.name) }}</span>
                   </template>
                 </div>
                 <span class="text-[10px] th-text-dim">
