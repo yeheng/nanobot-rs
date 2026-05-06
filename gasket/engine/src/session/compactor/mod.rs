@@ -47,7 +47,6 @@ pub use stats::{UsageStats, WatermarkInfo};
 const COMPACTION_COOLDOWN_SECS: u64 = 60;
 
 /// Watermark-based context compactor.
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -87,6 +86,17 @@ pub trait CompactionListener: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// CompactorState — unified state machine
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum CompactorState {
+    Idle,
+    Compressing { pending: bool },
+    Cooldown(Instant),
+}
+
+// ---------------------------------------------------------------------------
 // ContextCompactor — public API
 // ---------------------------------------------------------------------------
 
@@ -114,13 +124,8 @@ pub struct ContextCompactor {
     compaction_threshold: f32,
     /// Custom summarization prompt.
     summarization_prompt: String,
-    /// Guard preventing concurrent compaction for the same session.
-    is_compressing: Arc<AtomicBool>,
-    /// Pending compaction flag: set when threshold is exceeded but lock is held.
-    /// Checked by the background task on completion to trigger a follow-up run.
-    pending_compaction: Arc<AtomicBool>,
-    /// Timestamp of last compaction failure (for cooldown backoff).
-    last_failed_attempt: Arc<parking_lot::Mutex<Option<Instant>>>,
+    /// Unified state machine: Idle | Compressing { pending } | Cooldown(Instant).
+    state: Arc<parking_lot::Mutex<CompactorState>>,
     /// Optional checkpoint configuration for proactive working-memory snapshots.
     checkpoint_config: Option<CheckpointConfig>,
     /// Listeners notified when events are deleted during compaction.
@@ -147,9 +152,7 @@ impl ContextCompactor {
             token_budget,
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
             summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
-            is_compressing: Arc::new(AtomicBool::new(false)),
-            pending_compaction: Arc::new(AtomicBool::new(false)),
-            last_failed_attempt: Arc::new(parking_lot::Mutex::new(None)),
+            state: Arc::new(parking_lot::Mutex::new(CompactorState::Idle)),
             checkpoint_config: None,
             listeners: Vec::new(),
         }
@@ -178,9 +181,9 @@ impl ContextCompactor {
         self.listeners.push(listener);
     }
 
-    /// Get a clone of the is_compressing guard for external inspection.
-    pub fn is_compressing_flag(&self) -> Arc<AtomicBool> {
-        self.is_compressing.clone()
+    /// Check whether compaction is currently in progress.
+    pub fn is_compressing(&self) -> bool {
+        matches!(*self.state.lock(), CompactorState::Compressing { .. })
     }
 
     /// Load the current summary and its watermark for a session.
@@ -203,7 +206,7 @@ impl ContextCompactor {
             session_key,
             self.token_budget,
             self.compaction_threshold,
-            self.is_compressing.load(Ordering::Acquire),
+            self.is_compressing(),
         )
         .await
     }
@@ -225,14 +228,15 @@ impl ContextCompactor {
     /// Returns `true` if compaction was triggered, `false` if already in progress.
     pub fn force_compact(&self, session_key: &SessionKey, vault_values: &[String]) -> bool {
         let sk = session_key.to_string();
-        if !self.try_acquire_lock(&sk) {
-            debug!("Force compaction skipped: already in progress for {}", sk);
-            return false;
+        {
+            let mut state = self.state.lock();
+            if matches!(*state, CompactorState::Compressing { .. }) {
+                debug!("Force compaction skipped: already in progress for {}", sk);
+                return false;
+            }
+            *state = CompactorState::Compressing { pending: false };
         }
-        let guard = CompactionGuard {
-            is_compressing: self.is_compressing.clone(),
-            pending_compaction: Some(self.pending_compaction.clone()),
-        };
+        let guard = CompactionGuard::new(self.state.clone());
         info!("Force compaction triggered for {}", sk);
         self.spawn_compaction_task(session_key, vault_values, guard);
         true
@@ -248,14 +252,15 @@ impl ContextCompactor {
         vault_values: &[String],
     ) -> Result<()> {
         let sk = session_key.to_string();
-        if !self.try_acquire_lock(&sk) {
-            bail!("Compaction already in progress for {}", sk);
+        {
+            let mut state = self.state.lock();
+            if matches!(*state, CompactorState::Compressing { .. }) {
+                bail!("Compaction already in progress for {}", sk);
+            }
+            *state = CompactorState::Compressing { pending: false };
         }
         info!("Force compaction (blocking) started for {}", sk);
-        let _guard = CompactionGuard {
-            is_compressing: self.is_compressing.clone(),
-            pending_compaction: Some(self.pending_compaction.clone()),
-        };
+        let _guard = CompactionGuard::new(self.state.clone());
 
         if let Err(e) = self
             .session_store
@@ -337,59 +342,11 @@ impl ContextCompactor {
         vault_values: &[String],
     ) -> bool {
         let sk = session_key.to_string();
-        if !self.should_compact(&sk, current_tokens) {
-            // Clear pending if we drop below threshold — no need to re-trigger.
-            self.pending_compaction.store(false, Ordering::Release);
-            return false;
-        }
-        if !self.try_acquire_lock(&sk) {
-            // Lock held but threshold exceeded — mark pending for re-trigger.
-            self.pending_compaction.store(true, Ordering::Release);
-            debug!(
-                "Compaction deferred for {}: already in progress, marked pending",
-                sk
-            );
-            return false;
-        }
-        let guard = CompactionGuard {
-            is_compressing: self.is_compressing.clone(),
-            pending_compaction: Some(self.pending_compaction.clone()),
-        };
-        self.spawn_compaction_task(session_key, vault_values, guard);
-        true
-    }
-
-    // -----------------------------------------------------------------------
-    // Gate checks
-    // -----------------------------------------------------------------------
-
-    /// Check whether compaction should be triggered.
-    fn should_compact(&self, session_key: &str, current_tokens: usize) -> bool {
-        if self.is_compressing.load(Ordering::Acquire) {
-            debug!(
-                "Compaction already in progress for {}, skipping",
-                session_key
-            );
-            return false;
-        }
-
-        // Cooldown check: skip if last failure was within COOLDOWN_SECS
-        if let Some(last_fail) = *self.last_failed_attempt.lock() {
-            if last_fail.elapsed().as_secs() < COMPACTION_COOLDOWN_SECS {
-                debug!(
-                    "Compaction in cooldown for {}: {}s since last failure",
-                    session_key,
-                    last_fail.elapsed().as_secs()
-                );
-                return false;
-            }
-        }
-
         let threshold = (self.token_budget as f32 * self.compaction_threshold) as usize;
         if current_tokens < threshold {
             debug!(
                 "Skipping compaction for {}: {} tokens < threshold {} (budget={}, mult={})",
-                session_key,
+                sk,
                 current_tokens,
                 threshold,
                 self.token_budget,
@@ -398,23 +355,42 @@ impl ContextCompactor {
             return false;
         }
 
-        true
-    }
+        let started = {
+            let mut state = self.state.lock();
+            match *state {
+                CompactorState::Compressing { ref mut pending } => {
+                    *pending = true;
+                    debug!(
+                        "Compaction deferred for {}: already in progress, marked pending",
+                        sk
+                    );
+                    false
+                }
+                CompactorState::Cooldown(last_fail) => {
+                    if last_fail.elapsed().as_secs() < COMPACTION_COOLDOWN_SECS {
+                        debug!(
+                            "Compaction in cooldown for {}: {}s since last failure",
+                            sk,
+                            last_fail.elapsed().as_secs()
+                        );
+                        false
+                    } else {
+                        *state = CompactorState::Compressing { pending: false };
+                        true
+                    }
+                }
+                CompactorState::Idle => {
+                    *state = CompactorState::Compressing { pending: false };
+                    true
+                }
+            }
+        };
 
-    /// Atomically acquire the compaction lock via CAS.
-    fn try_acquire_lock(&self, session_key: &str) -> bool {
-        if self
-            .is_compressing
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            debug!(
-                "Race: another thread started compaction for {}",
-                session_key
-            );
-            return false;
+        if started {
+            let guard = CompactionGuard::new(self.state.clone());
+            self.spawn_compaction_task(session_key, vault_values, guard);
         }
-        true
+        started
     }
 
     // -----------------------------------------------------------------------
@@ -435,8 +411,7 @@ impl ContextCompactor {
         let summarization_prompt = self.summarization_prompt.clone();
         let sk = session_key.clone();
         let vault = vault_values.to_vec();
-        let last_failed = self.last_failed_attempt.clone();
-        let pending = self.pending_compaction.clone();
+        let state = self.state.clone();
         // Clone Arc references to listeners so the background task can notify them.
         let listeners: Vec<Arc<dyn CompactionListener>> = self.listeners.clone();
 
@@ -448,6 +423,7 @@ impl ContextCompactor {
                 warn!("Failed to mark compaction started for {}: {}", sk, e);
             }
 
+            let mut follow_up = false;
             let run = async {
                 if let Err(e) = pipeline::run_compaction(
                     &event_store,
@@ -462,41 +438,41 @@ impl ContextCompactor {
                 .await
                 {
                     warn!("Compaction failed for {}: {}", sk, e);
-                    *last_failed.lock() = Some(Instant::now());
+                    *state.lock() = CompactorState::Cooldown(Instant::now());
                 } else {
-                    *last_failed.lock() = None;
-                }
-
-                // If pending was set while we were running, clear it and re-trigger.
-                if pending
-                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    info!(
-                        "Pending compaction detected for {} — re-triggering immediately",
-                        sk
+                    // Check if a follow-up was requested while we were running.
+                    follow_up = matches!(
+                        *state.lock(),
+                        CompactorState::Compressing { pending: true }
                     );
-                    if let Err(e) = pipeline::run_compaction(
-                        &event_store,
-                        &session_store,
-                        &*provider,
-                        &model,
-                        &summarization_prompt,
-                        &sk,
-                        &vault,
-                        &listeners,
-                    )
-                    .await
-                    {
-                        warn!("Follow-up compaction failed for {}: {}", sk, e);
-                        *last_failed.lock() = Some(Instant::now());
-                    } else {
-                        *last_failed.lock() = None;
-                    }
                 }
             };
 
             run.await;
+
+            // If pending was set while we were running, re-trigger.
+            if follow_up {
+                info!(
+                    "Pending compaction detected for {} — re-triggering immediately",
+                    sk
+                );
+                *state.lock() = CompactorState::Compressing { pending: false };
+                if let Err(e) = pipeline::run_compaction(
+                    &event_store,
+                    &session_store,
+                    &*provider,
+                    &model,
+                    &summarization_prompt,
+                    &sk,
+                    &vault,
+                    &listeners,
+                )
+                .await
+                {
+                    warn!("Follow-up compaction failed for {}: {}", sk, e);
+                    *state.lock() = CompactorState::Cooldown(Instant::now());
+                }
+            }
 
             if let Err(e) = session_store.mark_compaction_finished(&sk).await {
                 warn!("Failed to mark compaction finished for {}: {}", sk, e);
@@ -505,20 +481,20 @@ impl ContextCompactor {
     }
 }
 
-/// RAII guard that resets the compaction flag on drop, ensuring panic safety.
-/// Optionally clears the pending flag so a follow-up run is not triggered
-/// when the lock was released by a synchronous path (e.g., force_compact_and_wait).
+/// RAII guard that resets the compactor state to Idle on drop, ensuring panic safety.
 struct CompactionGuard {
-    is_compressing: Arc<AtomicBool>,
-    pending_compaction: Option<Arc<AtomicBool>>,
+    state: Arc<parking_lot::Mutex<CompactorState>>,
+}
+
+impl CompactionGuard {
+    fn new(state: Arc<parking_lot::Mutex<CompactorState>>) -> Self {
+        Self { state }
+    }
 }
 
 impl Drop for CompactionGuard {
     fn drop(&mut self) {
-        self.is_compressing.store(false, Ordering::Release);
-        if let Some(ref pending) = self.pending_compaction {
-            pending.store(false, Ordering::Release);
-        }
+        *self.state.lock() = CompactorState::Idle;
     }
 }
 
@@ -548,6 +524,8 @@ mod tests {
         assert!(SUMMARY_PREFIX.ends_with('\n'));
         assert!(!SUMMARY_SUFFIX.is_empty());
     }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn test_atomic_bool_guard() {

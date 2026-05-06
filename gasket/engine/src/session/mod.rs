@@ -415,10 +415,7 @@ impl AgentSession {
 
     /// Check if context compaction is currently in progress.
     pub fn is_compacting(&self) -> bool {
-        self.compactor.as_ref().is_some_and(|c| {
-            c.is_compressing_flag()
-                .load(std::sync::atomic::Ordering::Acquire)
-        })
+        self.compactor.as_ref().is_some_and(|c| c.is_compressing())
     }
 
     /// Get context usage statistics.

@@ -72,14 +72,20 @@ fn substitute_template(template: &str, ctx: &HashMap<String, String>) -> String 
     // Regex for {{key}} where key is alphanumeric + dots + underscores + slashes
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap());
-    let mut result = template.to_string();
+    let mut result = String::with_capacity(template.len());
+    let mut last_end = 0;
     for caps in re.captures_iter(template) {
-        let full = caps.get(0).unwrap().as_str();
+        let m = caps.get(0).unwrap();
+        result.push_str(&template[last_end..m.start()]);
         let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         if let Some(val) = ctx.get(key) {
-            result = result.replace(full, val);
+            result.push_str(val);
+        } else {
+            result.push_str(m.as_str());
         }
+        last_end = m.end();
     }
+    result.push_str(&template[last_end..]);
     result
 }
 
