@@ -781,20 +781,16 @@ Session 是**有状态**的 orchestration 层，Kernel 是**纯函数**的执行
 
 ```rust
 pub struct AgentSession {
-    runtime_ctx: RuntimeContext,           // Kernel 执行上下文
-    event_store: Arc<EventStore>,           // 事件存储（非可选）
-    session_store: Arc<SessionStore>,       // 会话存储（非可选）
-    config: AgentConfig,                   // Agent 配置
-    workspace: PathBuf,                    // 工作目录
-    system_prompt: String,                 // 系统提示
-    skills_context: Option<String>,        // 技能上下文
-    hooks: Arc<HookRegistry>,              // Hook 注册表
-    history_config: HistoryConfig,         // 历史配置
-    compactor: Option<Arc<ContextCompactor>>, // 上下文压缩器
-    indexing_service: Option<Arc<IndexingService>>, // 索引服务
-    wiki: Option<WikiComponents>,          // Wiki 知识系统
-    pricing: Option<ModelPricing>,        // 价格配置
-    pending_done: tokio_util::task::TaskTracker, // 任务追踪器（无锁）
+    runtime_ctx: RuntimeContext,                              // Kernel 执行上下文
+    config: AgentConfig,                                      // Agent 配置
+    context_builder: history::builder::ContextBuilder,         // 历史/记忆组装
+    compactor: Option<Arc<ContextCompactor>>,            // 上下文压缩器
+    pricing: Option<ModelPricing>,                          // 价格配置
+    finalizer: ResponseFinalizer,                             // 响应后处理
+    pending_done: tokio_util::task::TaskTracker,          // 任务追踪器（无锁）
+    pending_asks: Arc<PendingAskRegistryImpl>,            // pending ask 注册表
+    #[cfg(feature = "embedding")]
+    embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>, // 嵌入索引器
 }
 
 pub struct AgentResponse {

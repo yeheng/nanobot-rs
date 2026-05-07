@@ -16,49 +16,44 @@ The Wiki module is a three-layer knowledge management system:
 
 ```
 gasket/
-├── engine/src/wiki/              # Application Layer - High-level interfaces
-│   ├── mod.rs                   # Module exports
-│   ├── page.rs                  # WikiPage, PageType, PageSummary, PageFilter, slugify()
-│   ├── store.rs                 # PageStore (SQLite CRUD wrapper)
-│   ├── index.rs                 # PageIndex (Tantivy search wrapper)
-│   ├── lifecycle.rs             # FrequencyManager, DecayReport (page lifecycle)
-│   ├── log.rs                   # WikiLog (operation logging)
+├── gasket/wiki/src/             # Application Layer - High-level interfaces
+│   ├── lib.rs                  # Module exports
+│   ├── page.rs                 # WikiPage, PageType, PageSummary, PageFilter, slugify()
+│   ├── store.rs                # PageStore (SQLite CRUD wrapper)
+│   ├── index.rs                # PageIndex (Tantivy search wrapper)
+│   ├── lifecycle.rs            # FrequencyManager, DecayReport (page lifecycle)
+│   ├── log.rs                  # WikiLog (operation logging)
 │   │
-│   ├── ingest/                  # Source ingestion pipeline
-│   │   ├── mod.rs               # Module exports
-│   │   ├── parser.rs            # SourceParser trait + Markdown/Html/PlainText/Conversation parsers
-│   │   ├── extractor.rs         # KnowledgeExtractor (LLM-based extraction)
-│   │   └── dedup.rs             # SemanticDeduplicator (text similarity dedup)
+│   ├── ingest/                 # Source ingestion pipeline
+│   │   ├── mod.rs              # Module exports
+│   │   ├── parser.rs           # SourceParser trait + Markdown/Html/PlainText/Conversation parsers
+│   │   ├── extractor.rs        # KnowledgeExtractor (LLM-based extraction)
+│   │   └── dedup.rs            # SemanticDeduplicator (text similarity dedup)
 │   │
-│   ├── lint/                    # Quality check pipeline
-│   │   ├── mod.rs               # WikiLinter, LintReport, FixReport
-│   │   └── structural.rs        # Structural checks (orphan, stub, naming, missing refs)
+│   ├── lint/                   # Quality check pipeline
+│   │   ├── mod.rs              # WikiLinter, LintReport, FixReport
+│   │   └── structural.rs       # Structural checks (orphan, stub, naming, missing refs)
 │   │
-│   └── query/                   # Query pipeline
+│   └── query/                  # Query pipeline
 │       ├── mod.rs              # WikiQueryEngine (3-phase retrieval), TokenBudget, QueryResult
 │       ├── tantivy_adapter.rs  # TantivyIndex, SearchHit, WikiFields (BM25 search)
 │       └── reranker.rs         # Reranker (BM25 + confidence + recency scoring)
 │
-├── storage/src/wiki/            # Data Layer - SQLite persistence
-│   ├── mod.rs                   # Module exports
-│   ├── types.rs                 # Frequency enum, TokenBudget
-│   ├── tables.rs                # SQL table definitions + indexes
-│   ├── page_store.rs            # WikiPageStore (SQLite ops), PageRow, WikiPageInput
-│   ├── source_store.rs          # WikiSourceStore (raw sources tracking), SourceRow
-│   ├── relation_store.rs        # WikiRelationStore (page relations), RelationRow
-│   └── log_store.rs             # WikiLogStore (operation log), LogRow
-│
-└── engine/src/tools/             # CLI Tools
-    ├── wiki_tools.rs           # WikiSearchTool, WikiWriteTool, WikiReadTool
-    ├── wiki_refresh.rs          # WikiRefreshTool (disk ↔ SQLite ↔ Tantivy sync)
-    └── wiki_decay.rs            # WikiDecayTool (frequency decay batch job)
+└── gasket/storage/src/wiki/    # Data Layer - SQLite persistence
+    ├── lib.rs                  # Module exports
+    ├── types.rs                # Frequency enum, TokenBudget
+    ├── tables.rs               # SQL table definitions + indexes
+    ├── page_store.rs           # WikiPageStore (SQLite ops), PageRow, WikiPageInput
+    ├── source_store.rs         # WikiSourceStore (raw sources tracking), SourceRow
+    ├── relation_store.rs       # WikiRelationStore (page relations), RelationRow
+    └── log_store.rs            # WikiLogStore (operation log), LogRow
 ```
 
 ---
 
 ## 3. Core Data Structures
 
-### 3.1 Data Layer (storage/src/wiki/)
+### 3.1 Data Layer (gasket/storage/src/wiki/)
 
 | Struct | Responsibility |
 |--------|---------------|
@@ -71,7 +66,7 @@ gasket/
 | `DecayCandidate` | Page path + frequency + last_accessed for decay processing. |
 | `Frequency` | Enum: `Hot`(rank 3), `Warm`(rank 2), `Cold`(rank 1), `Archived`(rank 0). Machine runtime state only. |
 
-### 3.2 Application Layer (engine/src/wiki/)
+### 3.2 Application Layer (gasket/wiki/src/)
 
 | Struct | Responsibility |
 |--------|---------------|
@@ -81,7 +76,7 @@ gasket/
 | `WikiQueryEngine` | Three-phase retrieval: BM25 candidate → rerank → budget-aware loading. |
 | `WikiLinter` | Runs structural quality checks. Produces LintReport, supports auto_fix(). |
 
-### 3.3 Ingest Pipeline (engine/src/wiki/ingest/)
+### 3.3 Ingest Pipeline (gasket/wiki/src/ingest/)
 
 | Struct | Responsibility |
 |--------|---------------|
@@ -292,23 +287,28 @@ sequenceDiagram
 ## 6. Key Design Principles
 
 ### 6.1 SQLite is Single Source of Truth (SSOT)
+
 - Markdown files are optional human-readable cache only
 - All operations go through SQLite first
 
 ### 6.2 Tantivy is Derived Data
+
 - Search index is rebuilt from SQLite on reindex
 - Writes keep it in sync via upsert
 
 ### 6.3 Frequency is Machine Runtime State
+
 - Never serialized to Markdown frontmatter
 - Decay is a background batch job (WikiDecayTool)
 
 ### 6.4 Three-Phase Query
+
 ```
 Phase 1: BM25 Candidate Retrieval → Phase 2: Hybrid Reranking (BM25 0.6 + Confidence 0.2 + Recency 0.2) → Phase 3: Token Budget Loading
 ```
 
 ### 6.5 LLM-Augmented Ingest
+
 - `KnowledgeExtractor` uses LLM to structure knowledge from raw documents
 - `SemanticDeduplicator` prevents duplicates via text similarity
 
@@ -337,6 +337,9 @@ gasket wiki stats
 
 # Migration (old memory → wiki)
 gasket wiki migrate
+
+# Delete page
+gasket wiki delete <path>
 ```
 
 ---
@@ -345,11 +348,10 @@ gasket wiki migrate
 
 | Feature | File Path |
 |---------|----------|
-| WikiPage definition | `engine/src/wiki/page.rs` |
-| SQLite storage | `storage/src/wiki/page_store.rs` |
-| Tantivy index | `engine/src/wiki/query/tantivy_adapter.rs` |
-| Query engine | `engine/src/wiki/query/mod.rs` |
-| Ingest pipeline | `engine/src/wiki/ingest/mod.rs` |
-| Linting | `engine/src/wiki/lint/mod.rs` |
-| CLI tools | `engine/src/tools/wiki_tools.rs` |
-| Refresh tool | `engine/src/tools/wiki_refresh.rs` |
+| WikiPage definition | `gasket/wiki/src/page.rs` |
+| SQLite storage | `gasket/storage/src/wiki/page_store.rs` |
+| Tantivy index | `gasket/wiki/src/query/tantivy_adapter.rs` |
+| Query engine | `gasket/wiki/src/query/mod.rs` |
+| Ingest pipeline | `gasket/wiki/src/ingest/mod.rs` |
+| Linting | `gasket/wiki/src/lint/mod.rs` |
+| CLI commands | `gasket/cli/src/commands/wiki.rs` |

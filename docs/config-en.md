@@ -84,10 +84,10 @@ agents:
   # Default configuration
   defaults:
     model: openrouter/anthropic/claude-4.5-sonnet
-    temperature: 0.7
-    max_tokens: 4096
+    temperature: 1.0
+    max_tokens: 100000
     max_iterations: 100
-    memory_window: 10
+    memory_window: 50
     thinking_enabled: false
     historyRecallK: 5
     streaming: true
@@ -289,10 +289,10 @@ Only set `provider_type` if you use a custom name (e.g., `my-proxy`) that the sy
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `model` | string | - | Default model, format `provider/model` |
-| `temperature` | float | 0.7 | Sampling temperature, lower = more deterministic |
-| `max_tokens` | int | 4096 | Max tokens per response |
+| `temperature` | float | 1.0 | Sampling temperature, lower = more deterministic |
+| `max_tokens` | int | 100000 | Max tokens per response |
 | `max_iterations` | int | 100 | Max tool calls per turn |
-| `memory_window` | int | 10 | Recent messages loaded into context |
+| `memory_window` | int | 50 | Recent messages loaded into context |
 | `thinking_enabled` | bool | false | Enable deep thinking mode (reasoning models only) |
 | `streaming` | bool | true | Enable streaming output |
 | `historyRecallK` | int | 5 | Semantic history recall count |

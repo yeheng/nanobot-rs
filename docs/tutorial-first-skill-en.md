@@ -322,12 +322,11 @@ Create a skill matching your preferences:
 name: skill-name                    # Skill identifier (unique)
 description: Brief description      # Displayed in skill list
 tags: [tag1, tag2]                 # Category tags
-always_load: false                  # Whether to always load
+always: false                      # Whether to always load
 
-# Optional: Dependency check
-dependencies:
-  binaries: ["node", "python"]     # Required commands
-  env_vars: ["API_KEY"]            # Required environment variables
+# Optional: Dependency check (at top level, no wrapper)
+bins: ["node", "python"]           # Required commands
+env_vars: ["API_KEY"]              # Required environment variables
 
 # Optional: Trigger conditions
 triggers:

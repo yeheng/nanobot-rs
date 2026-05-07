@@ -164,7 +164,10 @@ sequenceDiagram
 
 **参数：**
 - `task`（必填）- 任务描述
-- `model_id`（可选）- 模型 Profile ID，如 `"fast"`、`"coder"`，使用 `agents.models` 中定义的模型
+- `model`（可选）- 模型名称，如 `"openrouter/anthropic/claude-4.5-sonnet"`，默认使用主代理模型
+- `system_prompt`（可选）- 自定义系统提示词
+- `max_turns`（可选）- 最大执行轮数
+- `thinking_enabled`（可选）- 是否启用思考模式
 
 **适用场景：**
 - 复杂代码分析
@@ -202,7 +205,7 @@ sequenceDiagram
 **参数：**
 - `tasks`（必填）- 任务列表，支持两种格式：
   - 简单字符串数组：`["任务A", "任务B"]`
-  - 带模型选择的对象数组：`[{"task": "任务A", "model_id": "fast"}, ...]`
+  - 带模型选择的对象数组：`[{"task": "任务A", "model": "openrouter/anthropic/claude-4.5-sonnet"}, ...]`
 - 最多 10 个任务，最多 5 个并发执行（防止 API 限流）
 
 **适用场景：**

@@ -345,7 +345,7 @@ sequenceDiagram
 async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult;
 ```
 
-### 6. 定时任务工具
+### 8. 定时任务工具
 
 让 AI 能管理定时任务：
 

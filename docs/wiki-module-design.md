@@ -16,8 +16,8 @@ Wiki 模块是一个三层架构的知识管理系统：
 
 ```
 gasket/
-├── engine/src/wiki/              # 应用层 - 高级接口
-│   ├── mod.rs                    # 模块导出
+├── gasket/wiki/src/              # 应用层 - 高级接口
+│   ├── lib.rs                    # 模块导出
 │   ├── page.rs                  # WikiPage, PageType, PageSummary, PageFilter, slugify()
 │   ├── store.rs                 # PageStore (SQLite CRUD 包装器)
 │   ├── index.rs                 # PageIndex (Tantivy 搜索包装器)
@@ -39,7 +39,7 @@ gasket/
 │       ├── tantivy_adapter.rs   # TantivyIndex, SearchHit, WikiFields (BM25 搜索)
 │       └── reranker.rs          # Reranker (BM25 + 置信度 + 时效性 重排序)
 │
-├── storage/src/wiki/            # 数据层 - SQLite 持久化
+└── gasket/storage/src/wiki/    # 数据层 - SQLite 持久化
 │   ├── mod.rs                   # 模块导出
 │   ├── types.rs                 # Frequency 枚举, TokenBudget
 │   ├── tables.rs                # SQL 表定义 + 索引
@@ -48,17 +48,15 @@ gasket/
 │   ├── relation_store.rs         # WikiRelationStore (页面关系), RelationRow
 │   └── log_store.rs             # WikiLogStore (操作日志), LogRow
 │
-└── engine/src/tools/            # CLI 工具
-    ├── wiki_tools.rs            # WikiSearchTool, WikiWriteTool, WikiReadTool
-    ├── wiki_refresh.rs          # WikiRefreshTool (磁盘 ↔ SQLite ↔ Tantivy 同步)
-    └── wiki_decay.rs            # WikiDecayTool (频率衰减批量任务)
+└── gasket/cli/src/commands/     # CLI 工具
+    └── wiki.rs                 # wiki init/ingest/search/list/lint/stats/migrate/delete 命令
 ```
 
 ---
 
 ## 3. 核心数据结构
 
-### 3.1 数据层 (storage/src/wiki/)
+### 3.1 数据层 (gasket/storage/src/wiki/)
 
 | Struct | 职责 |
 |--------|------|
@@ -71,7 +69,7 @@ gasket/
 | `DecayCandidate` | 页面路径 + 频率 + 上次访问时间，用于衰减处理。 |
 | `Frequency` | 枚举: `Hot`(rank 3), `Warm`(rank 2), `Cold`(rank 1), `Archived`(rank 0)。机器运行时状态。 |
 
-### 3.2 应用层 (engine/src/wiki/)
+### 3.2 应用层 (gasket/wiki/src/)
 
 | Struct | 职责 |
 |--------|------|
@@ -81,7 +79,7 @@ gasket/
 | `WikiQueryEngine` | 三阶段检索引擎：BM25 候选 → 重排序 → 按预算加载。 |
 | `WikiLinter` | 运行结构化质量检查。生成 LintReport，支持 auto_fix() 自动修复简单问题。 |
 
-### 3.3 摄取管道 (engine/src/wiki/ingest/)
+### 3.3 摄取管道 (gasket/wiki/src/ingest/)
 
 | Struct | 职责 |
 |--------|------|
@@ -292,23 +290,28 @@ sequenceDiagram
 ## 6. 关键设计原则
 
 ### 6.1 SQLite 是单一数据源 (SSOT)
+
 - Markdown 文件仅作为可选的人类可读缓存
 - 所有操作优先通过 SQLite
 
 ### 6.2 Tantivy 是派生数据
+
 - 搜索索引在 reindex 时从 SQLite 重建
 - 写入时通过 upsert 保持同步
 
 ### 6.3 频率是机器运行时状态
+
 - 不序列化到 Markdown frontmatter
 - 衰减是后台批量任务 (WikiDecayTool)
 
 ### 6.4 三阶段查询
+
 ```
 Phase 1: BM25 候选检索 → Phase 2: 混合重排序 (BM25 + 置信度 + 时效性) → Phase 3: 按 Token 预算加载
 ```
 
 ### 6.5 LLM 增强的摄取
+
 - `KnowledgeExtractor` 使用 LLM 结构化原始文档
 - `SemanticDeduplicator` 通过文本相似度防止重复
 
@@ -337,6 +340,9 @@ gasket wiki stats
 
 # 迁移 (旧 memory → wiki)
 gasket wiki migrate
+
+# 删除页面
+gasket wiki delete <path>
 ```
 
 ---
@@ -345,11 +351,10 @@ gasket wiki migrate
 
 | 功能 | 文件路径 |
 |------|----------|
-| WikiPage 定义 | `engine/src/wiki/page.rs` |
-| SQLite 存储 | `storage/src/wiki/page_store.rs` |
-| Tantivy 索引 | `engine/src/wiki/query/tantivy_adapter.rs` |
-| 查询引擎 | `engine/src/wiki/query/mod.rs` |
-| 摄取管道 | `engine/src/wiki/ingest/mod.rs` |
-| 质量检查 | `engine/src/wiki/lint/mod.rs` |
-| CLI 工具 | `engine/src/tools/wiki_tools.rs` |
-| 刷新工具 | `engine/src/tools/wiki_refresh.rs` |
+| WikiPage 定义 | `gasket/wiki/src/page.rs` |
+| SQLite 存储 | `gasket/storage/src/wiki/page_store.rs` |
+| Tantivy 索引 | `gasket/wiki/src/query/tantivy_adapter.rs` |
+| 查询引擎 | `gasket/wiki/src/query/mod.rs` |
+| 摄取管道 | `gasket/wiki/src/ingest/mod.rs` |
+| 质量检查 | `gasket/wiki/src/lint/mod.rs` |
+| CLI 命令 | `gasket/cli/src/commands/wiki.rs` |

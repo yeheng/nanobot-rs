@@ -197,21 +197,47 @@ ThinkingConfig {
 
 ### 2.6 流式输出类型
 
-> **来源**: `gasket-engine::kernel::stream::StreamEvent`
+> **来源**: `gasket-types::events::stream`
+
+`StreamEvent` 是对外事件包装器，`ChatEvent` 是内部事件载荷：
 
 ```rust
-pub enum StreamEvent {
-    Thinking { agent_id: Option<Arc<str>>, content: Arc<str> },
-    ToolStart { agent_id: Option<Arc<str>>, name: Arc<str>, arguments: Option<Arc<str>> },
-    ToolEnd { agent_id: Option<Arc<str>>, name: Arc<str>, output: Option<Arc<str>> },
-    Content { agent_id: Option<Arc<str>>, content: Arc<str> },
-    Done { agent_id: Option<Arc<str>> },
-    TokenStats { agent_id: Option<Arc<str>>, input_tokens: usize, output_tokens: usize, total_tokens: usize, cost: f64, currency: Arc<str> },
-    SubagentStarted { agent_id: Arc<str>, task: Arc<str>, index: u32 },
-    SubagentCompleted { agent_id: Arc<str>, index: u32, summary: Arc<str>, tool_count: u32 },
-    SubagentError { agent_id: Arc<str>, index: u32, error: Arc<str> },
-    Text { agent_id: Option<Arc<str>>, content: Arc<str> },
+// StreamEvent - 对外事件包装器
+pub struct StreamEvent {
+    pub agent_id: Option<Arc<str>>,  // None=主代理, Some(uuid)=子代理
+    pub event: ChatEvent,           // 事件载荷
 }
+
+// ChatEvent - 内部事件载荷枚举
+pub enum ChatEvent {
+    // 核心事件
+    Thinking { content: Arc<str> },
+    ToolStart { name: Arc<str>, arguments: Option<Arc<str>> },
+    ToolEnd { name: Arc<str>, output: Option<Arc<str>> },
+    Content { content: Arc<str> },
+    Done,
+    Text { content: Arc<str> },
+    Error { message: Arc<str> },
+    // 上下文统计
+    ContextStats { token_budget, compaction_threshold, threshold_tokens, current_tokens, usage_percent, is_compressing },
+    WatermarkInfo { watermark, max_sequence, uncompacted_count, compacted_percent },
+    // 子代理事件
+    SubagentStarted { id, task, index },
+    SubagentThinking { id, content },
+    SubagentContent { id, content },
+    SubagentToolStart { id, name, arguments },
+    SubagentToolEnd { id, name, output },
+    SubagentCompleted { id, index, summary, tool_count },
+    SubagentError { id, index, error },
+    SubagentAllStarted { count },
+    SubagentSynthesizing {},
+    // 审批事件
+    ApprovalRequest { id, tool_name, description, arguments },
+    ApprovalResponse { ... },
+}
+
+// WebSocketMessage 是 ChatEvent 的类型别名
+pub type WebSocketMessage = ChatEvent;
 ```
 
 ---

@@ -56,7 +56,7 @@ sequenceDiagram
     
     U->>K: 发送问题
     
-    loop 最多思考20轮
+    loop 最多思考100轮
         K->>AI: 整理上下文，请求回复
         AI-->>K: 返回：思考内容 + 可能的工具调用
         
@@ -314,8 +314,8 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     Start([开始]) --> Count{第几轮?}
-    Count -->|第1-19轮| Think[继续思考]
-    Count -->|第20轮| Stop[强制结束]
+    Count -->|第1-99轮| Think[继续思考]
+    Count -->|第100轮| Stop[强制结束]
     Think --> NeedMore{还需要工具?}
     NeedMore -->|是| Count
     NeedMore -->|否| Answer[返回答案]

@@ -35,7 +35,7 @@ rustc --version
 ```bash
 # 克隆代码
 git clone https://github.com/YeHeng/gasket.git
-cd gasket-rs
+cd gasket
 
 # 编译（喝杯咖啡，大约需要 2-5 分钟）
 cargo build --release
@@ -205,4 +205,4 @@ channels:
 | API 错误 | 检查 API Key 是否正确，是否还有额度 |
 | 找不到命令 | 确保 `~/.cargo/bin` 在 PATH 中 |
 
-更多帮助查看 [FAQ](faq.md) 或提交 [Issue](https://github.com/YeHeng/gasket-rs/issues)
+更多帮助查看 [FAQ](faq.md) 或提交 [Issue](https://github.com/YeHeng/gasket/issues)

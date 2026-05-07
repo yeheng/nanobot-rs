@@ -153,7 +153,7 @@ flowchart TB
 flowchart TB
     START([开始]) --> I[iteration = 0]
 
-    I --> LP{iteration &lt;<br/>max_iterations<br/>(默认20)?}
+    I --> LP{iteration &lt;<br/>max_iterations<br/>(默认100)?}
 
     LP -->|YES| INC[iteration++]
     INC --> CK[Proactive Checkpoint<br/>注入工作记忆摘要]
@@ -168,8 +168,8 @@ flowchart TB
     LR -->|NO| STREAM[流式解析<br/>accumulate_stream]
 
     STREAM --> DELTA{delta类型}
-    DELTA -->|content| EC[StreamEvent::Content]
-    DELTA -->|reasoning| ER[StreamEvent::Reasoning]
+    DELTA -->|content| EC[ChatEvent::Content]
+    DELTA -->|reasoning| ER[ChatEvent::Thinking]
     DELTA -->|tool_calls| ET[累积 tool_calls<br/>直到流结束]
 
     EC --> CB[callback<br/>实时推送前端]
@@ -183,7 +183,7 @@ flowchart TB
     TE --> TR[Tool Result<br/>追加到 messages]
     TR --> I
 
-    TC -->|NO| DONE[StreamEvent::Done]
+    TC -->|NO| DONE[ChatEvent::Done]
     DONE --> OUT[返回 ExecutionResult<br/>content + reasoning +<br/>tools_used + token_usage]
 
     LP -->|NO| MAX["返回 MaxIterations<br/>( gracefully )"]
@@ -266,7 +266,7 @@ flowchart TB
         K2[StreamEvent::Content]
         K3[StreamEvent::ToolStart]
         K4[StreamEvent::ToolEnd]
-        K5[StreamEvent::TokenStats]
+        K5[ChatEvent::ContextStats]
         K6[StreamEvent::Done]
         K7[StreamEvent::SubagentStarted]
         K8[StreamEvent::SubagentCompleted]
@@ -274,7 +274,7 @@ flowchart TB
     end
 
     subgraph 转换层
-        T1[to_chat_event()<br/>filter_map]
+        T1["to_chat_event() / filter_map"]
     end
 
     subgraph 用户层事件 ChatEvent
@@ -282,7 +282,7 @@ flowchart TB
         C2[WebSocketMessage::Text]
         C3[WebSocketMessage::ToolStart]
         C4[WebSocketMessage::ToolEnd]
-        C5[内部消费<br/>不转发]
+        C5["内部消费 / 不转发"]
         C6[WebSocketMessage::Done]
         C7[WebSocketMessage::SubagentStarted]
         C8[WebSocketMessage::SubagentCompleted]
@@ -492,5 +492,5 @@ flowchart LR
 | **工具执行** | `engine/src/kernel/tool_executor.rs` | `ToolExecutor::execute_batch()` |
 | **请求构建** | `engine/src/kernel/request_handler.rs` | `RequestHandler::build_chat_request()` |
 | **后处理** | `engine/src/session/finalizer.rs` | `ResponseFinalizer::finalize()` |
-| **子代理** | `engine/src/plugin/dispatcher/subagent.rs` | `spawn_subagent()` |
-| **事件转换** | `gasket-types/src/events.rs` | `StreamEvent::to_chat_event()` |
+| **子代理** | `engine/src/subagents/manager.rs` | `spawn_subagent()` |
+| **事件转换** | `gasket-types/src/events/stream.rs` | `StreamEvent::to_chat_event()` |

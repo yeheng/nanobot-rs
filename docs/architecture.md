@@ -307,20 +307,20 @@ flowchart TB
     style Tool fill:#FFD700
 ```
 
-### Memory：记忆系统
+### Wiki：知识库系统
 
 ```mermaid
 flowchart TB
     subgraph 记忆层次
-        H[历史<br/>短期记忆]
+        H[历史<br/>会话历史]
         P[Profile<br/>用户画像]
         K[Knowledge<br/>知识]
         A[Active<br/>当前工作]
     end
 
     subgraph 存储
-        S1[SQLite<br/>会话历史]
-        S2[Markdown文件<br/>长期记忆]
+        S1[SQLite<br/>会话历史 + 索引]
+        S2[Wiki<br/>Markdown文件]
     end
 
     H --> S1
@@ -328,6 +328,8 @@ flowchart TB
     K --> S2
     A --> S2
 ```
+
+**注意**：Wiki 模块 (`gasket_storage::wiki`) 统一管理知识存储，支持语义搜索和三阶段 token 预算（bootstrap/scenario/on_demand）。
 
 ### Tools：工具系统
 
@@ -388,28 +390,27 @@ flowchart LR
 - 容易测试
 - 方便重试和缓存
 
-### 2. 枚举替代 Option
+### 2. ContextBuilder 模式
 
 ```mermaid
 flowchart TB
-    subgraph 老方法
+    subgraph 旧方法
         O["Option&lt;Context&gt;"]
         O -->|Some| P[持久化]
         O -->|None| S[无状态]
     end
 
     subgraph 新方法
-        E["直接 Store 引用"]
-        E -->|Arc EventStore| P2[ContextBuilder / ResponseFinalizer]
-        E -->|Arc SessionStore| P2
+        CB[ContextBuilder]
+        CB -->|组装| CTX[完整上下文]
     end
 
-    style E fill:#C8E6C9
+    style CB fill:#C8E6C9
 ```
 
 **好处**：
-- 组件直接持有存储引用，消除间接层
-- 非可选设计 — AgentSession 本身就是持久化会话
+- 统一接口组装历史、记忆、摘要
+- 支持三阶段 token 预算（bootstrap/scenario/on_demand）
 - 代码更简洁清晰
 
 ### 3. 文件 + 数据库混合存储

@@ -35,7 +35,7 @@ rustc --version
 ```bash
 # Clone the code
 git clone https://github.com/YeHeng/gasket.git
-cd gasket-rs
+cd gasket
 
 # Build (grab a coffee, takes 2-5 minutes)
 cargo build --release
@@ -205,4 +205,4 @@ Then run `gasket gateway`, and your AI can respond on Telegram!
 | API error | Check if API Key is correct and has credits |
 | Command not found | Ensure `~/.cargo/bin` is in PATH |
 
-More help in [FAQ](faq-en.md) or [Issues](https://github.com/YeHeng/gasket-rs/issues)
+More help in [FAQ](faq-en.md) or [Issues](https://github.com/YeHeng/gasket/issues)

@@ -91,6 +91,7 @@ flowchart LR
 ```
 
 No matter which channel the user comes from, messages are converted into a unified format:
+
 - User ID
 - Message content
 - Channel type
@@ -117,6 +118,7 @@ flowchart TB
 ```
 
 **Key Design**:
+
 - Each user has an independent Session
 - Sessions do not interfere with each other
 - Sessions are automatically created and cleaned up
@@ -283,27 +285,29 @@ flowchart TB
     style Tool fill:#FFD700
 ```
 
-### Memory: Memory System
+### Wiki: Knowledge Base System
 
 ```mermaid
 flowchart TB
     subgraph Memory_Hierarchy["Memory Hierarchy"]
-        H[History<br/>Short-term Memory]
+        H[History<br/>Session History]
         P[Profile<br/>User Profile]
         K[Knowledge<br/>Knowledge]
         A[Active<br/>Current Work]
     end
-    
+
     subgraph Storage["Storage"]
-        S1[SQLite<br/>Session History]
-        S2[Markdown Files<br/>Long-term Memory]
+        S1[SQLite<br/>Session History + Index]
+        S2[Wiki<br/>Markdown Files]
     end
-    
+
     H --> S1
     P --> S2
     K --> S2
     A --> S2
 ```
+
+**Note**: The Wiki module (`gasket_storage::wiki`) unifies knowledge storage with semantic search and three-phase token budget (bootstrap/scenario/on_demand).
 
 ### Tools: Tool System
 
@@ -365,11 +369,12 @@ flowchart LR
 ```
 
 **Benefits**:
+
 - Same input, same output
 - Easy to test
 - Convenient for retry and caching
 
-### 2. Enum Instead of Option
+### 2. ContextBuilder Pattern
 
 ```mermaid
 flowchart TB
@@ -378,19 +383,19 @@ flowchart TB
         O -->|Some| P[Persistent]
         O -->|None| S[Stateless]
     end
-    
+
     subgraph New_Way
-        E[Direct Store Refs]
-        E -->|Arc EventStore| P2[ContextBuilder / ResponseFinalizer]
-        E -->|Arc SessionStore| P2
+        CB[ContextBuilder]
+        CB -->|Assemble| CTX[Complete Context]
     end
 
-    style E fill:#C8E6C9
+    style CB fill:#C8E6C9
 ```
 
 **Benefits**:
-- Type known at compile time
-- Zero runtime overhead
+
+- Unified interface for history, memory, and summaries
+- Supports three-phase token budget (bootstrap/scenario/on_demand)
 - Cleaner code
 
 ### 3. File + Database Hybrid Storage
@@ -416,6 +421,7 @@ Fast Query]
 ```
 
 **Benefits**:
+
 - Human editable (Markdown)
 - Machine high performance (SQLite)
 - Version control friendly

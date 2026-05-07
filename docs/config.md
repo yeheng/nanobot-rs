@@ -84,10 +84,10 @@ agents:
   # 默认配置
   defaults:
     model: openrouter/anthropic/claude-4.5-sonnet
-    temperature: 0.7
-    max_tokens: 4096
+    temperature: 1.0
+    max_tokens: 100000
     max_iterations: 100
-    memory_window: 10
+    memory_window: 50
     thinking_enabled: false
     historyRecallK: 5
     streaming: true
@@ -289,10 +289,10 @@ Provider 名称会自动决定原生实现，通常**不需要**手动设置 `pr
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `model` | string | - | 默认模型，格式 `provider/model` |
-| `temperature` | float | 0.7 | 采样温度，越低越确定 |
-| `max_tokens` | int | 4096 | 单次回复最大 Token 数 |
+| `temperature` | float | 1.0 | 采样温度，越低越确定 |
+| `max_tokens` | int | 100000 | 单次回复最大 Token 数 |
 | `max_iterations` | int | 100 | 单轮对话最大工具调用次数 |
-| `memory_window` | int | 10 | 加载到上下文的最近消息数 |
+| `memory_window` | int | 50 | 加载到上下文的最近消息数 |
 | `thinking_enabled` | bool | false | 启用深度思考模式（仅支持 reasoning 模型） |
 | `streaming` | bool | true | 启用流式输出 |
 | `historyRecallK` | int | 5 | 语义历史召回条数 |

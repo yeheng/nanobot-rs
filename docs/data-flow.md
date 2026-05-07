@@ -314,17 +314,41 @@ flowchart TB
 ### 流式事件类型
 
 ```rust
-pub enum StreamEvent {
-    Thinking { agent_id: Option<Arc<str>>, content: Arc<str> },
-    ToolStart { agent_id: Option<Arc<str>>, name: Arc<str>, arguments: Option<Arc<str>> },
-    ToolEnd { agent_id: Option<Arc<str>>, name: Arc<str>, output: Option<Arc<str>> },
-    Content { agent_id: Option<Arc<str>>, content: Arc<str> },
-    Done { agent_id: Option<Arc<str>> },
-    TokenStats { agent_id: Option<Arc<str>>, input_tokens: usize, output_tokens: usize, total_tokens: usize, cost: f64, currency: Arc<str> },
-    SubagentStarted { agent_id: Arc<str>, task: Arc<str>, index: u32 },
-    SubagentCompleted { agent_id: Arc<str>, index: u32, summary: Arc<str>, tool_count: u32 },
-    SubagentError { agent_id: Arc<str>, index: u32, error: Arc<str> },
-    Text { agent_id: Option<Arc<str>>, content: Arc<str> },
+// StreamEvent 是对外的事件结构，包含 agent_id 用于标识来源
+pub struct StreamEvent {
+    pub agent_id: Option<Arc<str>>,  // None=主代理, Some(uuid)=子代理
+    pub event: ChatEvent,             // 事件载荷
+}
+
+// ChatEvent 是内部事件载荷枚举
+pub enum ChatEvent {
+    // 核心事件
+    Thinking { content: Arc<str> },
+    ToolStart { name: Arc<str>, arguments: Option<Arc<str>> },
+    ToolEnd { name: Arc<str>, output: Option<Arc<str>> },
+    Content { content: Arc<str> },
+    Done,
+    Text { content: Arc<str> },
+    Error { message: Arc<str> },
+
+    // 上下文统计
+    ContextStats { token_budget, compaction_threshold, threshold_tokens, current_tokens, usage_percent, is_compressing },
+    WatermarkInfo { watermark, max_sequence, uncompacted_count, compacted_percent },
+
+    // 子代理事件
+    SubagentStarted { id: Arc<str>, task: Arc<str>, index: u32 },
+    SubagentThinking { id: Arc<str>, content: Arc<str> },
+    SubagentContent { id: Arc<str>, content: Arc<str> },
+    SubagentToolStart { id: Arc<str>, name: Arc<str>, arguments: Option<Arc<str>> },
+    SubagentToolEnd { id: Arc<str>, name: Arc<str>, output: Option<Arc<str>> },
+    SubagentCompleted { id: Arc<str>, index: u32, summary: Arc<str>, tool_count: u32 },
+    SubagentError { id: Arc<str>, index: u32, error: Arc<str> },
+    SubagentAllStarted { count: u32 },
+    SubagentSynthesizing {},
+
+    // 审批事件
+    ApprovalRequest { id: Arc<str>, tool_name: Arc<str>, description: Arc<str>, arguments: Arc<str> },
+    ApprovalResponse { ... },
 }
 ```
 

@@ -350,7 +350,7 @@ agents:
 let task = TaskSpec::new("sub-1", prompt)
     .with_model("fast")  // Uses the "fast" profile
     .with_system_prompt(system_prompt);
-spawn_subagent(provider, tools, workspace, task, None, result_tx, None);
+spawn_subagent(provider, tools, workspace, task, None, result_tx, None, cancellation_token);
 ```
 
 | Task Type | Recommended Model | Why |

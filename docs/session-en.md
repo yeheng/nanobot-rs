@@ -312,19 +312,21 @@ sequenceDiagram
 The butler's toolkit:
 
 ```rust
-struct AgentSession {
-    runtime_ctx: RuntimeContext,         // Execution dependencies
-    event_store: Arc<EventStore>,        // Event persistence (non-optional)
-    session_store: Arc<SessionStore>,    // Session storage (non-optional)
-    config: AgentConfig,                 // Behavior settings
-    system_prompt: String,               // AI personality
-    hooks: Arc<HookRegistry>,            // Extension points
-    compactor: Option<Arc<ContextCompactor>>, // Compression
-    pricing: Option<ModelPricing>,       // Cost calculation
-    finalizer: ResponseFinalizer,        // Response post-processing
-    pending_done: TaskTracker,           // Graceful shutdown tracker
+pub struct AgentSession {
+    runtime_ctx: RuntimeContext,                              // Execution dependencies
+    config: AgentConfig,                                      // Behavior settings
+    context_builder: history::builder::ContextBuilder,         // History/memory assembly
+    compactor: Option<Arc<ContextCompactor>>,                // Context compression
+    pricing: Option<ModelPricing>,                            // Cost calculation
+    finalizer: ResponseFinalizer,                             // Response post-processing
+    pending_done: tokio_util::task::TaskTracker,              // Graceful shutdown tracker
+    pending_asks: Arc<PendingAskRegistryImpl>,                // Pending ask registry
+    #[cfg(feature = "embedding")]
+    embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>, // Background embedding indexer
 }
 ```
+
+**Note**: `ContextBuilder` replaces the old `event_store`/`session_store` pattern, providing a unified interface for history and memory assembly.
 
 ---
 

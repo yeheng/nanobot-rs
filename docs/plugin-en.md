@@ -149,10 +149,12 @@ JSON-RPC plugins must explicitly declare which engine capabilities they need. Th
 | Permission | RPC Method | What it does |
 |------------|------------|--------------|
 | `llm_chat` | `llm/chat` | Call the LLM provider (`chat` endpoint) |
-| `memory_search` | `memory/search` | Search structured memories |
-| `memory_write` | `memory/write` | Write a new memory entry |
-| `memory_decay` | `memory/decay` | Decay / compress old memories |
+| `wiki_search` | `wiki/search` | Search Wiki knowledge base |
+| `wiki_write` | `wiki/write` | Write Wiki pages |
+| `wiki_decay` | `wiki/decay` | Wiki frequency decay |
 | `subagent_spawn` | `subagent/spawn` | Spawn a subagent to handle a task |
+| `message_send` | `message/send` | Send messages to channels |
+| `user_ask` | `user/ask` | Ask the user questions |
 
 Example manifest:
 

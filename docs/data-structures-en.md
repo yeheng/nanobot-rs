@@ -34,11 +34,8 @@ OutboundMessage {
     ws_message: Option<WebSocketMessage>,  // WebSocket real-time message
 }
 
-WebSocketMessage {
-    msg_type: WebSocketMessageType,  // Text | Thinking | ToolStart | ToolEnd | TokenStats | Error | Done
-    content: String,
-    metadata: Option<serde_json::Value>,
-}
+// WebSocketMessage is a type alias for ChatEvent
+pub type WebSocketMessage = ChatEvent;
 ```
 
 ### 1.3 Session Identifier

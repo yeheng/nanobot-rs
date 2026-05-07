@@ -278,7 +278,7 @@ Unified pipeline extension mechanism with five execution points and sequential/p
 | `HookBuilder` | Builder for creating HookRegistry |
 | `HookContext<M>` | Generic context with session_key, messages, user_input, response |
 | `ExternalShellHook` | Shell script hook wrapper |
-| `HistoryRecallHook` | Semantic history recall (feature: local-embedding) |
+| `HistoryRecallHook` | Semantic history recall (feature: local-onnx) |
 | `VaultHook` | Vault secret injection at BeforeLLM |
 
 ### External Shell Hooks
@@ -353,17 +353,18 @@ flowchart LR
 |------|----------------|
 | `mod.rs` | `AgentSession` — Session management core, wraps kernel execution |
 | `config.rs` | `AgentConfig` — Agent configuration with kernel conversion support |
-| `compactor.rs` | `ContextCompactor` — Context compression (based on token budget) |
+| `builder.rs` | `SessionBuilder` — Session builder |
+| `finalizer.rs` | `ResponseFinalizer` — Response post-processor |
+| `pending_ask.rs` | `PendingAskRegistry` — Pending ask registry |
 | `prompt.rs` | Bootstrap file loading, skills context, token truncation |
-| `store.rs` | `MemoryStore` — Memory store wrapper (exports MemoryStore only) |
 | `history/` | Event sourcing history processing |
+| `compactor/` | Context compression (based on token budget) |
 
 ### history/ Submodule
 
 | File | Responsibility |
 |------|----------------|
-| `builder.rs` | `HistoryBuilder` — History message builder |
-| `coordinator.rs` | `HistoryCoordinator` — History loading coordinator |
+| `builder.rs` | `ContextBuilder` — History message builder |
 | `indexing.rs` | `HistoryIndexingService` — Message indexing service |
 | `mod.rs` | Module exports |
 
@@ -373,16 +374,16 @@ flowchart LR
 
 ```rust
 pub struct AgentSession {
-    runtime_ctx: RuntimeContext,    // Kernel execution context
-    event_store: Arc<EventStore>,   // Event store (non-optional — persistent session)
-    session_store: Arc<SessionStore>, // Session store (non-optional)
-    config: AgentConfig,            // Agent configuration
-    system_prompt: String,          // System prompt
-    hooks: Arc<HookRegistry>,       // Hook registry
-    compactor: Option<Arc<ContextCompactor>>, // Context compactor
-    pricing: Option<ModelPricing>,  // Optional pricing for cost calculation
-    finalizer: ResponseFinalizer,   // Response post-processor
-    pending_done: tokio_util::task::TaskTracker, // Graceful shutdown tracker
+    runtime_ctx: RuntimeContext,                              // Kernel execution context
+    config: AgentConfig,                                      // Agent configuration
+    context_builder: history::builder::ContextBuilder,         // History/memory assembly
+    compactor: Option<Arc<ContextCompactor>>,            // Context compactor
+    pricing: Option<ModelPricing>,                          // Optional pricing for cost calculation
+    finalizer: ResponseFinalizer,                             // Response post-processor
+    pending_done: tokio_util::task::TaskTracker,          // Graceful shutdown tracker
+    pending_asks: Arc<PendingAskRegistryImpl>,            // Pending ask registry
+    #[cfg(feature = "embedding")]
+    embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>, // Embedding indexer
 }
 ```
 
@@ -512,7 +513,7 @@ Password: {{vault:db_password}}
 
 | Type | Description |
 |------|-------------|
-| `TextEmbedder` | ONNX-based text embedding via fastembed (feature: local-embedding) |
+| `TextEmbedder` | ONNX-based text embedding via fastembed (feature: local-onnx) |
 | `EmbeddingConfig` | Model name, cache dir, local model path configuration |
 | `cosine_similarity()` | Calculate cosine similarity between two vectors |
 | `top_k_similar()` | Get top-K most similar items from vector collection |

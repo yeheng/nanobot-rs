@@ -71,14 +71,9 @@ agents:
 |------|------|------|
 | `provider` | string | 提供商 ID (openai, anthropic, zhipu 等) |
 | `model` | string | 模型 ID (gpt-4o, claude-opus-4 等) |
-| `model` | string | 模型 ID (如 `openrouter/anthropic/claude-4.5-sonnet`) |
-| `provider` | string | 提供商 ID |
-| `temperature` | number | 可选，采样温度 |
-| `max_tokens` | number | 可选，最大生成 token 数 |
-| `thinking_enabled` | boolean | 可选，是否启用思考模式 |
-| `temperature` | float | 采样温度 (0.0-2.0) |
-| `thinking_enabled` | bool | 是否启用推理模式 |
-| `max_tokens` | int | 最大生成 token 数 |
+| `temperature` | float | 采样温度 (0.0-2.0)，可选 |
+| `max_tokens` | int | 最大生成 token 数，可选 |
+| `thinking_enabled` | bool | 是否启用推理模式，可选 |
 
 ## Benefits
 

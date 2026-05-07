@@ -82,7 +82,7 @@ sequenceDiagram
     
     Session->>Kernel: execute(messages)
     Kernel->>Executor: Create executor
-    loop Up to 20 rounds
+    loop Up to 100 rounds
         Executor->>LLM: Send messages
         LLM-->>Executor: Return response
         alt Needs tool call
@@ -103,7 +103,7 @@ sequenceDiagram
 3. **Decision Point**:
    - If AI wants to use tools → Execute tools → Back to step 2
    - If AI gives direct answer → Return result
-4. **Loop Control**: Maximum 20 rounds (prevents infinite loops)
+4. **Loop Control**: Maximum 100 rounds (prevents infinite loops)
 
 ---
 
@@ -152,7 +152,7 @@ flowchart LR
 
 ### AgentExecutor
 
-The "coordinator" that manages the AI thinking loop (max 20 iterations by default):
+The "coordinator" that manages the AI thinking loop (max 100 iterations by default):
 
 ```rust
 // Pseudo-code showing the logic
