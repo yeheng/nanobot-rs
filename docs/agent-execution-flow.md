@@ -62,20 +62,20 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph 阶段1：PreProcess
+    subgraph "阶段1：PreProcess"
         P1[构建 Prompt<br/>PROFILE + SOUL +<br/>AGENTS + MEMORY +<br/>BOOTSTRAP + skills]
         P2[History Processor<br/>token 感知截断]
         P3[ContextCompactor<br/>摘要压缩]
         P4[Vault 注入<br/>替换占位符]
     end
 
-    subgraph 阶段2：Execute
+    subgraph "阶段2：Execute"
         E1[Kernel::execute_streaming]
         E2[多轮 LLM 循环]
         E3[Tool 并行执行]
     end
 
-    subgraph 阶段3：PostProcess
+    subgraph "阶段3：PostProcess"
         O1[ResponseFinalizer<br/>计算 cost]
         O2[保存 assistant<br/>message 到 EventStore]
         O3[触发 embedding<br/>索引]
@@ -137,7 +137,7 @@ flowchart TB
 
     SS --> PA2
 
-    PA2 --> VAULT[VaultInjector<br/>替换 {{vault:*}}]
+    PA2 --> VAULT["VaultInjector<br/>替换 {{vault:*}}"]
     VAULT --> END_PP([返回 PipelineContext<br/>+ messages])
 
     style HH fill:#E3F2FD
@@ -153,7 +153,7 @@ flowchart TB
 flowchart TB
     START([开始]) --> I[iteration = 0]
 
-    I --> LP{iteration &lt;<br/>max_iterations<br/>(默认100)?}
+    I --> LP{"iteration &lt;<br/>max_iterations<br/>(默认100)?"}
 
     LP -->|YES| INC[iteration++]
     INC --> CK[Proactive Checkpoint<br/>注入工作记忆摘要]
@@ -449,7 +449,7 @@ flowchart LR
     end
 
     subgraph 中间态
-        M1[BuildOutcome<br/>Aborted | Ready]
+        M1["BuildOutcome<br/>Aborted | Ready"]
         M2[ChatRequest<br/>messages + model + tools]
         M3[PipelineContext<br/>runtime_ctx + messages + fctx]
         M4[ChatResponse<br/>content + reasoning + tool_calls]
@@ -458,7 +458,7 @@ flowchart LR
 
     subgraph 输出
         O1[AgentResponse<br/>content + reasoning + tools_used + model + cost]
-        O2[ChatEvent Stream<br/>Text | Thinking | ToolStart | ToolEnd | Done]
+        O2["ChatEvent Stream<br/>Text | Thinking | ToolStart | ToolEnd | Done"]
     end
 
     I1 --> M1
