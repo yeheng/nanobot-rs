@@ -1,5 +1,13 @@
 name: "dev_workflow"
 description: "Research → Plan → Implement → Review loop for code generation"
+output_template: |
+  ## Dev Workflow Result: PASS
+
+  - **Final Review**: {{review.reason}}
+
+  ### Generated Code
+
+  {{implement}}
 parameters:
   type: object
   properties:

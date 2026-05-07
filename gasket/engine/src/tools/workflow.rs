@@ -31,6 +31,8 @@ pub struct WorkflowManifest {
     pub parameters: Value,
     pub start_step: String,
     pub steps: HashMap<String, WorkflowStep>,
+    /// Optional template to render as the final output instead of raw JSON.
+    pub output_template: Option<String>,
 }
 
 /// A single step in the workflow graph.
@@ -95,43 +97,49 @@ fn substitute_template(template: &str, ctx: &HashMap<String, String>) -> String 
 ///
 /// Tolerates ```json fences and missing fields. Unparseable input is treated
 /// as FAIL so the workflow retries rather than silently proceeding.
+/// Parse a verdict from LLM output.
+///
+/// Tolerates missing fields and surrounding markdown. Unparseable input is treated
+/// as FAIL so the workflow retries rather than silently proceeding.
 fn parse_verdict(text: &str) -> Result<(String, String), String> {
-    let mut txt = text.trim();
+    let txt = text.trim();
 
-    // Strip ```json ... ``` fences if present
-    if txt.starts_with("```") {
-        txt = txt.trim_start_matches('`');
-        if txt.to_lowercase().starts_with("json") {
-            txt = &txt[4..];
+    // Try finding JSON object boundaries to be robust against leading/trailing text
+    let obj: Value = match serde_json::from_str(txt) {
+        Ok(val) => val,
+        Err(_) => {
+            let start = txt.find('{').ok_or_else(|| "Failed to extract JSON object".to_string())?;
+            let json_part = &txt[start..];
+
+            // Use streaming deserializer: it stops after the first valid JSON object,
+            // ignoring any trailing garbage (e.g. code blocks with braces).
+            serde_json::Deserializer::from_str(json_part)
+                .into_iter::<Value>()
+                .next()
+                .ok_or_else(|| "Failed to extract JSON object".to_string())?
+                .map_err(|e| format!("JSON parse error: {}", e))?
         }
-        txt = txt.trim().trim_end_matches('`').trim();
-    }
+    };
 
-    let obj: Value = serde_json::from_str(txt).map_err(|e| {
-        format!(
-            "JSON parse error: {} in text: {}",
-            e,
-            &text[..text.len().min(200)]
-        )
-    })?;
-
-    let verdict = obj
-        .get("verdict")
-        .and_then(|v| v.as_str())
-        .unwrap_or("FAIL")
-        .to_uppercase();
-
-    let reason = obj
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let verdict = if verdict == "PASS" || verdict == "FAIL" {
-        verdict
+    let verdict = if let Some(v) = obj.get("verdict") {
+        v.as_str().unwrap_or("FAIL").to_uppercase()
+    } else if let Some(v) = obj.get("pass_gate").or_else(|| obj.get("validation_passed")) {
+        // Fallback for self-evolution and similar workflows using booleans
+        if v.as_bool().unwrap_or(false) {
+            "PASS".to_string()
+        } else {
+            "FAIL".to_string()
+        }
     } else {
         "FAIL".to_string()
     };
+
+    // Extract reason, or serialize the whole object as feedback if reason is absent
+    let reason = obj
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| serde_json::to_string(&obj).unwrap_or_default());
 
     Ok((verdict, reason))
 }
@@ -172,6 +180,7 @@ impl WorkflowTool {
         step_name: &str,
         prompt: &str,
         model: Option<String>,
+        step_index: u32,
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         let spawner = ctx.spawner.as_ref().ok_or_else(|| {
@@ -200,7 +209,7 @@ impl WorkflowTool {
                 gasket_types::events::ChatEvent::subagent_started(
                     subagent_id.clone(),
                     step_name,
-                    0,
+                    step_index,
                 ),
             ))
             .await;
@@ -275,7 +284,7 @@ impl WorkflowTool {
                 ctx.session_key.chat_id.clone(),
                 gasket_types::events::ChatEvent::subagent_completed(
                     subagent_id,
-                    0,
+                    step_index,
                     result.response.content.clone(),
                     result.response.tools_used.len() as u32,
                 ),
@@ -311,20 +320,33 @@ impl Tool for WorkflowTool {
     #[tracing::instrument(name = "tool.workflow", skip_all, fields(workflow = %self.manifest.name))]
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         // Flatten user arguments into the context map under the "input." prefix.
-        let mut context_map: HashMap<String, String> = HashMap::new();
+        let mut context_map = HashMap::new();
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
-                context_map.insert(
-                    format!("input.{}", k),
-                    v.to_string().trim_matches('"').to_string(),
-                );
+                let val_str = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+                context_map.insert(format!("input.{}", k), val_str);
             }
         }
 
         let mut current_step = self.manifest.start_step.clone();
         let mut retry_counts: HashMap<String, usize> = HashMap::new();
+        let mut step_index = 0u32;
 
-        while current_step != "DONE" {
+        // Defense against infinite loops from malformed YAML logic
+        let mut step_count = 0;
+        const MAX_WORKFLOW_STEPS: usize = 100;
+
+        loop {
+            if current_step == "DONE" {
+                break;
+            }
+            if step_count >= MAX_WORKFLOW_STEPS {
+                return Err(ToolError::ExecutionError(
+                    format!("Workflow exceeded maximum step limit ({})", MAX_WORKFLOW_STEPS)
+                ));
+            }
+            step_count += 1;
+
             let step = self.manifest.steps.get(&current_step).ok_or_else(|| {
                 ToolError::ExecutionError(format!("Workflow step '{}' not found", current_step))
             })?;
@@ -341,8 +363,9 @@ impl Tool for WorkflowTool {
 
             // Execute the step via subagent.
             let result = self
-                .run_step(&current_step, &prompt, step.model.clone(), ctx)
+                .run_step(&current_step, &prompt, step.model.clone(), step_index, ctx)
                 .await?;
+            step_index += 1;
 
             // Store result keyed by step name.
             context_map.insert(current_step.clone(), result);
@@ -359,7 +382,8 @@ impl Tool for WorkflowTool {
                 });
 
                 // Store reason for template use in the loop-back step.
-                context_map.insert(format!("{}_reason", current_step), reason.clone());
+                // Use '{}.reason' so that templates like `{{review.reason}}` resolve correctly.
+                context_map.insert(format!("{}.reason", current_step), reason.clone());
 
                 if verdict == "PASS" {
                     Self::notify(ctx, &format!("✅ **{}** passed", current_step)).await;
@@ -393,12 +417,16 @@ impl Tool for WorkflowTool {
             }
         }
 
-        // Build final result JSON.
-        let final_output = serde_json::json!({
-            "context": context_map,
-        });
-        serde_json::to_string(&final_output)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize result: {}", e)))
+        // If an output_template is defined, render it; otherwise return the raw context JSON.
+        if let Some(ref template) = self.manifest.output_template {
+            Ok(substitute_template(template, &context_map))
+        } else {
+            let final_output = serde_json::json!({
+                "context": context_map,
+            });
+            serde_json::to_string(&final_output)
+                .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize result: {}", e)))
+        }
     }
 }
 
@@ -546,6 +574,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_verdict_with_trailing_braces() {
+        let text = r#"{"verdict": "PASS"} \n Some code: if (true) { do_something(); }"#;
+        let (v, r) = parse_verdict(text).unwrap();
+        assert_eq!(v, "PASS");
+        // When reason is absent, the whole object is serialized as fallback
+        assert!(r.contains("PASS"));
+    }
+
+    #[test]
     fn parse_verdict_missing_verdict_defaults_to_fail() {
         let text = r#"{"reason": "no verdict field"}"#;
         let (v, r) = parse_verdict(text).unwrap();
@@ -591,12 +628,27 @@ steps:
     }
 
     #[test]
+    fn load_real_dev_yaml_has_output_template() {
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
+        assert!(
+            manifest.output_template.is_some(),
+            "dev.yaml should have output_template"
+        );
+        let tmpl = manifest.output_template.unwrap();
+        assert!(tmpl.contains("Dev Workflow Result"));
+        assert!(tmpl.contains("{{review.reason}}"));
+        assert!(tmpl.contains("{{implement}}"));
+    }
+
+    #[test]
     fn workflow_tool_name_and_description() {
         let manifest = WorkflowManifest {
             name: "my_flow".to_string(),
             description: "does things".to_string(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             start_step: "a".to_string(),
+            output_template: None,
             steps: {
                 let mut m = HashMap::new();
                 m.insert(

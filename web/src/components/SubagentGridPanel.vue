@@ -103,8 +103,8 @@ function toolIconForStatus(status: SubagentToolCall['status']) {
               class="w-3.5 h-3.5 shrink-0"
               :class="{ 'animate-spin': subagent.status === 'running' }"
             />
-            <span class="font-medium text-[11px] shrink-0">Task {{ subagent.index }}</span>
-            <span class="text-[10px] opacity-70 truncate">{{ subagent.task }}</span>
+            <span class="font-medium text-[11px] truncate">{{ subagent.task }}</span>
+            <span class="text-[10px] opacity-60 shrink-0">#{{ subagent.index }}</span>
           </div>
           <span
             class="text-[10px] px-1.5 py-0.5 rounded-full border shrink-0"

@@ -386,6 +386,7 @@ async fn setup_agent_pipeline(
             workspace.clone(),
             spawn_budget,
         )
+        .with_thinking_enabled(agent_config.thinking_enabled)
         .with_model_resolver(Arc::new(CliModelResolver {
             provider_registry: {
                 let mut r = ProviderRegistry::from_config(config);

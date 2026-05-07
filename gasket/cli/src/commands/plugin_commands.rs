@@ -126,17 +126,7 @@ fn tool_to_command(
                     ctx = ctx.session_key(key.clone());
 
                     let result = match tool_registry.execute(&name, parsed, &ctx).await {
-                        Ok(output) => {
-                            // For dev_workflow, pretty-print JSON as markdown
-                            if name == "dev_workflow" {
-                                match format_dev_workflow_output(&output) {
-                                    Some(md) => CommandResult::Print(md),
-                                    None => CommandResult::Print(output),
-                                }
-                            } else {
-                                CommandResult::Print(output)
-                            }
-                        }
+                        Ok(output) => CommandResult::Print(output),
                         Err(e) => CommandResult::Error(format!("Tool error: {e}")),
                     };
 
@@ -168,26 +158,4 @@ pub fn register_tool_commands(
     builder
 }
 
-/// Parse dev_workflow JSON output and format it as Markdown.
-fn format_dev_workflow_output(output: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(output).ok()?;
-    let result = value.get("result")?;
 
-    let code = result.get("final_code")?.as_str().unwrap_or("");
-    let passed = result.get("passed")?.as_bool().unwrap_or(false);
-    let iterations = result.get("iterations_used")?.as_u64().unwrap_or(0);
-    let reason = result.get("last_review_reason")?.as_str().unwrap_or("");
-
-    let status = if passed { "✅ PASS" } else { "❌ FAIL" };
-    let mut md = format!("## Dev Workflow Result: {status}\n\n");
-    md.push_str(&format!("- **Iterations**: {iterations}\n"));
-    if !reason.is_empty() {
-        md.push_str(&format!("- **Review**: {reason}\n"));
-    }
-    if !code.is_empty() {
-        md.push_str("\n### Generated Code\n\n```\n");
-        md.push_str(code);
-        md.push_str("\n```\n");
-    }
-    Some(md)
-}

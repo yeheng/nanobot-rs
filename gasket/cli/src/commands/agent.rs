@@ -236,6 +236,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             workspace.clone(),
             spawn_budget,
         )
+        .with_thinking_enabled(agent_config.thinking_enabled)
         .with_model_resolver(model_resolver),
     );
     let subagent_spawner_for_commands = subagent_spawner.clone();

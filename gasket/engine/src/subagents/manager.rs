@@ -42,6 +42,7 @@ pub struct TaskSpec {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub max_turns: Option<u32>,
+    pub thinking_enabled: bool,
 }
 
 impl TaskSpec {
@@ -52,13 +53,20 @@ impl TaskSpec {
             model: None,
             system_prompt: None,
             max_turns: None,
+            thinking_enabled: false,
         }
+    }
+
+    pub fn with_thinking_enabled(mut self, enabled: bool) -> Self {
+        self.thinking_enabled = enabled;
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
     }
+
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
@@ -140,6 +148,7 @@ pub fn spawn_subagent(
                 .clone()
                 .unwrap_or_else(|| provider.default_model().to_string()),
             max_iterations: crate::session::config::DEFAULT_MAX_ITERATIONS,
+            thinking_enabled: task.thinking_enabled,
             ..Default::default()
         };
         let ctx = {
@@ -311,6 +320,7 @@ pub struct SimpleSpawner {
     budget: gasket_types::SpawnBudget,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     model_resolver: Option<Arc<dyn ModelResolver>>,
+    thinking_enabled: bool,
 }
 
 impl SimpleSpawner {
@@ -327,6 +337,7 @@ impl SimpleSpawner {
             budget,
             token_tracker: None,
             model_resolver: None,
+            thinking_enabled: false,
         }
     }
 
@@ -337,6 +348,11 @@ impl SimpleSpawner {
 
     pub fn with_model_resolver(mut self, resolver: Arc<dyn ModelResolver>) -> Self {
         self.model_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_thinking_enabled(mut self, enabled: bool) -> Self {
+        self.thinking_enabled = enabled;
         self
     }
 }
@@ -366,7 +382,8 @@ impl SubagentSpawner for SimpleSpawner {
             _ => (self.provider.clone(), None),
         };
 
-        let task_spec = TaskSpec::new(&subagent_id, task);
+        let task_spec = TaskSpec::new(&subagent_id, task)
+            .with_thinking_enabled(self.thinking_enabled);
         let task_spec = if let Some(m) = model {
             task_spec.with_model(m)
         } else {
@@ -451,7 +468,8 @@ impl SubagentSpawner for SimpleSpawner {
             _ => (self.provider.clone(), None),
         };
 
-        let task_spec = TaskSpec::new(&subagent_id, task);
+        let task_spec = TaskSpec::new(&subagent_id, task)
+            .with_thinking_enabled(self.thinking_enabled);
         let task_spec = if let Some(m) = model {
             task_spec.with_model(m)
         } else {

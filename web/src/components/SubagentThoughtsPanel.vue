@@ -117,10 +117,10 @@ function formatDuration(start: number, end?: number) {
             :class="{ 'animate-spin': subagent.status === 'running' }"
           />
           <span class="font-medium text-xs truncate">
-            Task {{ subagent.index + 1 }}
-          </span>
-          <span class="text-[10px] opacity-70 truncate flex-1">
             {{ subagent.task }}
+          </span>
+          <span class="text-[10px] opacity-60 shrink-0">
+            #{{ subagent.index }}
           </span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
