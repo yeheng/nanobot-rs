@@ -65,11 +65,26 @@ impl ExecutionState {
         reasoning_content: Option<String>,
         ledger: &TokenLedger,
     ) -> ExecutionResult {
+        let token_usage = ledger.total_usage.clone().or_else(|| {
+            // Fallback: provider did not return usage — estimate from content length
+            let output_tokens = gasket_storage::count_tokens(&content);
+            let input_tokens: usize = self
+                .messages
+                .iter()
+                .filter_map(|m| m.content.as_ref())
+                .map(|c| gasket_storage::count_tokens(c))
+                .sum();
+            Some(TokenUsage {
+                input_tokens,
+                output_tokens,
+                total_tokens: input_tokens + output_tokens,
+            })
+        });
         ExecutionResult {
             content,
             reasoning_content,
             tools_used: self.tools_used.clone(),
-            token_usage: ledger.total_usage.clone(),
+            token_usage,
         }
     }
 }

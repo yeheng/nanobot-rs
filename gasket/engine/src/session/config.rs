@@ -59,7 +59,7 @@ pub const DEFAULT_MAX_ITERATIONS: u32 = 100;
 /// Default temperature for generation
 pub const DEFAULT_TEMPERATURE: f32 = 1.0;
 /// Default maximum tokens for generation
-pub const DEFAULT_MAX_TOKENS: u32 = 65536;
+pub const DEFAULT_MAX_TOKENS: u32 = 100_000;
 /// Default memory window size
 pub const DEFAULT_MEMORY_WINDOW: usize = 50;
 /// Default maximum characters for tool result output

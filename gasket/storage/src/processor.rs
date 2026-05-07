@@ -26,7 +26,7 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             max_events: 50,
-            token_budget: 8000, // ~8k tokens for context window
+            token_budget: 100_000, // 100k tokens for context window
             recent_keep: 10,
         }
     }

@@ -194,6 +194,9 @@ impl Session {
             self.metadata.total_events += 1;
             if let Some(ref usage) = event.metadata.token_usage {
                 self.metadata.total_tokens += (usage.input_tokens + usage.output_tokens) as u64;
+            } else {
+                // Fallback: provider did not return usage — use pre-computed BPE estimate
+                self.metadata.total_tokens += event.metadata.content_token_len as u64;
             }
             if event.event_type.is_summary() {
                 self.metadata.last_consolidated_event = Some(event.id);
