@@ -31,7 +31,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
 
 /// Maximum size of a single JSON-RPC message (1 MiB).
 ///
@@ -235,12 +234,12 @@ pub fn encode(msg: &RpcMessage) -> String {
 /// let msg = decode(line);
 /// assert!(msg.is_some());
 ///
-/// // Invalid JSON
-/// let line = "this is not json";
+/// // Empty line
+/// let line = "   \n";
 /// let msg = decode(line);
-/// assert!(msg.is_none());  // Logged at WARN level
+/// assert!(msg.is_none());
 /// ```
-pub fn decode(line: &str) -> Option<RpcMessage> {
+pub fn decode(line: &str) -> Option<Result<RpcMessage, String>> {
     // Skip empty and whitespace-only lines
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -249,22 +248,20 @@ pub fn decode(line: &str) -> Option<RpcMessage> {
 
     // Enforce size limit
     if line.len() > MAX_MESSAGE_SIZE {
-        warn!(
+        return Some(Err(format!(
             "[script stdout oversized] {} bytes (exceeds {})",
             line.len(),
             MAX_MESSAGE_SIZE
-        );
-        return None;
+        )));
     }
 
     // Attempt to parse JSON
     match serde_json::from_str::<RpcMessage>(trimmed) {
-        Ok(msg) => Some(msg),
-        Err(e) => {
-            // Invalid JSON is silently discarded (just logged)
-            warn!("[script stdout non-JSON] {} - input: {:.100}", e, trimmed);
-            None
-        }
+        Ok(msg) => Some(Ok(msg)),
+        Err(e) => Some(Err(format!(
+            "[script stdout non-JSON] {} - input: {:.100}",
+            e, trimmed
+        ))),
     }
 }
 
@@ -298,7 +295,9 @@ mod tests {
     #[test]
     fn test_decode_request() {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"test","params":{"key":"value"}}"#;
-        let msg = decode(line).expect("failed to decode valid request");
+        let msg = decode(line)
+            .expect("decode should return Some")
+            .expect("failed to decode valid request");
 
         match msg {
             RpcMessage::Request(req) => {
@@ -314,7 +313,9 @@ mod tests {
     #[test]
     fn test_decode_response_with_result() {
         let line = r#"{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}"#;
-        let msg = decode(line).expect("failed to decode valid response");
+        let msg = decode(line)
+            .expect("decode should return Some")
+            .expect("failed to decode valid response");
 
         match msg {
             RpcMessage::Response(res) => {
@@ -331,7 +332,9 @@ mod tests {
     fn test_decode_response_with_error() {
         let line =
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
-        let msg = decode(line).expect("failed to decode valid error response");
+        let msg = decode(line)
+            .expect("decode should return Some")
+            .expect("failed to decode valid error response");
 
         match msg {
             RpcMessage::Response(res) => {
@@ -352,17 +355,23 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_invalid_json_returns_none() {
+    fn test_decode_invalid_json_returns_err() {
         let garbage = "{this is not valid json";
         let msg = decode(garbage);
-        assert!(msg.is_none(), "invalid JSON should return None");
+        assert!(
+            matches!(msg, Some(Err(_))),
+            "invalid JSON should return Some(Err)"
+        );
     }
 
     #[test]
-    fn test_decode_plain_text_returns_none() {
+    fn test_decode_plain_text_returns_err() {
         let text = "hello world this is just plain text";
         let msg = decode(text);
-        assert!(msg.is_none(), "plain text should return None");
+        assert!(
+            matches!(msg, Some(Err(_))),
+            "plain text should return Some(Err)"
+        );
     }
 
     #[test]
@@ -376,7 +385,9 @@ mod tests {
 
         let msg = RpcMessage::Request(original.clone());
         let encoded = encode(&msg);
-        let decoded = decode(&encoded.trim()).expect("roundtrip failed");
+        let decoded = decode(&encoded.trim())
+            .expect("decode should return Some")
+            .expect("roundtrip failed");
 
         match decoded {
             RpcMessage::Request(req) => {
@@ -420,7 +431,10 @@ mod tests {
         oversized.push_str(r#""}"#);
 
         let msg = decode(&oversized);
-        assert!(msg.is_none(), "oversized message should be rejected");
+        assert!(
+            matches!(msg, Some(Err(_))),
+            "oversized message should return Some(Err)"
+        );
     }
 
     #[test]

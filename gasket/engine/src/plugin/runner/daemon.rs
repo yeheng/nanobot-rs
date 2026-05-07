@@ -18,7 +18,7 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 
 use crate::plugin::dispatcher::{DispatcherContext, RpcDispatcher};
 use crate::plugin::manifest::{Permission, PluginManifest};
-use crate::plugin::rpc::{decode, encode, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE};
+use crate::plugin::rpc::{decode, encode, RpcError, RpcMessage, RpcRequest, RpcResponse, MAX_MESSAGE_SIZE};
 use crate::plugin::runner::simple::spawn_process;
 use crate::plugin::runner::{PluginError, PluginResult};
 
@@ -130,10 +130,33 @@ impl JsonRpcDaemon {
                     result = reader_lines.next() => {
                         match result {
                             Some(Ok(line)) => {
-                                let msg = decode(&line);
-                                let msg = match msg {
-                                    Some(m) => m,
+                                let msg = match decode(&line) {
                                     None => continue,
+                                    Some(Ok(m)) => m,
+                                    Some(Err(e)) => {
+                                        tracing::error!(
+                                            "[daemon] Plugin emitted invalid JSON-RPC output, killing process: {} — line: {:.100}",
+                                            e, line
+                                        );
+                                        // Fail all pending requests
+                                        let keys: Vec<i64> = pending_reader.iter().map(|entry| *entry.key()).collect();
+                                        for key in keys {
+                                            if let Some((_, tx)) = pending_reader.remove(&key) {
+                                                let _ = tx.send(RpcResponse {
+                                                    jsonrpc: "2.0".to_string(),
+                                                    id: serde_json::json!(key),
+                                                    result: None,
+                                                    error: Some(RpcError {
+                                                        code: -32700,
+                                                        message: format!("Plugin emitted invalid output: {}", e),
+                                                        data: None,
+                                                    }),
+                                                });
+                                            }
+                                        }
+                                        alive_reader.store(false, Ordering::Relaxed);
+                                        break;
+                                    }
                                 };
                                 match msg {
                                     RpcMessage::Request(request) => {

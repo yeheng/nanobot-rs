@@ -303,11 +303,12 @@ impl ExternalHookRunner {
                 Ok(Some(output))
             }
             Err(e) => {
-                warn!(
-                    "Hook {} produced invalid JSON (ignoring): {} — raw: {}",
+                let msg = format!(
+                    "Hook {} produced invalid JSON: {} — raw: {}",
                     script_name, e, stdout_trimmed
                 );
-                Ok(None)
+                warn!("{}", msg);
+                Err(anyhow::anyhow!("{}", msg))
             }
         }
     }

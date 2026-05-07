@@ -79,8 +79,8 @@ pub mod streaming;
 // Re-export base types
 pub use base::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta,
-    FinishReason, FunctionCall, FunctionDefinition, LlmProvider, MessageRole, ThinkingConfig,
-    ToolCall, ToolCallDelta, ToolDefinition, Usage,
+    FinishReason, FunctionCall, FunctionDefinition, LlmProvider, MessageRole, ModelLimits,
+    ThinkingConfig, ToolCall, ToolCallDelta, ToolDefinition, Usage,
 };
 
 // Re-export common types

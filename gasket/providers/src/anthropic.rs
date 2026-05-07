@@ -399,6 +399,61 @@ impl LlmProvider for AnthropicProvider {
         true
     }
 
+    #[instrument(skip(self), fields(provider = "anthropic", model = %model))]
+    async fn model_limits(
+        &self,
+        model: &str,
+    ) -> Result<Option<crate::ModelLimits>, crate::ProviderError> {
+        let url = format!("{}/models/{}", self.api_base, model);
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.build_headers())
+            .send()
+            .await
+            .map_err(|e| {
+                crate::ProviderError::NetworkError(format!(
+                    "Anthropic model info request failed: {}",
+                    e
+                ))
+            })?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let body = response.text().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!(
+                "Failed to read Anthropic model info response: {}",
+                e
+            ))
+        })?;
+
+        let value: Value = serde_json::from_str(&body).map_err(|e| {
+            crate::ProviderError::ParseError(format!(
+                "Anthropic model info parse error: {} | body: {}",
+                e, body
+            ))
+        })?;
+
+        let max_input = value
+            .get("max_input_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let max_output = value
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        match (max_input, max_output) {
+            (Some(input), Some(output)) => Ok(Some(crate::ModelLimits {
+                max_input_tokens: input,
+                max_output_tokens: output,
+            })),
+            _ => Ok(None),
+        }
+    }
+
     #[instrument(skip(self, request), fields(provider = "anthropic", model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let url = format!("{}/messages", self.api_base);

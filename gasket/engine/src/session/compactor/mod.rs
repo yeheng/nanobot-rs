@@ -130,6 +130,9 @@ pub struct ContextCompactor {
     checkpoint_config: Option<CheckpointConfig>,
     /// Listeners notified when events are deleted during compaction.
     listeners: Vec<Arc<dyn CompactionListener>>,
+    /// Optional task tracker for graceful shutdown. When set, compaction tasks
+    /// are spawned through the tracker so they can be awaited during shutdown.
+    task_tracker: Option<tokio_util::task::TaskTracker>,
 }
 
 impl ContextCompactor {
@@ -155,6 +158,7 @@ impl ContextCompactor {
             state: Arc::new(parking_lot::Mutex::new(CompactorState::Idle)),
             checkpoint_config: None,
             listeners: Vec::new(),
+            task_tracker: None,
         }
     }
 
@@ -179,6 +183,12 @@ impl ContextCompactor {
     /// Add a compaction listener to be notified when events are deleted.
     pub fn add_listener(&mut self, listener: Arc<dyn CompactionListener>) {
         self.listeners.push(listener);
+    }
+
+    /// Attach a task tracker so compaction tasks are tracked for graceful shutdown.
+    pub fn with_task_tracker(mut self, tracker: tokio_util::task::TaskTracker) -> Self {
+        self.task_tracker = Some(tracker);
+        self
     }
 
     /// Check whether compaction is currently in progress.
@@ -415,7 +425,15 @@ impl ContextCompactor {
         // Clone Arc references to listeners so the background task can notify them.
         let listeners: Vec<Arc<dyn CompactionListener>> = self.listeners.clone();
 
-        tokio::spawn(async move {
+        let spawn = |fut| {
+            if let Some(ref tracker) = self.task_tracker {
+                tracker.spawn(fut)
+            } else {
+                tokio::spawn(fut)
+            }
+        };
+
+        spawn(async move {
             let _guard = guard;
             debug!("Background compaction started for {}", sk);
 

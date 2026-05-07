@@ -10,6 +10,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub type ChatStream =
     Pin<Box<dyn Stream<Item = Result<ChatStreamChunk, crate::ProviderError>> + Send>>;
 
+/// Token limits for a specific model, as reported by the provider's API.
+#[derive(Debug, Clone)]
+pub struct ModelLimits {
+    /// Maximum input tokens (context window size).
+    pub max_input_tokens: usize,
+    /// Maximum output tokens per response.
+    pub max_output_tokens: usize,
+}
+
 /// LLM Provider trait
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -34,6 +43,17 @@ pub trait LlmProvider: Send + Sync {
     /// (e.g. DeepSeek, Kimi, Anthropic) should override this.
     fn supports_thinking(&self) -> bool {
         false
+    }
+
+    /// Query the provider's API for a model's token limits.
+    ///
+    /// Returns `None` if the provider does not expose model metadata
+    /// or the query fails. Callers should fall back to hardcoded defaults.
+    async fn model_limits(
+        &self,
+        _model: &str,
+    ) -> Result<Option<ModelLimits>, crate::ProviderError> {
+        Ok(None)
     }
 
     /// Send a chat completion request

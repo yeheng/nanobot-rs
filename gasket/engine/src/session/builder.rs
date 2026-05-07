@@ -131,8 +131,25 @@ impl SessionBuilder {
         #[cfg(not(feature = "embedding"))]
         let event_store = EventStore::new(pool);
 
-        // ── 2. Kernel runtime context ────────────────────────────────
-        let kernel_config = self.config.to_kernel_config();
+        // ── 2. Query provider for real model limits ──────────────────
+        let model_limits = self.provider.model_limits(&self.config.model).await.ok().flatten();
+        let effective_max_tokens = if let Some(ref limits) = model_limits {
+            let capped = self.config.max_tokens.min(limits.max_output_tokens as u32);
+            if capped != self.config.max_tokens {
+                tracing::info!(
+                    "[SessionBuilder] Limiting max_tokens from {} to {} (model cap)",
+                    self.config.max_tokens,
+                    capped
+                );
+            }
+            capped
+        } else {
+            self.config.max_tokens
+        };
+
+        // ── 3. Kernel runtime context ────────────────────────────────
+        let mut kernel_config = self.config.to_kernel_config();
+        kernel_config.max_tokens = effective_max_tokens;
         let pending_asks = Arc::new(crate::session::PendingAskRegistryImpl::new());
 
         let runtime_ctx = RuntimeContext {
@@ -150,19 +167,32 @@ impl SessionBuilder {
                 pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
             ),
         };
-
-        // ── 3. Context compactor ─────────────────────────────────────
-        let history_config = gasket_storage::HistoryConfig {
+        // ── 4. Context compactor ─────────────────────────────────────
+        let mut history_config = gasket_storage::HistoryConfig {
             max_events: self.config.memory_window,
             ..Default::default()
         };
+        if let Some(ref limits) = model_limits {
+            let capped = history_config.token_budget.min(limits.max_input_tokens);
+            if capped != history_config.token_budget {
+                tracing::info!(
+                    "[SessionBuilder] Limiting token_budget from {} to {} (model cap)",
+                    history_config.token_budget,
+                    capped
+                );
+            }
+            history_config.token_budget = capped;
+        }
+        let pending_done = tokio_util::task::TaskTracker::new();
+
         let mut compactor = ContextCompactor::new(
             self.provider.clone(),
             event_store.clone(),
             session_store.clone(),
             self.config.model.clone(),
             history_config.token_budget,
-        );
+        )
+        .with_task_tracker(pending_done.clone());
         if let Some(ref prompt_text) = self.config.prompts.summarization {
             compactor = compactor.with_summarization_prompt(prompt_text.clone());
         }
@@ -240,19 +270,20 @@ impl SessionBuilder {
             history_config,
         );
 
-        let pending_done = tokio_util::task::TaskTracker::new();
-
         let finalizer = ResponseFinalizer::new(
             context_builder.hooks().clone(),
             context_builder.event_store().clone(),
             compactor.clone(),
             None,
-            self.config.max_tokens,
+            effective_max_tokens,
         );
+
+        let mut config = self.config;
+        config.max_tokens = effective_max_tokens;
 
         Ok(AgentSession {
             runtime_ctx,
-            config: self.config,
+            config,
             context_builder,
             compactor,
             pricing: None,

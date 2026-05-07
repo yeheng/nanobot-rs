@@ -407,11 +407,17 @@ fn parse_copilot_response(body: &str) -> Result<ChatResponse, crate::ProviderErr
         })
         .collect();
 
+    let usage = api_response.usage.map(|u| crate::Usage {
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        total_tokens: u.total_tokens,
+    });
+
     Ok(ChatResponse {
         content: choice.message.content,
         tool_calls,
         reasoning_content: None, // Copilot doesn't support reasoning_content
-        usage: None,
+        usage,
     })
 }
 
@@ -442,6 +448,8 @@ struct CopilotRequest {
 #[derive(Debug, Clone, Deserialize)]
 struct CopilotResponse {
     choices: Vec<CopilotChoice>,
+    #[serde(default)]
+    usage: Option<crate::Usage>,
 }
 
 /// A choice in the response

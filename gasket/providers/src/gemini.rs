@@ -273,11 +273,17 @@ impl GeminiProvider {
             Some(text_parts.join(""))
         };
 
+        let usage = response.get("usageMetadata").map(|u| crate::Usage {
+            input_tokens: u["promptTokenCount"].as_u64().unwrap_or(0) as usize,
+            output_tokens: u["candidatesTokenCount"].as_u64().unwrap_or(0) as usize,
+            total_tokens: u["totalTokenCount"].as_u64().unwrap_or(0) as usize,
+        });
+
         Ok(ChatResponse {
             content,
             tool_calls,
             reasoning_content: None,
-            usage: None,
+            usage,
         })
     }
 }

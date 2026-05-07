@@ -374,6 +374,75 @@ impl LlmProvider for OpenAICompatibleProvider {
         self.config.supports_thinking
     }
 
+    #[instrument(skip(self), fields(provider = %self.name(), model = %model))]
+    async fn model_limits(
+        &self,
+        model: &str,
+    ) -> Result<Option<crate::ModelLimits>, crate::ProviderError> {
+        let url = format!("{}/models/{}", self.config.api_base, model);
+        let mut req = self.client.get(&url).header(
+            "Authorization",
+            format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
+        );
+        for (key, value) in &self.config.extra_headers {
+            req = req.header(key, value);
+        }
+
+        let response = req.send().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!(
+                "{} model info request failed: {}",
+                self.name, e
+            ))
+        })?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let body = response.text().await.map_err(|e| {
+            crate::ProviderError::NetworkError(format!(
+                "{} model info response read failed: {}",
+                self.name, e
+            ))
+        })?;
+
+        let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            crate::ProviderError::ParseError(format!(
+                "{} model info parse error: {} | body: {}",
+                self.name, e, body
+            ))
+        })?;
+
+        let max_input = value
+            .get("max_input_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .or_else(|| {
+                value
+                    .get("context_length")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            });
+        let max_output = value
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .or_else(|| {
+                value
+                    .get("max_output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            });
+
+        match (max_input, max_output) {
+            (Some(input), Some(output)) => Ok(Some(crate::ModelLimits {
+                max_input_tokens: input,
+                max_output_tokens: output,
+            })),
+            _ => Ok(None),
+        }
+    }
+
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
         let url = format!("{}/chat/completions", self.config.api_base);
