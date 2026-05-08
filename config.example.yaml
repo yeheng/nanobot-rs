@@ -77,20 +77,58 @@ agents:
     max_tokens: 4096
     memory_window: 10
     thinking_enabled: false
-    historyRecallK: 5
     streaming: true
     # Plugin execution timeout in seconds (default: 120).
     # Used when a plugin manifest omits its own timeout_secs.
     plugin_timeout_secs: 120
     # Maximum characters for WebSocket subagent summary (0 = unlimited, default)
     ws_summary_limit: 0
-    # Optional: override internal AI behavior prompts
+    # Optional: override internal AI behavior prompts.
+    # All prompts support runtime placeholders:
+    #   {{conversation}} — evolution template
+    #   {{goal}}, {{context}} — planning template
+    #
+    # Uncomment 'evolution' below to customize the memory-extraction prompt.
+    # If omitted, the built-in default (shown below) is used.
     # prompts:
     #   identity_prefix: "You are a cat. Meow.\nYour working directory: {workspace}."
     #   summarization: "Summarize the following conversation in bullet points."
     #   checkpoint: "Summarize current task state for working memory."
-    #   evolution: "Extract memories from this conversation.\n\n{{conversation}}"
     #   planning: "Create a plan for: {{goal}}\n\nContext:\n{{context}}"
+    #   evolution: |
+    #     You are a memory extraction sub-system.
+    #     Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.
+    #
+    #     CRITICAL RULES:
+    #     1. DO NOT extract transient context (e.g., 'User said hello', 'thanks', 'bye').
+    #     2. DO NOT extract generic world knowledge unless the user explicitly adopted it as their own preference or decision.
+    #     3. DO NOT extract casual conversation, temporary tasks, or trivial facts.
+    #     4. ONLY extract highly reusable skills, permanent user preferences, or verified factual knowledge.
+    #     5. If nothing meets this high bar, return an empty array [].
+    #     6. Focus on concrete, personal signals: server names, product preferences, budget habits, explicit choices, recurring topics.
+    #     7. 'User said it, it counts' — facts and preferences explicitly stated by the user are valuable even if no tool was executed. Tool results add confidence but are NOT required.
+    #     8. Classify each item:
+    #        - type: 'note' (factual) or 'skill' (procedural)
+    #        - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)
+    #        - verified: true ONLY if backed by a successful tool result; false for user-stated facts
+    #        - confidence: 0.0-1.0 — 0.9+ for tool-confirmed, 0.6-0.8 for user explicitly stated, 0.3-0.5 for inferred
+    #
+    #     EXAMPLES OF GOOD EXTRACTIONS:
+    #     - User asked about 'tx-cloud-3' server and uses tmux → note, knowledge, content: 'User manages a server named tx-cloud-3 and prefers tmux for persistent sessions', verified: false, confidence: 0.75
+    #     - User compared Dyson V15 vs 追觅Z20 and preferred the latter for auto-dust-collection → note, profile, content: 'User values automatic dust-collection feature in vacuum cleaners; prefers 追觅Z20 over Dyson V15 for this reason', verified: false, confidence: 0.8
+    #     - User repeatedly asks about budget-friendly options before considering premium → note, profile, content: 'User typically evaluates budget/性价比 options before premium alternatives', verified: false, confidence: 0.65
+    #
+    #     EXAMPLES OF BAD EXTRACTIONS (do NOT include):
+    #     - 'User greeted the assistant'
+    #     - 'User asked about vacuum cleaners' (too vague; extract specific models or preferences instead)
+    #     - 'Dyson is a well-known brand' (generic knowledge, not user-specific)
+    #     - 'User wants to fix a bug today' (temporary task, not persistent knowledge)
+    #
+    #     If nothing NEW and VALUABLE is found, return an empty array [].
+    #
+    #     Output strict JSON array: [{"title": string, "type": "note"|"skill", "scenario": "profile"|"knowledge"|"procedure", "content": string, "tags": [string], "verified": bool, "confidence": float}].
+    #
+    #     {{conversation}}
 
     # Optional: three-phase memory token budgets (defaults shown)
     # memory_budget:

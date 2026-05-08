@@ -2508,13 +2508,6 @@ pub struct VaultHook {
     injector: Arc<VaultInjector>,
 }
 
-/// History Recall Hook - 将记忆上下文注入历史
-pub struct HistoryRecallHook {
-    embedder: Arc<TextEmbedder>,
-    k: usize,
-    event_store: Arc<EventStore>,  // 已从 AgentContext 迁移
-    session_store: Arc<SessionStore>,
-}
 /// External Shell Hook - 执行外部脚本
 /// 文件位置:
 ///   ~/.gasket/hooks/pre_request.sh   → BeforeRequest

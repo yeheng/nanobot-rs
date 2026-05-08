@@ -34,7 +34,7 @@ steps:
     prompt: "Create concrete implementation steps based on research.\n\nTask: {{input.task}}\n\nResearch:\n{{research}}"
     next: "implement"
   implement:
-    prompt: "Implement this plan. Output runnable code only.\n\nPlan:\n{{plan}}\n\nPrevious attempt (may be empty):\n{{implement}}\n\nFeedback to address (if any):\n{{review.reason}}"
+    prompt: "Implement this plan. Output runnable code only.\n\nPlan:\n{{plan}}\n\nPrevious attempt (may be empty):\n{{implement}}\n\nFeedback to address (if any):\n{{review.reason}}\n\nIf you need to generate intermediate files (drafts, scratch code, analysis notes), write them to tmp/dev_workflow/. Final deliverables go to outputs/. Never write to the workspace root."
     next: "review"
   review:
     prompt: "Review this code against the plan. Be strict.\n\nOutput STRICT JSON only, no prose, no markdown fences:\n{\"verdict\": \"PASS\" | \"FAIL\", \"reason\": \"<one sentence>\"}\n\nPlan:\n{{plan}}\n\nCode:\n{{implement}}"

@@ -229,36 +229,10 @@ impl SessionBuilder {
         }
 
         // ── 8. Hook registry ─────────────────────────────────────────
-        let stop_words_path = self.config.stop_words_path.clone();
+        let hooks = crate::session::history::builder::build_default_hooks_builder().build_shared();
 
         #[cfg(feature = "embedding")]
-        let (hooks, embedding_indexer) = if let Some((searcher, indexer)) = self.embedding_recall {
-            let mut builder = crate::session::history::builder::build_default_hooks_builder(
-                Some(event_store.clone()),
-                stop_words_path.clone(),
-            );
-            let recall_config = gasket_embedding::RecallConfig::default();
-            builder = builder.with_hook(Arc::new(crate::hooks::HistoryRecallHook::new(
-                searcher,
-                recall_config,
-            )));
-            (builder.build_shared(), Some(indexer))
-        } else {
-            let hooks_builder = crate::session::history::builder::build_default_hooks_builder(
-                Some(event_store.clone()),
-                stop_words_path.clone(),
-            );
-            (hooks_builder.build_shared(), None)
-        };
-
-        #[cfg(not(feature = "embedding"))]
-        let hooks = {
-            let hooks_builder = crate::session::history::builder::build_default_hooks_builder(
-                Some(event_store.clone()),
-                stop_words_path,
-            );
-            hooks_builder.build_shared()
-        };
+        let embedding_indexer = self.embedding_recall.map(|(_, indexer)| indexer);
 
         // ── 9. ContextBuilder — encapsulates all pipeline dependencies ──
         let context_builder = crate::session::history::builder::ContextBuilder::new(

@@ -41,9 +41,12 @@ const DEFAULT_EVOLUTION_TEMPLATE: &str =
      CRITICAL RULES:\n\
      1. DO NOT extract transient context (e.g., 'User said hello', 'thanks', 'bye').\n\
      2. DO NOT extract generic world knowledge unless the user explicitly adopted it as their own preference or decision.\n\
-     3. Focus on concrete, personal signals: server names, product preferences, budget habits, explicit choices, recurring topics.\n\
-     4. 'User said it, it counts' — facts and preferences explicitly stated by the user are valuable even if no tool was executed. Tool results add confidence but are NOT required.\n\
-     5. Classify each item:\n\
+     3. DO NOT extract casual conversation, temporary tasks, or trivial facts.\n\
+     4. ONLY extract highly reusable skills, permanent user preferences, or verified factual knowledge.\n\
+     5. If nothing meets this high bar, return an empty array [].\n\
+     6. Focus on concrete, personal signals: server names, product preferences, budget habits, explicit choices, recurring topics.\n\
+     7. 'User said it, it counts' — facts and preferences explicitly stated by the user are valuable even if no tool was executed. Tool results add confidence but are NOT required.\n\
+     8. Classify each item:\n\
         - type: 'note' (factual) or 'skill' (procedural)\n\
         - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)\n\
         - verified: true ONLY if backed by a successful tool result; false for user-stated facts\n\
@@ -55,7 +58,8 @@ const DEFAULT_EVOLUTION_TEMPLATE: &str =
      EXAMPLES OF BAD EXTRACTIONS (do NOT include):\n\
      - 'User greeted the assistant'\n\
      - 'User asked about vacuum cleaners' (too vague; extract specific models or preferences instead)\n\
-     - 'Dyson is a well-known brand' (generic knowledge, not user-specific)\n\n\
+     - 'Dyson is a well-known brand' (generic knowledge, not user-specific)\n\
+     - 'User wants to fix a bug today' (temporary task, not persistent knowledge)\n\n\
      If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
      Output strict JSON array: [{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}].\n\n\
      {{conversation}}";

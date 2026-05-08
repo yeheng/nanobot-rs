@@ -288,20 +288,6 @@ Output: "Use sk-xxxxxx to call API"
 
 Runs at **BeforeLLM** hook point.
 
-### HistoryRecallHook
-
-Semantic search for relevant past conversations:
-
-```mermaid
-flowchart LR
-    Query["User Query"] --> Embed["Generate Embedding"]
-    Embed --> Search["Search History"]
-    Search --> Results["Relevant Past Messages"]
-    Results --> Inject["Inject into Context"]
-```
-
-Runs at **AfterHistory** hook point.
-
 ---
 
 ## Creating Custom Hooks

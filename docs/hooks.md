@@ -370,28 +370,6 @@ sequenceDiagram
 - 超时：2 秒
 - stdout 上限：1MB
 
-### HistoryRecallHook - 历史召回
-
-```mermaid
-flowchart TB
-    Q[用户提问] --> E[嵌入向量]
-    
-    subgraph 语义搜索
-        E --> Search[搜索历史]
-        Search --> Match[找到相关内容]
-    end
-    
-    subgraph 添加到上下文
-        Match --> Add[追加到提示词]
-    end
-    
-    AI[AI处理] --> R[回复]
-    
-    Add --> AI
-```
-
-**作用**：根据用户问题，自动从历史中找到相关对话，追加到当前上下文，让 AI "想起"之前聊过的相关内容。
-
 ---
 
 ## 钩子注册表

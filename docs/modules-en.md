@@ -278,7 +278,6 @@ Unified pipeline extension mechanism with five execution points and sequential/p
 | `HookBuilder` | Builder for creating HookRegistry |
 | `HookContext<M>` | Generic context with session_key, messages, user_input, response |
 | `ExternalShellHook` | Shell script hook wrapper |
-| `HistoryRecallHook` | Semantic history recall (feature: local-onnx) |
 | `VaultHook` | Vault secret injection at BeforeLLM |
 
 ### External Shell Hooks

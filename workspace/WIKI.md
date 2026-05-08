@@ -1,5 +1,7 @@
 ---
 summary: "Wiki knowledge system overview and principles"
+read_when:
+  - Every conversation start
 ---
 
 # Wiki Knowledge System
@@ -28,7 +30,7 @@ Rule of thumb: fact → Wiki; reusable procedure → Skill.
 
 - **Search before write** — avoid duplicates.
 - **Not auto-injected** — call `wiki_search` proactively.
-- **Path conventions**: `topics/`, `entities/`, `sources/`, `sops/`.
+- **Path conventions**: `topics/`, `entities/`, `sources/`, `sops/`. Pages MUST be under one of these prefixes. Root-level wiki pages are forbidden.
 - **Frequency tiers**: Hot (3+/7d) → Warm (7d) → Cold (30d) → Archived (90d). Exempt: `profile/*`, `entities/people/*`, `sops/*`, `sources/*`, `*/decisions/*`.
 
 For tool signatures and operations, see **wiki skill** (`workspace/skills/wiki/SKILL.md`).

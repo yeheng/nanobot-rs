@@ -109,26 +109,54 @@ impl PathValidator {
         if self.allowed_dir.is_some() || !self.extra_allowed_dirs.is_empty() {
             let parent = path.parent().unwrap_or(&path);
 
-            if parent.exists() {
-                let canonical_parent = parent.canonicalize().map_err(|e| {
+            let canonical_parent = if parent.exists() {
+                parent.canonicalize().map_err(|e| {
                     ToolError::NotFound(format!(
                         "Cannot resolve parent path: {} - {}",
                         parent.display(),
                         e
                     ))
-                })?;
-
-                if !self.is_path_allowed(&canonical_parent) {
+                })?
+            } else if let Some(allowed) = &self.allowed_dir {
+                // Parent doesn't exist yet — synthesize from allowed_dir so
+                // WriteFileTool::execute can create it via create_dir_all.
+                if path.components().any(|c| c.as_os_str() == "..") {
                     return Err(ToolError::PermissionDenied(format!(
-                        "Path outside workspace: {}",
+                        "Path traversal not allowed: {}",
                         path.display()
                     )));
                 }
+                let resolved = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    allowed.join(&path)
+                };
+                resolved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| allowed.clone())
             } else {
                 return Err(ToolError::NotFound(format!(
                     "Parent directory not found: {}",
                     parent.display()
                 )));
+            };
+
+            if !self.is_path_allowed(&canonical_parent) {
+                return Err(ToolError::PermissionDenied(format!(
+                    "Path outside workspace: {}",
+                    path.display()
+                )));
+            }
+
+            // Reject writing directly to the workspace root.
+            if let Some(allowed) = &self.allowed_dir {
+                let canonical_allowed =
+                    allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+                if canonical_parent == canonical_allowed {
+                    return Err(ToolError::PermissionDenied(
+                        "Writing directly to the workspace root is forbidden. \
+                         Please write to a subdirectory like 'tmp/', 'outputs/', or 'src/'."
+                            .to_string(),
+                    ));
+                }
             }
         }
 

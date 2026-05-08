@@ -201,6 +201,16 @@ impl Tool for WikiWriteTool {
                 "path must not be empty".to_string(),
             ));
         }
+
+        const ALLOWED_PREFIXES: &[&str] = &["topics/", "entities/", "sources/", "sops/"];
+        if !ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p)) {
+            return Err(ToolError::InvalidArguments(format!(
+                "Wiki path MUST start with one of: topics/, entities/, sources/, sops/. \
+                 Do not write to the wiki root. Got: '{}'",
+                path
+            )));
+        }
+
         if title.is_empty() {
             return Err(ToolError::InvalidArguments(
                 "title must not be empty".to_string(),

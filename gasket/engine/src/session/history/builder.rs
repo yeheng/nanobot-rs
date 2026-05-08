@@ -309,18 +309,9 @@ impl ContextBuilder {
 /// Creates:
 /// - ExternalShellHook at BeforeRequest and AfterResponse
 /// - VaultHook at BeforeLLM (if vault is available)
-/// - HistoryRecallHook at AfterHistory (if `event_store` is provided)
-///
-/// With the `embedding` feature enabled, accepts an optional `EmbeddingConfig`
-/// to set up the semantic recall hook instead of the keyword-based one.
 ///
 /// Callers can append additional hooks before calling `.build_shared()`.
-pub fn build_default_hooks_builder(
-    #[allow(unused_variables)] event_store: Option<EventStore>,
-    #[allow(unused_variables)] stop_words_path: Option<std::path::PathBuf>,
-) -> HookBuilder {
-    #[cfg(not(feature = "embedding"))]
-    use crate::hooks::HistoryRecallHook;
+pub fn build_default_hooks_builder() -> HookBuilder {
     use crate::hooks::{ExternalHookRunner, ExternalShellHook, HookPoint};
     use std::path::PathBuf;
 
@@ -350,12 +341,6 @@ pub fn build_default_hooks_builder(
         builder = builder.with_hook(Arc::new(vault_hook));
     } else {
         tracing::debug!("[ContextBuilder] Vault not available, skipping vault injector");
-    }
-
-    // Add history recall hook if event store is available (keyword-based, without embedding feature)
-    #[cfg(not(feature = "embedding"))]
-    if let Some(store) = event_store {
-        builder = builder.with_hook(Arc::new(HistoryRecallHook::new(store, stop_words_path)));
     }
 
     builder
@@ -448,5 +433,5 @@ pub async fn setup_embedding_recall(
 ///
 /// Convenience wrapper around `build_default_hooks_builder().build_shared()`.
 pub fn build_default_hooks() -> Arc<HookRegistry> {
-    build_default_hooks_builder(None, None).build_shared()
+    build_default_hooks_builder().build_shared()
 }

@@ -23,14 +23,12 @@
 //!   Hooks run concurrently with readonly access, fire-and-forget.
 
 mod external;
-mod recall;
 mod registry;
 mod types;
 mod vault;
 pub mod wiki_lint;
 
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
-pub use recall::HistoryRecallHook;
 pub use registry::{HookBuilder, HookRegistry, PipelineHook};
 pub use types::{
     ExecutionStrategy, HookAction, HookContext, HookPoint, MutableContext, ReadonlyContext,
