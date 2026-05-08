@@ -2,8 +2,10 @@
 name: skill-creator
 description: Create new gasket skills with proper format
 always: false
-bins:
-  - jq
+# bins:        # Only list if the skill truly requires external binaries
+#   - <binary>
+# env_vars:     # Only list if the skill truly requires environment variables
+#   - <ENV_VAR>
 ---
 
 # Skill Creator
@@ -27,10 +29,7 @@ Skills are self-contained Markdown files with YAML frontmatter in `workspace/ski
 name: <skill-name>
 description: <brief description>
 always: false
-bins:
-  - <binary>
-env_vars:
-  - <ENV_VAR>
+# Only include bins/env_vars if you know they are actually required
 ---
 
 # <Title>
