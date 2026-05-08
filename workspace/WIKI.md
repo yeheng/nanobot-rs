@@ -13,18 +13,10 @@ Wiki-first long-term memory. Persist via `wiki_write`, retrieve via `wiki_search
 | | Wiki | Skill |
 |---|---|---|
 | Answers | "What" (facts, preferences) | "How" (procedures, SOPs) |
-| Stored | `~/.gasket/wiki/` (SQLite + Tantivy) | `workspace/skills/<name>/SKILL.md` |
+| Stored | `~/.gasket/wiki/` | `workspace/skills/<name>/SKILL.md` |
 | Format | Markdown + YAML frontmatter | Markdown + YAML frontmatter |
 
 Rule of thumb: fact → Wiki; reusable procedure → Skill.
-
-## Storage Layers
-
-| Layer | Storage | Purpose |
-|-------|---------|---------|
-| Session | SQLite (`gasket.db`) | Ephemeral conversation state |
-| Working | In-memory context | Recent messages |
-| Long-term | Wiki (SQLite + Tantivy) | Persistent knowledge |
 
 ## Principles
 
@@ -32,5 +24,3 @@ Rule of thumb: fact → Wiki; reusable procedure → Skill.
 - **Not auto-injected** — call `wiki_search` proactively.
 - **Path conventions**: `topics/`, `entities/`, `sources/`, `sops/`. Pages MUST be under one of these prefixes. Root-level wiki pages are forbidden.
 - **Frequency tiers**: Hot (3+/7d) → Warm (7d) → Cold (30d) → Archived (90d). Exempt: `profile/*`, `entities/people/*`, `sops/*`, `sources/*`, `*/decisions/*`.
-
-For tool signatures and operations, see **wiki skill** (`workspace/skills/wiki/SKILL.md`).
