@@ -32,6 +32,8 @@ pub trait SubagentSpawner: Send + Sync {
     /// # Arguments
     /// * `task` - The task description for the subagent to execute
     /// * `model_id` - Optional model profile ID to use (uses default if None)
+    /// * `ctx` - The caller's tool context, used to propagate session_key,
+    ///   outbound_tx, and pending_asks into the subagent's RuntimeContext.
     ///
     /// # Returns
     /// The subagent result or an error if spawning fails
@@ -39,6 +41,7 @@ pub trait SubagentSpawner: Send + Sync {
         &self,
         task: String,
         model_id: Option<String>,
+        ctx: &ToolContext,
     ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>>;
 
     /// Spawn a subagent with a real-time event stream.
@@ -55,6 +58,7 @@ pub trait SubagentSpawner: Send + Sync {
         &self,
         task: String,
         model_id: Option<String>,
+        ctx: &ToolContext,
     ) -> Result<
         (
             String,
@@ -64,7 +68,7 @@ pub trait SubagentSpawner: Send + Sync {
         ),
         Box<dyn std::error::Error + Send>,
     > {
-        let result = self.spawn(task, model_id).await?;
+        let result = self.spawn(task, model_id, ctx).await?;
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let (tx, result_rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(result);

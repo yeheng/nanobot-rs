@@ -379,26 +379,6 @@ async fn setup_agent_pipeline(
             .max_concurrency,
     );
 
-    let subagent_spawner: Arc<dyn SubagentSpawner> = Arc::new(
-        SimpleSpawner::new(
-            provider_info.provider.clone(),
-            worker_tools,
-            workspace.clone(),
-            spawn_budget,
-        )
-        .with_thinking_enabled(agent_config.thinking_enabled)
-        .with_model_resolver(Arc::new(CliModelResolver {
-            provider_registry: {
-                let mut r = ProviderRegistry::from_config(config);
-                if let Some(ref v) = vault {
-                    r.with_vault(v.clone());
-                }
-                r
-            },
-            model_registry,
-        })),
-    );
-
     let extra_tools = build_extra_tools(cron_service, &provider_info, &agent_config, sqlite_store);
 
     let mut tools = orchestrator_tools.clone();
@@ -415,55 +395,69 @@ async fn setup_agent_pipeline(
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
+    // 1. Create agent session first (without spawner) so we can extract pending_asks
     #[cfg(feature = "embedding")]
-    let agent = if let Some((searcher, indexer)) = embedding_recall {
-        Arc::new(
-            AgentSession::with_sqlite_store_and_embedding(
-                provider_info.provider,
-                workspace.clone(),
-                agent_config,
-                tools.clone(),
-                sqlite_store.clone(),
-                gasket_engine::session::builder::EmbeddingContext {
-                    searcher,
-                    indexer,
-                    event_store_tx,
-                },
-            )
-            .await
-            .context("Failed to initialize agent (check workspace bootstrap files)")?
-            .with_pricing(pricing)
-            .with_spawner(subagent_spawner.clone()),
-        )
-    } else {
-        Arc::new(
-            AgentSession::with_sqlite_store(
-                provider_info.provider,
-                workspace.clone(),
-                agent_config,
-                tools.clone(),
-                sqlite_store.clone(),
-            )
-            .await
-            .context("Failed to initialize agent (check workspace bootstrap files)")?
-            .with_pricing(pricing)
-            .with_spawner(subagent_spawner.clone()),
-        )
-    };
-    #[cfg(not(feature = "embedding"))]
-    let agent = Arc::new(
-        AgentSession::with_sqlite_store(
-            provider_info.provider,
+    let mut agent = if let Some((searcher, indexer)) = embedding_recall {
+        AgentSession::with_sqlite_store_and_embedding(
+            provider_info.provider.clone(),
             workspace.clone(),
-            agent_config,
+            agent_config.clone(),
+            tools.clone(),
+            sqlite_store.clone(),
+            gasket_engine::session::builder::EmbeddingContext {
+                searcher,
+                indexer,
+                event_store_tx,
+            },
+        )
+        .await
+        .context("Failed to initialize agent (check workspace bootstrap files)")?
+    } else {
+        AgentSession::with_sqlite_store(
+            provider_info.provider.clone(),
+            workspace.clone(),
+            agent_config.clone(),
             tools.clone(),
             sqlite_store.clone(),
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
-        .with_pricing(pricing)
-        .with_spawner(subagent_spawner.clone()),
+    };
+    #[cfg(not(feature = "embedding"))]
+    let mut agent = AgentSession::with_sqlite_store(
+        provider_info.provider.clone(),
+        workspace.clone(),
+        agent_config.clone(),
+        tools.clone(),
+        sqlite_store.clone(),
+    )
+    .await
+    .context("Failed to initialize agent (check workspace bootstrap files)")?;
+
+    // 2. Build spawner with the session's pending-ask registry so subagents can use ask_user
+    let subagent_spawner: Arc<dyn SubagentSpawner> = Arc::new(
+        SimpleSpawner::new(
+            provider_info.provider.clone(),
+            worker_tools,
+            workspace.clone(),
+            spawn_budget,
+        )
+        .with_pending_asks(agent.pending_asks())
+        .with_thinking_enabled(agent_config.thinking_enabled)
+        .with_model_resolver(Arc::new(CliModelResolver {
+            provider_registry: {
+                let mut r = ProviderRegistry::from_config(config);
+                if let Some(ref v) = vault {
+                    r.with_vault(v.clone());
+                }
+                r
+            },
+            model_registry,
+        })),
     );
+
+    agent = agent.with_pricing(pricing).with_spawner(subagent_spawner.clone());
+    let agent = Arc::new(agent);
 
     Ok((agent, tools, subagent_spawner))
 }

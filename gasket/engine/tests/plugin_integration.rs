@@ -25,6 +25,7 @@ impl SubagentSpawner for MockSpawner {
         &self,
         _task: String,
         _model_id: Option<String>,
+        _ctx: &ToolContext,
     ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
         Ok(SubagentResult {
             id: "mock".to_string(),

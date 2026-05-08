@@ -100,17 +100,22 @@ impl Tool for AskUserTool {
         let mut answer_rx = registration.answer_rx;
 
         // Send prompt to the user channel.
-        let outbound = OutboundMessage::new(
-            ctx.session_key.channel.clone(),
-            ctx.session_key.chat_id.clone(),
-            prompt,
-        );
-        if let Err(e) = ctx.outbound_tx.send(outbound).await {
-            registry.cancel(&ctx.session_key, ask_id);
-            return Err(ToolError::ExecutionError(format!(
-                "failed to send prompt: {}",
-                e
-            )));
+        // Non-streaming channels (CLI, Telegram) need a plain text prompt.
+        // Streaming channels (WebSocket) already broadcast ToolStart with the
+        // prompt in arguments, so sending text here would be redundant.
+        if !ctx.session_key.channel.supports_streaming() {
+            let outbound = OutboundMessage::new(
+                ctx.session_key.channel.clone(),
+                ctx.session_key.chat_id.clone(),
+                prompt,
+            );
+            if let Err(e) = ctx.outbound_tx.send(outbound).await {
+                registry.cancel(&ctx.session_key, ask_id);
+                return Err(ToolError::ExecutionError(format!(
+                    "failed to send prompt: {}",
+                    e
+                )));
+            }
         }
 
         // Await answer or timeout.

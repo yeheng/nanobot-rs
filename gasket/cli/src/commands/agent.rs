@@ -229,31 +229,20 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         model_registry: ModelRegistry::from_config(&config.agents),
     });
 
-    let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
-        SimpleSpawner::new(
-            provider_info.provider.clone(),
-            worker_tools,
-            workspace.clone(),
-            spawn_budget,
-        )
-        .with_thinking_enabled(agent_config.thinking_enabled)
-        .with_model_resolver(model_resolver),
-    );
-    let subagent_spawner_for_commands = subagent_spawner.clone();
-
     // Convert pricing info to ModelPricing
     let pricing = provider_info
         .pricing
         .map(|(input, output, currency)| ModelPricing::new(input, output, &currency));
 
+    // 1. Create agent session first (without spawner) so we can extract pending_asks
     #[cfg(feature = "embedding")]
-    let agent = if let Some((searcher, indexer)) = embedding_recall {
+    let mut agent = if let Some((searcher, indexer)) = embedding_recall {
         AgentSession::with_sqlite_store_and_embedding(
-            provider_info.provider,
-            workspace,
-            agent_config,
-            tools,
-            sqlite_store,
+            provider_info.provider.clone(),
+            workspace.clone(),
+            agent_config.clone(),
+            tools.clone(),
+            sqlite_store.clone(),
             gasket_engine::session::builder::EmbeddingContext {
                 searcher,
                 indexer,
@@ -262,33 +251,44 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
-        .with_pricing(pricing)
-        .with_spawner(subagent_spawner)
     } else {
         AgentSession::with_sqlite_store(
-            provider_info.provider,
-            workspace,
-            agent_config,
-            tools,
-            sqlite_store,
+            provider_info.provider.clone(),
+            workspace.clone(),
+            agent_config.clone(),
+            tools.clone(),
+            sqlite_store.clone(),
         )
         .await
         .context("Failed to initialize agent (check workspace bootstrap files)")?
-        .with_pricing(pricing)
-        .with_spawner(subagent_spawner)
     };
     #[cfg(not(feature = "embedding"))]
-    let agent = AgentSession::with_sqlite_store(
-        provider_info.provider,
-        workspace,
-        agent_config,
-        tools,
-        sqlite_store,
+    let mut agent = AgentSession::with_sqlite_store(
+        provider_info.provider.clone(),
+        workspace.clone(),
+        agent_config.clone(),
+        tools.clone(),
+        sqlite_store.clone(),
     )
     .await
-    .context("Failed to initialize agent (check workspace bootstrap files)")?
-    .with_pricing(pricing)
-    .with_spawner(subagent_spawner);
+    .context("Failed to initialize agent (check workspace bootstrap files)")?;
+
+    // 2. Build spawner with the session's pending-ask registry so subagents can use ask_user
+    let subagent_spawner: Arc<dyn gasket_engine::SubagentSpawner> = Arc::new(
+        SimpleSpawner::new(
+            provider_info.provider.clone(),
+            worker_tools,
+            workspace.clone(),
+            spawn_budget,
+        )
+        .with_pending_asks(agent.pending_asks())
+        .with_thinking_enabled(agent_config.thinking_enabled)
+        .with_model_resolver(model_resolver),
+    );
+    let subagent_spawner_for_commands = subagent_spawner.clone();
+
+    // 3. Wire spawner and pricing into agent
+    agent = agent.with_pricing(pricing).with_spawner(subagent_spawner);
 
     // Wrap once. Existing &self method calls pass through via Arc::Deref;
     // CliCommandHost needs an owned Arc clone for shared ownership.

@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::approval_router::ApprovalRouter;
 use crate::events::ChannelType::WebSocket as WebSocketChannel;
-use crate::events::{InboundMessage, OutboundMessage};
+use crate::events::{ChatEvent, InboundMessage, OutboundMessage};
 
 type ConnectionId = String;
 type UserId = String;
@@ -250,7 +250,7 @@ impl WebSocketManager {
         if let Some(ws_msg) = msg.ws_message() {
             ws_msg.to_json()
         } else if !msg.content().is_empty() {
-            msg.content().to_string()
+            ChatEvent::text(msg.content()).to_json()
         } else {
             String::new()
         }

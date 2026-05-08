@@ -7,6 +7,7 @@ use serde_json::Value;
 use super::{DispatcherContext, RpcHandler};
 use crate::plugin::manifest::Permission;
 use crate::plugin::rpc::RpcError;
+use crate::tools::ToolContext;
 
 /// Handler for `subagent/spawn` RPC method calls.
 ///
@@ -58,10 +59,23 @@ impl RpcHandler for SubagentSpawnHandler {
             RpcError::invalid_params(format!("Failed to parse SpawnRequest: {}", e))
         })?;
 
+        // Build a ToolContext from EngineHandle so the spawner can propagate
+        // session_key / outbound_tx / pending_asks into the subagent.
+        let tool_ctx = {
+            let mut tc = ToolContext::default()
+                .session_key(ctx.engine.session_key.clone())
+                .outbound_tx(ctx.engine.outbound_tx.clone())
+                .token_tracker(ctx.engine.token_tracker.clone());
+            if let Some(registry) = &ctx.engine.pending_asks {
+                tc = tc.pending_asks(registry.clone());
+            }
+            tc
+        };
+
         // Use the streaming variant so the frontend receives live
         // thinking/content events instead of a frozen UI.
         let (subagent_id, event_rx, result_rx, _cancel_token) = (*spawner)
-            .spawn_with_stream(request.task.clone(), request.model_id.clone())
+            .spawn_with_stream(request.task.clone(), request.model_id.clone(), &tool_ctx)
             .await
             .map_err(|e| RpcError::internal_error(format!("Subagent spawn failed: {}", e)))?;
 
@@ -147,6 +161,7 @@ mod tests {
             &self,
             _task: String,
             _model_id: Option<String>,
+            _ctx: &ToolContext,
         ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
             unreachable!("streaming handler must call spawn_with_stream, not spawn")
         }
@@ -155,6 +170,7 @@ mod tests {
             &self,
             task: String,
             model_id: Option<String>,
+            _ctx: &ToolContext,
         ) -> Result<
             (
                 String,

@@ -20,6 +20,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
+use super::spawn_common::spawn_event_forwarder;
 
 // ── Data structures ─────────────────────────────────────────────────────────
 
@@ -163,17 +164,6 @@ impl WorkflowTool {
         &self.manifest
     }
 
-    /// Send a lightweight progress message to the user via WebSocket.
-    async fn notify(ctx: &ToolContext, message: &str) {
-        use gasket_types::events::{ChatEvent, OutboundMessage};
-        let msg = OutboundMessage::with_ws_message(
-            ctx.session_key.channel.clone(),
-            ctx.session_key.chat_id.clone(),
-            ChatEvent::text(message),
-        );
-        let _ = ctx.outbound_tx.send(msg).await;
-    }
-
     /// Execute a single step: spawn subagent, stream events, collect result.
     async fn run_step(
         &self,
@@ -195,8 +185,8 @@ impl WorkflowTool {
         );
 
         // Spawn with streaming so the frontend sees real-time progress.
-        let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner
-            .spawn_with_stream(prompt.to_string(), model)
+        let (subagent_id, event_rx, result_rx, _cancel_token) = spawner
+            .spawn_with_stream(prompt.to_string(), model, ctx)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
@@ -215,51 +205,12 @@ impl WorkflowTool {
             .await;
 
         // Forward streaming events to WebSocket in the background.
-        let fwd_session_key = ctx.session_key.clone();
-        let fwd_outbound_tx = ctx.outbound_tx.clone();
-        let fwd_subagent_id = subagent_id.clone();
-        let forward_handle = tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                use gasket_types::events::{ChatEvent, OutboundMessage};
-
-                let chat_event = match &event.event {
-                    ChatEvent::Thinking { content } => Some(ChatEvent::subagent_thinking(
-                        &fwd_subagent_id,
-                        content.as_ref(),
-                    )),
-                    ChatEvent::ToolStart { name, arguments } => {
-                        Some(ChatEvent::subagent_tool_start(
-                            &fwd_subagent_id,
-                            name.as_ref(),
-                            arguments.as_ref().map(|s| s.to_string()),
-                        ))
-                    }
-                    ChatEvent::ToolEnd { name, output } => {
-                        Some(ChatEvent::subagent_tool_end(
-                            &fwd_subagent_id,
-                            name.as_ref(),
-                            output.as_ref().map(|s| s.to_string()),
-                        ))
-                    }
-                    ChatEvent::Content { content } => Some(ChatEvent::subagent_content(
-                        &fwd_subagent_id,
-                        content.as_ref(),
-                    )),
-                    ChatEvent::Done => None,
-                    ChatEvent::Text { .. } => None,
-                    _ => None,
-                };
-
-                if let Some(chat_event) = chat_event {
-                    let msg = OutboundMessage::with_ws_message(
-                        fwd_session_key.channel.clone(),
-                        fwd_session_key.chat_id.clone(),
-                        chat_event,
-                    );
-                    let _ = fwd_outbound_tx.send(msg).await;
-                }
-            }
-        });
+        let forward_handle = spawn_event_forwarder(
+            subagent_id.clone(),
+            event_rx,
+            ctx.session_key.clone(),
+            ctx.outbound_tx.clone(),
+        );
 
         // Block for the final result.
         let result = result_rx.await.map_err(|e| {
@@ -354,13 +305,6 @@ impl Tool for WorkflowTool {
             // Substitute template variables.
             let prompt = substitute_template(&step.prompt, &context_map);
 
-            // Notify user of progress.
-            Self::notify(
-                ctx,
-                &format!("🔄 **{}**: {}", current_step, &self.manifest.name),
-            )
-            .await;
-
             // Execute the step via subagent.
             let result = self
                 .run_step(&current_step, &prompt, step.model.clone(), step_index, ctx)
@@ -386,7 +330,6 @@ impl Tool for WorkflowTool {
                 context_map.insert(format!("{}.reason", current_step), reason.clone());
 
                 if verdict == "PASS" {
-                    Self::notify(ctx, &format!("✅ **{}** passed", current_step)).await;
                     current_step = eval.on_pass.clone();
                 } else {
                     let retries = retry_counts.entry(current_step.clone()).or_insert(0);
@@ -397,14 +340,6 @@ impl Tool for WorkflowTool {
                             current_step, eval.max_retries, reason
                         )));
                     }
-                    Self::notify(
-                        ctx,
-                        &format!(
-                            "❌ **{}** failed (retry {}/{}): {}",
-                            current_step, retries, eval.max_retries, reason
-                        ),
-                    )
-                    .await;
                     current_step = eval.on_fail.clone();
                 }
             } else if let Some(ref next) = step.next {

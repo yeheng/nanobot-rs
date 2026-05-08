@@ -340,6 +340,7 @@ mod tests {
             &self,
             _task: String,
             _model_id: Option<String>,
+            _ctx: &crate::tools::ToolContext,
         ) -> Result<SubagentResult, Box<dyn std::error::Error + Send>> {
             Ok(SubagentResult {
                 id: "mock".to_string(),

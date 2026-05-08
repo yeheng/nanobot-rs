@@ -324,6 +324,11 @@ impl AgentSession {
         .await
     }
 
+    /// Access the pending-ask registry (for wiring into the subagent spawner).
+    pub fn pending_asks(&self) -> gasket_types::pending_ask::DynPendingAskRegistry {
+        self.pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
+    }
+
     /// Set the subagent spawner.
     pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
         self.runtime_ctx.spawner = Some(spawner);

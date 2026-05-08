@@ -90,6 +90,11 @@ impl TaskSpec {
 /// * `result_tx` - Channel for the final result
 /// * `token_tracker` - Optional shared token tracker for budget enforcement
 /// * `cancellation_token` - Token to cancel this subagent (checked before and during execution)
+/// * `pending_asks` - Optional pending-ask registry for ask_user tool
+/// * `session_key` - Session key from the parent request, propagated into the worker
+///   so that tools like ask_user register with the correct key instead of a dummy.
+/// * `outbound_tx` - Outbound message channel from the parent request, propagated
+///   so that tools like ask_user can send prompts to the real channel.
 ///
 /// # Returns
 /// A `JoinHandle` for the spawned task.
@@ -104,6 +109,9 @@ pub fn spawn_subagent(
     result_tx: mpsc::Sender<SubagentResult>,
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     cancellation_token: CancellationToken,
+    pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
+    session_key: Option<gasket_types::events::SessionKey>,
+    outbound_tx: Option<mpsc::Sender<gasket_types::events::OutboundMessage>>,
 ) -> JoinHandle<()> {
     let subagent_id = task.id.clone();
     let task_desc = task.task.clone();
@@ -155,6 +163,9 @@ pub fn spawn_subagent(
             let mut c =
                 kernel::RuntimeContext::new_worker(provider, tools, config.to_kernel_config());
             c.token_tracker = token_tracker.clone();
+            c.pending_asks = pending_asks.clone();
+            c.session_key = session_key;
+            c.outbound_tx = outbound_tx;
             c
         };
 
@@ -321,6 +332,7 @@ pub struct SimpleSpawner {
     token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     model_resolver: Option<Arc<dyn ModelResolver>>,
     thinking_enabled: bool,
+    pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
 }
 
 impl SimpleSpawner {
@@ -338,6 +350,7 @@ impl SimpleSpawner {
             token_tracker: None,
             model_resolver: None,
             thinking_enabled: false,
+            pending_asks: None,
         }
     }
 
@@ -352,7 +365,12 @@ impl SimpleSpawner {
     }
 
     pub fn with_thinking_enabled(mut self, enabled: bool) -> Self {
-        self.thinking_enabled = enabled;
+            self.thinking_enabled = enabled;
+            self
+        }
+
+    pub fn with_pending_asks(mut self, registry: gasket_types::pending_ask::DynPendingAskRegistry) -> Self {
+        self.pending_asks = Some(registry);
         self
     }
 }
@@ -363,6 +381,7 @@ impl SubagentSpawner for SimpleSpawner {
         &self,
         task: String,
         model_id: Option<String>,
+        ctx: &gasket_types::tool::ToolContext,
     ) -> Result<TypesSubagentResult, Box<dyn std::error::Error + Send>> {
         use super::tracker::SubagentTracker;
 
@@ -400,6 +419,9 @@ impl SubagentSpawner for SimpleSpawner {
             result_tx,
             self.token_tracker.clone(),
             tracker.cancellation_token(),
+            self.pending_asks.clone(),
+            Some(ctx.session_key.clone()),
+            Some(ctx.outbound_tx.clone()),
         );
         // Hold the permit until the worker's tokio task ends.
         tokio::spawn(async move {
@@ -441,6 +463,7 @@ impl SubagentSpawner for SimpleSpawner {
         &self,
         task: String,
         model_id: Option<String>,
+        ctx: &gasket_types::tool::ToolContext,
     ) -> Result<
         (
             String,
@@ -486,6 +509,9 @@ impl SubagentSpawner for SimpleSpawner {
             result_tx,
             self.token_tracker.clone(),
             tracker.cancellation_token(),
+            self.pending_asks.clone(),
+            Some(ctx.session_key.clone()),
+            Some(ctx.outbound_tx.clone()),
         );
 
         let event_rx = tracker
