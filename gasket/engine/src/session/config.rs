@@ -74,6 +74,14 @@ pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECS: u64 = 3600;
 /// Default wait timeout for subagent results in seconds (12 minutes)
 pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 720;
+/// Default cooldown after a failed compaction LLM call
+pub const DEFAULT_COMPACTION_COOLDOWN_SECS: u64 = 60;
+/// Default timeout for after-response hooks
+pub const DEFAULT_AFTER_RESPONSE_HOOK_TIMEOUT_SECS: u64 = 30;
+/// Default timeout for external shell hooks
+pub const DEFAULT_EXTERNAL_HOOK_TIMEOUT_SECS: u64 = 2;
+/// Default concurrency for parallel tool execution
+pub const DEFAULT_TOOL_CONCURRENCY: usize = 5;
 
 /// Configuration for the self-evolution hook.
 #[derive(Clone, Debug)]
@@ -82,6 +90,8 @@ pub struct EvolutionConfig {
     pub enabled: bool,
     /// Number of messages to accumulate before triggering reflection.
     pub batch_messages: usize,
+    /// Maximum number of concurrent evolution tasks (default: 3).
+    pub concurrency: usize,
 }
 
 impl Default for EvolutionConfig {
@@ -89,6 +99,7 @@ impl Default for EvolutionConfig {
         Self {
             enabled: true,
             batch_messages: 20,
+            concurrency: 3,
         }
     }
 }
@@ -203,6 +214,12 @@ pub struct AgentConfig {
     pub subagent_timeout_secs: u64,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
+    /// Cooldown after a failed compaction LLM call (default: 60s).
+    pub compaction_cooldown_secs: u64,
+    /// Timeout for after-response hooks in seconds (default: 30s).
+    pub after_response_hook_timeout_secs: u64,
+    /// Timeout for external shell hooks in seconds (default: 2s).
+    pub external_hook_timeout_secs: u64,
     /// Maximum characters for WebSocket subagent summary (0 = unlimited).
     pub ws_summary_limit: usize,
     /// Prompt configuration for internal AI behaviors.
@@ -233,6 +250,9 @@ impl Default for AgentConfig {
             plugin_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+            compaction_cooldown_secs: DEFAULT_COMPACTION_COOLDOWN_SECS,
+            after_response_hook_timeout_secs: DEFAULT_AFTER_RESPONSE_HOOK_TIMEOUT_SECS,
+            external_hook_timeout_secs: DEFAULT_EXTERNAL_HOOK_TIMEOUT_SECS,
             ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
             memory_budget: None,
@@ -262,6 +282,9 @@ impl AgentConfigExt for AgentConfig {
             plugin_timeout_secs: self.plugin_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
             tool_filter: None,
+            stream_chunk_timeout_secs: 120,
+            max_stream_chunks: 100_000,
+            tool_concurrency: DEFAULT_TOOL_CONCURRENCY,
         }
     }
 }

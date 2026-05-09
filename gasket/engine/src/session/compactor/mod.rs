@@ -124,6 +124,8 @@ pub struct ContextCompactor {
     compaction_threshold: f32,
     /// Custom summarization prompt.
     summarization_prompt: String,
+    /// Cooldown after LLM failure in seconds (default: 60).
+    cooldown_secs: u64,
     /// Unified state machine: Idle | Compressing { pending } | Cooldown(Instant).
     state: Arc<parking_lot::Mutex<CompactorState>>,
     /// Optional checkpoint configuration for proactive working-memory snapshots.
@@ -155,6 +157,7 @@ impl ContextCompactor {
             token_budget,
             compaction_threshold: Self::DEFAULT_COMPACTION_THRESHOLD,
             summarization_prompt: DEFAULT_SUMMARIZATION_PROMPT.to_string(),
+            cooldown_secs: COMPACTION_COOLDOWN_SECS,
             state: Arc::new(parking_lot::Mutex::new(CompactorState::Idle)),
             checkpoint_config: None,
             listeners: Vec::new(),
@@ -177,6 +180,12 @@ impl ContextCompactor {
     /// Set a custom compaction threshold multiplier.
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.compaction_threshold = threshold;
+        self
+    }
+
+    /// Set cooldown after LLM failure in seconds.
+    pub fn with_cooldown_secs(mut self, secs: u64) -> Self {
+        self.cooldown_secs = secs;
         self
     }
 
@@ -377,7 +386,7 @@ impl ContextCompactor {
                     false
                 }
                 CompactorState::Cooldown(last_fail) => {
-                    if last_fail.elapsed().as_secs() < COMPACTION_COOLDOWN_SECS {
+                    if last_fail.elapsed().as_secs() < self.cooldown_secs {
                         debug!(
                             "Compaction in cooldown for {}: {}s since last failure",
                             sk,

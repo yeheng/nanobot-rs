@@ -107,24 +107,19 @@ impl SteppableExecutor {
     ) -> Result<ChatResponse, KernelError> {
         let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
 
-        // LLM providers may pause for extended reasoning without emitting
-        // chunks.  We keep the event-forwarding loop alive so that when the
-        // model finally produces output (or tool calls) the client sees it.
-        // The true hung-stream defense is the HTTP/TCP timeout at the
-        // provider level; breaking here only causes frontend stalls.
-        const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
-        const MAX_STREAM_CHUNKS: usize = 100_000;
+        let chunk_timeout = Duration::from_secs(self.ctx.config.stream_chunk_timeout_secs);
+        let max_chunks = self.ctx.config.max_stream_chunks;
 
         let mut event_count = 0usize;
         loop {
-            if event_count >= MAX_STREAM_CHUNKS {
+            if event_count >= max_chunks {
                 warn!(
                     "[Steppable] Stream exceeded {} chunks; aborting to prevent hang",
-                    MAX_STREAM_CHUNKS
+                    max_chunks
                 );
                 break;
             }
-            match timeout(STREAM_CHUNK_TIMEOUT, event_stream.next()).await {
+            match timeout(chunk_timeout, event_stream.next()).await {
                 Ok(Some(event)) => {
                     event_count += 1;
                     if event_count == 1 {
@@ -139,7 +134,7 @@ impl SteppableExecutor {
                 Err(_) => {
                     warn!(
                         "[Steppable] No stream chunk for {}s; model may be reasoning — continuing to wait",
-                        STREAM_CHUNK_TIMEOUT.as_secs()
+                        chunk_timeout.as_secs()
                     );
                     continue;
                 }
@@ -226,7 +221,7 @@ impl SteppableExecutor {
                         (idx, tool_call.id, tool_name, result.output)
                     }
                 })
-                .buffer_unordered(5)
+                .buffer_unordered(self.ctx.config.tool_concurrency)
                 .collect()
                 .await;
 

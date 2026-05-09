@@ -376,6 +376,7 @@ impl ToolProvider for SystemToolProvider {
                     event_store: es.clone(),
                     default_threshold: 20,
                     evolution_prompt: self.evolution_prompt.clone(),
+                    concurrency: 3,
                 }),
                 "Evolution",
                 "system",
