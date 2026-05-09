@@ -17,7 +17,6 @@ use crate::kernel::{
 };
 use crate::token_tracker::TokenUsage;
 use crate::tools::truncate_for_display;
-use crate::tools::ToolContext;
 use gasket_providers::{ChatMessage, ChatResponse, ChatStream};
 use gasket_types::StreamEvent;
 
@@ -181,41 +180,7 @@ impl SteppableExecutor {
             response.reasoning_content.clone(),
         ));
 
-        let mut ctx = ToolContext::default()
-            .ws_summary_limit(self.ctx.config.ws_summary_limit)
-            .plugin_timeout_secs(self.ctx.config.plugin_timeout_secs);
-        if let Some(ref spawner) = self.ctx.spawner {
-            ctx = ctx.spawner(spawner.clone());
-        }
-        if let Some(ref tracker) = self.ctx.token_tracker {
-            ctx = ctx.token_tracker(tracker.clone());
-        }
-        if let Some(ref session_key) = self.ctx.session_key {
-            ctx = ctx.session_key(session_key.clone());
-        }
-        if let Some(ref outbound_tx) = self.ctx.outbound_tx {
-            ctx = ctx.outbound_tx(outbound_tx.clone());
-            // Inject SynthesisCallback for WebSocket channels
-            let provider = &self.ctx.provider;
-            let model = provider.default_model().to_string();
-            let session_key = self.ctx.session_key.clone().unwrap_or_else(|| {
-                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
-            });
-            let callback =
-                std::sync::Arc::new(crate::kernel::synthesis::WebSocketSynthesizer::new(
-                    provider.clone(),
-                    model,
-                    outbound_tx.clone(),
-                    session_key,
-                ));
-            ctx = ctx.synthesis_callback(callback);
-        }
-        if let Some(ref cancel) = self.ctx.aggregator_cancel {
-            ctx = ctx.aggregator_cancel(cancel.clone());
-        }
-        if let Some(ref registry) = self.ctx.pending_asks {
-            ctx = ctx.pending_asks(registry.clone());
-        }
+        let ctx = self.ctx.build_tool_context();
 
         let results: Vec<_> =
             futures_util::stream::iter(response.tool_calls.clone().into_iter().enumerate())

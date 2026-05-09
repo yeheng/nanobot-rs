@@ -89,6 +89,19 @@ pub trait MessageHandler: Send + Sync {
         let _ = command;
         Ok(vec![])
     }
+
+    /// Try to intercept an inbound message before it enters the session queue.
+    ///
+    /// Returns `Ok(())` if the message was consumed (e.g. fulfilled a pending ask).
+    /// Returns `Err(msg)` if the message should proceed to normal session processing.
+    async fn try_intercept(
+        &self,
+        session_key: &SessionKey,
+        msg: InboundMessage,
+    ) -> Result<(), InboundMessage> {
+        let _ = session_key;
+        Err(msg)
+    }
 }
 
 /// Manages per-session processing tasks.
@@ -184,6 +197,22 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
             trace_id = ?msg.trace_id,
             "Dispatching message to session"
         );
+
+        // Try intercept before enqueuing (e.g. pending ask fulfillment).
+        // This MUST happen outside the session task to avoid deadlock:
+        // if the session task is blocked waiting for an ask answer,
+        // the answer would never be dequeued from the channel.
+        let msg = match self.handler.try_intercept(&key, msg).await {
+            Ok(()) => {
+                tracing::debug!(
+                    target: "gasket::broker",
+                    session_key = %key,
+                    "Message intercepted by handler"
+                );
+                return;
+            }
+            Err(m) => m,
+        };
 
         if let Some(tx) = self.sessions.get(&key) {
             if tx.send(msg.clone()).await.is_ok() {

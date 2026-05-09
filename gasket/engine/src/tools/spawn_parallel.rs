@@ -246,7 +246,7 @@ impl Tool for SpawnParallelTool {
             let outbound_tx = ctx.outbound_tx.clone();
             let ws_summary_limit = ctx.ws_summary_limit;
             let handle = tokio::spawn(async move {
-                let (subagent_id, mut event_rx, result_rx, _cancel_token) = spawner_clone
+                let (subagent_id, event_rx, result_rx, _cancel_token) = spawner_clone
                     .spawn_with_stream(spec.task.clone(), spec.model_id, &task_ctx)
                     .await
                     .map_err(|e| {
@@ -266,54 +266,13 @@ impl Tool for SpawnParallelTool {
                     ))
                     .await;
 
-                // Forward subagent events to WebSocket in real-time
-                let fwd_subagent_id = subagent_id.clone();
-                let fwd_session_key = session_key.clone();
-                let fwd_outbound_tx = outbound_tx.clone();
-                let forward_handle = tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        use gasket_types::events::ChatEvent;
-
-                        let chat_event = match &event.event {
-                            ChatEvent::Thinking { content } => {
-                                Some(ChatEvent::subagent_thinking(
-                                    fwd_subagent_id.clone(),
-                                    content.as_ref(),
-                                ))
-                            }
-                            ChatEvent::ToolStart { name, arguments } => {
-                                Some(ChatEvent::subagent_tool_start(
-                                    fwd_subagent_id.clone(),
-                                    name.as_ref(),
-                                    arguments.as_ref().map(|s| s.to_string()),
-                                ))
-                            }
-                            ChatEvent::ToolEnd { name, output } => {
-                                Some(ChatEvent::subagent_tool_end(
-                                    fwd_subagent_id.clone(),
-                                    name.as_ref(),
-                                    output.as_ref().map(|s| s.to_string()),
-                                ))
-                            }
-                            ChatEvent::Content { content } => {
-                                Some(ChatEvent::subagent_content(
-                                    fwd_subagent_id.clone(),
-                                    content.as_ref(),
-                                ))
-                            }
-                            _ => None,
-                        };
-
-                        if let Some(chat_event) = chat_event {
-                            let msg = gasket_types::events::OutboundMessage::with_ws_message(
-                                fwd_session_key.channel.clone(),
-                                fwd_session_key.chat_id.clone(),
-                                chat_event,
-                            );
-                            let _ = fwd_outbound_tx.send(msg).await;
-                        }
-                    }
-                });
+                // Forward subagent events via the shared helper
+                let forward_handle = spawn_common::spawn_event_forwarder(
+                    subagent_id.clone(),
+                    event_rx,
+                    session_key.clone(),
+                    outbound_tx.clone(),
+                );
 
                 let result = result_rx.await.map_err(|e| {
                     ToolError::ExecutionError(format!("Subagent result channel closed: {}", e))

@@ -30,6 +30,14 @@ impl DispatchingEngineHandler {
 
 #[async_trait]
 impl MessageHandler for DispatchingEngineHandler {
+    async fn try_intercept(
+        &self,
+        session_key: &SessionKey,
+        msg: gasket_types::events::InboundMessage,
+    ) -> Result<(), gasket_types::events::InboundMessage> {
+        self.engine.try_intercept(session_key, msg).await
+    }
+
     async fn handle_message(
         &self,
         session_key: &SessionKey,

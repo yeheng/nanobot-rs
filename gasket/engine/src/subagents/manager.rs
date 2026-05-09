@@ -162,10 +162,10 @@ pub fn spawn_subagent(
         let ctx = {
             let mut c =
                 kernel::RuntimeContext::new_worker(provider, tools, config.to_kernel_config());
-            c.token_tracker = token_tracker.clone();
-            c.pending_asks = pending_asks.clone();
-            c.session_key = session_key;
-            c.outbound_tx = outbound_tx;
+            c.refs.token_tracker = token_tracker.clone();
+            c.refs.pending_asks = pending_asks.clone();
+            c.refs.session_key = session_key;
+            c.refs.outbound_tx = outbound_tx;
             c
         };
 
@@ -373,6 +373,23 @@ impl SimpleSpawner {
         self.pending_asks = Some(registry);
         self
     }
+
+    /// Resolve provider and model from an optional model_id.
+    ///
+    /// When both `model_id` and `model_resolver` are present, attempts resolution.
+    /// Falls back to the default provider with no model override on failure or absence.
+    fn resolve_provider_model(
+        &self,
+        model_id: Option<&str>,
+    ) -> (Arc<dyn LlmProvider>, Option<String>) {
+        match (model_id, &self.model_resolver) {
+            (Some(mid), Some(resolver)) => resolver
+                .resolve_model(mid)
+                .map(|(p, c)| (p, Some(c.model)))
+                .unwrap_or_else(|| (self.provider.clone(), None)),
+            _ => (self.provider.clone(), None),
+        }
+    }
 }
 
 #[async_trait]
@@ -392,14 +409,7 @@ impl SubagentSpawner for SimpleSpawner {
         let event_tx = tracker.event_sender();
         let subagent_id = SubagentTracker::generate_id();
 
-        // Resolve provider and model: only attempt resolution when both model_id and resolver exist.
-        let (provider, model) = match (&model_id, &self.model_resolver) {
-            (Some(mid), Some(resolver)) => resolver
-                .resolve_model(mid)
-                .map(|(p, c)| (p, Some(c.model)))
-                .unwrap_or((self.provider.clone(), None)),
-            _ => (self.provider.clone(), None),
-        };
+        let (provider, model) = self.resolve_provider_model(model_id.as_deref());
 
         let task_spec = TaskSpec::new(&subagent_id, task)
             .with_thinking_enabled(self.thinking_enabled);
@@ -408,7 +418,6 @@ impl SubagentSpawner for SimpleSpawner {
         } else {
             task_spec
         };
-        let _task_desc = task_spec.task.clone();
 
         let join_handle = spawn_subagent(
             provider,
@@ -475,21 +484,12 @@ impl SubagentSpawner for SimpleSpawner {
     > {
         use super::tracker::SubagentTracker;
 
-        let permit = self.budget.acquire().await;
-
         let mut tracker = SubagentTracker::new();
         let result_tx = tracker.result_sender();
         let event_tx = tracker.event_sender();
         let subagent_id = SubagentTracker::generate_id();
 
-        // Resolve provider and model: only attempt resolution when both model_id and resolver exist.
-        let (provider, model) = match (&model_id, &self.model_resolver) {
-            (Some(mid), Some(resolver)) => resolver
-                .resolve_model(mid)
-                .map(|(p, c)| (p, Some(c.model)))
-                .unwrap_or((self.provider.clone(), None)),
-            _ => (self.provider.clone(), None),
-        };
+        let (provider, model) = self.resolve_provider_model(model_id.as_deref());
 
         let task_spec = TaskSpec::new(&subagent_id, task)
             .with_thinking_enabled(self.thinking_enabled);
@@ -500,20 +500,6 @@ impl SubagentSpawner for SimpleSpawner {
         };
         let task_desc = task_spec.task.clone();
 
-        spawn_subagent(
-            provider,
-            self.worker_tools.clone(),
-            self.workspace.clone(),
-            task_spec,
-            Some(event_tx),
-            result_tx,
-            self.token_tracker.clone(),
-            tracker.cancellation_token(),
-            self.pending_asks.clone(),
-            Some(ctx.session_key.clone()),
-            Some(ctx.outbound_tx.clone()),
-        );
-
         let event_rx = tracker
             .take_event_receiver()
             .map_err(|e| anyhow::anyhow!("Failed to take event receiver: {}", e))?;
@@ -521,9 +507,35 @@ impl SubagentSpawner for SimpleSpawner {
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let result_subagent_id = subagent_id.clone();
         let cancel_token = tracker.cancellation_token();
+        let cancel_token_for_spawn = cancel_token.clone();
+
+        // Move budget acquisition into the background so the caller
+        // (e.g. spawn_parallel) is not blocked when concurrency is limited.
+        let budget = self.budget.clone();
+        let worker_tools = self.worker_tools.clone();
+        let workspace = self.workspace.clone();
+        let token_tracker = self.token_tracker.clone();
+        let pending_asks = self.pending_asks.clone();
+        let session_key = ctx.session_key.clone();
+        let outbound_tx = ctx.outbound_tx.clone();
 
         tokio::spawn(async move {
-            let _permit = permit; // RAII: drops on guard-task exit
+            let _permit = budget.acquire().await;
+
+            let _join_handle = spawn_subagent(
+                provider,
+                worker_tools,
+                workspace,
+                task_spec,
+                Some(event_tx),
+                result_tx,
+                token_tracker,
+                cancel_token_for_spawn,
+                pending_asks,
+                Some(session_key),
+                Some(outbound_tx),
+            );
+
             let types_result = match tracker.wait_for_all(1).await {
                 Ok(results) => match results.into_iter().next() {
                     Some(result) => TypesSubagentResult {

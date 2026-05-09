@@ -119,6 +119,14 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
         Ok((chat_rx, result_rx))
     }
 
+    async fn try_intercept(
+        &self,
+        session_key: &SessionKey,
+        msg: gasket_types::events::InboundMessage,
+    ) -> Result<(), gasket_types::events::InboundMessage> {
+        self.session.pending_asks().try_fulfill(session_key, msg)
+    }
+
     async fn handle_command(
         &self,
         session_key: &SessionKey,

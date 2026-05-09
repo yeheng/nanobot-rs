@@ -287,7 +287,10 @@ impl Tool for PluginTool {
 ///
 /// * `Ok(Vec<PluginTool>)` - Vector of discovered plugins
 /// * `Err(anyhow::Error)` - Directory read error or manifest parse error
-pub fn discover_plugins_in_dir(plugins_dir: &Path) -> anyhow::Result<Vec<PluginTool>> {
+pub fn discover_plugins_in_dir(
+    plugins_dir: &Path,
+    engine: Option<EngineResources>,
+) -> anyhow::Result<Vec<PluginTool>> {
     let mut tools = Vec::new();
 
     // Check if directory exists
@@ -322,11 +325,11 @@ pub fn discover_plugins_in_dir(plugins_dir: &Path) -> anyhow::Result<Vec<PluginT
             continue;
         }
 
-        // Load manifest
+        // Load manifest — inject engine resources at construction time
         match load_manifest(&path) {
             Ok(manifest) => {
                 info!("Discovered plugin '{}' from {:?}", manifest.name, path);
-                let tool = PluginTool::new(manifest, plugins_dir.to_path_buf(), None);
+                let tool = PluginTool::new(manifest, plugins_dir.to_path_buf(), engine.clone());
                 tools.push(tool);
             }
             Err(e) => {
@@ -370,24 +373,14 @@ pub fn discover_plugins(
         .map(|home| home.join(".gasket/plugins"))
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve home directory"))?;
 
-    // Discover tools
-    let tools = discover_plugins_in_dir(&plugins_dir)?;
+    // Discover tools — engine resources are injected at construction time.
+    let tools = discover_plugins_in_dir(&plugins_dir, engine)?;
 
-    // Register each tool — engine resources are injected at construction time.
-    for tool in &tools {
-        let tool = PluginTool::new(
-            tool.manifest.clone(),
-            tool.manifest_dir.clone(),
-            engine.clone(),
-        );
+    for tool in tools {
         registry.register(Box::new(tool));
     }
 
-    info!(
-        "Discovered and registered {} plugins from {:?}",
-        tools.len(),
-        plugins_dir
-    );
+    info!("Discovered and registered plugins from {:?}", plugins_dir);
 
     Ok(())
 }
@@ -501,7 +494,7 @@ mod tests {
         // Use a nonexistent directory path
         let nonexistent = PathBuf::from("/tmp/nonexistent_gasket_scripts_xyz123");
 
-        let tools = discover_plugins_in_dir(&nonexistent).unwrap();
+        let tools = discover_plugins_in_dir(&nonexistent, None).unwrap();
 
         // Should return empty vec without error
         assert_eq!(tools.len(), 0);

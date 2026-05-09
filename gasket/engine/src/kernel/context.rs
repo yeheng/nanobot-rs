@@ -2,12 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::tools::{SubagentSpawner, ToolRegistry};
+use crate::tools::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use gasket_providers::LlmProvider;
-use gasket_types::events::OutboundMessage;
-use gasket_types::SessionKey;
-use tokio_util::sync::CancellationToken;
+use gasket_types::SessionRefs;
 
 /// Async callback for proactive working-memory checkpoint injection.
 ///
@@ -29,43 +27,37 @@ pub struct RuntimeContext {
     pub tools: Arc<ToolRegistry>,
     pub config: KernelConfig,
     pub role: gasket_types::AgentRole,
-    pub spawner: Option<Arc<dyn SubagentSpawner>>,
-    pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     /// Optional checkpoint callback for proactive working-memory injection.
-    /// `None` means no checkpointing — checked before each step iteration.
     pub checkpoint_callback: Option<Arc<dyn CheckpointCallback>>,
-    /// Session key for the current request (for routing WebSocket messages).
-    pub session_key: Option<SessionKey>,
-    /// Outbound channel for sending WebSocket messages directly from tools.
-    /// When None, tools fall back to blocking mode (e.g., CLI/Telegram).
-    pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
-    /// Shared cancellation token for the current aggregator task.
-    /// Tools check/inject this to support user interruption.
-    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
-    /// Pending-ask registry for the `ask_user` tool. None disables user prompting.
-    pub pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
+    /// Session-level references shared with ToolContext.
+    pub refs: SessionRefs,
 }
 
 impl RuntimeContext {
+    /// Internal constructor — public API delegates to this with the desired role.
+    fn new_with_role(
+        provider: Arc<dyn LlmProvider>,
+        tools: Arc<ToolRegistry>,
+        config: KernelConfig,
+        role: gasket_types::AgentRole,
+    ) -> Self {
+        Self {
+            provider,
+            tools,
+            config,
+            role,
+            checkpoint_callback: None,
+            refs: SessionRefs::default(),
+        }
+    }
+
     /// Constructs an Orchestrator context (main agent, may attach a spawner).
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         tools: Arc<ToolRegistry>,
         config: KernelConfig,
     ) -> Self {
-        Self {
-            provider,
-            tools,
-            config,
-            role: gasket_types::AgentRole::Orchestrator,
-            spawner: None,
-            token_tracker: None,
-            checkpoint_callback: None,
-            session_key: None,
-            outbound_tx: None,
-            aggregator_cancel: None,
-            pending_asks: None,
-        }
+        Self::new_with_role(provider, tools, config, gasket_types::AgentRole::Orchestrator)
     }
 
     /// Constructs a Worker context (subagent leaf). `spawner` is forced to None
@@ -75,19 +67,40 @@ impl RuntimeContext {
         tools: Arc<ToolRegistry>,
         config: KernelConfig,
     ) -> Self {
-        Self {
-            provider,
-            tools,
-            config,
-            role: gasket_types::AgentRole::Worker,
-            spawner: None,
-            token_tracker: None,
-            checkpoint_callback: None,
-            session_key: None,
-            outbound_tx: None,
-            aggregator_cancel: None,
-            pending_asks: None,
+        Self::new_with_role(provider, tools, config, gasket_types::AgentRole::Worker)
+    }
+
+    /// Build a `ToolContext` from this RuntimeContext.
+    ///
+    /// Applies session refs (spawner, session_key, etc.) onto a `ToolContext`
+    /// pre-filled with kernel config values. This is the single mapping point
+    /// between kernel context and tool context.
+    pub fn build_tool_context(&self) -> ToolContext {
+        use crate::kernel::synthesis::WebSocketSynthesizer;
+
+        let mut ctx = ToolContext::default()
+            .ws_summary_limit(self.config.ws_summary_limit)
+            .plugin_timeout_secs(self.config.plugin_timeout_secs);
+
+        ctx.apply_session_refs(&self.refs);
+
+        // Inject SynthesisCallback when outbound channel is present (WebSocket mode).
+        if self.refs.outbound_tx.is_some() {
+            let provider = &self.provider;
+            let model = provider.default_model().to_string();
+            let session_key = self.refs.session_key.clone().unwrap_or_else(|| {
+                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
+            });
+            let callback = std::sync::Arc::new(WebSocketSynthesizer::new(
+                provider.clone(),
+                model,
+                self.refs.outbound_tx.clone().unwrap(),
+                session_key,
+            ));
+            ctx = ctx.synthesis_callback(callback);
         }
+
+        ctx
     }
 }
 
@@ -98,13 +111,8 @@ impl Clone for RuntimeContext {
             tools: self.tools.clone(),
             config: self.config.clone(),
             role: self.role,
-            spawner: self.spawner.clone(),
-            token_tracker: self.token_tracker.clone(),
             checkpoint_callback: self.checkpoint_callback.clone(),
-            session_key: self.session_key.clone(),
-            outbound_tx: self.outbound_tx.clone(),
-            aggregator_cancel: self.aggregator_cancel.clone(),
-            pending_asks: self.pending_asks.clone(),
+            refs: self.refs.clone(),
         }
     }
 }

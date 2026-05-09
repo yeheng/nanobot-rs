@@ -120,6 +120,48 @@ pub trait SynthesisCallback: Send + Sync {
     fn synthesize(&self, results: Vec<SubagentResult>) -> SynthesisFuture;
 }
 
+/// Session-level references shared between kernel's `RuntimeContext` and
+/// the tool execution `ToolContext`.
+///
+/// Groups the 6 fields that both contexts need, so adding a new session-scoped
+/// reference only requires changing this struct + `apply_to_tool_context()`,
+/// not three separate locations.
+#[derive(Clone)]
+pub struct SessionRefs {
+    pub session_key: Option<SessionKey>,
+    pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
+    pub spawner: Option<Arc<dyn SubagentSpawner>>,
+    pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
+    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    pub pending_asks: Option<DynPendingAskRegistry>,
+}
+
+impl Default for SessionRefs {
+    fn default() -> Self {
+        Self {
+            session_key: None,
+            outbound_tx: None,
+            spawner: None,
+            token_tracker: None,
+            aggregator_cancel: None,
+            pending_asks: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for SessionRefs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRefs")
+            .field("session_key", &self.session_key)
+            .field("outbound_tx", &"Sender<OutboundMessage>")
+            .field("spawner", &self.spawner.is_some())
+            .field("token_tracker", &self.token_tracker.is_some())
+            .field("aggregator_cancel", &self.aggregator_cancel.is_some())
+            .field("pending_asks", &self.pending_asks.is_some())
+            .finish()
+    }
+}
+
 /// Context passed to tool execution, providing request-scoped data.
 ///
 /// This replaces the old pattern of storing session_key in SubagentManager
@@ -235,6 +277,31 @@ impl ToolContext {
     pub fn pending_asks(mut self, registry: DynPendingAskRegistry) -> Self {
         self.pending_asks = Some(registry);
         self
+    }
+
+    /// Apply session-level references from a `SessionRefs` bundle.
+    ///
+    /// For each field that is `Some` in `refs`, overrides the current value.
+    /// `None` fields are left unchanged (keeping defaults or previously set values).
+    pub fn apply_session_refs(&mut self, refs: &SessionRefs) {
+        if let Some(ref sk) = refs.session_key {
+            self.session_key = sk.clone();
+        }
+        if let Some(ref tx) = refs.outbound_tx {
+            self.outbound_tx = tx.clone();
+        }
+        if let Some(ref spawner) = refs.spawner {
+            self.spawner = Some(spawner.clone());
+        }
+        if let Some(ref tracker) = refs.token_tracker {
+            self.token_tracker = tracker.clone();
+        }
+        if let Some(ref cancel) = refs.aggregator_cancel {
+            self.aggregator_cancel = Some(cancel.clone());
+        }
+        if let Some(ref registry) = refs.pending_asks {
+            self.pending_asks = Some(registry.clone());
+        }
     }
 }
 

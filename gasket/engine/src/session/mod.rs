@@ -331,13 +331,13 @@ impl AgentSession {
 
     /// Set the subagent spawner.
     pub fn with_spawner(mut self, spawner: Arc<dyn SubagentSpawner>) -> Self {
-        self.runtime_ctx.spawner = Some(spawner);
+        self.runtime_ctx.refs.spawner = Some(spawner);
         self
     }
 
     /// Set the token tracker.
     pub fn with_token_tracker(mut self, tracker: Arc<crate::token_tracker::TokenTracker>) -> Self {
-        self.runtime_ctx.token_tracker = Some(tracker);
+        self.runtime_ctx.refs.token_tracker = Some(tracker);
         self
     }
 
@@ -542,17 +542,17 @@ impl AgentSession {
                 }
             }
         });
-        ctx.runtime_ctx.outbound_tx = Some(outbound_tx);
+        ctx.runtime_ctx.refs.outbound_tx = Some(outbound_tx);
 
         // Per-call tool filter: a YAML command may have requested a tool whitelist
         // for this single invocation. None preserves the existing 'all tools' default.
         ctx.runtime_ctx.config.tool_filter = tool_filter;
 
         // Cancel any previous aggregator for this session turn
-        if ctx.runtime_ctx.aggregator_cancel.is_none() {
-            ctx.runtime_ctx.aggregator_cancel = Some(Arc::new(tokio::sync::Mutex::new(None)));
+        if ctx.runtime_ctx.refs.aggregator_cancel.is_none() {
+            ctx.runtime_ctx.refs.aggregator_cancel = Some(Arc::new(tokio::sync::Mutex::new(None)));
         }
-        if let Some(ref cancel) = ctx.runtime_ctx.aggregator_cancel {
+        if let Some(ref cancel) = ctx.runtime_ctx.refs.aggregator_cancel {
             if let Ok(mut guard) = cancel.try_lock() {
                 if let Some(ref token) = *guard {
                     token.cancel();
@@ -628,7 +628,7 @@ impl AgentSession {
         let fctx = FinalizeContext::from_request(&request);
         let messages = request.messages;
         let mut runtime_ctx = self.runtime_ctx.clone();
-        runtime_ctx.session_key = Some(session_key.clone());
+        runtime_ctx.refs.session_key = Some(session_key.clone());
 
         if let Some(ref compactor) = &self.compactor {
             runtime_ctx.checkpoint_callback = Some(Arc::new(SessionCheckpointCallback {

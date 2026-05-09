@@ -157,15 +157,17 @@ impl SessionBuilder {
             tools: self.tools.clone(),
             config: kernel_config,
             role: gasket_types::AgentRole::Orchestrator,
-            spawner: None,
-            token_tracker: None,
             checkpoint_callback: None,
-            session_key: None,
-            outbound_tx: None,
-            aggregator_cancel: None,
-            pending_asks: Some(
-                pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
-            ),
+            refs: gasket_types::SessionRefs {
+                spawner: None,
+                token_tracker: None,
+                session_key: None,
+                outbound_tx: None,
+                aggregator_cancel: None,
+                pending_asks: Some(
+                    pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
+                ),
+            },
         };
         // ── 4. Context compactor ─────────────────────────────────────
         let mut history_config = gasket_storage::HistoryConfig {

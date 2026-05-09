@@ -37,7 +37,7 @@ pub use token_tracker::{
     TokenUsage,
 };
 pub use tool::{
-    simple_schema, ApprovalCallback, SubagentResponse, SubagentResult, SubagentSpawner,
-    SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse, ToolContext, ToolError,
-    ToolMetadata, ToolResult,
+    simple_schema, ApprovalCallback, SessionRefs, SubagentResponse, SubagentResult,
+    SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
+    ToolContext, ToolError, ToolMetadata, ToolResult,
 };
