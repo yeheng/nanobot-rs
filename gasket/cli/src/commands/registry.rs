@@ -99,6 +99,9 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         },
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
+        compaction_cooldown_secs: defaults.compaction_cooldown_secs,
+        after_response_hook_timeout_secs: defaults.after_response_hook_timeout_secs,
+        external_hook_timeout_secs: defaults.external_hook_timeout_secs,
         ws_summary_limit: config.agents.defaults.ws_summary_limit,
         prompts: {
             let p = &config.agents.defaults.prompts;

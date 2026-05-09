@@ -103,6 +103,7 @@ pub fn spawn_subagent(
     result_tx: mpsc::Sender<SubagentResult>,
     cancellation_token: CancellationToken,
     refs: gasket_types::SessionRefs,
+    timeout_secs: u64,
 ) -> JoinHandle<()> {
     let subagent_id = task.id.clone();
     let task_desc = task.task.clone();
@@ -158,7 +159,7 @@ pub fn spawn_subagent(
         };
 
         // Execute with timeout, cancellable via token
-        let timeout = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         let messages = vec![
             ChatMessage::system(system_prompt),
             ChatMessage::user(&task_desc),
@@ -182,7 +183,7 @@ pub fn spawn_subagent(
                         &subagent_id,
                         &task_desc,
                         &model,
-                        &format!("Timed out after {}s", SUBAGENT_TIMEOUT_SECS),
+                        &format!("Timed out after {}s", timeout_secs),
                         &result_tx,
                     )
                     .await;
@@ -321,6 +322,7 @@ pub struct SimpleSpawner {
     model_resolver: Option<Arc<dyn ModelResolver>>,
     thinking_enabled: bool,
     pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
+    timeout_secs: u64,
 }
 
 impl SimpleSpawner {
@@ -339,6 +341,7 @@ impl SimpleSpawner {
             model_resolver: None,
             thinking_enabled: false,
             pending_asks: None,
+            timeout_secs: SUBAGENT_TIMEOUT_SECS,
         }
     }
 
@@ -359,6 +362,11 @@ impl SimpleSpawner {
 
     pub fn with_pending_asks(mut self, registry: gasket_types::pending_ask::DynPendingAskRegistry) -> Self {
         self.pending_asks = Some(registry);
+        self
+    }
+
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
         self
     }
 
@@ -423,6 +431,7 @@ impl SubagentSpawner for SimpleSpawner {
             result_tx,
             tracker.cancellation_token(),
             refs,
+            self.timeout_secs,
         );
         // Hold the permit until the worker's tokio task ends.
         tokio::spawn(async move {
@@ -506,6 +515,7 @@ impl SubagentSpawner for SimpleSpawner {
         let budget = self.budget.clone();
         let worker_tools = self.worker_tools.clone();
         let workspace = self.workspace.clone();
+        let timeout_secs = self.timeout_secs;
 
         let refs = gasket_types::SessionRefs {
             token_tracker: self.token_tracker.clone(),
@@ -527,6 +537,7 @@ impl SubagentSpawner for SimpleSpawner {
                 result_tx,
                 cancel_token_for_spawn,
                 refs,
+                timeout_secs,
             );
 
             let types_result = match tracker.wait_for_all(1).await {

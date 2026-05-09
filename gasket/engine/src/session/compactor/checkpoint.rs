@@ -13,12 +13,15 @@ pub struct CheckpointConfig {
     pub interval_turns: usize,
     /// Prompt template for checkpoint generation.
     pub prompt: String,
+    /// Timeout for checkpoint LLM calls in seconds (default: 30).
+    pub timeout_secs: u64,
 }
 
 impl Default for CheckpointConfig {
     fn default() -> Self {
         Self {
             interval_turns: 7,
+            timeout_secs: CHECKPOINT_TIMEOUT_SECS,
             prompt: r#"Summarize current task state for working memory.
 Output ONLY in this format:
 
@@ -90,7 +93,7 @@ pub async fn checkpoint(
     };
 
     let response = match tokio::time::timeout(
-        std::time::Duration::from_secs(CHECKPOINT_TIMEOUT_SECS),
+        std::time::Duration::from_secs(config.timeout_secs),
         provider.chat(request),
     )
     .await
@@ -103,7 +106,7 @@ pub async fn checkpoint(
         Err(_) => {
             warn!(
                 "Checkpoint LLM call timed out after {}s for {}",
-                CHECKPOINT_TIMEOUT_SECS, session_key
+                config.timeout_secs, session_key
             );
             return Ok(None);
         }

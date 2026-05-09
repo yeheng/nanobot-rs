@@ -194,6 +194,7 @@ impl SessionBuilder {
             self.config.model.clone(),
             history_config.token_budget,
         )
+        .with_cooldown_secs(self.config.compaction_cooldown_secs)
         .with_task_tracker(pending_done.clone());
         if let Some(ref prompt_text) = self.config.prompts.summarization {
             compactor = compactor.with_summarization_prompt(prompt_text.clone());
@@ -252,6 +253,7 @@ impl SessionBuilder {
             compactor.clone(),
             None,
             effective_max_tokens,
+            self.config.after_response_hook_timeout_secs,
         );
 
         let mut config = self.config;

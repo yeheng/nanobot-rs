@@ -30,6 +30,7 @@ pub struct ResponseFinalizer {
     compactor: Option<Arc<ContextCompactor>>,
     pricing: Option<ModelPricing>,
     max_tokens: u32,
+    after_response_hook_timeout_secs: u64,
 }
 
 impl ResponseFinalizer {
@@ -39,6 +40,7 @@ impl ResponseFinalizer {
         compactor: Option<Arc<ContextCompactor>>,
         pricing: Option<ModelPricing>,
         max_tokens: u32,
+        after_response_hook_timeout_secs: u64,
     ) -> Self {
         Self {
             hooks,
@@ -46,6 +48,7 @@ impl ResponseFinalizer {
             compactor,
             pricing,
             max_tokens,
+            after_response_hook_timeout_secs,
         }
     }
 
@@ -60,7 +63,7 @@ impl ResponseFinalizer {
 
         save_assistant_event(&self.event_store, &result, ctx, vault_values).await;
         trigger_compaction(self.compactor.as_ref(), ctx, vault_values);
-        execute_after_response_hooks(&self.hooks, &result, ctx).await;
+        execute_after_response_hooks(&self.hooks, &result, ctx, self.after_response_hook_timeout_secs).await;
 
         let cost = calculate_cost(&result.token_usage, self.pricing.as_ref());
         log_token_stats(&result.token_usage, cost, self.max_tokens);
@@ -114,15 +117,12 @@ fn trigger_compaction(
     }
 }
 
-/// Timeout for AfterResponse hooks — prevents a slow/stuck external script
-/// from blocking the response pipeline indefinitely.
-const AFTER_RESPONSE_HOOK_TIMEOUT_SECS: u64 = 30;
-
 /// Execute AfterResponse hooks with the result context.
 async fn execute_after_response_hooks(
     hooks: &HookRegistry,
     result: &ExecutionResult,
     ctx: &FinalizeContext,
+    hook_timeout_secs: u64,
 ) {
     let tools_used: Vec<ToolCallInfo> = result
         .tools_used
@@ -154,8 +154,9 @@ async fn execute_after_response_hooks(
         vault_values: Vec::new(),
     };
 
+    let hook_timeout = std::time::Duration::from_secs(hook_timeout_secs);
     match tokio::time::timeout(
-        std::time::Duration::from_secs(AFTER_RESPONSE_HOOK_TIMEOUT_SECS),
+        hook_timeout,
         hooks.execute(HookPoint::AfterResponse, &mut hook_ctx),
     )
     .await
@@ -167,7 +168,7 @@ async fn execute_after_response_hooks(
         Err(_) => {
             warn!(
                 "AfterResponse hook timed out after {}s — skipping",
-                AFTER_RESPONSE_HOOK_TIMEOUT_SECS
+                hook_timeout_secs
             );
         }
     }

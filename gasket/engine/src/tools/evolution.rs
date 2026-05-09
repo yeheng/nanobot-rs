@@ -74,6 +74,8 @@ pub struct EvolutionConfig {
     pub event_store: gasket_storage::EventStore,
     pub default_threshold: usize,
     pub evolution_prompt: Option<String>,
+    /// Maximum number of concurrent evolution tasks (default: 3).
+    pub concurrency: usize,
 }
 
 /// Tool for performing background evolution (auto-learning) on conversation sessions.
@@ -86,6 +88,7 @@ pub struct EvolutionTool {
     event_store: gasket_storage::EventStore,
     default_threshold: usize,
     evolution_prompt: Option<String>,
+    concurrency: usize,
 }
 
 impl EvolutionTool {
@@ -100,6 +103,7 @@ impl EvolutionTool {
             event_store: config.event_store,
             default_threshold: config.default_threshold,
             evolution_prompt: config.evolution_prompt,
+            concurrency: config.concurrency,
         }
     }
 
@@ -533,7 +537,7 @@ impl Tool for EvolutionTool {
                     }
                 }
             })
-            .buffer_unordered(3);
+            .buffer_unordered(self.concurrency);
 
         let results: Vec<_> = stream.collect().await;
         for (p, m) in results.into_iter().flatten() {
