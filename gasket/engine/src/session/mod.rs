@@ -248,7 +248,9 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 /// to avoid the indirection and dynamic dispatch of a plugin trait.
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
-    config: AgentConfig,
+    /// Mutable model name — supports runtime switching via `/model <id>`.
+    /// Read on every request via `model()`, written by `switch_model()`.
+    active_model: parking_lot::Mutex<String>,
     context_builder: history::builder::ContextBuilder,
     compactor: Option<Arc<ContextCompactor>>,
     /// Pricing config for cost tracking. None when cost tracking is disabled.
@@ -284,11 +286,7 @@ impl AgentSession {
         config: AgentConfig,
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
-        let sqlite_store = Arc::new(
-            SqliteStore::new()
-                .await
-                .expect("Failed to open SqliteStore"),
-        );
+        let sqlite_store = Arc::new(SqliteStore::new().await?);
         Self::with_sqlite_store(provider, workspace, config, tools, sqlite_store).await
     }
 
@@ -352,9 +350,9 @@ impl AgentSession {
         self.runtime_ctx.tools.clone()
     }
 
-    /// Get the model name.
-    pub fn model(&self) -> &str {
-        &self.config.model
+    /// Get the active model name.
+    pub fn model(&self) -> String {
+        self.active_model.lock().clone()
     }
 
     /// Get the hook registry.
@@ -375,23 +373,45 @@ impl AgentSession {
         }
     }
 
-    /// List recent sessions for the `/sessions` built-in.
+    /// List recent sessions ordered by last activity.
     ///
-    /// Day-1: returns an empty vec. A future commit can scan the event store
-    /// to enumerate distinct session keys; see TODO in
-    /// docs/superpowers/specs/2026-05-03-command-system-design.md §11.
+    /// Queries the session store for all sessions with at least one event.
     pub async fn list_sessions(&self) -> Vec<gasket_types::SessionSummary> {
-        Vec::new()
+        match self.context_builder.session_store().scan_active_sessions().await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|(key_str, count, updated_at)| {
+                    let key = SessionKey::parse(&key_str)?;
+                    let last_active = chrono::DateTime::parse_from_rfc3339(&updated_at)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                    Some(gasket_types::SessionSummary {
+                        key,
+                        message_count: count as usize,
+                        last_active,
+                    })
+                })
+                .collect(),
+            Err(e) => {
+                warn!("Failed to list sessions: {}", e);
+                Vec::new()
+            }
+        }
     }
 
-    /// Switch the active model for the `/model <id>` built-in.
+    /// Switch the active model for the session.
     ///
-    /// Day-1: not implemented because `AgentSession::config` is held by value
-    /// behind `&self` (no interior mutability). Wrapping the config in
-    /// `Arc<Mutex<…>>` is a session-wide change tracked separately. The
-    /// `/model` no-arg path still works through `current_model`.
-    pub async fn switch_model(&self, _new: &str) -> Result<gasket_types::ModelSwitchInfo, String> {
-        Err("model switching is not supported in this build".into())
+    /// Updates the model used in subsequent LLM calls. Returns previous and
+    /// current model IDs on success.
+    pub async fn switch_model(&self, new: &str) -> Result<gasket_types::ModelSwitchInfo, String> {
+        let mut guard = self.active_model.lock();
+        let previous = guard.clone();
+        *guard = new.to_string();
+        drop(guard);
+        Ok(gasket_types::ModelSwitchInfo {
+            previous,
+            current: new.to_string(),
+        })
     }
 
     /// Force-trigger context compaction.
@@ -617,7 +637,7 @@ impl AgentSession {
                         local_vault_values: vec![],
                         estimated_tokens: 0,
                     },
-                    model: self.config.model.clone(),
+                    model: self.model(),
                     finalizer: self.finalizer.clone(),
                 };
                 return Ok((ctx, Some(msg)));
@@ -642,7 +662,7 @@ impl AgentSession {
             runtime_ctx,
             messages,
             fctx,
-            model: self.config.model.clone(),
+            model: self.model(),
             finalizer: self.finalizer.clone(),
         };
         Ok((ctx, None))

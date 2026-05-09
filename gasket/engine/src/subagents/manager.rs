@@ -88,18 +88,12 @@ impl TaskSpec {
 /// * `task` - Task specification
 /// * `event_tx` - Optional channel for streaming events
 /// * `result_tx` - Channel for the final result
-/// * `token_tracker` - Optional shared token tracker for budget enforcement
 /// * `cancellation_token` - Token to cancel this subagent (checked before and during execution)
-/// * `pending_asks` - Optional pending-ask registry for ask_user tool
-/// * `session_key` - Session key from the parent request, propagated into the worker
-///   so that tools like ask_user register with the correct key instead of a dummy.
-/// * `outbound_tx` - Outbound message channel from the parent request, propagated
-///   so that tools like ask_user can send prompts to the real channel.
+/// * `refs` - Session-level references (token tracker, pending asks, session key, outbound channel)
 ///
 /// # Returns
 /// A `JoinHandle` for the spawned task.
 #[instrument(name = "subagent.spawn", skip_all, fields(subagent_id = %task.id))]
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_subagent(
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
@@ -107,11 +101,8 @@ pub fn spawn_subagent(
     task: TaskSpec,
     event_tx: Option<mpsc::Sender<StreamEvent>>,
     result_tx: mpsc::Sender<SubagentResult>,
-    token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     cancellation_token: CancellationToken,
-    pending_asks: Option<gasket_types::pending_ask::DynPendingAskRegistry>,
-    session_key: Option<gasket_types::events::SessionKey>,
-    outbound_tx: Option<mpsc::Sender<gasket_types::events::OutboundMessage>>,
+    refs: gasket_types::SessionRefs,
 ) -> JoinHandle<()> {
     let subagent_id = task.id.clone();
     let task_desc = task.task.clone();
@@ -162,10 +153,7 @@ pub fn spawn_subagent(
         let ctx = {
             let mut c =
                 kernel::RuntimeContext::new_worker(provider, tools, config.to_kernel_config());
-            c.refs.token_tracker = token_tracker.clone();
-            c.refs.pending_asks = pending_asks.clone();
-            c.refs.session_key = session_key;
-            c.refs.outbound_tx = outbound_tx;
+            c.refs = refs.clone();
             c
         };
 
@@ -209,7 +197,7 @@ pub fn spawn_subagent(
         };
 
         // Accumulate token usage
-        if let Some(ref tracker) = token_tracker {
+        if let Some(ref tracker) = ctx.refs.token_tracker {
             if let Some(ref usage) = response.token_usage {
                 let token_usage =
                     gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
@@ -419,6 +407,13 @@ impl SubagentSpawner for SimpleSpawner {
             task_spec
         };
 
+        let refs = gasket_types::SessionRefs {
+            token_tracker: self.token_tracker.clone(),
+            pending_asks: self.pending_asks.clone(),
+            session_key: Some(ctx.session_key.clone()),
+            outbound_tx: Some(ctx.outbound_tx.clone()),
+            ..Default::default()
+        };
         let join_handle = spawn_subagent(
             provider,
             self.worker_tools.clone(),
@@ -426,11 +421,8 @@ impl SubagentSpawner for SimpleSpawner {
             task_spec,
             Some(event_tx),
             result_tx,
-            self.token_tracker.clone(),
             tracker.cancellation_token(),
-            self.pending_asks.clone(),
-            Some(ctx.session_key.clone()),
-            Some(ctx.outbound_tx.clone()),
+            refs,
         );
         // Hold the permit until the worker's tokio task ends.
         tokio::spawn(async move {
@@ -514,10 +506,14 @@ impl SubagentSpawner for SimpleSpawner {
         let budget = self.budget.clone();
         let worker_tools = self.worker_tools.clone();
         let workspace = self.workspace.clone();
-        let token_tracker = self.token_tracker.clone();
-        let pending_asks = self.pending_asks.clone();
-        let session_key = ctx.session_key.clone();
-        let outbound_tx = ctx.outbound_tx.clone();
+
+        let refs = gasket_types::SessionRefs {
+            token_tracker: self.token_tracker.clone(),
+            pending_asks: self.pending_asks.clone(),
+            session_key: Some(ctx.session_key.clone()),
+            outbound_tx: Some(ctx.outbound_tx.clone()),
+            ..Default::default()
+        };
 
         tokio::spawn(async move {
             let _permit = budget.acquire().await;
@@ -529,11 +525,8 @@ impl SubagentSpawner for SimpleSpawner {
                 task_spec,
                 Some(event_tx),
                 result_tx,
-                token_tracker,
                 cancel_token_for_spawn,
-                pending_asks,
-                Some(session_key),
-                Some(outbound_tx),
+                refs,
             );
 
             let types_result = match tracker.wait_for_all(1).await {

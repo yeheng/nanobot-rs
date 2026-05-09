@@ -112,7 +112,7 @@ impl EvolutionTool {
             .map_err(|e| ToolError::ExecutionError(format!("Failed to scan sessions: {}", e)))?;
 
         let mut qualifying = Vec::new();
-        for (session_key, total_events) in rows {
+        for (session_key, total_events, _updated_at) in rows {
             let watermark = self
                 .maintenance_store
                 .read_watermark("evolution", &session_key)

@@ -142,10 +142,10 @@ impl SessionStore {
     // ── Evolution / Maintenance helpers ──
 
     /// Scan all sessions that have at least one event.
-    /// Returns `(session_key, total_events)` tuples.
-    pub async fn scan_active_sessions(&self) -> anyhow::Result<Vec<(String, i64)>> {
-        let rows: Vec<(String, i64)> =
-            sqlx::query_as("SELECT key, total_events FROM sessions_v2 WHERE total_events > 0")
+    /// Returns `(session_key, total_events, updated_at)` tuples.
+    pub async fn scan_active_sessions(&self) -> anyhow::Result<Vec<(String, i64, String)>> {
+        let rows: Vec<(String, i64, String)> =
+            sqlx::query_as("SELECT key, total_events, updated_at FROM sessions_v2 WHERE total_events > 0")
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows)

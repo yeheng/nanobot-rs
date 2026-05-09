@@ -256,10 +256,11 @@ impl SessionBuilder {
 
         let mut config = self.config;
         config.max_tokens = effective_max_tokens;
+        let initial_model = config.model.clone();
 
         Ok(AgentSession {
             runtime_ctx,
-            config,
+            active_model: parking_lot::Mutex::new(initial_model),
             context_builder,
             compactor,
             pricing: None,

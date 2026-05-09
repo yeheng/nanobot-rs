@@ -512,7 +512,13 @@ impl CompactionGuard {
 
 impl Drop for CompactionGuard {
     fn drop(&mut self) {
-        *self.state.lock() = CompactorState::Idle;
+        let mut state = self.state.lock();
+        // Only reset to Idle if still in Compressing state.
+        // Preserve Cooldown — it was set because the LLM call failed
+        // and we want to avoid hammering a failing API.
+        if matches!(*state, CompactorState::Compressing { .. }) {
+            *state = CompactorState::Idle;
+        }
     }
 }
 
