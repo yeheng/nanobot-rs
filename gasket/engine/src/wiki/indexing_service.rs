@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use gasket_broker::{BrokerError, Subscriber};
-use gasket_storage::wiki::WikiRelationStore;
+use gasket_storage::wiki::{PageIndex, PageStore, WikiRelationStore};
 use tracing::{debug, info, warn};
 
-use super::{extract_page_references, PageIndex, PageStore};
+use super::lint::extract_page_references;
 
 /// Trait for computing embeddings (injected from engine/embedding layer).
 #[async_trait::async_trait]

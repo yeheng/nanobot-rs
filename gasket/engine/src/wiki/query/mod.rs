@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use gasket_storage::wiki::{PageSearchIndex, SearchHit};
+use gasket_storage::wiki::{PageSearchIndex, PageStore, SearchHit};
+use gasket_types::wiki::{slugify, PageSummary, PageType, WikiPage};
 
 use super::indexing_service::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
-use super::page::{slugify, PageType, WikiPage};
-use super::store::PageStore;
 
 /// RRF constant (standard value from Cormack et al., 2009).
 const RRF_K: u32 = 60;
@@ -116,7 +115,7 @@ impl WikiQueryEngine {
         let paths: Vec<String> = candidates.iter().map(|h| h.path.clone()).collect();
         let summaries = self.store.read_summaries(&paths).await?;
 
-        let summary_by_path: std::collections::HashMap<&str, &super::page::PageSummary> =
+        let summary_by_path: std::collections::HashMap<&str, &PageSummary> =
             summaries.iter().map(|s| (s.path.as_str(), s)).collect();
 
         let chars_budget = budget.chars_budget();

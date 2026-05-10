@@ -122,19 +122,6 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             (None, None)
         };
 
-    // Spawn wiki indexing service for auto Tantivy updates
-    if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
-        let relation_store = gasket_storage::wiki::WikiRelationStore::new(pool.clone());
-        let svc =
-            gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone(), relation_store);
-        if let Ok(sub) = broker
-            .subscribe(&gasket_engine::broker::Topic::WikiChanged)
-            .await
-        {
-            let _ = svc.spawn(sub);
-        }
-    }
-
     // Build model registry and provider registry for switch_model tool
     let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
     let mut provider_registry = ProviderRegistry::from_config(&config);
@@ -152,7 +139,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         );
     }
 
-    // Initialize embedding recall if configured
+    // Initialize embedding recall if configured (before wiki indexing so
+    // the provider can be shared with wiki semantic search).
     #[cfg(feature = "embedding")]
     let (history_search, embedding_recall, event_store_tx) =
         if let Some(ref emb_cfg) = config.embedding {
@@ -180,6 +168,31 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             (None, None, None)
         };
     // (non-embedding builds skip semantic recall initialization)
+
+    // Spawn wiki indexing service for auto Tantivy + vector updates
+    if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
+        let relation_store = gasket_storage::wiki::WikiRelationStore::new(pool.clone());
+        #[allow(unused_mut)]
+        let mut svc =
+            gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone(), relation_store);
+
+        // Attach semantic search if embedding is configured.
+        #[cfg(feature = "embedding")]
+        if let Some(ref searcher) = history_search {
+            use gasket_engine::tools::{WikiEmbeddingAdapter, WikiVectorAdapter};
+            svc = svc.with_semantic(
+                Arc::new(WikiEmbeddingAdapter::new(searcher.searcher.provider().clone())),
+                Arc::new(WikiVectorAdapter::new(searcher.searcher.store().clone())),
+            );
+        }
+
+        if let Ok(sub) = broker
+            .subscribe(&gasket_engine::broker::Topic::WikiChanged)
+            .await
+        {
+            let _ = svc.spawn(sub);
+        }
+    }
 
     // Build Orchestrator (main agent) tool registry — includes spawn tools.
     let orchestrator_tools =

@@ -4,7 +4,9 @@
 //! only SQLite runtime state (frequency, access_count, last_accessed) is updated.
 
 use chrono::{DateTime, Utc};
-use gasket_storage::wiki::{Frequency, WikiPageStore};
+
+use super::page_store::WikiPageStore;
+use super::types::Frequency;
 
 /// Report from a decay batch run.
 #[derive(Debug, Default)]

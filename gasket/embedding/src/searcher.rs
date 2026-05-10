@@ -69,6 +69,16 @@ impl RecallSearcher {
         }
     }
 
+    /// Access the underlying embedding provider (for reuse by other subsystems).
+    pub fn provider(&self) -> &Arc<dyn EmbeddingProvider> {
+        &self.provider
+    }
+
+    /// Access the underlying vector store (for reuse by other subsystems).
+    pub fn store(&self) -> &Arc<dyn VectorStore> {
+        &self.store
+    }
+
     /// Search for similar events. Returns `(event_id, score)` pairs sorted
     /// by descending score.
     ///

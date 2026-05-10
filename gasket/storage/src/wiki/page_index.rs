@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use gasket_storage::wiki::{IndexPage, PageSearchIndex, SearchHit};
+use gasket_types::wiki::{PageSummary, WikiPage};
 
-use super::page::{PageSummary, WikiPage};
+use super::search_index::{IndexPage, PageSearchIndex, SearchHit};
 use super::store::PageStore;
 
 pub struct PageIndex {

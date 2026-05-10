@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use gasket_embedding::{EmbeddingProvider, VectorStore};
-use gasket_wiki::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
+use crate::wiki::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 
 /// Adapter: wraps an `EmbeddingProvider` as a `WikiEmbeddingProvider`.
 pub struct WikiEmbeddingAdapter {

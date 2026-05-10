@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::SubagentSpawner;
 use crate::{MaintenanceStore, SessionStore};
-use gasket_wiki::{PageIndex, PageStore};
+use crate::wiki::{PageIndex, PageStore};
 
 use super::{
     registry::ToolRegistry, AskUserTool, ClearSessionTool, CreatePlanTool, EditFileTool,

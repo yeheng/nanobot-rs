@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::instrument;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_wiki::PageStore;
+use crate::wiki::PageStore;
 
 /// Tool for running wiki frequency decay.
 pub struct WikiDecayTool {

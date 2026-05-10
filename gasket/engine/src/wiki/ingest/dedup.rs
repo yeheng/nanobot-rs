@@ -5,8 +5,9 @@
 
 use tracing::debug;
 
+use gasket_types::wiki::PageSummary;
+
 use super::extractor::ExtractedItem;
-use crate::page::PageSummary;
 
 /// Result of a deduplication check.
 #[derive(Debug, Clone)]
@@ -111,8 +112,8 @@ impl Default for SemanticDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::PageType;
-    use chrono::Utc;
+    use gasket_storage::wiki::Frequency;
+    use gasket_types::wiki::PageType;
 
     fn make_summary(path: &str, title: &str, tags: Vec<&str>) -> PageSummary {
         PageSummary {
@@ -121,9 +122,9 @@ mod tests {
             page_type: PageType::Topic,
             category: None,
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
-            updated: Utc::now(),
+            updated: chrono::Utc::now(),
             confidence: 1.0,
-            frequency: gasket_storage::wiki::Frequency::Warm,
+            frequency: Frequency::Warm,
             access_count: 0,
             last_accessed: None,
             summary: None,

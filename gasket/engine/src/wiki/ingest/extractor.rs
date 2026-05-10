@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
+use gasket_types::wiki::slugify;
 
 use super::parser::ParsedSource;
-use crate::page::slugify;
 
 /// A single extracted knowledge item from a source.
 #[derive(Debug, Clone, Serialize, Deserialize)]

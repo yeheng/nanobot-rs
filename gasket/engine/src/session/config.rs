@@ -224,8 +224,6 @@ pub struct AgentConfig {
     pub ws_summary_limit: usize,
     /// Prompt configuration for internal AI behaviors.
     pub prompts: PromptsConfig,
-    /// Memory token budget for three-phase context loading.
-    pub memory_budget: Option<gasket_storage::wiki::MemoryBudget>,
     /// Self-evolution configuration (auto-learning from conversations).
     pub evolution: Option<EvolutionConfig>,
     /// Wiki knowledge system configuration (replaces memory system).
@@ -255,7 +253,6 @@ impl Default for AgentConfig {
             external_hook_timeout_secs: DEFAULT_EXTERNAL_HOOK_TIMEOUT_SECS,
             ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
-            memory_budget: None,
             evolution: Some(EvolutionConfig::default()),
             wiki: None,
             stop_words_path: None,

@@ -113,7 +113,6 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
                 planning: p.planning.clone(),
             }
         },
-        memory_budget: config.agents.defaults.memory_budget,
         evolution: defaults.evolution,
         wiki: {
             let wiki_root = dirs::home_dir().map(|p| p.join(".gasket/wiki"));

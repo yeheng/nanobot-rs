@@ -145,12 +145,42 @@ pub async fn cmd_gateway() -> Result<()> {
     setup_http_server(&providers, &agent, &dispatcher, &mut tasks).await;
     setup_broker_pipeline(broker.clone(), &providers, &agent, &dispatcher, &mut tasks);
     start_heartbeat_service(broker.clone(), &workspace, &mut tasks);
-    // Spawn wiki indexing service to auto-update Tantivy on WikiChanged events
+    // Spawn wiki indexing service to auto-update Tantivy + vectors on WikiChanged events
     if let (Some(ref ps), Some(ref pi)) = (&page_store, &page_index) {
         let relation_store =
             gasket_storage::wiki::WikiRelationStore::new(sqlite_store.pool().clone());
-        let svc =
+        #[allow(unused_mut)]
+        let mut svc =
             gasket_engine::wiki::WikiIndexingService::new(ps.clone(), pi.clone(), relation_store);
+
+        // Attach semantic search if embedding is configured.
+        #[cfg(feature = "embedding")]
+        if let Some(ref emb_cfg) = config.embedding {
+            if let Ok(provider) = emb_cfg.provider.build() {
+                let dim = provider.dim();
+                let provider: Arc<dyn gasket_engine::embedding::EmbeddingProvider> =
+                    Arc::from(provider);
+                match gasket_engine::embedding::vector_store::build_vector_store(
+                    &emb_cfg.vector_store,
+                    dim,
+                    Some(&sqlite_store.pool()),
+                )
+                .await
+                {
+                    Ok(vstore) => {
+                        use gasket_engine::tools::{WikiEmbeddingAdapter, WikiVectorAdapter};
+                        svc = svc.with_semantic(
+                            Arc::new(WikiEmbeddingAdapter::new(provider)),
+                            Arc::new(WikiVectorAdapter::new(vstore)),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to build wiki vector store: {}", e);
+                    }
+                }
+            }
+        }
+
         if let Ok(sub) = broker
             .subscribe(&gasket_engine::broker::Topic::WikiChanged)
             .await

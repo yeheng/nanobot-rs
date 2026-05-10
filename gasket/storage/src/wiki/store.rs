@@ -1,11 +1,14 @@
 use anyhow::Result;
-use gasket_storage::fs::atomic_write;
-use gasket_storage::wiki::{Frequency, WikiPageStore};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 
-use super::page::{PageFilter, PageSummary, PageType, WikiPage};
+use crate::fs::atomic_write;
+use gasket_types::wiki::{PageFilter, PageSummary, PageType, WikiPage};
+
+use super::lifecycle::{DecayReport, FrequencyManager};
+use super::page_store::WikiPageStore;
+use super::types::Frequency;
 
 /// PageStore: CRUD operations on wiki pages.
 /// Markdown files on disk are the SSOT. SQLite is a derived index (cache + query projection).
@@ -39,12 +42,12 @@ impl PageStore {
     }
 
     /// Run frequency decay batch on all stale pages.
-    pub async fn run_decay_batch(&self) -> anyhow::Result<crate::DecayReport> {
-        crate::FrequencyManager::run_decay_batch(&self.db).await
+    pub async fn run_decay_batch(&self) -> Result<DecayReport> {
+        FrequencyManager::run_decay_batch(&self.db).await
     }
 
     /// Get metadata for a page by path (lightweight, no content).
-    pub async fn get_metadata(&self, path: &str) -> anyhow::Result<Option<PageSummary>> {
+    pub async fn get_metadata(&self, path: &str) -> Result<Option<PageSummary>> {
         match self.db.get(path).await? {
             Some(row) => Ok(Some(PageSummary {
                 path: row.path,
@@ -265,7 +268,7 @@ impl PageStore {
 
     // -- private helpers --
 
-    fn row_to_page(&self, row: gasket_storage::wiki::PageRow) -> WikiPage {
+    fn row_to_page(&self, row: super::page_store::PageRow) -> WikiPage {
         WikiPage {
             path: row.path,
             title: row.title,
@@ -301,7 +304,7 @@ impl PageStore {
         let tags_str = serde_json::to_string(&page.tags)?;
         let checksum = Some(format!("{}", page.content.len()));
         self.db
-            .upsert(&gasket_storage::wiki::WikiPageInput {
+            .upsert(&super::page_store::WikiPageInput {
                 path: &page.path,
                 title: &page.title,
                 page_type: page.page_type.as_str(),

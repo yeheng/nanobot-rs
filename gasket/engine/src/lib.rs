@@ -30,7 +30,7 @@ pub mod subagents;
 pub mod token_tracker;
 pub mod tools;
 pub mod vault;
-pub use gasket_wiki as wiki;
+pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{AgentConfig, AgentResponse, AgentSession, ContextCompactor};
@@ -165,12 +165,14 @@ pub mod providers {
     };
 }
 
-// Wiki
-pub use gasket_storage::wiki::create_wiki_tables;
+// Wiki re-exports are now in the wiki module (pub mod wiki).
+pub use wiki::create_wiki_tables;
 
 // Embedding (re-exported for CLI when feature is enabled)
 #[cfg(feature = "embedding")]
 pub mod embedding {
     pub use gasket_embedding::vector_store;
-    pub use gasket_embedding::{EmbeddingIndexer, MemoryIndex, RecallConfig, RecallSearcher};
+    pub use gasket_embedding::{
+        EmbeddingIndexer, EmbeddingProvider, MemoryIndex, RecallConfig, RecallSearcher, VectorStore,
+    };
 }

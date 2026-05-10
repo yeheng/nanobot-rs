@@ -14,7 +14,7 @@ use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_wiki::{slugify, PageStore, PageType, WikiPage};
+use crate::wiki::{slugify, PageStore, PageType, WikiPage};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_types::{EventType, SessionKey};

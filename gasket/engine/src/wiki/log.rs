@@ -1,9 +1,10 @@
+//! WikiLog: structured operation log.
+//! Data in SQLite. No log.md file maintenance.
+
 use anyhow::Result;
 use gasket_storage::wiki::WikiLogStore;
 use serde::{Deserialize, Serialize};
 
-/// WikiLog: structured operation log.
-/// Data in SQLite. No log.md file maintenance.
 pub struct WikiLog {
     db: WikiLogStore,
 }

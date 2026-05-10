@@ -253,6 +253,14 @@ impl ContextBuilder {
     }
 
     /// Pure, synchronous assembly of the LLM prompt sequence.
+    ///
+    /// Three-layer memory architecture:
+    /// - **L0 (Identity & Rules)**: System prompts loaded from workspace PROFILE.md,
+    ///   SOUL.md, and skills. Static for the session lifetime.
+    /// - **L1 (Working Memory)**: Compacted summary + recent session events.
+    ///   Automatically managed via ContextCompactor and watermark tracking.
+    /// - **L2 (Long-term Knowledge)**: Wiki pages. NOT auto-injected here.
+    ///   The LLM accesses L2 via tool calls (`wiki_search`, `wiki_read`).
     fn assemble_prompt(
         processed_history: Vec<SessionEvent>,
         current_message: &str,
@@ -261,8 +269,9 @@ impl ContextBuilder {
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
-        // 1. Build the system prompt (only if non-empty)
-        // Static content: workspace markdown + skills. Never changes mid-session.
+        // ── L0: System Identity & Rules (Static) ──────────────────
+        // Loaded once at session start from workspace files. Never changes.
+        // Tells the LLM "who you are" and "what tools you have".
         if !system_prompts.is_empty() {
             let system_content = system_prompts.join("\n\n");
             if !system_content.is_empty() {
@@ -270,9 +279,9 @@ impl ContextBuilder {
             }
         }
 
-        // 2. Inject summary as system message with boundary markers (if exists)
-        // Using System role prevents the LLM from mistaking the summary for a
-        // real assistant turn. Boundary markers clearly delineate summary content.
+        // ── L1: Working Memory — Compacted Summary ────────────────
+        // Summary of all events before the watermark. Produced by
+        // ContextCompactor when token budget is exceeded.
         if let Some(summary_text) = summary {
             if !summary_text.is_empty() {
                 messages.push(ChatMessage::system(format!(
@@ -284,7 +293,8 @@ impl ContextBuilder {
             }
         }
 
-        // 3. Add processed history events (convert SessionEvent to ChatMessage)
+        // ── L1: Working Memory — Recent Session Events ────────────
+        // Only events after the watermark (not yet compacted).
         for event in processed_history {
             match event.event_type {
                 gasket_types::EventType::UserMessage => {
@@ -297,7 +307,7 @@ impl ContextBuilder {
             }
         }
 
-        // 4. Current message
+        // ── Current user message ──────────────────────────────────
         messages.push(ChatMessage::user(current_message));
 
         messages
