@@ -10,7 +10,9 @@ pub mod store;
 
 // Re-exports
 pub use index::PageIndex;
-pub use indexing_service::WikiIndexingService;
+pub use indexing_service::{
+    WikiEmbeddingProvider, WikiIndexingService, WikiVectorHit, WikiVectorStore,
+};
 pub use ingest::{
     ConversationParser, DedupResult, ExtractedItem, ExtractedItemType, ExtractionResult,
     HtmlParser, KnowledgeExtractor, MarkdownParser, ParsedSource, PlainTextParser,
@@ -18,8 +20,8 @@ pub use ingest::{
 };
 pub use lifecycle::{DecayReport, FrequencyManager};
 pub use lint::{
-    FixReport, LintReport, Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig,
-    WikiLinter,
+    extract_page_references, FixReport, LintReport, Severity, StructuralIssue,
+    StructuralIssueType, StructuralLintConfig, WikiLinter,
 };
 pub use log::{LogEntry, WikiLog};
 pub use page::{slugify, PageFilter, PageSummary, PageType, WikiPage};
@@ -69,6 +71,32 @@ mod tests {
         assert_eq!(parsed.title, "Test Topic");
         assert_eq!(parsed.content, "Some content here.");
         assert_eq!(parsed.tags, vec!["test"]);
+    }
+
+    #[test]
+    fn test_page_markdown_roundtrip_with_summary() {
+        let mut page = WikiPage::new(
+            "topics/rust-async".to_string(),
+            "Rust Async".to_string(),
+            PageType::Topic,
+            "Detailed content about async programming.".to_string(),
+        );
+        page.summary = Some("Rust async programming overview".to_string());
+        let md = page.to_markdown();
+        assert!(md.contains("summary: Rust async programming overview"));
+        let parsed = WikiPage::from_markdown("topics/rust-async".to_string(), &md).unwrap();
+        assert_eq!(parsed.summary, Some("Rust async programming overview".to_string()));
+        assert_eq!(parsed.content, "Detailed content about async programming.");
+    }
+
+    #[test]
+    fn test_page_fallback_summary_from_content() {
+        let md = "---\ntitle: No Summary\ntype: topic\n---\n\nThis is the body content that should become the fallback summary.";
+        let parsed = WikiPage::from_markdown("topics/no-summary".to_string(), md).unwrap();
+        assert!(parsed.summary.is_some());
+        let s = parsed.summary.unwrap();
+        assert!(s.starts_with("This is the body content"));
+        assert!(s.len() <= 104); // 100 chars + "..."
     }
 
     #[test]

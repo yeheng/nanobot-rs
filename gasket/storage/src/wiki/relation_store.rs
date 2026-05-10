@@ -54,6 +54,15 @@ impl WikiRelationStore {
             .await?;
         Ok(())
     }
+
+    /// Delete all outgoing relations from a page (preserves incoming).
+    pub async fn delete_all_outgoing(&self, path: &str) -> Result<()> {
+        sqlx::query("DELETE FROM wiki_relations WHERE from_page = $1")
+            .bind(path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]

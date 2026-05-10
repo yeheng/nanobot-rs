@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, instrument, warn};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_wiki::{slugify, PageFilter, PageStore, PageType, WikiPage};
+use gasket_wiki::{slugify, PageStore, PageType, WikiPage};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
 use gasket_types::{EventType, SessionKey};
@@ -26,6 +27,7 @@ struct EvolutionMemory {
     memory_type: String,
     scenario: String,
     content: String,
+    summary: Option<String>,
     tags: Option<Vec<String>>,
     #[serde(default)]
     verified: bool,
@@ -50,10 +52,14 @@ const DEFAULT_EVOLUTION_TEMPLATE: &str =
         - type: 'note' (factual) or 'skill' (procedural)\n\
         - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)\n\
         - verified: true ONLY if backed by a successful tool result; false for user-stated facts\n\
-        - confidence: 0.0-1.0 — 0.9+ for tool-confirmed, 0.6-0.8 for user explicitly stated, 0.3-0.5 for inferred\n\n\
+        - confidence: 0.0-1.0 — 0.9+ for tool-confirmed, 0.6-0.8 for user explicitly stated, 0.3-0.5 for inferred\n\
+     9. ENTITY LINKING: In the `content` field, wrap important entities (people, projects, technologies, products) with double-bracket wiki links using the format [[entities/category/name]] or [[topics/name]]. Examples:\n\
+        - 'User manages [[entities/servers/tx-cloud-3]] and prefers tmux'\n\
+        - 'User prefers [[topics/rust]] over [[topics/python]] for systems programming'\n\
+        - 'User works on [[entities/projects/gasket]]'\n\n\
      EXAMPLES OF GOOD EXTRACTIONS:\n\
-     - User asked about 'tx-cloud-3' server and uses tmux → note, knowledge, content: 'User manages a server named tx-cloud-3 and prefers tmux for persistent sessions', verified: false, confidence: 0.75\n\
-     - User compared Dyson V15 vs 追觅Z20 and preferred the latter for auto-dust-collection → note, profile, content: 'User values automatic dust-collection feature in vacuum cleaners; prefers 追觅Z20 over Dyson V15 for this reason', verified: false, confidence: 0.8\n\
+     - User asked about 'tx-cloud-3' server and uses tmux → note, knowledge, content: 'User manages [[entities/servers/tx-cloud-3]] and prefers tmux for persistent sessions', verified: false, confidence: 0.75\n\
+     - User compared Dyson V15 vs 追觅Z20 and preferred the latter for auto-dust-collection → note, profile, content: 'User values automatic dust-collection feature in vacuum cleaners; prefers [[topics/dreame-z20]] over [[topics/dyson-v15]]', verified: false, confidence: 0.8\n\
      - User repeatedly asks about budget-friendly options before considering premium → note, profile, content: 'User typically evaluates budget/性价比 options before premium alternatives', verified: false, confidence: 0.65\n\n\
      EXAMPLES OF BAD EXTRACTIONS (do NOT include):\n\
      - 'User greeted the assistant'\n\
@@ -61,7 +67,8 @@ const DEFAULT_EVOLUTION_TEMPLATE: &str =
      - 'Dyson is a well-known brand' (generic knowledge, not user-specific)\n\
      - 'User wants to fix a bug today' (temporary task, not persistent knowledge)\n\n\
      If nothing NEW and VALUABLE is found, return an empty array [].\n\n\
-     Output strict JSON array: [{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}].\n\n\
+     Also include a brief `summary` field for each item: one sentence (max 50 chars) capturing the essence.\n\
+     Output strict JSON array: [{\"title\": string, \"type\": \"note\"|\"skill\", \"scenario\": \"profile\"|\"knowledge\"|\"procedure\", \"content\": string, \"summary\": string, \"tags\": [string], \"verified\": bool, \"confidence\": float}].\n\n\
      {{conversation}}";
 
 /// Configuration for building an [`EvolutionTool`].
@@ -274,7 +281,10 @@ impl EvolutionTool {
             );
         }
 
-        // Persist to wiki.
+        // Persist to wiki using ADD-only strategy:
+        // - If target page already exists, append new memory as a dated update block.
+        // - If not, create a new page.
+        // This prevents silent data loss when user preferences evolve over time.
         let page_store = match &self.page_store {
             Some(ps) => ps,
             None => {
@@ -283,21 +293,12 @@ impl EvolutionTool {
             }
         };
 
-        let mut existing_slugs: std::collections::HashSet<String> =
-            match page_store.list(PageFilter::default()).await {
-                Ok(pages) => pages.into_iter().map(|p| slugify(&p.title)).collect(),
-                Err(e) => {
-                    warn!("Evolution: failed to list pages for dedup: {}", e);
-                    std::collections::HashSet::new()
-                }
-            };
-
         let mut persisted = 0;
         for mem in memories {
             match mem.memory_type.as_str() {
                 "skill" => {
                     if self
-                        .persist_as_sop(&mem, page_store, &mut existing_slugs)
+                        .persist_as_sop(&mem, page_store)
                         .await
                         .is_ok()
                     {
@@ -317,22 +318,54 @@ impl EvolutionTool {
                     let slug = slugify(&mem.title);
                     let page_path = format!("{}/{}", path_prefix, slug);
 
-                    if existing_slugs.contains(&slug) {
-                        continue;
-                    }
-
                     let mut tags = mem.tags.clone().unwrap_or_default();
                     tags.push("auto_learned".to_string());
 
-                    let page = WikiPage::new(page_path, mem.title, page_type, mem.content.clone());
-                    let mut page = page;
-                    page.tags = tags;
-
-                    if let Err(e) = page_store.write(&page).await {
-                        warn!("Evolution: failed to create wiki page: {}", e);
+                    if page_store.exists(&page_path).await.unwrap_or(false) {
+                        // Page exists — append new memory as a dated update block.
+                        match page_store.read(&page_path).await {
+                            Ok(mut existing_page) => {
+                                let today = Utc::now().format("%Y-%m-%d").to_string();
+                                existing_page.content.push_str(&format!(
+                                    "\n\n### {} Update\n\n{}",
+                                    today, mem.content
+                                ));
+                                merge_tags(&mut existing_page.tags, &tags);
+                                if let Some(ref summary) = mem.summary {
+                                    existing_page.summary = Some(summary.clone());
+                                }
+                                if let Err(e) = page_store.write(&existing_page).await {
+                                    warn!(
+                                        "Evolution: failed to append to wiki page '{}': {}",
+                                        page_path, e
+                                    );
+                                } else {
+                                    persisted += 1;
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Evolution: failed to read existing page '{}': {}",
+                                    page_path, e
+                                );
+                            }
+                        }
                     } else {
-                        existing_slugs.insert(slug);
-                        persisted += 1;
+                        // New page — create fresh.
+                        let mut page = WikiPage::new(
+                            page_path,
+                            mem.title,
+                            page_type,
+                            mem.content.clone(),
+                        );
+                        page.summary = mem.summary.clone();
+                        page.tags = tags;
+
+                        if let Err(e) = page_store.write(&page).await {
+                            warn!("Evolution: failed to create wiki page: {}", e);
+                        } else {
+                            persisted += 1;
+                        }
                     }
                 }
             }
@@ -391,42 +424,62 @@ impl EvolutionTool {
     }
 
     /// Persist a skill-type memory as an SOP wiki page.
+    /// If the SOP already exists, appends new observations as a dated update block.
     async fn persist_as_sop(
         &self,
         mem: &EvolutionMemory,
         page_store: &PageStore,
-        existing_slugs: &mut std::collections::HashSet<String>,
     ) -> Result<(), ToolError> {
         let slug = slugify(&mem.title);
-
-        if existing_slugs.contains(&slug) {
-            debug!("Evolution: SOP '{}' already exists. Skipping.", mem.title);
-            return Ok(());
-        }
-
         let path = format!("sops/{}", slug);
-        let mut page = WikiPage::new(
-            path,
-            mem.title.clone(),
-            PageType::Sop,
-            format_sop_content(mem),
-        );
 
         let mut tags = mem.tags.clone().unwrap_or_default();
         tags.push("auto_learned".to_string());
         if mem.verified {
             tags.push("verified".to_string());
         }
-        page.tags = tags;
 
-        page_store
-            .write(&page)
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to write SOP page: {}", e)))?;
+        if page_store.exists(&path).await.unwrap_or(false) {
+            // SOP exists — append new observations.
+            match page_store.read(&path).await {
+                Ok(mut existing_page) => {
+                    let today = Utc::now().format("%Y-%m-%d").to_string();
+                    existing_page.content.push_str(&format!(
+                        "\n\n### {} Update\n\n{}",
+                        today, mem.content
+                    ));
+                    merge_tags(&mut existing_page.tags, &tags);
+                    if let Some(ref summary) = mem.summary {
+                        existing_page.summary = Some(summary.clone());
+                    }
+                    page_store.write(&existing_page).await.map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to append to SOP page: {}", e))
+                    })?;
+                    info!("Evolution: appended to existing SOP page '{}'", mem.title);
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("Evolution: failed to read existing SOP '{}': {}", path, e);
+                    Ok(())
+                }
+            }
+        } else {
+            // New SOP — create fresh.
+            let mut page = WikiPage::new(
+                path,
+                mem.title.clone(),
+                PageType::Sop,
+                format_sop_content(mem),
+            );
+            page.summary = mem.summary.clone();
+            page.tags = tags;
 
-        existing_slugs.insert(slug);
-        info!("Evolution: created SOP page '{}'", mem.title);
-        Ok(())
+            page_store.write(&page).await.map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to write SOP page: {}", e))
+            })?;
+            info!("Evolution: created SOP page '{}'", mem.title);
+            Ok(())
+        }
     }
 }
 
@@ -448,6 +501,15 @@ fn format_sop_content(mem: &EvolutionMemory) -> String {
         mem.confidence * 100.0,
         mem.verified
     )
+}
+
+/// Merge new tags into existing tags (union, preserving order).
+fn merge_tags(existing: &mut Vec<String>, new_tags: &[String]) {
+    for tag in new_tags {
+        if !existing.contains(tag) {
+            existing.push(tag.clone());
+        }
+    }
 }
 
 #[async_trait]
@@ -573,6 +635,7 @@ mod tests {
             memory_type: "skill".to_string(),
             scenario: "procedure".to_string(),
             content: "1. Step one\n2. Step two".to_string(),
+            summary: Some("Test SOP summary".to_string()),
             tags: Some(vec!["docker".to_string()]),
             verified: true,
             confidence: 0.9,

@@ -47,6 +47,7 @@ pub struct IndexPage {
     pub page_type: String,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    pub summary: Option<String>,
     pub confidence: f64,
 }
 
@@ -96,6 +97,7 @@ struct WikiFields {
     page_type: Field,
     category: Field,
     tags: Field,
+    summary: Field,
     confidence: Field,
 }
 
@@ -113,10 +115,11 @@ impl WikiFields {
 
         let path = builder.add_text_field("path", STRING | STORED);
         let title = builder.add_text_field("title", text_options.clone());
-        let content = builder.add_text_field("content", text_options);
+        let content = builder.add_text_field("content", text_options.clone());
         let page_type = builder.add_text_field("page_type", STRING | STORED);
         let category = builder.add_text_field("category", STRING | STORED);
         let tags = builder.add_text_field("tags", STRING | STORED);
+        let summary = builder.add_text_field("summary", text_options);
         let confidence = builder.add_f64_field("confidence", STORED);
 
         (
@@ -128,6 +131,7 @@ impl WikiFields {
                 page_type,
                 category,
                 tags,
+                summary,
                 confidence,
             },
         )
@@ -215,6 +219,10 @@ impl TantivyPageIndex {
 
         for tag in &page.tags {
             doc.add_text(self.fields.tags, tag);
+        }
+
+        if let Some(ref s) = page.summary {
+            doc.add_text(self.fields.summary, s);
         }
 
         doc.add_f64(self.fields.confidence, page.confidence);
@@ -346,6 +354,10 @@ impl TantivyPageIndex {
 
             for tag in &page.tags {
                 doc.add_text(self.fields.tags, tag);
+            }
+
+            if let Some(ref s) = page.summary {
+                doc.add_text(self.fields.summary, s);
             }
 
             doc.add_f64(self.fields.confidence, page.confidence);
@@ -497,6 +509,7 @@ mod tests {
             page_type: "topic".to_string(),
             category: None,
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
+            summary: None,
             confidence: 1.0,
         }
     }

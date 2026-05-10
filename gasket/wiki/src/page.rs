@@ -59,6 +59,8 @@ pub struct WikiPage {
     pub category: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub content: String,
     pub created: DateTime<Utc>,
     pub updated: DateTime<Utc>,
@@ -97,6 +99,7 @@ impl WikiPage {
             title,
             page_type,
             content,
+            summary: None,
             category: None,
             tags: vec![],
             created: now,
@@ -131,6 +134,8 @@ impl WikiPage {
             category: Option<&'a str>,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             tags: &'a Vec<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            summary: Option<&'a str>,
         }
 
         let front = Frontmatter {
@@ -138,6 +143,7 @@ impl WikiPage {
             page_type: self.page_type.as_str(),
             category: self.category.as_deref(),
             tags: &self.tags,
+            summary: self.summary.as_deref(),
         };
 
         let mut out = String::from("---\n");
@@ -159,6 +165,8 @@ impl WikiPage {
             category: Option<String>,
             #[serde(default)]
             tags: Vec<String>,
+            #[serde(default)]
+            summary: Option<String>,
         }
 
         let content = markdown.trim_start();
@@ -174,12 +182,23 @@ impl WikiPage {
         let front: Frontmatter = serde_yaml::from_str(yaml)?;
 
         let now = Utc::now();
+        let summary = front.summary.or_else(|| {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                let end = trimmed.char_indices().nth(100).map(|(i, _)| i).unwrap_or(trimmed.len());
+                let s = trimmed[..end].trim().to_string();
+                if s.len() < trimmed.len() { Some(format!("{}...", s)) } else { Some(s) }
+            }
+        });
         Ok(WikiPage {
             path,
             title: front.title,
             page_type: front.page_type.parse().unwrap_or(PageType::Topic),
             category: front.category,
             tags: front.tags,
+            summary,
             content: body.to_string(),
             created: now,
             updated: now,
@@ -209,6 +228,8 @@ pub struct PageSummary {
     pub access_count: u64,
     /// Machine runtime state: last access timestamp.
     pub last_accessed: Option<DateTime<Utc>>,
+    /// One-sentence L0 summary (from frontmatter or auto-generated).
+    pub summary: Option<String>,
     /// Content length in bytes (for budget-aware selection without loading full content).
     pub content_length: u64,
     /// Disk file modification time in Unix epoch seconds.

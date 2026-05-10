@@ -8,7 +8,9 @@
 
 pub mod structural;
 
-pub use structural::{Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig};
+pub use structural::{
+    extract_page_references, Severity, StructuralIssue, StructuralIssueType, StructuralLintConfig,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

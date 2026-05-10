@@ -8,14 +8,42 @@ use gasket_broker::{BrokerError, Subscriber};
 use gasket_storage::wiki::WikiRelationStore;
 use tracing::{debug, info, warn};
 
-use super::{PageIndex, PageStore};
+use super::{extract_page_references, PageIndex, PageStore};
+
+/// Trait for computing embeddings (injected from engine/embedding layer).
+#[async_trait::async_trait]
+pub trait WikiEmbeddingProvider: Send + Sync {
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
+}
+
+/// Trait for upserting wiki page vectors (injected from engine/embedding layer).
+#[async_trait::async_trait]
+pub trait WikiVectorStore: Send + Sync {
+    async fn upsert(&self, id: &str, vector: Vec<f32>, content: &str) -> anyhow::Result<()>;
+    async fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: f32,
+    ) -> anyhow::Result<Vec<WikiVectorHit>>;
+    async fn delete(&self, id: &str) -> anyhow::Result<()>;
+}
+
+/// A single hit from wiki vector search.
+#[derive(Debug, Clone)]
+pub struct WikiVectorHit {
+    pub id: String,
+    pub score: f32,
+}
 
 /// Background actor that subscribes to `Topic::WikiChanged` and syncs
-/// the Tantivy index and relation store.
+/// the Tantivy index, relation store, and optionally the vector index.
 pub struct WikiIndexingService {
     page_store: PageStore,
     page_index: Arc<PageIndex>,
     relation_store: WikiRelationStore,
+    embedding_provider: Option<Arc<dyn WikiEmbeddingProvider>>,
+    vector_store: Option<Arc<dyn WikiVectorStore>>,
 }
 
 impl WikiIndexingService {
@@ -28,7 +56,21 @@ impl WikiIndexingService {
             page_store,
             page_index,
             relation_store,
+            embedding_provider: None,
+            vector_store: None,
         }
+    }
+
+    /// Attach semantic embedding capabilities.
+    /// When set, wiki pages will be vectorized on every write.
+    pub fn with_semantic(
+        mut self,
+        provider: Arc<dyn WikiEmbeddingProvider>,
+        store: Arc<dyn WikiVectorStore>,
+    ) -> Self {
+        self.embedding_provider = Some(provider);
+        self.vector_store = Some(store);
+        self
     }
 
     /// Spawn the service as a background Tokio task.
@@ -94,6 +136,68 @@ impl WikiIndexingService {
                 } else {
                     debug!("WikiIndexingService: upserted {}", path);
                 }
+
+                // Extract [[...]] entity links and persist as relations.
+                let refs = extract_page_references(&page.content);
+                if !refs.is_empty() {
+                    // First clear old outgoing relations for this page.
+                    if let Err(e) = self
+                        .relation_store
+                        .delete_all_outgoing(path)
+                        .await
+                    {
+                        debug!(
+                            "WikiIndexingService: failed to clear old relations for {}: {}",
+                            path, e
+                        );
+                    }
+                    for target in &refs {
+                        if let Err(e) = self
+                            .relation_store
+                            .add(path, target, "mentions")
+                            .await
+                        {
+                            debug!(
+                                "WikiIndexingService: failed to add relation {} -> {}: {}",
+                                path, target, e
+                            );
+                        }
+                    }
+                    debug!(
+                        "WikiIndexingService: indexed {} outgoing relation(s) for {}",
+                        refs.len(),
+                        path
+                    );
+                }
+
+                // Compute embedding and upsert to vector store.
+                if let (Some(provider), Some(vstore)) =
+                    (&self.embedding_provider, &self.vector_store)
+                {
+                    // Use title + summary + first 500 chars of content for embedding.
+                    let embed_text = match &page.summary {
+                        Some(s) => format!("{} {}\n{}", page.title, s, &page.content[..page.content.len().min(500)]),
+                        None => format!("{}\n{}", page.title, &page.content[..page.content.len().min(500)]),
+                    };
+                    match provider.embed(&embed_text).await {
+                        Ok(vector) => {
+                            if let Err(e) = vstore.upsert(path, vector, &embed_text).await {
+                                warn!(
+                                    "WikiIndexingService: failed to vectorize {}: {}",
+                                    path, e
+                                );
+                            } else {
+                                debug!("WikiIndexingService: vectorized {}", path);
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "WikiIndexingService: embedding failed for {}: {}",
+                                path, e
+                            );
+                        }
+                    }
+                }
             }
             Err(_) => {
                 // Page doesn't exist anymore — delete from index and relations.
@@ -112,6 +216,15 @@ impl WikiIndexingService {
                     );
                 } else {
                     debug!("WikiIndexingService: deleted relations for {}", path);
+                }
+                // Remove vector if semantic indexing is enabled.
+                if let Some(vstore) = &self.vector_store {
+                    if let Err(e) = vstore.delete(path).await {
+                        debug!(
+                            "WikiIndexingService: failed to delete vector for {}: {}",
+                            path, e
+                        );
+                    }
                 }
             }
         }

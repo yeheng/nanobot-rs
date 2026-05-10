@@ -19,6 +19,7 @@ pub struct WikiPageInput<'a> {
     pub page_type: &'a str,
     pub category: Option<&'a str>,
     pub tags: &'a str,
+    pub summary: Option<&'a str>,
     pub content: &'a str,
     pub source_count: u32,
     pub confidence: f64,
@@ -50,13 +51,14 @@ impl WikiPageStore {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            INSERT INTO wiki_pages (path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO wiki_pages (path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 type = excluded.type,
                 category = excluded.category,
                 tags = excluded.tags,
+                summary = excluded.summary,
                 content = excluded.content,
                 updated = excluded.updated,
                 source_count = excluded.source_count,
@@ -73,6 +75,7 @@ impl WikiPageStore {
         .bind(page.page_type)
         .bind(page.category)
         .bind(page.tags)
+        .bind(page.summary)
         .bind(page.content)
         .bind(&now)
         .bind(&now)
@@ -90,7 +93,7 @@ impl WikiPageStore {
 
     pub async fn get(&self, path: &str) -> Result<Option<PageRow>> {
         let row = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE path = $1"
+            "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE path = $1"
         )
         .bind(path)
         .fetch_optional(&self.pool)
@@ -116,7 +119,7 @@ impl WikiPageStore {
 
     pub async fn list_by_type(&self, page_type: &str) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages WHERE type = $1 ORDER BY updated DESC"
         )
         .bind(page_type)
         .fetch_all(&self.pool)
@@ -126,7 +129,7 @@ impl WikiPageStore {
 
     pub async fn list_all(&self) -> Result<Vec<PageRow>> {
         let rows = sqlx::query_as::<_, PageRow>(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages ORDER BY updated DESC"
+            "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime FROM wiki_pages ORDER BY updated DESC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -183,7 +186,7 @@ impl WikiPageStore {
 
         let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT path, title, type, category, tags, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime \
+            "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime \
              FROM wiki_pages \
              WHERE path IN ({})",
             placeholders
@@ -211,7 +214,7 @@ impl WikiPageStore {
 
         let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT path, title, type, category, tags, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length, file_mtime \
+            "SELECT path, title, type, category, tags, summary, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length, file_mtime \
              FROM wiki_pages \
              WHERE path IN ({})",
             placeholders
@@ -236,6 +239,7 @@ pub struct PageSummaryRow {
     pub page_type: String,
     pub category: Option<String>,
     pub tags: Option<String>,
+    pub summary: Option<String>,
     pub confidence: f64,
     pub frequency: String,
     pub access_count: i64,
@@ -255,6 +259,7 @@ pub struct PageRow {
     pub page_type: String,
     pub category: Option<String>,
     pub tags: Option<String>,
+    pub summary: Option<String>,
     pub content: String,
     pub created: String,
     pub updated: String,

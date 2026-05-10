@@ -126,6 +126,7 @@ mod tests {
             frequency: gasket_storage::wiki::Frequency::Warm,
             access_count: 0,
             last_accessed: None,
+            summary: None,
             content_length: 0,
             file_mtime: 0,
         }

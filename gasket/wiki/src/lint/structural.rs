@@ -175,7 +175,7 @@ fn build_reference_set(pages: &[WikiPage]) -> HashSet<String> {
 
 /// Extract wiki page references from content.
 /// Looks for patterns like `[[entities/projects/gasket]]` or `[[topics/rust]]`.
-fn extract_page_references(content: &str) -> Vec<String> {
+pub fn extract_page_references(content: &str) -> Vec<String> {
     let mut refs = Vec::new();
     let mut rest = content;
 

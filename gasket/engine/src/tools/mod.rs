@@ -40,6 +40,8 @@ pub(crate) mod spawn_common;
 mod spawn_parallel;
 mod web_fetch;
 mod web_search;
+#[cfg(feature = "embedding")]
+mod wiki_semantic;
 mod wiki_decay;
 mod wiki_refresh;
 mod wiki_tools;
@@ -79,5 +81,7 @@ pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 pub use wiki_decay::WikiDecayTool;
 pub use wiki_refresh::WikiRefreshTool;
+#[cfg(feature = "embedding")]
+pub use wiki_semantic::{WikiEmbeddingAdapter, WikiVectorAdapter};
 pub use wiki_tools::{WikiDeleteTool, WikiReadTool, WikiSearchTool, WikiWriteTool};
 pub use workflow::{discover_workflows, WorkflowManifest, WorkflowStep, WorkflowTool};

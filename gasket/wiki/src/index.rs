@@ -49,6 +49,7 @@ impl PageIndex {
                         frequency: page.frequency,
                         access_count: page.access_count,
                         last_accessed: page.last_accessed,
+                        summary: page.summary,
                         content_length: page.content.len() as u64,
                         file_mtime: page.file_mtime,
                     }),
@@ -103,6 +104,7 @@ fn wiki_page_to_index(page: &WikiPage) -> IndexPage {
         page_type: page.page_type.as_str().to_string(),
         category: page.category.clone(),
         tags: page.tags.clone(),
+        summary: page.summary.clone(),
         confidence: page.confidence,
     }
 }

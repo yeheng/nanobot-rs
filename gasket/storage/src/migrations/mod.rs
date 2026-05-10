@@ -34,6 +34,7 @@ async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
     migrate_add_session_sequence_index(pool).await?;
     migrate_add_compaction_state(pool).await?;
     migrate_add_sync_sequence_to_wiki_pages(pool).await?;
+    migrate_add_summary_to_wiki_pages(pool).await?;
     Ok(())
 }
 
@@ -115,6 +116,18 @@ async fn migrate_add_compaction_state(pool: &SqlitePool) -> anyhow::Result<()> {
     }
     if !column_exists(pool, "session_summaries", "compaction_started_at").await {
         sqlx::query("ALTER TABLE session_summaries ADD COLUMN compaction_started_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Add `summary` column to `wiki_pages` if it doesn't exist.
+async fn migrate_add_summary_to_wiki_pages(pool: &SqlitePool) -> anyhow::Result<()> {
+    if table_exists(pool, "wiki_pages").await
+        && !column_exists(pool, "wiki_pages", "summary").await
+    {
+        sqlx::query("ALTER TABLE wiki_pages ADD COLUMN summary TEXT")
             .execute(pool)
             .await?;
     }

@@ -13,6 +13,7 @@ pub async fn create_wiki_tables(pool: &SqlitePool) -> anyhow::Result<()> {
             category     TEXT,
             tags         TEXT,
             content      TEXT NOT NULL DEFAULT '',
+            summary      TEXT,
             created      TEXT NOT NULL,
             updated      TEXT NOT NULL,
             source_count INTEGER DEFAULT 0,

@@ -67,6 +67,7 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
+                summary: row.summary,
                 content_length: row.content.len() as u64,
                 file_mtime: row.file_mtime,
             })),
@@ -165,6 +166,7 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
+                summary: r.summary.clone(),
                 content_length: r.content.len() as u64,
                 file_mtime: r.file_mtime,
             })
@@ -197,6 +199,7 @@ impl PageStore {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc)),
+                summary: r.summary,
                 content_length: r.content_length as u64,
                 file_mtime: r.file_mtime,
             })
@@ -273,6 +276,7 @@ impl PageStore {
                 .as_ref()
                 .and_then(|t| serde_json::from_str(t).ok())
                 .unwrap_or_default(),
+            summary: row.summary,
             content: row.content,
             created: chrono::DateTime::parse_from_rfc3339(&row.created)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -303,6 +307,7 @@ impl PageStore {
                 page_type: page.page_type.as_str(),
                 category: page.category.as_deref(),
                 tags: &tags_str,
+                summary: page.summary.as_deref(),
                 content: &page.content,
                 source_count: page.source_count,
                 confidence: page.confidence,

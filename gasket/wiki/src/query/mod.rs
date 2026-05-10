@@ -1,7 +1,8 @@
-//! Wiki query pipeline — two-phase retrieval with Tantivy boost.
+//! Wiki query pipeline — hybrid retrieval with RRF fusion.
 //!
-//! Phase 1: BM25 → candidate set (top-50, title boosted)
-//! Phase 2: Budget-aware selection → load full pages from SQLite
+//! Phase 1: BM25 + Vector search → candidate sets
+//! Phase 2: RRF fusion → merged ranking
+//! Phase 3: Budget-aware selection → load full pages from SQLite
 
 use std::sync::Arc;
 
@@ -9,8 +10,12 @@ use anyhow::Result;
 
 use gasket_storage::wiki::{PageSearchIndex, SearchHit};
 
+use super::indexing_service::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 use super::page::{slugify, PageType, WikiPage};
 use super::store::PageStore;
+
+/// RRF constant (standard value from Cormack et al., 2009).
+const RRF_K: u32 = 60;
 
 /// Token budget for query results (controls how much content to return).
 #[derive(Debug, Clone)]
@@ -62,20 +67,42 @@ impl QueryResult {
     }
 }
 
-/// Wiki query engine — two-phase retrieval over wiki pages.
+/// Wiki query engine — hybrid retrieval over wiki pages.
+///
+/// When semantic search is configured, uses RRF (Reciprocal Rank Fusion)
+/// to merge BM25 and vector search results. Falls back to pure BM25
+/// when no embedding provider is available.
 pub struct WikiQueryEngine {
     search: Arc<dyn PageSearchIndex>,
     store: PageStore,
+    embedding_provider: Option<Arc<dyn WikiEmbeddingProvider>>,
+    vector_store: Option<Arc<dyn WikiVectorStore>>,
 }
 
 impl WikiQueryEngine {
     pub fn new(search: Arc<dyn PageSearchIndex>, store: PageStore) -> Self {
-        Self { search, store }
+        Self {
+            search,
+            store,
+            embedding_provider: None,
+            vector_store: None,
+        }
     }
 
-    /// Full two-phase query with budget-aware selection.
+    /// Attach semantic search capabilities for hybrid retrieval.
+    pub fn with_semantic(
+        mut self,
+        provider: Arc<dyn WikiEmbeddingProvider>,
+        store: Arc<dyn WikiVectorStore>,
+    ) -> Self {
+        self.embedding_provider = Some(provider);
+        self.vector_store = Some(store);
+        self
+    }
+
+    /// Full hybrid query with RRF fusion and budget-aware selection.
     pub async fn query(&self, query: &str, budget: TokenBudget) -> Result<QueryResult> {
-        let candidates = self.search.search(query, 50).await?;
+        let candidates = self.hybrid_search(query, 50).await?;
         let total_candidates = candidates.len();
 
         if candidates.is_empty() {
@@ -122,6 +149,31 @@ impl WikiQueryEngine {
         })
     }
 
+    /// Hybrid search: merge BM25 and vector results via RRF.
+    /// Falls back to pure BM25 when semantic search is not configured.
+    async fn hybrid_search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        match (&self.embedding_provider, &self.vector_store) {
+            (Some(provider), Some(vstore)) => {
+                // Parallel BM25 + vector search.
+                let bm25_future = self.search.search(query, limit);
+                let query_vec = provider.embed(query).await?;
+                let vector_future = vstore.search(&query_vec, limit, 0.3);
+
+                let (bm25_results, vector_results) =
+                    tokio::join!(bm25_future, vector_future);
+
+                let bm25_hits = bm25_results.unwrap_or_default();
+                let vector_hits = vector_results.unwrap_or_default();
+
+                Ok(rrf_merge(&bm25_hits, &vector_hits))
+            }
+            _ => {
+                // Pure BM25 fallback.
+                self.search.search(query, limit).await
+            }
+        }
+    }
+
     /// Simple BM25 search returning search hits.
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         self.search.search(query, limit).await
@@ -147,6 +199,7 @@ impl WikiQueryEngine {
                 page_type: full_page.page_type.as_str().to_string(),
                 category: full_page.category.clone(),
                 tags: full_page.tags.clone(),
+                summary: full_page.summary.clone(),
                 confidence: full_page.confidence,
             })
             .await?;
@@ -168,6 +221,7 @@ impl WikiQueryEngine {
                     page_type: page.page_type.as_str().to_string(),
                     category: page.category.clone(),
                     tags: page.tags.clone(),
+                    summary: page.summary.clone(),
                     confidence: page.confidence,
                 });
             }
@@ -184,6 +238,36 @@ impl WikiQueryEngine {
     pub fn store(&self) -> &PageStore {
         &self.store
     }
+}
+
+/// Merge BM25 and vector search results using Reciprocal Rank Fusion.
+///
+/// Formula: score = 1/(k + rank_bm25) + 1/(k + rank_vector)
+/// Where k=60 (standard from Cormack, Clarke & Buettcher, 2009).
+fn rrf_merge(bm25_hits: &[SearchHit], vector_hits: &[WikiVectorHit]) -> Vec<SearchHit> {
+    let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+
+    for (rank, hit) in bm25_hits.iter().enumerate() {
+        let rank = rank as u32 + 1; // 1-based rank
+        *scores.entry(hit.path.clone()).or_default() += 1.0 / (RRF_K + rank) as f32;
+    }
+
+    for (rank, hit) in vector_hits.iter().enumerate() {
+        let rank = rank as u32 + 1;
+        *scores.entry(hit.id.clone()).or_default() += 1.0 / (RRF_K + rank) as f32;
+    }
+
+    let mut merged: Vec<(String, f32)> = scores.into_iter().collect();
+    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    merged
+        .into_iter()
+        .map(|(path, score)| SearchHit {
+            path,
+            score,
+            title: String::new(), // Title will be filled when loading full pages.
+        })
+        .collect()
 }
 
 #[cfg(test)]
