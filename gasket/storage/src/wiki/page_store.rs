@@ -178,27 +178,35 @@ impl WikiPageStore {
 
     /// Batch-load full pages for a set of paths.
     ///
-    /// Uses a single `SELECT * ... WHERE path IN (...)` query.
+    /// Uses `SELECT * ... WHERE path IN (...)` queries chunked to stay within
+    /// SQLite's binding variable limit (999 on older versions, 32766 on newer).
     pub async fn get_many(&self, paths: &[String]) -> Result<Vec<PageRow>> {
         if paths.is_empty() {
             return Ok(vec![]);
         }
 
-        let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime \
-             FROM wiki_pages \
-             WHERE path IN ({})",
-            placeholders
-        );
+        const CHUNK_SIZE: usize = 900;
+        let mut results = Vec::new();
 
-        let mut query = sqlx::query_as::<_, PageRow>(&sql);
-        for p in paths {
-            query = query.bind(p);
+        for chunk in paths.chunks(CHUNK_SIZE) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT path, title, type, category, tags, summary, content, created, updated, source_count, confidence, checksum, frequency, access_count, last_accessed, file_mtime \
+                 FROM wiki_pages \
+                 WHERE path IN ({})",
+                placeholders
+            );
+
+            let mut query = sqlx::query_as::<_, PageRow>(&sql);
+            for p in chunk {
+                query = query.bind(p);
+            }
+
+            let rows = query.fetch_all(&self.pool).await?;
+            results.extend(rows);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
-        Ok(rows)
+        Ok(results)
     }
 
     /// Batch-load lightweight page summaries for a set of paths.
@@ -207,26 +215,35 @@ impl WikiPageStore {
     /// (title, tags, confidence, etc.) — NOT the heavy `content` column.
     /// This is the N+1 fix: one query for N paths instead of N separate
     /// `SELECT *` queries pulling megabytes of content into memory.
+    ///
+    /// Queries are chunked to stay within SQLite's binding variable limit.
     pub async fn get_summaries_by_paths(&self, paths: &[String]) -> Result<Vec<PageSummaryRow>> {
         if paths.is_empty() {
             return Ok(vec![]);
         }
 
-        let placeholders: String = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT path, title, type, category, tags, summary, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length, file_mtime \
-             FROM wiki_pages \
-             WHERE path IN ({})",
-            placeholders
-        );
+        const CHUNK_SIZE: usize = 900;
+        let mut results = Vec::new();
 
-        let mut query = sqlx::query_as::<_, PageSummaryRow>(&sql);
-        for p in paths {
-            query = query.bind(p);
+        for chunk in paths.chunks(CHUNK_SIZE) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT path, title, type, category, tags, summary, confidence, frequency, access_count, last_accessed, updated, LENGTH(content) as content_length, file_mtime \
+                 FROM wiki_pages \
+                 WHERE path IN ({})",
+                placeholders
+            );
+
+            let mut query = sqlx::query_as::<_, PageSummaryRow>(&sql);
+            for p in chunk {
+                query = query.bind(p);
+            }
+
+            let rows = query.fetch_all(&self.pool).await?;
+            results.extend(rows);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
-        Ok(rows)
+        Ok(results)
     }
 }
 

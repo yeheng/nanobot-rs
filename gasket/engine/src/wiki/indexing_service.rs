@@ -151,17 +151,15 @@ impl WikiIndexingService {
                             path, e
                         );
                     }
-                    for target in &refs {
-                        if let Err(e) = self
-                            .relation_store
-                            .add(path, target, "mentions")
-                            .await
-                        {
-                            debug!(
-                                "WikiIndexingService: failed to add relation {} -> {}: {}",
-                                path, target, e
-                            );
-                        }
+                    if let Err(e) = self
+                        .relation_store
+                        .add_many(path, &refs, "mentions")
+                        .await
+                    {
+                        debug!(
+                            "WikiIndexingService: failed to add relations for {}: {}",
+                            path, e
+                        );
                     }
                     debug!(
                         "WikiIndexingService: indexed {} outgoing relation(s) for {}",

@@ -72,31 +72,28 @@ impl SessionStore {
 
     // ── Combined Summary + Checkpoint ──
 
-    /// Load summary with watermark and merge latest checkpoint.
+    /// Load summary, checkpoint, and watermark.
     ///
-    /// Returns `(merged_summary, watermark)`.
-    /// If no summary exists, returns `("", 0)`.
+    /// Returns `(summary, checkpoint, watermark)`.
+    /// If no summary exists, summary is empty; if no checkpoint exists, checkpoint is empty.
+    /// If no summary exists, watermark is `0`.
     pub async fn load_summary_with_checkpoint(
         &self,
         session_key: &SessionKey,
-    ) -> anyhow::Result<(String, i64)> {
-        let (mut summary, watermark) = match self.load_summary(session_key).await {
+    ) -> anyhow::Result<(String, String, i64)> {
+        let (summary, watermark) = match self.load_summary(session_key).await {
             Ok(Some((content, watermark))) => (content, watermark),
             Ok(None) => (String::new(), 0),
             Err(e) => return Err(e),
         };
 
         let key_str = session_key.to_string();
-        if let Ok(Some((ck_summary, _ck_seq))) = self.load_checkpoint(&key_str, i64::MAX).await {
-            if !ck_summary.is_empty() {
-                if !summary.is_empty() {
-                    summary.push_str("\n\n[Working Memory]\n");
-                }
-                summary.push_str(&ck_summary);
-            }
-        }
+        let checkpoint = match self.load_checkpoint(&key_str, i64::MAX).await {
+            Ok(Some((ck_summary, _))) => ck_summary,
+            _ => String::new(),
+        };
 
-        Ok((summary, watermark))
+        Ok((summary, checkpoint, watermark))
     }
 
     // ── Session Checkpoints API ──
@@ -148,6 +145,30 @@ impl SessionStore {
             sqlx::query_as("SELECT key, total_events, updated_at FROM sessions_v2 WHERE total_events > 0")
                 .fetch_all(&self.pool)
                 .await?;
+        Ok(rows)
+    }
+
+    /// Get sessions that need evolution (or any maintenance task) based on a threshold.
+    ///
+    /// Uses a single SQL JOIN to avoid N+1 queries. Returns `(session_key, total_events, watermark)`
+    /// for sessions where `total_events - watermark >= threshold`.
+    pub async fn get_sessions_needing_evolution(
+        &self,
+        task_name: &str,
+        threshold: i64,
+    ) -> anyhow::Result<Vec<(String, i64, i64)>> {
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT s.key, s.total_events, COALESCE(m.last_watermark, 0) as watermark
+            FROM sessions_v2 s
+            LEFT JOIN maintenance_state m ON s.key = m.target_id AND m.task_name = ?1
+            WHERE s.total_events > 0 AND (s.total_events - COALESCE(m.last_watermark, 0)) >= ?2
+            "#,
+        )
+        .bind(task_name)
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows)
     }
 

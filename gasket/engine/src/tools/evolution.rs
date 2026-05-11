@@ -116,31 +116,19 @@ impl EvolutionTool {
 
     /// Scan all sessions and return those that need evolution.
     async fn scan_sessions(&self, threshold: usize) -> Result<Vec<(String, i64, i64)>, ToolError> {
-        let rows = self
+        let qualifying = self
             .session_store
-            .scan_active_sessions()
+            .get_sessions_needing_evolution("evolution", threshold as i64)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to scan sessions: {}", e)))?;
 
-        let mut qualifying = Vec::new();
-        for (session_key, total_events, _updated_at) in rows {
-            let watermark = self
-                .maintenance_store
-                .read_watermark("evolution", &session_key)
-                .await
-                .map_err(|e| {
-                    ToolError::ExecutionError(format!("Failed to read watermark: {}", e))
-                })?;
-
-            let delta = total_events.saturating_sub(watermark);
-            if delta >= threshold as i64 {
-                qualifying.push((session_key, total_events, watermark));
-            } else {
-                debug!(
-                    "Evolution: session {} delta {} < threshold {}, skipping.",
-                    session_key, delta, threshold
-                );
-            }
+        for (session_key, total_events, watermark) in &qualifying {
+            debug!(
+                "Evolution: session {} delta {} >= threshold {}, will process.",
+                session_key,
+                total_events.saturating_sub(*watermark),
+                threshold
+            );
         }
 
         Ok(qualifying)

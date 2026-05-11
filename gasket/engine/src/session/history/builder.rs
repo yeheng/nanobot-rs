@@ -147,7 +147,7 @@ impl ContextBuilder {
             .unwrap_or_else(|| content.to_string());
 
         // ── 2. Load summary with watermark (read path optimization) ─────
-        let (existing_summary, watermark) = self
+        let (summary, checkpoint, watermark) = self
             .session_store
             .load_summary_with_checkpoint(session_key)
             .await
@@ -157,6 +157,14 @@ impl ContextBuilder {
                     session_key, e
                 ))
             })?;
+
+        let mut existing_summary = summary;
+        if !checkpoint.is_empty() {
+            if !existing_summary.is_empty() {
+                existing_summary.push_str("\n\n[Working Memory]\n");
+            }
+            existing_summary.push_str(&checkpoint);
+        }
 
         // ── 3. Save user event ────────────────
         let user_event = SessionEvent {
