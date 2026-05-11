@@ -19,7 +19,6 @@ pub mod session_event;
 pub mod spawn_budget;
 pub mod token_tracker;
 pub mod tool;
-pub mod wiki;
 
 pub use agent::AgentRole;
 pub use command::{ModelSwitchInfo, SessionSummary};
@@ -39,8 +38,7 @@ pub use token_tracker::{
     TokenUsage,
 };
 pub use tool::{
-    simple_schema, ApprovalCallback, SessionRefs, SubagentResponse, SubagentResult,
-    SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest, ToolApprovalResponse,
-    ToolContext, ToolError, ToolMetadata, ToolResult,
+    simple_schema, AggregatorCancel, ApprovalCallback, SessionRefs, SubagentResponse,
+    SubagentResult, SubagentSpawner, SynthesisCallback, Tool, ToolApprovalRequest,
+    ToolApprovalResponse, ToolContext, ToolError, ToolMetadata, ToolResult,
 };
-pub use wiki::{Frequency, PageFilter, PageSummary, PageType, WikiPage, slugify};

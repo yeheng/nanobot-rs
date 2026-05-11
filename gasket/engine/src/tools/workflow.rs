@@ -264,10 +264,6 @@ impl Tool for WorkflowTool {
         self
     }
 
-    fn clone_box(&self) -> Option<Box<dyn Tool>> {
-        Some(Box::new(self.clone()))
-    }
-
     #[tracing::instrument(name = "tool.workflow", skip_all, fields(workflow = %self.manifest.name))]
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         // Flatten user arguments into the context map under the "input." prefix.

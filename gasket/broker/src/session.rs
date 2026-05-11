@@ -54,7 +54,7 @@ impl MessageOutput for BrokerOutput {
     }
 }
 
-/// Message handler trait — decoupled from AgentLoop.
+/// Message handler trait — decoupled from AgentSession.
 #[async_trait]
 pub trait MessageHandler: Send + Sync {
     async fn handle_message(

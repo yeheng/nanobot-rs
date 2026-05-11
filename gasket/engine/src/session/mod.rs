@@ -533,61 +533,43 @@ impl AgentSession {
         let (mut ctx, aborted) = self.preprocess(content, session_key).await?;
 
         if let Some(msg) = aborted {
-            let (_tx, rx) = tokio::sync::mpsc::channel(1);
-            let model = ctx.model;
-            let handle = tokio::spawn(async move {
-                Ok(AgentResponse {
-                    content: msg,
-                    reasoning_content: None,
-                    tools_used: vec![],
-                    model: Some(model),
-                    token_usage: None,
-                    cost: 0.0,
-                })
-            });
-            return Ok((rx, handle));
+            return Ok(early_abort_response(msg, ctx.model));
         }
 
         let (kernel_tx, kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
 
-        // Bridge: outbound messages from tools → ChatEvent → frontend
-        let (outbound_tx, mut outbound_rx) =
-            tokio::sync::mpsc::channel::<gasket_types::events::OutboundMessage>(64);
-        let chat_tx_bridge = chat_tx.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = outbound_rx.recv().await {
-                if let gasket_types::events::OutboundPayload::Stream(chat_event) = msg.payload {
-                    let _ = chat_tx_bridge.send(chat_event).await;
-                }
-            }
-        });
-        ctx.runtime_ctx.refs.outbound_tx = Some(outbound_tx);
-
-        // Per-call tool filter: a YAML command may have requested a tool whitelist
-        // for this single invocation. None preserves the existing 'all tools' default.
+        ctx.runtime_ctx.refs.outbound_tx = Some(bridge_outbound_to_chat(chat_tx.clone()));
         ctx.runtime_ctx.config.tool_filter = tool_filter;
 
-        // Cancel any previous aggregator for this session turn
-        if ctx.runtime_ctx.refs.aggregator_cancel.is_none() {
-            ctx.runtime_ctx.refs.aggregator_cancel = Some(Arc::new(tokio::sync::Mutex::new(None)));
-        }
-        if let Some(ref cancel) = ctx.runtime_ctx.refs.aggregator_cancel {
-            if let Ok(mut guard) = cancel.try_lock() {
-                if let Some(ref token) = *guard {
-                    token.cancel();
-                }
-                *guard = None;
-            }
-        }
+        // Reset any previous aggregator left from the prior turn.
+        let cancel = ctx
+            .runtime_ctx
+            .refs
+            .aggregator_cancel
+            .get_or_insert_with(gasket_types::AggregatorCancel::new);
+        cancel.cancel_current();
 
-        // Extract messages so we can move them into the kernel without cloning.
         let messages = std::mem::take(&mut ctx.messages);
+        let result_handle = self.spawn_pipeline_task(ctx, messages, kernel_tx, kernel_rx, chat_tx);
 
-        // Spawn via TaskTracker so graceful shutdown can await this task.
-        // T3: Stream combinator replaces manual loop + extra spawn.
+        Ok((chat_rx, result_handle))
+    }
+
+    /// Spawn the kernel + stream-forwarding pipeline as a tracked task.
+    ///
+    /// Joins the kernel execution future with a stream that forwards
+    /// `StreamEvent`s to `ChatEvent`s, then runs postprocessing.
+    fn spawn_pipeline_task(
+        &self,
+        ctx: PipelineContext,
+        messages: Vec<ChatMessage>,
+        kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+        kernel_rx: tokio::sync::mpsc::Receiver<StreamEvent>,
+        chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
+    ) -> tokio::task::JoinHandle<Result<AgentResponse, AgentError>> {
         let chat_tx_err = chat_tx.clone();
-        let result_handle = self.pending_done.spawn(async move {
+        self.pending_done.spawn(async move {
             let stream_future = ReceiverStream::new(kernel_rx)
                 .filter_map(|event| futures_util::future::ready(event.to_chat_event()))
                 .for_each(|chat| {
@@ -611,9 +593,7 @@ impl AgentSession {
             let response = Self::postprocess(result, &ctx).await;
 
             Ok(response)
-        });
-
-        Ok((chat_rx, result_handle))
+        })
     }
 
     // ── Pipeline stages ──────────────────────────────────────────────────────
@@ -702,3 +682,45 @@ impl AgentSession {
 }
 
 // Post-processing logic lives in `session::finalizer::ResponseFinalizer`.
+
+// ── Free-function helpers for streaming entry point ─────────────────────────
+
+/// Construct the response pair for the early-abort path (BeforeRequest hook
+/// aborted the pipeline). No kernel is invoked; just emits the abort message.
+fn early_abort_response(
+    msg: String,
+    model: String,
+) -> (
+    tokio::sync::mpsc::Receiver<ChatEvent>,
+    tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+) {
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    let handle = tokio::spawn(async move {
+        Ok(AgentResponse {
+            content: msg,
+            reasoning_content: None,
+            tools_used: vec![],
+            model: Some(model),
+            token_usage: None,
+            cost: 0.0,
+        })
+    });
+    (rx, handle)
+}
+
+/// Spawn a bridge task: every `OutboundMessage::Stream` payload is forwarded
+/// as a `ChatEvent` onto `chat_tx`. Returns the sender for tools to use.
+fn bridge_outbound_to_chat(
+    chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
+) -> tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage> {
+    let (outbound_tx, mut outbound_rx) =
+        tokio::sync::mpsc::channel::<gasket_types::events::OutboundMessage>(64);
+    tokio::spawn(async move {
+        while let Some(msg) = outbound_rx.recv().await {
+            if let gasket_types::events::OutboundPayload::Stream(chat_event) = msg.payload {
+                let _ = chat_tx.send(chat_event).await;
+            }
+        }
+    });
+    outbound_tx
+}

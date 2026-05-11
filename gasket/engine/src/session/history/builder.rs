@@ -1,7 +1,7 @@
-//! Context Builder: Extracted pipeline construction from AgentLoop
+//! Context Builder: Extracted pipeline construction from AgentSession
 //!
 //! This module decouples the "Pipeline building" from "LLM execution" to prevent
-//! AgentLoop from becoming a God Class. The builder handles:
+//! AgentSession from becoming a God Class. The builder handles:
 //!
 //! 1. Hook execution (BeforeRequest, AfterHistory, BeforeLLM)
 //! 2. Session loading/saving
@@ -48,7 +48,7 @@ pub struct ChatRequest {
 
 /// Builder for constructing the LLM context/pipeline.
 ///
-/// Decouples the complex pipeline preparation logic from `AgentLoop`,
+/// Decouples the complex pipeline preparation logic from `AgentSession`,
 /// following the Single Responsibility Principle.
 pub struct ContextBuilder {
     event_store: EventStore,

@@ -180,15 +180,6 @@ impl Tool for CreatePlanTool {
         self
     }
 
-    fn clone_box(&self) -> Option<Box<dyn Tool>> {
-        Some(Box::new(Self {
-            provider: self.provider.clone(),
-            model: self.model.clone(),
-            page_store: self.page_store.clone(),
-            planning_prompt: self.planning_prompt.clone(),
-        }))
-    }
-
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let parsed: CreatePlanArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;

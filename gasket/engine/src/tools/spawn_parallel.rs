@@ -213,12 +213,7 @@ impl Tool for SpawnParallelTool {
             // Launch background aggregation
             let cancel_token = tokio_util::sync::CancellationToken::new();
             if let Some(ref cancel) = ctx.aggregator_cancel {
-                if let Ok(mut guard) = cancel.try_lock() {
-                    if let Some(ref old) = *guard {
-                        old.cancel();
-                    }
-                    *guard = Some(cancel_token.clone());
-                }
+                cancel.swap_and_cancel_old(cancel_token.clone());
             }
             spawn_common::spawn_aggregator(
                 result_receivers,

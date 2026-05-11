@@ -141,11 +141,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // Initialize embedding recall if configured (before wiki indexing so
     // the provider can be shared with wiki semantic search).
+    //
+    // `embedding_recall` carries (searcher, indexer, event_store_tx) as a
+    // single bundle so the channel invariant is encoded in the type: either
+    // all three are present, or none are.
     #[cfg(feature = "embedding")]
-    let (history_search, embedding_recall, event_store_tx) =
+    let (history_search, embedding_recall) =
         if let Some(ref emb_cfg) = config.embedding {
             let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
-            let tx = Some(event_store.sender());
+            let tx = event_store.sender();
             match gasket_engine::session::history::builder::setup_embedding_recall(
                 &event_store,
                 emb_cfg,
@@ -157,15 +161,15 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         searcher: searcher.clone(),
                         config: emb_cfg.recall.clone(),
                     };
-                    (Some(params), Some((searcher, indexer)), tx)
+                    (Some(params), Some((searcher, indexer, tx)))
                 }
                 Err(e) => {
                     tracing::warn!("Failed to initialize embedding recall: {}", e);
-                    (None, None, None)
+                    (None, None)
                 }
             }
         } else {
-            (None, None, None)
+            (None, None)
         };
     // (non-embedding builds skip semantic recall initialization)
 
@@ -249,7 +253,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
 
     // 1. Create agent session first (without spawner) so we can extract pending_asks
     #[cfg(feature = "embedding")]
-    let mut agent = if let Some((searcher, indexer)) = embedding_recall {
+    let mut agent = if let Some((searcher, indexer, event_store_tx)) = embedding_recall {
         AgentSession::with_sqlite_store_and_embedding(
             provider_info.provider.clone(),
             workspace.clone(),

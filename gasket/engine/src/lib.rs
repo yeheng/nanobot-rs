@@ -4,7 +4,7 @@
 //!
 //! ## Architecture
 //!
-//! - **engine**: Orchestration layer (AgentLoop, executor, tools, hooks)
+//! - **engine**: Orchestration layer (AgentSession, executor, tools, hooks)
 //! - **core**: Convenience re-export layer (pub use of common types)
 //! - **providers**: LLM provider abstractions
 //! - **storage**: Event sourcing and persistence
@@ -34,8 +34,6 @@ pub mod wiki;
 
 // ── Session (replaces agent/core) ───────────────────────────
 pub use session::{AgentConfig, AgentResponse, AgentSession, ContextCompactor};
-// Backward-compatible alias
-pub use session::AgentSession as AgentLoop;
 
 // ── Kernel ─────────────────────────────────────────────────
 pub use kernel::{

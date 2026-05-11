@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
-use gasket_types::wiki::slugify;
+use gasket_storage::wiki::slugify;
 
 use super::parser::ParsedSource;
 

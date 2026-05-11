@@ -5,7 +5,7 @@
 
 use tracing::debug;
 
-use gasket_types::wiki::PageSummary;
+use gasket_storage::wiki::PageSummary;
 
 use super::extractor::ExtractedItem;
 
@@ -113,7 +113,7 @@ impl Default for SemanticDeduplicator {
 mod tests {
     use super::*;
     use gasket_storage::wiki::Frequency;
-    use gasket_types::wiki::PageType;
+    use gasket_storage::wiki::PageType;
 
     fn make_summary(path: &str, title: &str, tags: Vec<&str>) -> PageSummary {
         PageSummary {

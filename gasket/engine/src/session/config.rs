@@ -279,9 +279,6 @@ impl AgentConfigExt for AgentConfig {
             plugin_timeout_secs: self.plugin_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
             tool_filter: None,
-            stream_chunk_timeout_secs: 120,
-            max_stream_chunks: 100_000,
-            tool_concurrency: DEFAULT_TOOL_CONCURRENCY,
         }
     }
 }

@@ -9,7 +9,7 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::kernel::{
-    context::RuntimeContext,
+    context::{RuntimeContext, MAX_STREAM_CHUNKS, STREAM_CHUNK_TIMEOUT_SECS, TOOL_CONCURRENCY},
     error::KernelError,
     request_handler::RequestHandler,
     stream,
@@ -107,8 +107,8 @@ impl SteppableExecutor {
     ) -> Result<ChatResponse, KernelError> {
         let (mut event_stream, response_future, _handle) = stream::stream_events(stream_result);
 
-        let chunk_timeout = Duration::from_secs(self.ctx.config.stream_chunk_timeout_secs);
-        let max_chunks = self.ctx.config.max_stream_chunks;
+        let chunk_timeout = Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS);
+        let max_chunks = MAX_STREAM_CHUNKS;
 
         let mut event_count = 0usize;
         loop {
@@ -221,7 +221,7 @@ impl SteppableExecutor {
                         (idx, tool_call.id, tool_name, result.output)
                     }
                 })
-                .buffer_unordered(self.ctx.config.tool_concurrency)
+                .buffer_unordered(TOOL_CONCURRENCY)
                 .collect()
                 .await;
 

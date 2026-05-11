@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use gasket_types::wiki::{PageSummary, WikiPage};
+use crate::wiki::types::{PageSummary, WikiPage};
 
 use super::search_index::{IndexPage, PageSearchIndex, SearchHit};
 use super::store::PageStore;

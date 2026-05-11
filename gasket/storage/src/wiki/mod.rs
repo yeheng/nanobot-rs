@@ -18,4 +18,4 @@ pub use search_index::{IndexPage, PageSearchIndex, SearchHit, TantivyPageIndex};
 pub use source_store::WikiSourceStore;
 pub use store::PageStore;
 pub use tables::create_wiki_tables;
-pub use types::Frequency;
+pub use types::{slugify, Frequency, PageFilter, PageSummary, PageType, WikiPage};

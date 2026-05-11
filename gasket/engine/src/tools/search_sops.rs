@@ -84,12 +84,6 @@ impl Tool for SearchSopsTool {
         self
     }
 
-    fn clone_box(&self) -> Option<Box<dyn Tool>> {
-        Some(Box::new(Self {
-            page_index: self.page_index.clone(),
-        }))
-    }
-
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> ToolResult {
         let parsed: SearchSopsArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;

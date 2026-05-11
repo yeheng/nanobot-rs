@@ -44,6 +44,9 @@ tantivy = "0.25"
 dirs.workspace = true
 directories.workspace = true
 
+# Regex (used by wiki::types::slugify)
+regex = "1"
+
 # Token counting (from gasket-history)
 tiktoken-rs.workspace = true
 

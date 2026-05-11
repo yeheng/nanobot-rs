@@ -11,38 +11,21 @@ use gasket_providers::ToolDefinition;
 use gasket_types::{ApprovalCallback, ToolApprovalRequest};
 
 /// A tool bundled with its optional metadata.
+///
+/// `Clone` is `Arc`-cheap: tools are shared via `Arc<dyn Tool>` and never
+/// deep-copied. The only consumer of cloning is the plugin builder, which
+/// hands a registry snapshot to plugins at construction time.
+#[derive(Clone)]
 struct RegisteredTool {
     tool: Arc<dyn Tool>,
     metadata: Option<ToolMetadata>,
 }
 
-impl Clone for RegisteredTool {
-    fn clone(&self) -> Self {
-        let tool = if let Some(cloned) = self.tool.clone_box() {
-            Arc::from(cloned)
-        } else {
-            self.tool.clone()
-        };
-        Self {
-            tool,
-            metadata: self.metadata.clone(),
-        }
-    }
-}
-
 /// Registry for managing tools.
+#[derive(Clone)]
 pub struct ToolRegistry {
     items: HashMap<String, RegisteredTool>,
     approval_callback: Option<Arc<dyn ApprovalCallback>>,
-}
-
-impl Clone for ToolRegistry {
-    fn clone(&self) -> Self {
-        Self {
-            items: self.items.clone(),
-            approval_callback: self.approval_callback.clone(),
-        }
-    }
 }
 
 impl ToolRegistry {

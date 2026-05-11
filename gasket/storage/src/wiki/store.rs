@@ -4,7 +4,7 @@ use std::time::UNIX_EPOCH;
 use tokio::fs;
 
 use crate::fs::atomic_write;
-use gasket_types::wiki::{PageFilter, PageSummary, PageType, WikiPage};
+use crate::wiki::types::{PageFilter, PageSummary, PageType, WikiPage};
 
 use super::lifecycle::{DecayReport, FrequencyManager};
 use super::page_store::WikiPageStore;

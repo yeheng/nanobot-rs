@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use gasket_storage::wiki::{PageSearchIndex, PageStore, SearchHit};
-use gasket_types::wiki::{slugify, PageSummary, PageType, WikiPage};
+use gasket_storage::wiki::{slugify, PageSearchIndex, PageStore, PageSummary, PageType, SearchHit, WikiPage};
 
 use super::indexing_service::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 

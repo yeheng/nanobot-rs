@@ -7,7 +7,7 @@
 //! - Background indexing service (broker consumer)
 //! - Operation log
 //!
-//! Data types live in `gasket_types::wiki`.
+//! Data types live in `gasket_storage::wiki` alongside their persistence layer.
 //! Persistence (PageStore, PageIndex) lives in `gasket_storage::wiki`.
 
 pub mod indexing_service;
@@ -16,11 +16,11 @@ pub mod lint;
 pub mod log;
 pub mod query;
 
-// ── Re-exports from gasket-types (data structures) ──────────
-pub use gasket_types::wiki::{Frequency, PageFilter, PageSummary, PageType, WikiPage, slugify};
-
-// ── Re-exports from gasket-storage (persistence) ─────────────
-pub use gasket_storage::wiki::{PageIndex, PageStore, create_wiki_tables};
+// ── Re-exports from gasket-storage (data + persistence) ─────
+pub use gasket_storage::wiki::{
+    create_wiki_tables, slugify, Frequency, PageFilter, PageIndex, PageStore, PageSummary,
+    PageType, WikiPage,
+};
 
 // ── Re-exports from internal compute modules ─────────────────
 pub use indexing_service::{

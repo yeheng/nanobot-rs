@@ -13,6 +13,54 @@ use crate::events::{OutboundMessage, SessionKey};
 use crate::pending_ask::DynPendingAskRegistry;
 use tokio_util::sync::CancellationToken;
 
+/// Shared handle for the "cancel previous aggregator" pattern used by spawn tools.
+///
+/// Holds at most one live `CancellationToken`. When a new aggregator launches,
+/// it calls `swap_and_cancel_old(new)`: the previous token (if any) is cancelled
+/// and replaced atomically under a single lock.
+///
+/// Replaces the prior `Arc<Mutex<Option<CancellationToken>>>` open-coded dance,
+/// which leaked the nesting and forced every call site to repeat the same
+/// take/cancel/store sequence.
+#[derive(Clone, Default)]
+pub struct AggregatorCancel {
+    inner: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
+}
+
+impl AggregatorCancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Store `new` as the active token, cancelling the previous one (if any).
+    ///
+    /// Uses `try_lock`: if contention occurs the previous token is left intact
+    /// — matching the original best-effort semantics.
+    pub fn swap_and_cancel_old(&self, new: CancellationToken) {
+        if let Ok(mut guard) = self.inner.try_lock() {
+            if let Some(old) = guard.take() {
+                old.cancel();
+            }
+            *guard = Some(new);
+        }
+    }
+
+    /// Cancel and forget the current token, if any.
+    pub fn cancel_current(&self) {
+        if let Ok(mut guard) = self.inner.try_lock() {
+            if let Some(old) = guard.take() {
+                old.cancel();
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for AggregatorCancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AggregatorCancel").finish()
+    }
+}
+
 /// Result type for tool execution
 pub type ToolResult = Result<String, ToolError>;
 
@@ -132,7 +180,7 @@ pub struct SessionRefs {
     pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
     pub spawner: Option<Arc<dyn SubagentSpawner>>,
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
-    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    pub aggregator_cancel: Option<AggregatorCancel>,
     pub pending_asks: Option<DynPendingAskRegistry>,
 }
 
@@ -186,9 +234,9 @@ pub struct ToolContext {
     /// Callback for triggering synthesis after all subagents complete.
     /// When None (CLI/Telegram/non-WebSocket mode), spawn tools use blocking mode.
     pub synthesis_callback: Option<std::sync::Arc<dyn SynthesisCallback>>,
-    /// Shared cancellation token for the current aggregator task.
+    /// Shared cancellation handle for the current aggregator task.
     /// Tools use this to cancel previous aggregators when spawning new ones.
-    pub aggregator_cancel: Option<Arc<tokio::sync::Mutex<Option<CancellationToken>>>>,
+    pub aggregator_cancel: Option<AggregatorCancel>,
     /// Pending-ask registry for the `ask_user` tool. None in contexts that
     /// don't need user prompting (CLI white-box, unit tests).
     pub pending_asks: Option<DynPendingAskRegistry>,
@@ -266,10 +314,7 @@ impl ToolContext {
         self
     }
 
-    pub fn aggregator_cancel(
-        mut self,
-        cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
-    ) -> Self {
+    pub fn aggregator_cancel(mut self, cancel: AggregatorCancel) -> Self {
         self.aggregator_cancel = Some(cancel);
         self
     }
@@ -342,16 +387,6 @@ pub trait Tool: Send + Sync {
 
     /// Return as `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
-
-    /// Deep-clone this tool into a new boxed trait object.
-    ///
-    /// Tools that hold mutable state (e.g. engine references) should override
-    /// this so that each `ToolRegistry` clone receives an independent copy.
-    /// Stateless tools can rely on the default `None`, in which case the
-    /// registry will fall back to a cheap `Arc` clone.
-    fn clone_box(&self) -> Option<Box<dyn Tool>> {
-        None
-    }
 }
 
 /// Metadata describing a tool's capabilities, tags, and permission requirements.

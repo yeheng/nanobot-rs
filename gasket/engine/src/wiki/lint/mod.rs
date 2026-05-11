@@ -16,8 +16,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use gasket_storage::wiki::PageStore;
-use gasket_types::wiki::{PageType, WikiPage};
+use gasket_storage::wiki::{PageStore, PageType, WikiPage};
 
 /// Complete lint report.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -135,14 +135,19 @@ pub struct KernelConfig {
     /// Optional whitelist of tool names visible to the LLM for this run.
     /// `None` exposes all registered tools; `Some(vec![])` forbids all tools.
     pub tool_filter: Option<Vec<String>>,
-    /// Timeout for individual stream chunks — keeps the forwarding loop alive
-    /// during extended reasoning pauses (default: 120s).
-    pub stream_chunk_timeout_secs: u64,
-    /// Defensive limit on stream chunks per LLM turn to prevent hangs (default: 100_000).
-    pub max_stream_chunks: usize,
-    /// Maximum number of tool calls executed concurrently (default: 5).
-    pub tool_concurrency: usize,
 }
+
+// Stream forwarding limits — fixed defensive bounds, not user-tunable.
+//
+// These prevent runaway streams from hanging the kernel loop. Nobody has
+// ever needed to override them; demoting them to constants keeps the
+// `KernelConfig` surface honest.
+/// Per-chunk timeout for the streaming forwarding loop.
+pub const STREAM_CHUNK_TIMEOUT_SECS: u64 = 120;
+/// Hard cap on stream chunks per LLM turn to prevent hangs.
+pub const MAX_STREAM_CHUNKS: usize = 100_000;
+/// Maximum number of tool calls executed concurrently.
+pub const TOOL_CONCURRENCY: usize = 5;
 
 impl KernelConfig {
     pub fn new(model: String) -> Self {
@@ -158,9 +163,6 @@ impl KernelConfig {
             plugin_timeout_secs: 120,
             ws_summary_limit: 0,
             tool_filter: None,
-            stream_chunk_timeout_secs: 120,
-            max_stream_chunks: 100_000,
-            tool_concurrency: 5,
         }
     }
 }

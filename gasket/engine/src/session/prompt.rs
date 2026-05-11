@@ -2,7 +2,7 @@
 //!
 //! Provides functions to load workspace bootstrap files and skills context
 //! for injection into the system prompt. These are called directly by
-//! `AgentLoop` during initialization — no dynamic hook dispatch needed.
+//! `AgentSession` during initialization — no dynamic hook dispatch needed.
 
 use std::path::Path;
 

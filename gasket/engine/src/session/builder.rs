@@ -21,13 +21,15 @@ use gasket_storage::{EventStore, SessionStore};
 
 /// Bundle of embedding-specific dependencies for session construction.
 ///
-/// Groups the three embedding parameters that are always passed together,
-/// keeping function signatures under the clippy::too_many_arguments limit.
+/// All three fields are required: the broadcast sender is **not** optional —
+/// it is the channel the indexer listens on, so omitting it would silently
+/// detach the indexer from event flow. Callers that don't want embedding
+/// indexing simply don't build a session with embedding at all.
 #[cfg(feature = "embedding")]
 pub struct EmbeddingContext {
     pub searcher: Arc<gasket_embedding::RecallSearcher>,
     pub indexer: gasket_embedding::EmbeddingIndexer,
-    pub event_store_tx: Option<tokio::sync::broadcast::Sender<gasket_types::SessionEvent>>,
+    pub event_store_tx: tokio::sync::broadcast::Sender<gasket_types::SessionEvent>,
 }
 
 /// Wiki preparation prompt appended to system prompt when wiki is enabled.
@@ -314,10 +316,9 @@ pub async fn build_session_with_embedding(
     sqlite_store: Arc<gasket_storage::SqliteStore>,
     embedding: EmbeddingContext,
 ) -> Result<AgentSession, AgentError> {
-    let mut builder = SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
-        .with_embedding_recall(embedding.searcher, embedding.indexer);
-    if let Some(tx) = embedding.event_store_tx {
-        builder = builder.with_event_store_tx(tx);
-    }
-    builder.build().await
+    SessionBuilder::new(provider, workspace, config, tools, sqlite_store)
+        .with_embedding_recall(embedding.searcher, embedding.indexer)
+        .with_event_store_tx(embedding.event_store_tx)
+        .build()
+        .await
 }

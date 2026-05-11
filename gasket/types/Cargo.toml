@@ -11,7 +11,6 @@ description = "Shared types and events for gasket"
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
-regex = "1"
 anyhow.workspace = true
 
 # Async
