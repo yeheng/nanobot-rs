@@ -11,8 +11,8 @@ use tracing::{info, Level};
 use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
 use gasket_command::dispatcher::shared_help_snapshot;
 use gasket_command::{CommandCompleter, CommandResult, DispatcherBuilder, RouteOutcome};
-use gasket_engine::channels::ChatEvent;
-use gasket_engine::channels::SessionKey;
+use gasket_channels::SessionKey;
+use gasket_types::events::ChatEvent;
 use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
@@ -314,7 +314,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let session_key = SessionKey::new(gasket_engine::channels::ChannelType::Cli, "direct");
+            let session_key = SessionKey::new(gasket_channels::ChannelType::Cli, "direct");
             use gasket_engine::session::HandleOutcome;
             let outcome = agent
                 .handle_inbound(&msg, &session_key, None)
@@ -365,7 +365,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             println!("🐈 gasket interactive mode. Type '/help' for commands, '/exit' to quit.\n");
 
             let interactive_session =
-                SessionKey::new(gasket_engine::channels::ChannelType::Cli, "interactive");
+                SessionKey::new(gasket_channels::ChannelType::Cli, "interactive");
 
             // Build the slash-command dispatcher: built-ins, user YAML files,
             // help snapshot. The CLI is the only path through this dispatcher;

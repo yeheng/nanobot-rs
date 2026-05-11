@@ -6,8 +6,8 @@ use serde_json::Value;
 use tracing::{debug, instrument};
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use crate::channels::ChannelType;
-use crate::channels::OutboundMessage;
+use gasket_types::ChannelType;
+use gasket_types::OutboundMessage;
 
 /// Message tool for sending messages to specific channels.
 ///

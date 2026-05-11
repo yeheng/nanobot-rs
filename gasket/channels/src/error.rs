@@ -1,8 +1,5 @@
-use thiserror::Error;
+//! Channel-specific configuration validation errors
+//!
+//! Re-exported from `gasket-types::channel_config` for backward compatibility.
 
-/// Channel-specific configuration validation errors
-#[derive(Debug, Error)]
-pub enum ChannelConfigError {
-    #[error("Channel '{0}' has invalid configuration: {1}")]
-    InvalidChannelConfig(String, String),
-}
+pub use gasket_types::channel_config::ChannelConfigError;

@@ -2,6 +2,7 @@
 
 mod agent;
 mod auth;
+mod broker_outbound;
 mod channels;
 mod command_host;
 mod cron;

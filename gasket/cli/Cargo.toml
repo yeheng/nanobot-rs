@@ -20,14 +20,14 @@ markdown = ["termimad"]
 telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 
 # Channels (for gateway mode)
-telegram = ["gasket-engine/telegram"]
-discord = ["gasket-engine/discord"]
-slack = ["gasket-engine/slack"]
+telegram = ["gasket-channels/telegram"]
+discord = ["gasket-channels/discord"]
+slack = ["gasket-channels/slack"]
 
-feishu = ["gasket-engine/feishu"]
-wechat = ["gasket-engine/wechat"]
-websocket = ["gasket-engine/websocket", "axum", "dep:tower-http"]
-all-channels = ["gasket-engine/all-channels", "axum", "teloxide", "dep:tower-http"]
+feishu = ["gasket-channels/feishu"]
+wechat = ["gasket-channels/wechat"]
+websocket = ["gasket-channels/websocket", "axum", "dep:tower-http"]
+all-channels = ["gasket-channels/all-channels", "axum", "teloxide", "dep:tower-http"]
 
 # Providers
 provider-anthropic = ["gasket-engine/provider-anthropic"]
@@ -52,6 +52,8 @@ gasket-storage = { path = "../storage" }
 gasket-sandbox = { path = "../sandbox" }
 gasket-types = { path = "../types" }
 gasket-command = { path = "../command" }
+gasket-channels = { path = "../channels" }
+gasket-broker = { path = "../broker" }
 
 # Async
 tokio.workspace = true

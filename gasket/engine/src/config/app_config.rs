@@ -13,8 +13,8 @@ use crate::error::ConfigValidationError;
 use crate::vault::contains_placeholders;
 use crate::vault::VaultStore;
 
-// Re-export channel config types
-pub use gasket_channels::ChannelsConfig;
+// Re-export channel config types (from gasket-types to avoid engine -> channels dep)
+pub use gasket_types::channel_config::ChannelsConfig;
 // Re-export tools config
 use crate::config::ToolsConfig;
 

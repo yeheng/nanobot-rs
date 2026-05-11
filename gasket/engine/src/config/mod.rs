@@ -18,8 +18,8 @@ pub use tools::{
     ToolsConfig, WebToolsConfig,
 };
 
-// Re-export channel config types (merged from gasket-core facade)
-pub use gasket_channels::{
+// Re-export channel config types (from gasket-types to avoid engine -> channels dep)
+pub use gasket_types::channel_config::{
     ChannelsConfig, DiscordConfig, FeishuConfig, SlackConfig, TelegramConfig,
 };
 

@@ -23,7 +23,7 @@ use gasket_engine::SqliteStore;
 use gasket_engine::SubagentSpawner;
 
 use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
-use gasket_engine::OutboundDispatcher;
+use crate::commands::broker_outbound::OutboundDispatcher;
 use gasket_types::SessionKey;
 
 use super::registry::CliModelResolver;
@@ -75,8 +75,8 @@ pub async fn cmd_gateway() -> Result<()> {
     let cron_service =
         Arc::new(CronService::new(workspace.clone(), cron_sqlite_store.cron_store()).await);
 
-    let inbound_sender = gasket_engine::channels::InboundSender::new(broker.clone());
-    let providers = Arc::new(gasket_engine::channels::ImProviders::from_config(
+    let inbound_sender = gasket_channels::InboundSender::new(broker.clone());
+    let providers = Arc::new(gasket_channels::ImProviders::from_config(
         &config.channels,
         inbound_sender.clone(),
     ));
@@ -86,12 +86,12 @@ pub async fn cmd_gateway() -> Result<()> {
         let mut callback: Option<Arc<dyn gasket_types::ApprovalCallback>> = None;
         for provider in providers.iter() {
             #[cfg(feature = "websocket")]
-            if let gasket_engine::channels::ImProvider::WebSocket(ref adapter) = provider {
+            if let gasket_channels::ImProvider::WebSocket(ref adapter) = provider {
                 let manager = adapter.manager().clone();
-                let router = Arc::new(gasket_engine::channels::ApprovalRouter::new());
+                let router = Arc::new(gasket_channels::ApprovalRouter::new());
                 manager.set_approval_router(router.clone());
                 callback = Some(Arc::new(
-                    gasket_engine::channels::WebSocketApprovalCallback::new(manager, router),
+                    gasket_channels::WebSocketApprovalCallback::new(manager, router),
                 ));
             }
         }
@@ -225,7 +225,7 @@ fn print_no_channels_hint() {
 }
 
 /// Warn when a channel is enabled in config but its compile-time feature is disabled.
-fn warn_disabled_features(channels: &gasket_engine::channels::ChannelsConfig) {
+fn warn_disabled_features(channels: &gasket_types::channel_config::ChannelsConfig) {
     let checks: [(&str, bool, bool); 6] = [
         (
             "telegram",
@@ -548,7 +548,7 @@ fn build_extra_tools(
 }
 
 async fn setup_http_server(
-    providers: &Arc<gasket_engine::channels::ImProviders>,
+    providers: &Arc<gasket_channels::ImProviders>,
     agent: &Arc<AgentSession>,
     dispatcher: &Arc<gasket_command::Dispatcher>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
@@ -741,7 +741,7 @@ async fn handle_commands_list(
 
 fn setup_broker_pipeline(
     broker: Arc<gasket_engine::broker::MemoryBroker>,
-    providers: &Arc<gasket_engine::channels::ImProviders>,
+    providers: &Arc<gasket_channels::ImProviders>,
     agent: &Arc<AgentSession>,
     dispatcher: &Arc<gasket_command::Dispatcher>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
@@ -780,8 +780,8 @@ fn start_heartbeat_service(
             .run(|task_text| {
                 let broker = broker.clone();
                 async move {
-                    let inbound = gasket_engine::channels::InboundMessage {
-                        channel: gasket_engine::channels::ChannelType::Cli,
+                    let inbound = gasket_channels::InboundMessage {
+                        channel: gasket_channels::ChannelType::Cli,
                         sender_id: "heartbeat".to_string(),
                         chat_id: "heartbeat".to_string(),
                         content: task_text,
@@ -824,7 +824,7 @@ fn start_cron_checker(
                     .channel
                     .as_deref()
                     .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
-                    .unwrap_or(gasket_engine::channels::ChannelType::Cli);
+                    .unwrap_or(gasket_channels::ChannelType::Cli);
                 let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
                 let is_broadcast = chat_id == "*";
 
@@ -844,7 +844,7 @@ fn start_cron_checker(
                             // then forward to broker. This preserves the
                             // ToolContext API while using broker underneath.
                             let (tx, mut rx) = tokio::sync::mpsc::channel::<
-                                gasket_engine::channels::OutboundMessage,
+                                gasket_channels::OutboundMessage,
                             >(16);
                             let broker2 = broker.clone();
                             tokio::spawn(async move {
@@ -869,9 +869,9 @@ fn start_cron_checker(
                             tracing::info!("{}", result);
                             // Send result to output channel
                             let out_msg = if is_broadcast {
-                                gasket_engine::channels::OutboundMessage::broadcast(channel, result)
+                                gasket_channels::OutboundMessage::broadcast(channel, result)
                             } else {
-                                gasket_engine::channels::OutboundMessage::new(
+                                gasket_channels::OutboundMessage::new(
                                     channel, &chat_id, result,
                                 )
                             };
@@ -886,11 +886,11 @@ fn start_cron_checker(
                             // Send error to output channel
                             let error_msg = format!("Cron job error: {}", e);
                             let out_msg = if is_broadcast {
-                                gasket_engine::channels::OutboundMessage::broadcast(
+                                gasket_channels::OutboundMessage::broadcast(
                                     channel, error_msg,
                                 )
                             } else {
-                                gasket_engine::channels::OutboundMessage::new(
+                                gasket_channels::OutboundMessage::new(
                                     channel, &chat_id, error_msg,
                                 )
                             };
@@ -903,7 +903,7 @@ fn start_cron_checker(
                     }
                 } else if is_broadcast {
                     // Broadcast path: send the message directly to all connected clients
-                    let out_msg = gasket_engine::channels::OutboundMessage::broadcast(
+                    let out_msg = gasket_channels::OutboundMessage::broadcast(
                         channel,
                         job.message.clone(),
                     );
@@ -914,7 +914,7 @@ fn start_cron_checker(
                     let _ = broker.publish(envelope).await;
                 } else {
                     // Traditional LLM-based path
-                    let inbound = gasket_engine::channels::InboundMessage {
+                    let inbound = gasket_channels::InboundMessage {
                         channel,
                         sender_id: "cron".to_string(),
                         chat_id,

@@ -59,8 +59,6 @@ pub use session::history::indexing::{IndexingQueue, IndexingService, Priority, Q
 // ── Bus Adapter ────────────────────────────────────────────
 pub use bus_adapter::EngineHandler;
 
-// ── Broker Outbound Dispatcher ─────────────────────────────
-pub use broker_outbound::OutboundDispatcher;
 
 // ── Config ─────────────────────────────────────────────────
 pub use config::{
@@ -110,34 +108,6 @@ pub use vault::{
 // Broker (topic-based message broker)
 pub mod broker {
     pub use gasket_broker::*;
-}
-
-// OutboundDispatcher (in engine, not broker — uses ImProviders)
-pub mod broker_outbound;
-
-// Channels
-pub mod channels {
-    #[cfg(feature = "discord")]
-    pub use gasket_channels::discord;
-
-    #[cfg(feature = "feishu")]
-    pub use gasket_channels::feishu;
-    #[cfg(feature = "slack")]
-    pub use gasket_channels::slack;
-    #[cfg(feature = "telegram")]
-    pub use gasket_channels::telegram;
-    #[cfg(feature = "websocket")]
-    pub use gasket_channels::websocket;
-    #[cfg(feature = "websocket")]
-    pub use gasket_channels::WebSocketApprovalCallback;
-    pub use gasket_channels::{
-        adapter, log_inbound, middleware, ApprovalRouter, ChannelConfigError, ChannelType,
-        ChannelsConfig, DiscordConfig, FeishuConfig, ImAdapter, ImProvider, ImProviders,
-        InboundMessage, InboundSender, MediaAttachment, OutboundMessage, SessionKey,
-        SessionKeyParseError, SimpleAuthChecker, SimpleRateLimiter, SlackConfig, TelegramConfig,
-        WebSocketMessage,
-    };
-    pub use gasket_types::events::ChatEvent;
 }
 
 // Providers

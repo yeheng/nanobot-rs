@@ -121,10 +121,10 @@ impl From<anyhow::Error> for ChannelError {
     }
 }
 
-impl From<gasket_channels::ChannelConfigError> for ConfigValidationError {
-    fn from(err: gasket_channels::ChannelConfigError) -> Self {
+impl From<gasket_types::channel_config::ChannelConfigError> for ConfigValidationError {
+    fn from(err: gasket_types::channel_config::ChannelConfigError) -> Self {
         match err {
-            gasket_channels::ChannelConfigError::InvalidChannelConfig(ch, msg) => {
+            gasket_types::channel_config::ChannelConfigError::InvalidChannelConfig(ch, msg) => {
                 ConfigValidationError::InvalidChannelConfig(ch, msg)
             }
         }

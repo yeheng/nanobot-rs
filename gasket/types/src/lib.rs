@@ -11,6 +11,7 @@
 //! between `gasket-core` and other crates.
 
 pub mod agent;
+pub mod channel_config;
 pub mod command;
 pub mod events;
 pub mod pending_ask;
