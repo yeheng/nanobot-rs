@@ -303,7 +303,8 @@ impl HtmlParser {
 
     /// Strip HTML tags from content.
     fn strip_tags(html: &str) -> String {
-        let re = regex::Regex::new(r"<[^>]*>").unwrap();
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| regex::Regex::new(r"<[^>]*>").expect("static tag regex"));
         re.replace_all(html, "").to_string()
     }
 
@@ -319,8 +320,11 @@ impl HtmlParser {
 
     /// Extract title from HTML <title> or <h1> tag.
     fn extract_title(html: &str) -> Option<String> {
+        static TITLE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static H1_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
         // Try <title> tag first
-        let title_re = regex::Regex::new(r"<title[^>]*>(.*?)</title>").unwrap();
+        let title_re = TITLE_RE.get_or_init(|| regex::Regex::new(r"<title[^>]*>(.*?)</title>").expect("static title regex"));
         if let Some(caps) = title_re.captures(html) {
             if let Some(title) = caps.get(1) {
                 let title = Self::decode_entities(title.as_str());
@@ -332,7 +336,7 @@ impl HtmlParser {
         }
 
         // Try <h1> tag
-        let h1_re = regex::Regex::new(r"<h1[^>]*>(.*?)</h1>").unwrap();
+        let h1_re = H1_RE.get_or_init(|| regex::Regex::new(r"<h1[^>]*>(.*?)</h1>").expect("static h1 regex"));
         if let Some(caps) = h1_re.captures(html) {
             if let Some(title) = caps.get(1) {
                 let title = Self::strip_tags(title.as_str());
@@ -349,7 +353,8 @@ impl HtmlParser {
 
     /// Collapse multiple whitespace and newlines.
     fn normalize_whitespace(text: &str) -> String {
-        let re = regex::Regex::new(r"\s+").unwrap();
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| regex::Regex::new(r"\s+").expect("static whitespace regex"));
         re.replace_all(text, " ").trim().to_string()
     }
 }

@@ -73,11 +73,13 @@ fn default_max_retries() -> usize {
 /// LLM prompt rather than silently replaced with empty strings.
 fn substitute_template(template: &str, ctx: &HashMap<String, String>) -> String {
     // Regex for {{key}} where key is alphanumeric + dots + underscores + slashes
+    // SAFETY: static regex pattern, compiles infallibly.
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap());
     let mut result = String::with_capacity(template.len());
     let mut last_end = 0;
     for caps in re.captures_iter(template) {
+        // SAFETY: captures_iter always yields group 0 (full match).
         let m = caps.get(0).unwrap();
         result.push_str(&template[last_end..m.start()]);
         let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");

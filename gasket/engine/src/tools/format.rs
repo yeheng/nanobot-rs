@@ -21,6 +21,7 @@ pub fn extract_json_array<T: serde::de::DeserializeOwned>(
 
     // 2. Extract from markdown code blocks.
     static CODE_BLOCK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // SAFETY: static regex pattern, compiles infallibly.
     let code_block_re = CODE_BLOCK_RE
         .get_or_init(|| regex::Regex::new(r"(?s)```(?:json)?\s*(\[.*?\])\s*```").unwrap());
     if let Some(caps) = code_block_re.captures(trimmed) {

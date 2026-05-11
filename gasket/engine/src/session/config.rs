@@ -7,6 +7,7 @@ fn default_wiki_base() -> String {
         .expect("home directory not available")
         .join(".gasket/wiki")
         .to_str()
+        // SAFETY: home_dir always returns valid UTF-8 on supported platforms.
         .unwrap()
         .to_string()
 }
@@ -16,6 +17,7 @@ fn default_sources_base() -> String {
         .expect("home directory not available")
         .join(".gasket/sources")
         .to_str()
+        // SAFETY: home_dir always returns valid UTF-8 on supported platforms.
         .unwrap()
         .to_string()
 }

@@ -85,7 +85,7 @@ impl RuntimeContext {
         ctx.apply_session_refs(&self.refs);
 
         // Inject SynthesisCallback when outbound channel is present (WebSocket mode).
-        if self.refs.outbound_tx.is_some() {
+        if let Some(outbound_tx) = self.refs.outbound_tx.clone() {
             let provider = &self.provider;
             let model = provider.default_model().to_string();
             let session_key = self.refs.session_key.clone().unwrap_or_else(|| {
@@ -94,7 +94,7 @@ impl RuntimeContext {
             let callback = std::sync::Arc::new(WebSocketSynthesizer::new(
                 provider.clone(),
                 model,
-                self.refs.outbound_tx.clone().unwrap(),
+                outbound_tx,
                 session_key,
             ));
             ctx = ctx.synthesis_callback(callback);
