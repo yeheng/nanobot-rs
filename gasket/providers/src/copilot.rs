@@ -42,22 +42,14 @@ impl CopilotProvider {
         api_base: Option<String>,
         default_model: Option<String>,
     ) -> Result<Self, ProviderError> {
-        let mut builder = rig::providers::copilot::Client::builder();
-
-        if let Some(base) = api_base {
-            builder = builder.base_url(base);
-        }
-
-        let client = builder
-            .github_access_token(github_token)
-            .build()
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
-
-        Ok(Self {
-            name: "copilot".to_string(),
-            rig_client: client,
-            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        })
+        Self::build(
+            rig::providers::copilot::CopilotAuth::GitHubAccessToken(github_token.into()),
+            api_base,
+            None,
+            None,
+            None,
+            default_model,
+        )
     }
 
     /// Create a new Copilot provider with API Key authentication
@@ -69,18 +61,14 @@ impl CopilotProvider {
         api_key: impl Into<String>,
         default_model: Option<String>,
     ) -> Result<Self, ProviderError> {
-        use rig::providers::copilot::CopilotAuth;
-
-        let client = rig::providers::copilot::Client::builder()
-            .api_key(CopilotAuth::ApiKey(api_key.into()))
-            .build()
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
-
-        Ok(Self {
-            name: "copilot".to_string(),
-            rig_client: client,
-            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        })
+        Self::build(
+            rig::providers::copilot::CopilotAuth::ApiKey(api_key.into()),
+            None,
+            None,
+            None,
+            None,
+            default_model,
+        )
     }
 
     /// Create a new Copilot provider from environment variables
@@ -112,12 +100,53 @@ impl CopilotProvider {
         api_key: &str,
         api_base: Option<String>,
         default_model: Option<String>,
-        _proxy_url: Option<String>,
-        _proxy_username: Option<String>,
-        _proxy_password: Option<String>,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
         _extra_headers: HashMap<String, String>,
     ) -> Result<Self, ProviderError> {
-        Self::new(api_key, api_base, default_model)
+        Self::build(
+            rig::providers::copilot::CopilotAuth::GitHubAccessToken(api_key.to_string()),
+            api_base,
+            proxy_url,
+            proxy_username,
+            proxy_password,
+            default_model,
+        )
+    }
+
+    fn build(
+        auth: rig::providers::copilot::CopilotAuth,
+        api_base: Option<String>,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
+        default_model: Option<String>,
+    ) -> Result<Self, ProviderError> {
+        let mut builder = rig::providers::copilot::Client::builder().api_key(auth);
+
+        if let Some(base) = api_base {
+            builder = builder.base_url(base);
+        }
+
+        if proxy_url.is_some() {
+            let http = crate::common::build_http_client(
+                proxy_url.as_deref(),
+                proxy_username.as_deref(),
+                proxy_password.as_deref(),
+            );
+            builder = builder.http_client(http);
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
+
+        Ok(Self {
+            name: "copilot".to_string(),
+            rig_client: client,
+            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        })
     }
 
     /// Validate a GitHub Personal Access Token by attempting to authorize.

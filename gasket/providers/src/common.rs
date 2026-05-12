@@ -225,28 +225,43 @@ impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
     pub fn new(name: impl Into<String>, config: ProviderConfig) -> Self {
         let api_key = config.api_key.clone().unwrap_or_default();
-        let rig_client = if config.api_base.is_empty() {
-            openai::Client::new(api_key).unwrap_or_else(|e| {
-                tracing::warn!("Failed to create rig client: {}", e);
-                openai::Client::new("".to_string()).expect("fallback rig client creation should not fail")
-            })
-        } else {
-            openai::Client::builder()
-                .api_key(api_key.clone())
-                .base_url(&config.api_base)
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to create rig client with base_url: {}", e);
-                    openai::Client::new(api_key).unwrap_or_else(|e2| {
-                        panic!("Fallback rig client creation also failed: {}", e2)
-                    })
-                })
-        };
+
         let http_client = build_http_client(
             config.proxy_url.as_deref(),
             config.proxy_username.as_deref(),
             config.proxy_password.as_deref(),
         );
+
+        let rig_client = if config.api_base.is_empty() {
+            openai::Client::builder()
+                .api_key(api_key)
+                .http_client(http_client.clone())
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to create rig client: {}", e);
+                    openai::Client::builder()
+                        .api_key("")
+                        .http_client(http_client.clone())
+                        .build()
+                        .expect("fallback rig client creation should not fail")
+                })
+        } else {
+            openai::Client::builder()
+                .api_key(api_key.clone())
+                .base_url(&config.api_base)
+                .http_client(http_client.clone())
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to create rig client with base_url: {}", e);
+                    openai::Client::builder()
+                        .api_key(api_key)
+                        .http_client(http_client.clone())
+                        .build()
+                        .unwrap_or_else(|e2| {
+                            panic!("Fallback rig client creation also failed: {}", e2)
+                        })
+                })
+        };
         Self {
             name: name.into(),
             config,

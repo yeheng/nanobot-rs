@@ -101,6 +101,12 @@ impl AnthropicProvider {
         if let Some(base) = api_base {
             builder = builder.base_url(&base);
         }
+        let http = crate::common::build_http_client(
+            proxy_url.as_deref(),
+            proxy_username.as_deref(),
+            proxy_password.as_deref(),
+        );
+        builder = builder.http_client(http);
         let rig_client = builder.build().expect("Failed to create Anthropic client");
         Self {
             rig_client,

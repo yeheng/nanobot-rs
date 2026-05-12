@@ -173,15 +173,23 @@ impl MoonshotProvider {
         let final_api_base = api_base
             .unwrap_or_else(|| MOONSHOT_API_BASE.to_string());
 
+        let http = crate::common::build_http_client(
+            proxy_url.as_deref(),
+            proxy_username.as_deref(),
+            proxy_password.as_deref(),
+        );
+
         let mut builder = rig::providers::moonshot::Client::builder()
             .api_key(api_key.clone())
-            .base_url(&final_api_base);
+            .base_url(&final_api_base)
+            .http_client(http.clone());
 
         let rig_anthropic_client = if final_api_base.contains("/coding") || final_api_base.contains("/anthropic") {
             Some(
                 rig::providers::moonshot::AnthropicClient::builder()
                     .api_key(api_key.clone())
                     .base_url(&final_api_base)
+                    .http_client(http)
                     .build()
                     .expect("Failed to create Moonshot Anthropic client"),
             )
