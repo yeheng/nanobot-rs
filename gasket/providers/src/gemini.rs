@@ -14,7 +14,7 @@ use tracing::{debug, instrument};
 /// Gemini provider using rig's client
 pub struct GeminiProvider {
     /// Rig Gemini client
-    rig_client: rig::providers::gemini::Client,
+    rig_client: rig::providers::gemini::Client<crate::logging_http::LoggingHttpClient>,
 
     /// API key (needed for custom configuration)
     api_key: String,
@@ -34,6 +34,7 @@ impl GeminiProvider {
     pub fn new(api_key: String) -> Self {
         let rig_client = rig::providers::gemini::Client::builder()
             .api_key(api_key.clone())
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Gemini client");
         Self {
@@ -57,7 +58,10 @@ impl GeminiProvider {
             builder = builder.base_url(&url);
         }
         Self {
-            rig_client: builder.build().expect("Failed to create Gemini client"),
+            rig_client: builder
+                .http_client(crate::logging_http::LoggingHttpClient::default())
+                .build()
+                .expect("Failed to create Gemini client"),
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-2.5-flash".to_string(),
@@ -70,6 +74,7 @@ impl GeminiProvider {
         let rig_client = rig::providers::gemini::Client::builder()
             .api_key(api_key.clone())
             .base_url(&api_base)
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Gemini client");
         Self {
@@ -91,16 +96,17 @@ impl GeminiProvider {
         proxy_password: Option<String>,
         extra_headers: HashMap<String, String>,
     ) -> Self {
-        let mut builder = rig::providers::gemini::Client::builder().api_key(api_key.clone());
-        if let Some(ref base) = api_base {
-            builder = builder.base_url(base);
-        }
         let http = crate::common::build_http_client(
             proxy_url.as_deref(),
             proxy_username.as_deref(),
             proxy_password.as_deref(),
         );
-        builder = builder.http_client(http);
+        let mut builder = rig::providers::gemini::Client::builder()
+            .api_key(api_key.clone())
+            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+        if let Some(ref base) = api_base {
+            builder = builder.base_url(base);
+        }
         Self {
             rig_client: builder.build().expect("Failed to create Gemini client"),
             api_key,

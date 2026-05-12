@@ -216,7 +216,7 @@ impl ProviderConfig {
 pub struct OpenAICompatibleProvider {
     name: String,
     config: ProviderConfig,
-    rig_client: openai::Client,
+    rig_client: openai::CompletionsClient<crate::logging_http::LoggingHttpClient>,
     /// HTTP client for model_limits API calls (rig doesn't expose model introspection)
     http_client: Client,
 }
@@ -233,29 +233,29 @@ impl OpenAICompatibleProvider {
         );
 
         let rig_client = if config.api_base.is_empty() {
-            openai::Client::builder()
+            openai::CompletionsClient::builder()
                 .api_key(api_key)
-                .http_client(http_client.clone())
+                .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!("Failed to create rig client: {}", e);
-                    openai::Client::builder()
+                    openai::CompletionsClient::builder()
                         .api_key("")
-                        .http_client(http_client.clone())
+                        .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
                         .build()
                         .expect("fallback rig client creation should not fail")
                 })
         } else {
-            openai::Client::builder()
+            openai::CompletionsClient::builder()
                 .api_key(api_key.clone())
                 .base_url(&config.api_base)
-                .http_client(http_client.clone())
+                .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!("Failed to create rig client with base_url: {}", e);
-                    openai::Client::builder()
+                    openai::CompletionsClient::builder()
                         .api_key(api_key)
-                        .http_client(http_client.clone())
+                        .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
                         .build()
                         .unwrap_or_else(|e2| {
                             panic!("Fallback rig client creation also failed: {}", e2)

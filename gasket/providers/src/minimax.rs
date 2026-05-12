@@ -148,7 +148,7 @@ fn sanitize_messages(messages: Vec<crate::ChatMessage>) -> Vec<crate::ChatMessag
 /// MiniMax provider using rig's client
 pub struct MinimaxProvider {
     /// Rig MiniMax client
-    rig_client: rig::providers::minimax::Client,
+    rig_client: rig::providers::minimax::Client<crate::logging_http::LoggingHttpClient>,
 
     /// API key
     api_key: String,
@@ -171,6 +171,7 @@ impl MinimaxProvider {
     pub fn new(api_key: String) -> Self {
         let rig_client = rig::providers::minimax::Client::builder()
             .api_key(api_key.clone())
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Minimax client");
         Self {
@@ -195,7 +196,10 @@ impl MinimaxProvider {
             builder = builder.base_url(&url);
         }
         Self {
-            rig_client: builder.build().expect("Failed to create Minimax client"),
+            rig_client: builder
+                .http_client(crate::logging_http::LoggingHttpClient::default())
+                .build()
+                .expect("Failed to create Minimax client"),
             api_key,
             api_base: MINIMAX_API_BASE.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
@@ -209,6 +213,7 @@ impl MinimaxProvider {
         let rig_client = rig::providers::minimax::Client::builder()
             .api_key(api_key.clone())
             .base_url(&api_base)
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Minimax client");
         Self {
@@ -239,16 +244,17 @@ impl MinimaxProvider {
         proxy_password: Option<String>,
         extra_headers: HashMap<String, String>,
     ) -> Self {
-        let mut builder = rig::providers::minimax::Client::builder().api_key(api_key.clone());
-        if let Some(ref base) = api_base {
-            builder = builder.base_url(base);
-        }
         let http = crate::common::build_http_client(
             proxy_url.as_deref(),
             proxy_username.as_deref(),
             proxy_password.as_deref(),
         );
-        builder = builder.http_client(http);
+        let mut builder = rig::providers::minimax::Client::builder()
+            .api_key(api_key.clone())
+            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+        if let Some(ref base) = api_base {
+            builder = builder.base_url(base);
+        }
         Self {
             rig_client: builder.build().expect("Failed to create Minimax client"),
             api_key,
@@ -422,7 +428,8 @@ impl LlmProvider for MinimaxProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ChatMessage;
+    use crate::{ChatMessage, ToolCall};
+    use serde_json::json;
 
     #[test]
     fn test_provider_creation() {

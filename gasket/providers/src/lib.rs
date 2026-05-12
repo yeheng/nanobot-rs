@@ -67,6 +67,7 @@ mod common;
 mod copilot;
 #[cfg(feature = "provider-gemini")]
 mod gemini;
+mod logging_http;
 #[cfg(feature = "provider-minimax")]
 mod minimax;
 mod model_spec;

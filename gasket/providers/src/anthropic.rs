@@ -23,7 +23,7 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Anthropic provider using rig's client
 pub struct AnthropicProvider {
     /// Rig Anthropic client
-    rig_client: rig::providers::anthropic::Client,
+    rig_client: rig::providers::anthropic::Client<crate::logging_http::LoggingHttpClient>,
 
     /// Default model
     default_model: String,
@@ -40,6 +40,7 @@ impl AnthropicProvider {
     pub fn new(api_key: String) -> Self {
         let rig_client = rig::providers::anthropic::Client::builder()
             .api_key(api_key)
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Anthropic client");
         Self {
@@ -61,7 +62,10 @@ impl AnthropicProvider {
         if let Some(url) = proxy_url {
             builder = builder.base_url(&url);
         }
-        let rig_client = builder.build().expect("Failed to create Anthropic client");
+        let rig_client = builder
+            .http_client(crate::logging_http::LoggingHttpClient::default())
+            .build()
+            .expect("Failed to create Anthropic client");
         Self {
             rig_client,
             default_model: DEFAULT_MODEL.to_string(),
@@ -75,6 +79,7 @@ impl AnthropicProvider {
         let rig_client = rig::providers::anthropic::Client::builder()
             .api_key(api_key)
             .base_url(&api_base)
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Anthropic client");
         Self {
@@ -97,16 +102,17 @@ impl AnthropicProvider {
         proxy_password: Option<String>,
         extra_headers: HashMap<String, String>,
     ) -> Self {
-        let mut builder = rig::providers::anthropic::Client::builder().api_key(api_key);
-        if let Some(base) = api_base {
-            builder = builder.base_url(&base);
-        }
         let http = crate::common::build_http_client(
             proxy_url.as_deref(),
             proxy_username.as_deref(),
             proxy_password.as_deref(),
         );
-        builder = builder.http_client(http);
+        let mut builder = rig::providers::anthropic::Client::builder()
+            .api_key(api_key)
+            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+        if let Some(base) = api_base {
+            builder = builder.base_url(&base);
+        }
         let rig_client = builder.build().expect("Failed to create Anthropic client");
         Self {
             rig_client,

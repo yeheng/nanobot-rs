@@ -37,10 +37,10 @@ enum ApiFormat {
 /// Moonshot provider using rig's client
 pub struct MoonshotProvider {
     /// Rig Moonshot client (OpenAI-compatible)
-    rig_client: rig::providers::moonshot::Client,
+    rig_client: rig::providers::moonshot::Client<crate::logging_http::LoggingHttpClient>,
 
     /// Rig Moonshot Anthropic client (for Anthropic-format endpoints)
-    rig_anthropic_client: Option<rig::providers::moonshot::AnthropicClient>,
+    rig_anthropic_client: Option<rig::providers::moonshot::AnthropicClient<crate::logging_http::LoggingHttpClient>>,
 
     /// API base URL
     api_base: String,
@@ -90,6 +90,7 @@ impl MoonshotProvider {
     pub fn new(api_key: String) -> Self {
         let rig_client = rig::providers::moonshot::Client::builder()
             .api_key(api_key.clone())
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Moonshot client");
         Self {
@@ -115,7 +116,10 @@ impl MoonshotProvider {
             builder = builder.base_url(&url);
         }
         Self {
-            rig_client: builder.build().expect("Failed to create Moonshot client"),
+            rig_client: builder
+                .http_client(crate::logging_http::LoggingHttpClient::default())
+                .build()
+                .expect("Failed to create Moonshot client"),
             rig_anthropic_client: None,
             api_base: MOONSHOT_API_BASE.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
@@ -130,15 +134,16 @@ impl MoonshotProvider {
         let rig_client = rig::providers::moonshot::Client::builder()
             .api_key(api_key.clone())
             .base_url(&api_base)
+            .http_client(crate::logging_http::LoggingHttpClient::default())
             .build()
             .expect("Failed to create Moonshot client");
 
-        // If using Anthropic format, also create the Anthropic client
         let rig_anthropic_client = if api_base.contains("/coding") || api_base.contains("/anthropic") {
             Some(
                 rig::providers::moonshot::AnthropicClient::builder()
                     .api_key(api_key.clone())
                     .base_url(&api_base)
+                    .http_client(crate::logging_http::LoggingHttpClient::default())
                     .build()
                     .expect("Failed to create Moonshot Anthropic client"),
             )
@@ -182,14 +187,14 @@ impl MoonshotProvider {
         let mut builder = rig::providers::moonshot::Client::builder()
             .api_key(api_key.clone())
             .base_url(&final_api_base)
-            .http_client(http.clone());
+            .http_client(crate::logging_http::LoggingHttpClient::new(http.clone()));
 
         let rig_anthropic_client = if final_api_base.contains("/coding") || final_api_base.contains("/anthropic") {
             Some(
                 rig::providers::moonshot::AnthropicClient::builder()
                     .api_key(api_key.clone())
                     .base_url(&final_api_base)
-                    .http_client(http)
+                    .http_client(crate::logging_http::LoggingHttpClient::new(http))
                     .build()
                     .expect("Failed to create Moonshot Anthropic client"),
             )

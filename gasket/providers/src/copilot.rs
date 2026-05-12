@@ -25,7 +25,7 @@ pub struct CopilotProvider {
     /// Provider name
     name: String,
     /// Rig copilot client
-    rig_client: rig::providers::copilot::Client,
+    rig_client: rig::providers::copilot::Client<crate::logging_http::LoggingHttpClient>,
     /// Default model
     default_model: String,
 }
@@ -81,14 +81,34 @@ impl CopilotProvider {
     /// # Arguments
     /// * `default_model` - Default model to use (e.g., "gpt-4o")
     pub fn from_env(default_model: Option<String>) -> Result<Self, ProviderError> {
-        let client = rig::providers::copilot::Client::from_env()
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
+        // Read auth from environment and build with logging client.
+        let api_key = std::env::var("GITHUB_COPILOT_API_KEY")
+            .or_else(|_| std::env::var("COPILOT_API_KEY"))
+            .ok();
 
-        Ok(Self {
-            name: "copilot".to_string(),
-            rig_client: client,
-            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        })
+        if let Some(key) = api_key {
+            return Self::build(
+                rig::providers::copilot::CopilotAuth::ApiKey(key),
+                None, None, None, None, default_model,
+            );
+        }
+
+        let github_token = std::env::var("COPILOT_GITHUB_ACCESS_TOKEN")
+            .or_else(|_| std::env::var("GITHUB_TOKEN"))
+            .ok();
+
+        if let Some(token) = github_token {
+            return Self::build(
+                rig::providers::copilot::CopilotAuth::GitHubAccessToken(token),
+                None, None, None, None, default_model,
+            );
+        }
+
+        // No env credentials found — fall back to OAuth
+        Self::build(
+            rig::providers::copilot::CopilotAuth::GitHubAccessToken(String::new()),
+            None, None, None, None, default_model,
+        )
     }
 
     /// Create a Copilot provider for use in the provider registry.
@@ -123,19 +143,23 @@ impl CopilotProvider {
         proxy_password: Option<String>,
         default_model: Option<String>,
     ) -> Result<Self, ProviderError> {
-        let mut builder = rig::providers::copilot::Client::builder().api_key(auth);
-
-        if let Some(base) = api_base {
-            builder = builder.base_url(base);
-        }
-
-        if proxy_url.is_some() {
+        let logging_client = if let Some(url) = proxy_url.as_deref() {
             let http = crate::common::build_http_client(
-                proxy_url.as_deref(),
+                Some(url),
                 proxy_username.as_deref(),
                 proxy_password.as_deref(),
             );
-            builder = builder.http_client(http);
+            crate::logging_http::LoggingHttpClient::new(http)
+        } else {
+            crate::logging_http::LoggingHttpClient::default()
+        };
+
+        let mut builder = rig::providers::copilot::Client::builder()
+            .api_key(auth)
+            .http_client(logging_client);
+
+        if let Some(base) = api_base {
+            builder = builder.base_url(base);
         }
 
         let client = builder
