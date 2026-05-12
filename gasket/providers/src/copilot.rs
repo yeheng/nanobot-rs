@@ -1,9 +1,11 @@
 //! GitHub Copilot LLM Provider
 //!
 //! Implements the `LlmProvider` trait for GitHub Copilot's chat API using rig.
-//! Supports GitHub Access Token and API Key authentication.
+//! Supports GitHub Access Token, API Key, and OAuth authentication.
 //!
 //! For OAuth, use `Client::from_env()` which handles device flow automatically.
+
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use rig::client::{CompletionClient, ProviderClient};
@@ -99,6 +101,59 @@ impl CopilotProvider {
             rig_client: client,
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         })
+    }
+
+    /// Create a Copilot provider for use in the provider registry.
+    ///
+    /// Accepts the full set of registry config parameters. Proxy settings are
+    /// currently ignored because rig's HTTP client does not expose proxy
+    /// configuration.
+    pub fn with_proxy(
+        api_key: &str,
+        api_base: Option<String>,
+        default_model: Option<String>,
+        _proxy_url: Option<String>,
+        _proxy_username: Option<String>,
+        _proxy_password: Option<String>,
+        _extra_headers: HashMap<String, String>,
+    ) -> Result<Self, ProviderError> {
+        Self::new(api_key, api_base, default_model)
+    }
+
+    /// Validate a GitHub Personal Access Token by attempting to authorize.
+    ///
+    /// Returns `Ok(())` if the token is valid and Copilot access is available.
+    pub async fn validate_pat(token: &str) -> Result<(), ProviderError> {
+        let client = rig::providers::copilot::Client::builder()
+            .github_access_token(token)
+            .build()
+            .map_err(|e| ProviderError::AuthError(e.to_string()))?;
+
+        client
+            .authorize()
+            .await
+            .map_err(|e| ProviderError::AuthError(e.to_string()))
+    }
+
+    /// Run the OAuth Device Flow, caching tokens in the given directory.
+    ///
+    /// Rig prints the verification URL and user code to stdout automatically.
+    /// Tokens are cached in `token_dir` for subsequent use.
+    ///
+    /// Returns `Ok(())` on success.
+    pub async fn oauth_device_flow(
+        token_dir: &std::path::Path,
+    ) -> Result<(), ProviderError> {
+        let client = rig::providers::copilot::Client::builder()
+            .oauth()
+            .token_dir(token_dir)
+            .build()
+            .map_err(|e| ProviderError::AuthError(e.to_string()))?;
+
+        client
+            .authorize()
+            .await
+            .map_err(|e| ProviderError::AuthError(e.to_string()))
     }
 }
 

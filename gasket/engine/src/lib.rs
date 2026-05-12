@@ -127,10 +127,7 @@ pub mod providers {
         ToolCallDelta, ToolDefinition, Usage,
     };
     #[cfg(feature = "provider-copilot")]
-    pub use gasket_providers::{
-        CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
-        COPILOT_DEFAULT_CLIENT_ID,
-    };
+    pub use gasket_providers::CopilotProvider;
 }
 
 // Wiki re-exports are now in the wiki module (pub mod wiki).

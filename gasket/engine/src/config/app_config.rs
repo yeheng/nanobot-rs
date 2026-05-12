@@ -494,17 +494,16 @@ impl ProviderRegistry {
             "copilot" => {
                 #[cfg(feature = "provider-copilot")]
                 {
-                    return Ok(std::sync::Arc::new(
-                        gasket_providers::CopilotProvider::with_proxy(
-                            api_key,
-                            Some(provider_config.api_base.clone()),
-                            Some(model.to_string()),
-                            proxy_url,
-                            proxy_username,
-                            proxy_password,
-                            provider_config.extra_headers.clone(),
-                        ),
-                    ));
+                    let provider = gasket_providers::CopilotProvider::with_proxy(
+                        api_key,
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        proxy_url,
+                        proxy_username,
+                        proxy_password,
+                        provider_config.extra_headers.clone(),
+                    )?;
+                    return Ok(std::sync::Arc::new(provider));
                 }
                 #[cfg(not(feature = "provider-copilot"))]
                 anyhow::bail!(

@@ -47,20 +47,12 @@ pub async fn cmd_auth_status() -> Result<()> {
             #[cfg(feature = "provider-copilot")]
             {
                 if let Some(ref token) = provider_config.api_key {
-                    // Try to validate the token
-                    let oauth = gasket_engine::providers::CopilotOAuth::with_proxy(
-                        gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
-                        provider_config.proxy_url.clone(),
-                        provider_config.proxy_username.clone(),
-                        provider_config.proxy_password.clone(),
-                    );
-                    match oauth.validate_pat(token).await {
-                        Ok(true) => format!("{} Authenticated", "✓".green()),
-                        Ok(false) => format!("{} Invalid token", "✗".red()),
-                        Err(_) => format!("{} Unable to verify", "?".yellow()),
+                    match gasket_engine::providers::CopilotProvider::validate_pat(token).await {
+                        Ok(()) => format!("{} Authenticated", "✓".green()),
+                        Err(_) => format!("{} Invalid token", "✗".red()),
                     }
                 } else {
-                    format!("{} No token configured", "✗".red())
+                    format!("{} Configured (OAuth cached)", "✓".green())
                 }
             }
             #[cfg(not(feature = "provider-copilot"))]

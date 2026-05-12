@@ -164,17 +164,16 @@ pub fn build_provider(
         "copilot" => {
             #[cfg(feature = "provider-copilot")]
             {
-                Ok(Arc::new(
-                    gasket_engine::providers::CopilotProvider::with_proxy(
-                        api_key,
-                        Some(provider_config.api_base.clone()),
-                        Some(model.to_string()),
-                        proxy_url,
-                        proxy_username,
-                        proxy_password,
-                        provider_config.extra_headers.clone(),
-                    ),
-                ))
+                let provider = gasket_engine::providers::CopilotProvider::with_proxy(
+                    api_key,
+                    Some(provider_config.api_base.clone()),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    provider_config.extra_headers.clone(),
+                )?;
+                Ok(Arc::new(provider))
             }
             #[cfg(not(feature = "provider-copilot"))]
             {
