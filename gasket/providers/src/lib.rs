@@ -74,6 +74,7 @@ mod minimax;
 mod model_spec;
 #[cfg(feature = "provider-moonshot")]
 mod moonshot;
+pub mod rig_bridge;
 pub mod streaming;
 
 // Re-export base types
