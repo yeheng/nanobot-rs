@@ -120,7 +120,7 @@ pub mod providers {
     #[cfg(feature = "provider-moonshot")]
     pub use gasket_providers::MoonshotProvider;
     pub use gasket_providers::{
-        build_http_client, parse_json_args, ChatMessage, ChatRequest, ChatResponse,
+        build_http_client, build_provider, parse_json_args, ChatMessage, ChatRequest, ChatResponse,
         ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall,
         FunctionDefinition, LlmProvider, MessageRole, ModelSpec, OpenAICompatibleProvider,
         ProviderBuildError, ProviderConfig, ProviderResult, ThinkingConfig, ToolCall,

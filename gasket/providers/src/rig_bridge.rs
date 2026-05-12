@@ -1,7 +1,7 @@
 //! Type conversion bridge between gasket provider types and rig-core types.
 
 use futures_util::stream::StreamExt;
-use rig::completion::{CompletionError, CompletionRequest, CompletionResponse, Message as RigMessage, ToolDefinition as RigToolDefinition};
+use rig::completion::{CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Message as RigMessage, ToolDefinition as RigToolDefinition};
 use rig::message::{AssistantContent, ReasoningContent, ToolCall as RigToolCall, ToolFunction as RigToolFunction};
 use rig::streaming::{StreamedAssistantContent, ToolCallDeltaContent};
 use rig::OneOrMany;
@@ -39,8 +39,10 @@ pub fn to_rig_message(msg: ChatMessage) -> RigMessage {
             }
         }
         MessageRole::Tool => {
-            // Tool results map to user messages with ToolResult content
-            RigMessage::user(msg.content.unwrap_or_default())
+            RigMessage::tool_result(
+                msg.tool_call_id.unwrap_or_default(),
+                msg.content.unwrap_or_default(),
+            )
         }
     }
 }
@@ -135,7 +137,7 @@ pub fn from_rig_response<T>(response: CompletionResponse<T>) -> ChatResponse {
 pub fn from_rig_stream<S, R>(stream: S) -> ChatStream
 where
     S: futures_util::Stream<Item = Result<StreamedAssistantContent<R>, CompletionError>> + Send + 'static,
-    R: Send + 'static,
+    R: GetTokenUsage + Send + 'static,
 {
     let mapped = stream.map(|result| {
         match result {
@@ -179,11 +181,18 @@ where
                         finish_reason: None,
                         usage: None,
                     },
-                    StreamedAssistantContent::Final(_) => ChatStreamChunk {
-                        delta: ChatStreamDelta::default(),
-                        finish_reason: Some(FinishReason::Stop),
-                        usage: None,
-                    },
+                    StreamedAssistantContent::Final(res) => {
+                        let usage = res.token_usage().map(|u| Usage {
+                            input_tokens: u.input_tokens as usize,
+                            output_tokens: u.output_tokens as usize,
+                            total_tokens: u.total_tokens as usize,
+                        });
+                        ChatStreamChunk {
+                            delta: ChatStreamDelta::default(),
+                            finish_reason: Some(FinishReason::Stop),
+                            usage,
+                        }
+                    }
                     _ => ChatStreamChunk {
                         delta: ChatStreamDelta::default(),
                         finish_reason: None,

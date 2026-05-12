@@ -213,7 +213,7 @@ impl ProviderConfig {
 /// identical HTTP POST + JSON parse logic.
 pub struct OpenAICompatibleProvider {
     name: String,
-    config: ProviderConfig,
+    api_base: String,
     inner: RigCompletionProvider<openai::CompletionsClient<crate::logging_http::LoggingHttpClient>>,
 }
 
@@ -221,6 +221,7 @@ impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
     pub fn new(name: impl Into<String>, config: ProviderConfig) -> Self {
         let api_key = config.api_key.clone().unwrap_or_default();
+        let supports_thinking = config.supports_thinking;
 
         let http_client = build_http_client(
             config.proxy_url.as_deref(),
@@ -262,10 +263,11 @@ impl OpenAICompatibleProvider {
                 })
         };
         let name = name.into();
-        let inner = RigCompletionProvider::new(&name, config.default_model.clone(), rig_client);
+        let inner = RigCompletionProvider::new(&name, config.default_model.clone(), rig_client)
+            .with_thinking(supports_thinking);
         Self {
+            api_base: config.api_base.clone(),
             name,
-            config,
             inner,
         }
     }
@@ -338,17 +340,24 @@ impl OpenAICompatibleProvider {
         proxy_username: Option<String>,
         proxy_password: Option<String>,
     ) -> Self {
-        let mut provider = Self::from_name(
+        let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
+        Self::new(
             name,
-            api_key,
-            api_base,
-            default_model,
-            proxy_url,
-            proxy_username,
-            proxy_password,
-        );
-        provider.config.extra_headers = extra_headers;
-        provider
+            ProviderConfig {
+                provider_type: ProviderType::Openai,
+                api_base,
+                api_key: Some(api_key.into()),
+                default_model: resolved_model,
+                models: HashMap::new(),
+                extra_headers,
+                proxy_url,
+                proxy_username,
+                proxy_password,
+                client_id: None,
+                default_currency: None,
+                supports_thinking: false,
+            },
+        )
     }
 
     // -- Special constructors --
@@ -386,7 +395,7 @@ impl OpenAICompatibleProvider {
 
     /// Get the API base URL
     pub fn api_base(&self) -> &str {
-        &self.config.api_base
+        &self.api_base
     }
 }
 
@@ -401,7 +410,7 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 
     fn supports_thinking(&self) -> bool {
-        self.config.supports_thinking
+        self.inner.supports_thinking()
     }
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
@@ -412,6 +421,235 @@ impl LlmProvider for OpenAICompatibleProvider {
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
         self.inner.chat_stream(request).await
+    }
+}
+
+/// Build a provider instance by name and config.
+///
+/// Routes to the appropriate native provider when the name is recognized,
+/// falling back to `provider_type` dispatch for unknown names.
+pub fn build_provider(
+    name: &str,
+    api_key: &str,
+    provider_config: &ProviderConfig,
+    model: &str,
+) -> anyhow::Result<std::sync::Arc<dyn crate::LlmProvider>> {
+    let proxy_url = provider_config.proxy_url.clone();
+    let proxy_username = provider_config.proxy_username.clone();
+    let proxy_password = provider_config.proxy_password.clone();
+    let extra_headers = provider_config.extra_headers.clone();
+    let api_base = provider_config.api_base.clone();
+
+    match name {
+        "minimax" | "minimaxi" => {
+            #[cfg(feature = "provider-minimax")]
+            {
+                let provider = crate::build_minimax_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-minimax"))]
+            anyhow::bail!(
+                "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+            )
+        }
+        "gemini" => {
+            #[cfg(feature = "provider-gemini")]
+            {
+                let provider = crate::build_gemini_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-gemini"))]
+            anyhow::bail!(
+                "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+            )
+        }
+        "moonshot" | "kimi" => {
+            #[cfg(feature = "provider-moonshot")]
+            {
+                let provider = crate::MoonshotProvider::with_config(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-moonshot"))]
+            anyhow::bail!(
+                "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+            )
+        }
+        "anthropic" | "claude" => {
+            #[cfg(feature = "provider-anthropic")]
+            {
+                let provider = crate::build_anthropic_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    None,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-anthropic"))]
+            anyhow::bail!(
+                "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+            )
+        }
+        "copilot" => {
+            #[cfg(feature = "provider-copilot")]
+            {
+                let provider = crate::CopilotProvider::with_proxy(
+                    api_key,
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                )?;
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-copilot"))]
+            anyhow::bail!(
+                "Copilot provider is not compiled in. Rebuild with --features provider-copilot"
+            )
+        }
+        _ => dispatch_by_type(name, api_key, provider_config, model),
+    }
+}
+
+/// Fallback: dispatch by `provider_type` for unknown provider names.
+fn dispatch_by_type(
+    name: &str,
+    api_key: &str,
+    provider_config: &ProviderConfig,
+    model: &str,
+) -> anyhow::Result<std::sync::Arc<dyn crate::LlmProvider>> {
+    let proxy_url = provider_config.proxy_url.clone();
+    let proxy_username = provider_config.proxy_username.clone();
+    let proxy_password = provider_config.proxy_password.clone();
+    let extra_headers = provider_config.extra_headers.clone();
+    let api_base = provider_config.api_base.clone();
+
+    match provider_config.provider_type {
+        ProviderType::Gemini => {
+            #[cfg(feature = "provider-gemini")]
+            {
+                let provider = crate::build_gemini_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-gemini"))]
+            anyhow::bail!(
+                "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+            )
+        }
+        ProviderType::Minimax => {
+            #[cfg(feature = "provider-minimax")]
+            {
+                let provider = crate::build_minimax_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-minimax"))]
+            anyhow::bail!(
+                "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+            )
+        }
+        ProviderType::Moonshot => {
+            #[cfg(feature = "provider-moonshot")]
+            {
+                let provider = crate::MoonshotProvider::with_config(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-moonshot"))]
+            anyhow::bail!(
+                "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+            )
+        }
+        ProviderType::Anthropic => {
+            #[cfg(feature = "provider-anthropic")]
+            {
+                let provider = crate::build_anthropic_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    None,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-anthropic"))]
+            anyhow::bail!(
+                "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+            )
+        }
+        ProviderType::Openai => {
+            let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
+            let config = ProviderConfig {
+                provider_type: ProviderType::Openai,
+                api_base: provider_config.api_base.clone(),
+                api_key: Some(api_key.to_string()),
+                default_model: model.to_string(),
+                models: HashMap::new(),
+                extra_headers,
+                proxy_url,
+                proxy_username,
+                proxy_password,
+                client_id: provider_config.client_id.clone(),
+                default_currency: provider_config.default_currency.clone(),
+                supports_thinking,
+            };
+            Ok(std::sync::Arc::new(OpenAICompatibleProvider::new(name, config)))
+        }
     }
 }
 
