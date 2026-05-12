@@ -10,13 +10,12 @@
 //! - Thinking content is returned in `reasoning_details` field when `reasoning_split=true`
 //! - Streaming uses standard SSE with MiniMax-specific fields
 
-use crate::base::{ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
+use crate::base::ChatStream;
 use crate::rig_bridge::{from_rig_response, from_rig_stream, to_rig_request};
 use crate::{ChatRequest, ChatResponse, LlmProvider, ProviderError};
 use async_trait::async_trait;
 use rig::client::CompletionClient;
 use rig::completion::CompletionModel;
-use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, instrument};
 
@@ -158,12 +157,6 @@ pub struct MinimaxProvider {
 
     /// Default model
     default_model: String,
-
-    /// Group ID for MiniMax API
-    group_id: Option<String>,
-
-    /// Extra HTTP headers to send with every request
-    extra_headers: HashMap<String, String>,
 }
 
 impl MinimaxProvider {
@@ -179,8 +172,6 @@ impl MinimaxProvider {
             api_key,
             api_base: MINIMAX_API_BASE.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
-            group_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -203,8 +194,6 @@ impl MinimaxProvider {
             api_key,
             api_base: MINIMAX_API_BASE.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
-            group_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -221,24 +210,14 @@ impl MinimaxProvider {
             api_key,
             api_base,
             default_model: DEFAULT_MODEL.to_string(),
-            group_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
-    /// Create with group_id for Multi-account API access
-    pub fn with_group_id(mut self, group_id: String) -> Self {
-        self.group_id = Some(group_id);
-        self
-    }
-
     /// Create with full configuration
-    #[allow(clippy::too_many_arguments)]
     pub fn with_config(
         api_key: String,
         api_base: Option<String>,
         default_model: Option<String>,
-        group_id: Option<String>,
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
@@ -251,7 +230,7 @@ impl MinimaxProvider {
         );
         let mut builder = rig::providers::minimax::Client::builder()
             .api_key(api_key.clone())
-            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+            .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
         if let Some(ref base) = api_base {
             builder = builder.base_url(base);
         }
@@ -260,8 +239,6 @@ impl MinimaxProvider {
             api_key,
             api_base: api_base.unwrap_or_else(|| MINIMAX_API_BASE.to_string()),
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            group_id,
-            extra_headers,
         }
     }
 
@@ -278,80 +255,6 @@ impl MinimaxProvider {
         sanitize_messages(messages)
     }
 
-    /// Parse MiniMax streaming SSE chunk
-    fn parse_stream_chunk(&self, value: Value) -> ChatStreamChunk {
-        let choices = value["choices"].as_array().cloned().unwrap_or_default();
-
-        let choice = choices.into_iter().next();
-
-        let Some(choice) = choice else {
-            return ChatStreamChunk {
-                delta: ChatStreamDelta::default(),
-                finish_reason: None,
-                usage: None,
-            };
-        };
-
-        let delta = &choice["delta"];
-
-        // Extract reasoning content from reasoning_details
-        let reasoning_content = delta["reasoning_details"].as_array().and_then(|details| {
-            let texts: Vec<String> = details
-                .iter()
-                .filter_map(|d| d["text"].as_str().map(String::from))
-                .collect();
-            if texts.is_empty() {
-                None
-            } else {
-                Some(texts.join(""))
-            }
-        });
-
-        // Extract content
-        let content = delta["content"].as_str().map(String::from);
-
-        // Extract tool calls
-        let tool_calls: Vec<ToolCallDelta> = delta["tool_calls"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|tc| {
-                Some(ToolCallDelta {
-                    index: tc["index"].as_u64()? as usize,
-                    id: tc["id"].as_str().map(String::from),
-                    function_name: tc["function"]["name"].as_str().map(String::from),
-                    function_arguments: tc["function"]["arguments"].as_str().map(String::from),
-                })
-            })
-            .collect();
-
-        let finish_reason = choice["finish_reason"].as_str().map(|r| match r {
-            "stop" => FinishReason::Stop,
-            "length" => FinishReason::Length,
-            "tool_calls" => FinishReason::ToolCalls,
-            other => FinishReason::Other(other.to_string()),
-        });
-
-        let usage = value["usage"].as_object().map(|u| crate::Usage {
-            input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-            output_tokens: u
-                .get("completion_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-        });
-
-        ChatStreamChunk {
-            delta: ChatStreamDelta {
-                content,
-                reasoning_content,
-                tool_calls,
-            },
-            finish_reason,
-            usage,
-        }
-    }
 }
 
 #[async_trait]
@@ -429,7 +332,7 @@ impl LlmProvider for MinimaxProvider {
 mod tests {
     use super::*;
     use crate::{ChatMessage, ToolCall};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn test_provider_creation() {

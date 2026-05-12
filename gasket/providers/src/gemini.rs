@@ -16,17 +16,8 @@ pub struct GeminiProvider {
     /// Rig Gemini client
     rig_client: rig::providers::gemini::Client<crate::logging_http::LoggingHttpClient>,
 
-    /// API key (needed for custom configuration)
-    api_key: String,
-
-    /// API base URL
-    api_base: String,
-
     /// Default model
     default_model: String,
-
-    /// Extra HTTP headers to send with every request
-    extra_headers: HashMap<String, String>,
 }
 
 impl GeminiProvider {
@@ -39,10 +30,7 @@ impl GeminiProvider {
             .expect("Failed to create Gemini client");
         Self {
             rig_client,
-            api_key,
-            api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-2.5-flash".to_string(),
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -50,8 +38,8 @@ impl GeminiProvider {
     pub fn with_proxy(
         api_key: String,
         proxy_url: Option<String>,
-        proxy_username: Option<String>,
-        proxy_password: Option<String>,
+        _proxy_username: Option<String>,
+        _proxy_password: Option<String>,
     ) -> Self {
         let mut builder = rig::providers::gemini::Client::builder().api_key(api_key.clone());
         if let Some(url) = proxy_url {
@@ -62,10 +50,7 @@ impl GeminiProvider {
                 .http_client(crate::logging_http::LoggingHttpClient::default())
                 .build()
                 .expect("Failed to create Gemini client"),
-            api_key,
-            api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-2.5-flash".to_string(),
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -79,10 +64,7 @@ impl GeminiProvider {
             .expect("Failed to create Gemini client");
         Self {
             rig_client,
-            api_key,
-            api_base,
             default_model: "gemini-2.5-flash".to_string(),
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -103,17 +85,13 @@ impl GeminiProvider {
         );
         let mut builder = rig::providers::gemini::Client::builder()
             .api_key(api_key.clone())
-            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+            .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
         if let Some(ref base) = api_base {
             builder = builder.base_url(base);
         }
         Self {
             rig_client: builder.build().expect("Failed to create Gemini client"),
-            api_key,
-            api_base: api_base
-                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
             default_model: default_model.unwrap_or_else(|| "gemini-2.5-flash".to_string()),
-            extra_headers,
         }
     }
 

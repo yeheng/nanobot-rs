@@ -9,13 +9,11 @@
 //! `POST {api_base}/chat/completions`  (OpenAI format, api_base ends with `/v1`)
 //! `POST {api_base}/messages`          (Anthropic format, api_base ends with `/coding` or `/anthropic`)
 
-use crate::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
 use crate::rig_bridge::{from_rig_response, from_rig_stream, to_rig_request};
 use crate::{ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError};
 use async_trait::async_trait;
 use rig::client::CompletionClient;
 use rig::completion::CompletionModel;
-use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, instrument};
 
@@ -53,26 +51,10 @@ pub struct MoonshotProvider {
 
     /// Optional default user_id
     default_user_id: Option<String>,
-
-    /// Extra HTTP headers to send with every request
-    extra_headers: HashMap<String, String>,
 }
 
 impl MoonshotProvider {
-    /// Resolve the effective API base URL.
-    ///
-    /// For `/coding` and `/anthropic` endpoints, if the URL does not already
-    /// end with `/v1`, we append `/v1` automatically.
-    fn resolved_api_base(&self) -> String {
-        let base = &self.api_base;
-        if (base.contains("/coding") || base.contains("/anthropic")) && !base.ends_with("/v1") {
-            format!("{}/v1", base)
-        } else {
-            base.clone()
-        }
-    }
-
-    /// Detect API format from the resolved API base URL.
+    /// Detect API format from the API base URL.
     ///
     /// Priority:
     /// 1. If URL contains `/coding` or `/anthropic` → Anthropic format
@@ -100,7 +82,6 @@ impl MoonshotProvider {
             default_model: DEFAULT_MODEL.to_string(),
             default_cache_tag: None,
             default_user_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -108,8 +89,8 @@ impl MoonshotProvider {
     pub fn with_proxy(
         api_key: String,
         proxy_url: Option<String>,
-        proxy_username: Option<String>,
-        proxy_password: Option<String>,
+        _proxy_username: Option<String>,
+        _proxy_password: Option<String>,
     ) -> Self {
         let mut builder = rig::providers::moonshot::Client::builder().api_key(api_key.clone());
         if let Some(url) = proxy_url {
@@ -125,7 +106,6 @@ impl MoonshotProvider {
             default_model: DEFAULT_MODEL.to_string(),
             default_cache_tag: None,
             default_user_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -158,12 +138,10 @@ impl MoonshotProvider {
             default_model: DEFAULT_MODEL.to_string(),
             default_cache_tag: None,
             default_user_id: None,
-            extra_headers: HashMap::new(),
         }
     }
 
     /// Create with full configuration
-    #[allow(clippy::too_many_arguments)]
     pub fn with_config(
         api_key: String,
         api_base: Option<String>,
@@ -184,17 +162,20 @@ impl MoonshotProvider {
             proxy_password.as_deref(),
         );
 
-        let mut builder = rig::providers::moonshot::Client::builder()
+        let logging = crate::logging_http::LoggingHttpClient::new(http.clone())
+            .with_extra_headers(extra_headers.clone());
+
+        let builder = rig::providers::moonshot::Client::builder()
             .api_key(api_key.clone())
             .base_url(&final_api_base)
-            .http_client(crate::logging_http::LoggingHttpClient::new(http.clone()));
+            .http_client(logging);
 
         let rig_anthropic_client = if final_api_base.contains("/coding") || final_api_base.contains("/anthropic") {
             Some(
                 rig::providers::moonshot::AnthropicClient::builder()
                     .api_key(api_key.clone())
                     .base_url(&final_api_base)
-                    .http_client(crate::logging_http::LoggingHttpClient::new(http))
+                    .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers))
                     .build()
                     .expect("Failed to create Moonshot Anthropic client"),
             )
@@ -209,7 +190,6 @@ impl MoonshotProvider {
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             default_cache_tag,
             default_user_id,
-            extra_headers,
         }
     }
 
@@ -231,70 +211,6 @@ impl MoonshotProvider {
         self
     }
 
-    /// Parse Moonshot streaming SSE chunk (OpenAI format)
-    fn parse_openai_stream_chunk(&self, value: Value) -> ChatStreamChunk {
-        let choices = value["choices"].as_array().cloned().unwrap_or_default();
-
-        let choice = choices.into_iter().next();
-
-        let Some(choice) = choice else {
-            return ChatStreamChunk {
-                delta: ChatStreamDelta::default(),
-                finish_reason: None,
-                usage: None,
-            };
-        };
-
-        let delta = &choice["delta"];
-
-        // Extract reasoning content
-        let reasoning_content = delta["reasoning_content"].as_str().map(String::from);
-
-        // Extract content
-        let content = delta["content"].as_str().map(String::from);
-
-        // Extract tool calls
-        let tool_calls: Vec<ToolCallDelta> = delta["tool_calls"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|tc| {
-                Some(ToolCallDelta {
-                    index: tc["index"].as_u64()? as usize,
-                    id: tc["id"].as_str().map(String::from),
-                    function_name: tc["function"]["name"].as_str().map(String::from),
-                    function_arguments: tc["function"]["arguments"].as_str().map(String::from),
-                })
-            })
-            .collect();
-
-        let finish_reason = choice["finish_reason"].as_str().map(|r| match r {
-            "stop" => FinishReason::Stop,
-            "length" => FinishReason::Length,
-            "tool_calls" => FinishReason::ToolCalls,
-            other => FinishReason::Other(other.to_string()),
-        });
-
-        let usage = value["usage"].as_object().map(|u| crate::Usage {
-            input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-            output_tokens: u
-                .get("completion_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-        });
-
-        ChatStreamChunk {
-            delta: ChatStreamDelta {
-                content,
-                reasoning_content,
-                tool_calls,
-            },
-            finish_reason,
-            usage,
-        }
-    }
 }
 
 #[async_trait]

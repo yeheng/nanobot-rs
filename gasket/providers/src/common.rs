@@ -232,16 +232,19 @@ impl OpenAICompatibleProvider {
             config.proxy_password.as_deref(),
         );
 
+        let logging_client = crate::logging_http::LoggingHttpClient::new(http_client.clone())
+            .with_extra_headers(config.extra_headers.clone());
+
         let rig_client = if config.api_base.is_empty() {
             openai::CompletionsClient::builder()
                 .api_key(api_key)
-                .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
+                .http_client(logging_client.clone())
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!("Failed to create rig client: {}", e);
                     openai::CompletionsClient::builder()
                         .api_key("")
-                        .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
+                        .http_client(logging_client.clone())
                         .build()
                         .expect("fallback rig client creation should not fail")
                 })
@@ -249,13 +252,13 @@ impl OpenAICompatibleProvider {
             openai::CompletionsClient::builder()
                 .api_key(api_key.clone())
                 .base_url(&config.api_base)
-                .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
+                .http_client(logging_client.clone())
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!("Failed to create rig client with base_url: {}", e);
                     openai::CompletionsClient::builder()
                         .api_key(api_key)
-                        .http_client(crate::logging_http::LoggingHttpClient::new(http_client.clone()))
+                        .http_client(logging_client.clone())
                         .build()
                         .unwrap_or_else(|e2| {
                             panic!("Fallback rig client creation also failed: {}", e2)

@@ -11,9 +11,6 @@ use rig::completion::CompletionModel;
 use std::collections::HashMap;
 use tracing::{debug, instrument};
 
-/// Default API base for Anthropic
-const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
-
 /// Default model for Anthropic
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 
@@ -30,9 +27,6 @@ pub struct AnthropicProvider {
 
     /// Default max tokens
     default_max_tokens: u32,
-
-    /// Extra HTTP headers to send with every request
-    extra_headers: HashMap<String, String>,
 }
 
 impl AnthropicProvider {
@@ -47,7 +41,6 @@ impl AnthropicProvider {
             rig_client,
             default_model: DEFAULT_MODEL.to_string(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -55,8 +48,8 @@ impl AnthropicProvider {
     pub fn with_proxy(
         api_key: String,
         proxy_url: Option<String>,
-        proxy_username: Option<String>,
-        proxy_password: Option<String>,
+        _proxy_username: Option<String>,
+        _proxy_password: Option<String>,
     ) -> Self {
         let mut builder = rig::providers::anthropic::Client::builder().api_key(api_key);
         if let Some(url) = proxy_url {
@@ -70,7 +63,6 @@ impl AnthropicProvider {
             rig_client,
             default_model: DEFAULT_MODEL.to_string(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -86,7 +78,6 @@ impl AnthropicProvider {
             rig_client,
             default_model: DEFAULT_MODEL.to_string(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
-            extra_headers: HashMap::new(),
         }
     }
 
@@ -109,7 +100,7 @@ impl AnthropicProvider {
         );
         let mut builder = rig::providers::anthropic::Client::builder()
             .api_key(api_key)
-            .http_client(crate::logging_http::LoggingHttpClient::new(http));
+            .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
         if let Some(base) = api_base {
             builder = builder.base_url(&base);
         }
@@ -118,7 +109,6 @@ impl AnthropicProvider {
             rig_client,
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             default_max_tokens: default_max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-            extra_headers,
         }
     }
 

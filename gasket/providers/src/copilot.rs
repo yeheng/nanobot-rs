@@ -5,11 +5,10 @@
 //!
 //! For OAuth, use `Client::from_env()` which handles device flow automatically.
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
-use rig::client::{CompletionClient, ProviderClient};
+use rig::client::CompletionClient;
 use rig::completion::CompletionModel;
+use std::collections::HashMap;
 use tracing::{debug, instrument};
 
 use crate::rig_bridge::{from_rig_response, from_rig_stream, to_rig_request};
@@ -49,6 +48,7 @@ impl CopilotProvider {
             None,
             None,
             default_model,
+            HashMap::new(),
         )
     }
 
@@ -68,6 +68,7 @@ impl CopilotProvider {
             None,
             None,
             default_model,
+            HashMap::new(),
         )
     }
 
@@ -90,6 +91,7 @@ impl CopilotProvider {
             return Self::build(
                 rig::providers::copilot::CopilotAuth::ApiKey(key),
                 None, None, None, None, default_model,
+                HashMap::new(),
             );
         }
 
@@ -101,6 +103,7 @@ impl CopilotProvider {
             return Self::build(
                 rig::providers::copilot::CopilotAuth::GitHubAccessToken(token),
                 None, None, None, None, default_model,
+                HashMap::new(),
             );
         }
 
@@ -108,6 +111,7 @@ impl CopilotProvider {
         Self::build(
             rig::providers::copilot::CopilotAuth::GitHubAccessToken(String::new()),
             None, None, None, None, default_model,
+            HashMap::new(),
         )
     }
 
@@ -123,7 +127,7 @@ impl CopilotProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
-        _extra_headers: HashMap<String, String>,
+        extra_headers: HashMap<String, String>,
     ) -> Result<Self, ProviderError> {
         Self::build(
             rig::providers::copilot::CopilotAuth::GitHubAccessToken(api_key.to_string()),
@@ -132,6 +136,7 @@ impl CopilotProvider {
             proxy_username,
             proxy_password,
             default_model,
+            extra_headers,
         )
     }
 
@@ -142,6 +147,7 @@ impl CopilotProvider {
         proxy_username: Option<String>,
         proxy_password: Option<String>,
         default_model: Option<String>,
+        extra_headers: HashMap<String, String>,
     ) -> Result<Self, ProviderError> {
         let logging_client = if let Some(url) = proxy_url.as_deref() {
             let http = crate::common::build_http_client(
@@ -149,9 +155,9 @@ impl CopilotProvider {
                 proxy_username.as_deref(),
                 proxy_password.as_deref(),
             );
-            crate::logging_http::LoggingHttpClient::new(http)
+            crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers)
         } else {
-            crate::logging_http::LoggingHttpClient::default()
+            crate::logging_http::LoggingHttpClient::default().with_extra_headers(extra_headers)
         };
 
         let mut builder = rig::providers::copilot::Client::builder()
