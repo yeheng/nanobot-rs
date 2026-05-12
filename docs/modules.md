@@ -30,7 +30,7 @@ flowchart TB
     TP --> GP["GeminiProvider"]
     TP --> CP["CopilotProvider"]
 
-    OP --> ON["from_name()<br/>openai · openrouter · deepseek<br/>anthropic · zhipu · dashscope<br/>moonshot · minimax · ollama · litellm"]
+    OP --> ON["from_name()<br/>openai · openrouter · deepseek<br/>anthropic · zhipu · gemini<br/>moonshot · minimax · ollama · litellm · copilot"]
 
     style TP fill:#E3F2FD
     style OP fill:#FFF3E0
@@ -70,23 +70,34 @@ trait Tool: Send + Sync {
 
 ### 内置工具清单
 
-| 工具 | 类别 | 说明 |
-|------|------|------|
-| `read_file` | filesystem | 读取文件内容 |
-| `write_file` | filesystem | 写入文件 |
-| `edit_file` | filesystem | 编辑文件 (search/replace) |
-| `list_dir` | filesystem | 列出目录内容 |
-| `exec` | system | 执行 Shell 命令 (带超时 + policy: allowlist/denylist) |
-| `spawn` | system | 创建子代理执行任务 |
-| `spawn_parallel` | system | 并行创建多个子代理 |
-| `web_fetch` | web | HTTP GET 请求 |
-| `web_search` | web | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
-| `MessageTool` | communication | 通过 Broker 发消息到渠道 |
-| `cron` | system | 管理定时任务 (CRUD) |
-| `memory_search` | memory | 通过 SQLite MetadataStore 搜索结构化记忆 |
-| `memorize` | memory | 写入结构化长期记忆 |
-| MCP tools | mcp | MCP 服务器提供的动态工具 |
-| 插件工具 | plugin | 从 `~/.gasket/plugins/` 加载的外部脚本工具 |
+| 工具 | 类别 | 需要审批 | 说明 |
+|------|------|---------|------|
+| `read_file` | filesystem | 否 | 读取文件内容 |
+| `write_file` | filesystem | 是 | 写入文件 |
+| `edit_file` | filesystem | 是 | 编辑文件 (search/replace) |
+| `list_dir` | filesystem | 否 | 列出目录内容 |
+| `exec` | system | 是 | 执行 Shell 命令 (带超时 + policy: allowlist/denylist) |
+| `spawn` | system | 否 | 创建子代理执行任务（仅 Orchestrator 角色） |
+| `spawn_parallel` | system | 否 | 并行创建多个子代理（仅 Orchestrator 角色） |
+| `web_fetch` | web | 否 | HTTP GET 请求 |
+| `web_search` | web | 否 | Web 搜索 (Brave/Tavily/Exa/Firecrawl) |
+| `ask_user` | interaction | 否 | 向用户提问并等待回复 |
+| `message` | communication | 否 | 通过 Broker 发消息到渠道 |
+| `cron` | system | 否 | 管理定时任务 (CRUD) |
+| `history_query` | wiki | 否 | 按关键词查询对话历史（SQLite 本地搜索） |
+| `history_search` | wiki | 否 | 语义搜索历史对话（需要 `embedding` 特性） |
+| `wiki_search` | wiki | 否 | Tantivy BM25 搜索 Wiki 页面 |
+| `wiki_read` | wiki | 否 | 按路径读取 Wiki 页面 |
+| `wiki_write` | wiki | 否 | 写入/更新 Wiki 页面 |
+| `wiki_decay` | wiki | 否 | 运行 Wiki 频率衰减 |
+| `wiki_refresh` | wiki | 否 | 刷新 Wiki 索引 |
+| `wiki_delete` | wiki | 是 | 删除 Wiki 页面 |
+| `search_sops` | wiki | 否 | 搜索 SOP（标准操作流程）页面 |
+| `create_plan` | system | 否 | 创建执行计划（需要 LLM provider） |
+| `evolution` | system | 否 | 从对话中提取记忆（需要 LLM provider） |
+| `new_session` | system | 是 | 开启新会话并清空历史 |
+| `clear_session` | system | 是 | 清空当前会话历史 |
+| 插件工具 | plugin | 否 | 从 `~/.gasket/plugins/` 加载的外部脚本工具 |
 
 ### 辅助模块
 
@@ -132,13 +143,15 @@ trait Tool: Send + Sync {
 
 ### 权限（默认拒绝）
 
-| 权限 | RPC 方法 |
-|------|----------|
-| `LlmChat` | `llm/chat` |
-| `MemorySearch` | `memory/search` |
-| `MemoryWrite` | `memory/write` |
-| `MemoryDecay` | `memory/decay` |
-| `SubagentSpawn` | `subagent/spawn` |
+| 权限 | YAML 值 | RPC 方法 |
+|------|---------|----------|
+| `LlmChat` | `llm_chat` | `llm/chat` |
+| `WikiSearch` | `wiki_search` | `wiki/search` |
+| `WikiWrite` | `wiki_write` | `wiki/write` |
+| `WikiDecay` | `wiki_decay` | `wiki/decay` |
+| `SubagentSpawn` | `subagent_spawn` | `subagent/spawn` |
+| `MessageSend` | `message_send` | `message/send` |
+| `UserAsk` | `user_ask` | `user/ask` |
 
 ---
 
@@ -168,9 +181,8 @@ trait Channel: Send + Sync {
 | Discord | `discord` | WebSocket (serenity) | Discord Gateway |
 | Slack | `slack` | WebSocket (tungstenite) | Slack Socket Mode |
 | 飞书 | `feishu` | HTTP Webhook (axum) | 飞书事件订阅 |
-| 钉钉 | `dingtalk` | HTTP Webhook (axum) | 钉钉回调 |
-| 企业微信 | `wecom` | HTTP Webhook (axum) | 企微回调 |
 | WebSocket | `websocket` | WebSocket (axum) | 实时双向通信 |
+| 微信 | `wechat` | HTTP Webhook | 微信公众号/企业微信 |
 
 ### middleware 层
 
@@ -183,30 +195,11 @@ trait Channel: Send + Sync {
 
 ---
 
-## 4. mcp/ — Model Context Protocol
+## 4. plugin/ — 外部插件系统
 
-> **注意**: MCP 功能内嵌在 `engine` crate，通过条件编译集成。
+> 详细文档: [plugin.md](plugin.md)
 
-### 核心组件
-
-```mermaid
-flowchart LR
-    MC["MCP Client<br/>(gasket)"] <-->|"JSON-RPC 2.0<br/>stdio"| MS["MCP Server<br/>(外部进程)"]
-
-    MC -->|"initialize"| MS
-    MC -->|"tools/list"| MS
-    MC -->|"tools/call"| MS
-
-    style MC fill:#E3F2FD
-    style MS fill:#FFF3E0
-```
-
-| 组件 | 职责 |
-|------|------|
-| `McpClient` | JSON-RPC 2.0 over stdio 通信 |
-| `McpManager` | 管理多个 MCP 服务器生命周期 |
-| `McpToolBridge` | 将 MCP 工具适配为 `trait Tool` |
-| `McpServerConfig` | MCP 服务器配置 |
+Gasket 通过插件系统支持外部工具扩展。插件通过 YAML 清单声明，支持 Simple（stdin/stdout JSON）和 JSON-RPC 2.0 两种协议。详见 [plugin.md](plugin.md)。
 
 ---
 
@@ -251,6 +244,7 @@ flowchart LR
 ### MemoryBroker 实现
 
 使用 DashMap + async-channel 实现：
+
 - `publish(envelope)` — 阻塞发布，队列满时背压
 - `try_publish(envelope)` — 非阻塞发布
 - `subscribe(topic)` — 订阅返回 Subscriber
@@ -259,6 +253,7 @@ flowchart LR
 ### SessionManager
 
 管理 per-session 消息路由：
+
 - 订阅 `Topic::Inbound`
 - 分发到 per-session mpsc 通道
 - 每 300 秒空闲超时 GC
@@ -518,26 +513,26 @@ flowchart LR
 
 ---
 
-## 14. search/ — 搜索与嵌入
+## 14. embedding/ — 语义搜索与嵌入
 
-> **注意**: 搜索类型从 `storage` crate re-export。高级 Tantivy 全文搜索在独立 `tantivy` crate。
+> 需要: `cargo build --features embedding`
 
 ### 核心类型
 
 | 类型 | 说明 |
 |------|------|
-| `TextEmbedder` | 基于 ONNX 的文本嵌入（fastembed，feature: local-onnx） |
-| `EmbeddingConfig` | 模型名称、缓存目录、本地模型路径配置 |
-| `cosine_similarity()` | 计算两个向量的余弦相似度 |
-| `top_k_similar()` | 从向量集合中获取 Top-K 最相似项 |
-| `bytes_to_embedding()` | 字节切片转嵌入向量 |
-| `embedding_to_bytes()` | 嵌入向量转字节切片 |
+| `EmbeddingProvider` | 嵌入生成 trait（`ApiProvider` 或 `LocalOnnx`） |
+| `EmbeddingIndexer` | 管理嵌入索引的创建和查询 |
+| `MemoryIndex` | 内存中的向量索引（hot_limit 控制上限） |
+| `RecallSearcher` | 语义历史召回搜索器 |
+| `RecallConfig` | 召回配置（top_k, token_budget, min_score） |
+| `VectorStore` | 向量存储抽象 |
 
 ### 语义搜索流程
 
-1. `TextEmbedder::embed(text) -> Vec<f32>` — 为查询生成嵌入
-2. `cosine_similarity(query, candidate) -> f32` — 计算相似度分数
-3. `top_k_similar(query, vectors, k) -> Vec<(f32, String)>` — 排序结果
+1. 用户提问 → `RecallSearcher` 生成查询嵌入
+2. 在 `MemoryIndex`（内存）和 SQLite（磁盘）中搜索最相似的历史消息
+3. 按 token 预算返回 top-k 结果
 
 ---
 
@@ -630,34 +625,32 @@ always_load: false
 
 ---
 
-## 18. tantivy/ — 独立 Tantivy CLI 工具
+## 15. command/ — 斜杠命令调度
 
-> 详细设计文档: [tantivy-module-design.md](tantivy-module-design.md)
+> 位于 `gasket/command/`
 
-独立 CLI 工具，管理多个 Tantivy 全文搜索索引。
+斜杠命令调度器，不依赖 gasket-engine。内置处理器通过 `CommandHost` trait 获取引擎能力。
 
-### CLI 命令
-
-| 命令 | 说明 |
+| 文件 | 职责 |
 |------|------|
-| `index create/list/stats/drop/compact/rebuild` | 索引管理 |
-| `doc add/add-batch/delete/commit` | 文档操作 |
-| `search` | 全文搜索 |
+| `dispatcher.rs` | `Dispatcher`, `DispatcherBuilder` — 命令路由 |
+| `host.rs` | `CommandHost` — 引擎能力注入 trait |
+| `parser.rs` | 命令解析 |
+| `completer.rs` | `CommandCompleter` — Tab 补全 |
+| `builtins/` | 内置命令处理（/new, /help, /exit 等） |
 
-### 核心组件
+---
 
-| 组件 | 职责 |
-|------|------|
-| `IndexManager` | 多索引管理，HashMap 内存注册表 |
-| `FieldDef` | 字段定义 (Text, String, I64, DateTime 等) |
-| `SearchQuery` | BM25 + 过滤 + 分页 + 高亮 |
-| `IndexLock` | 进程级文件锁 (RAII) |
+## 16. sandbox/ — 沙箱执行
 
-### 维护操作
+> 位于 `gasket/sandbox/`
 
-| 操作 | 说明 |
-|------|------|
-| `backup/restore` | 索引备份与恢复 |
-| `compact` | 合并段，移除已删除文档 |
-| `expire` | TTL 文档过期清理 |
-| `rebuild` | 流式重建，支持 schema 迁移 |
+提供安全的命令执行环境，支持多平台。
+
+| 平台 | 后端 | 说明 |
+|------|------|------|
+| Linux | bwrap (Bubblewrap) | 命名空间隔离 |
+| macOS | sandbox-exec | 系统级沙箱 |
+| Windows | Job Objects | 进程限制 |
+
+核心类型：`ProcessManager`, `SandboxConfig`, `SandboxBackend`, `CommandPolicy`, `ResourceLimits`

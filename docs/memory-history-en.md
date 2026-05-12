@@ -373,7 +373,7 @@ AI: Based on what we discussed before about Rust...
 A: No. History remembers recent conversations. Only important information is extracted to long-term Memory.
 
 **Q: How do I make AI remember something?**
-A: Explicitly ask: "Remember that I prefer dark mode" or use the `memorize` tool / Wiki CLI to manage pages.
+A: Explicitly ask: "Remember that I prefer dark mode" or use the `wiki_write` tool / Wiki CLI to manage pages.
 
 **Q: Can I delete memories?**
 A: Yes. Use the `wiki_write` tool to remove pages, or manage them via the Wiki CLI (`gasket wiki`).

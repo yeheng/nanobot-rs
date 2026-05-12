@@ -27,7 +27,7 @@ providers:
 
 agents:
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
 ```
 
 ---
@@ -83,16 +83,17 @@ providers:
 agents:
   # 默认配置
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
     temperature: 1.0
     max_tokens: 100000
     max_iterations: 100
     memory_window: 50
     thinking_enabled: false
-    historyRecallK: 5
     streaming: true
     # WebSocket 子代理摘要长度限制（0 = 不限，默认）
     ws_summary_limit: 0
+    # 插件执行超时（秒），插件清单未指定 timeout_secs 时使用
+    plugin_timeout_secs: 120
 
     # 可选：覆盖内部 AI 行为提示词模板
     # prompts:
@@ -102,18 +103,11 @@ agents:
     #   evolution: "Extract memories from this conversation.\n\n{{conversation}}"
     #   planning: "Create a plan for: {{goal}}\n\nContext:\n{{context}}"
 
-    # 可选：三阶段记忆 Token 预算（默认值如下）
-    # memory_budget:
-    #   bootstrap: 1500    # 阶段 1：Profile + Active Hot/Warm
-    #   scenario: 1500     # 阶段 2：场景特定 Hot + 标签匹配 Warm
-    #   on_demand: 1000    # 阶段 3：语义搜索填充
-    #   total_cap: 4000    # 全阶段硬上限
-
   # 多模型配置（用于动态切换）
   models:
     default:
       provider: openrouter
-      model: anthropic/claude-4.5-sonnet
+      model: anthropic/claude-sonnet-4
       description: "General-purpose model for everyday tasks."
       capabilities: ["general", "chat"]
       temperature: 0.7
@@ -169,8 +163,19 @@ channels:
     enabled: true
 
   # 飞书
+  feishu:
+    enabled: false
+    app_id: ""
+    app_secret: ""
+    # verification_token: ""
+    # encrypt_key: ""
+    allow_from: []
+
+  # 微信
   wechat:
     enabled: false
+    # baseUrl: "https://ilinkai.weixin.qq.com"
+    # credPath: "~/.wechatbot/credentials.json"
     allowFrom: []
 
 # ============================================
@@ -259,7 +264,7 @@ embedding:
 model: provider/model
 
 # 示例
-model: openrouter/anthropic/claude-4.5-sonnet
+model: openrouter/anthropic/claude-sonnet-4
 model: deepseek/deepseek-chat
 model: zhipu/glm-5
 ```
@@ -295,9 +300,8 @@ Provider 名称会自动决定原生实现，通常**不需要**手动设置 `pr
 | `memory_window` | int | 50 | 加载到上下文的最近消息数 |
 | `thinking_enabled` | bool | false | 启用深度思考模式（仅支持 reasoning 模型） |
 | `streaming` | bool | true | 启用流式输出 |
-| `historyRecallK` | int | 5 | 语义历史召回条数 |
 | `ws_summary_limit` | int | 0 | WebSocket 子代理摘要长度限制（字符数），0 = 不限 |
-| `memory_budget` | object | - | 三阶段记忆 Token 预算 |
+| `plugin_timeout_secs` | u64 | 120 | 插件执行超时（秒），插件清单未指定时使用 |
 | `prompts` | object | - | 覆盖内部 AI 行为提示词模板 |
 
 ### Model Profile 配置项
@@ -355,7 +359,7 @@ providers:
 
 agents:
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
     temperature: 0.7
 
 tools:

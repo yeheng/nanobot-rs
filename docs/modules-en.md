@@ -45,7 +45,7 @@ flowchart TB
 | Input | provider | model |
 |------|----------|-------|
 | `deepseek/deepseek-chat` | `deepseek` | `deepseek-chat` |
-| `anthropic/claude-4.5-sonnet` | `anthropic` | `claude-4.5-sonnet` |
+| `anthropic/claude-sonnet-4` | `anthropic` | `claude-sonnet-4` |
 | `gpt-4o` | `None` (use default) | `gpt-4o` |
 
 ---
@@ -79,9 +79,19 @@ trait Tool: Send + Sync {
 | `web_search` | web | Web search (Brave/Tavily/Exa/Firecrawl) |
 | `MessageTool` | communication | Send message through Broker to channel |
 | `cron` | system | Manage scheduled tasks (CRUD) |
-| `memory_search` | memory | Search structured memories via SQLite MetadataStore |
-| `memorize` | memory | Write structured long-term memories |
-| MCP tools | mcp | Dynamic tools provided by MCP servers |
+| `ask_user` | communication | Ask the user a question and wait for response |
+| `search_sops` | wiki | Search SOPs (Standard Operating Procedures) |
+| `create_plan` | planning | Create a structured plan for a goal |
+| `evolution` | memory | Extract memories from conversation |
+| `wiki_delete` | wiki | Delete a wiki page |
+| `clear_session` | session | Clear current session history |
+| `history_query` | history | Query conversation history by keywords |
+| `history_search` | history | Semantic search through history |
+| `wiki_search` | wiki | Search wiki pages using Tantivy BM25 |
+| `wiki_read` | wiki | Read a wiki page by path |
+| `wiki_write` | wiki | Write/update a wiki page |
+| `wiki_decay` | wiki | Run frequency decay on wiki pages |
+| `wiki_refresh` | wiki | Sync on-disk wiki files into search index |
 | Plugin tools | plugin | External script tools loaded from `~/.gasket/plugins/` |
 
 ### Helper Modules
@@ -114,25 +124,27 @@ The plugin system loads external scripts via YAML manifests and exposes them as 
 | `runner/daemon.rs` | `JsonRpcDaemon` — persistent JSON-RPC process with request multiplexing |
 | `dispatcher/mod.rs` | `RpcDispatcher` — routes RPC calls with permission enforcement |
 | `dispatcher/llm_chat.rs` | Handler for `llm/chat` |
-| `dispatcher/memory_search.rs` | Handler for `memory/search` |
-| `dispatcher/memory_write.rs` | Handler for `memory/write` |
-| `dispatcher/memory_decay.rs` | Handler for `memory/decay` |
+| `dispatcher/wiki_search.rs` | Handler for `wiki/search` |
+| `dispatcher/wiki_write.rs` | Handler for `wiki/write` |
+| `dispatcher/wiki_decay.rs` | Handler for `wiki/decay` |
 | `dispatcher/subagent.rs` | Handler for `subagent/spawn` |
 
 ### Protocols
 
 - **Simple**: One-shot JSON input/output via stdin/stdout
-- **JsonRpc**: Bidirectional JSON-RPC 2.0 with callback methods (`llm/chat`, `memory/search`, etc.)
+- **JsonRpc**: Bidirectional JSON-RPC 2.0 with callback methods (`llm/chat`, `wiki/search`, etc.)
 
 ### Permissions (Default Deny)
 
 | Permission | RPC Method |
 |------------|------------|
 | `LlmChat` | `llm/chat` |
-| `MemorySearch` | `memory/search` |
-| `MemoryWrite` | `memory/write` |
-| `MemoryDecay` | `memory/decay` |
+| `WikiSearch` | `wiki/search` |
+| `WikiWrite` | `wiki/write` |
+| `WikiDecay` | `wiki/decay` |
 | `SubagentSpawn` | `subagent/spawn` |
+| `MessageSend` | `message/send` |
+| `UserAsk` | `user/ask` |
 
 ---
 
@@ -160,8 +172,6 @@ trait Channel: Send + Sync {
 | Discord | `discord` | WebSocket (serenity) | Discord Gateway |
 | Slack | `slack` | WebSocket (tungstenite) | Slack Socket Mode |
 | Feishu | `feishu` | HTTP Webhook (axum) | Feishu event subscription |
-| DingTalk | `dingtalk` | HTTP Webhook (axum) | DingTalk callback |
-| WeCom | `wecom` | HTTP Webhook (axum) | WeCom callback |
 | WebSocket | `websocket` | WebSocket (axum) | Real-time bidirectional communication |
 
 ### Middleware Layer
@@ -175,28 +185,11 @@ trait Channel: Send + Sync {
 
 ---
 
-## 4. mcp/ — Model Context Protocol
+## 4. plugin/ — External Plugin System
 
-```mermaid
-flowchart LR
-    MC["MCP Client<br/>(gasket)"] <-->|"JSON-RPC 2.0<br/>stdio"| MS["MCP Server<br/>(External proc)"]
+> Detailed design: [plugin-en.md](plugin-en.md)
 
-    MC -->|"initialize"| MS
-    MC -->|"tools/list"| MS
-    MC -->|"tools/call"| MS
-
-    style MC fill:#E3F2FD
-    style MS fill:#FFF3E0
-```
-
-### Submodule Structure
-
-| File | Responsibility |
-|------|----------------|
-| `client.rs` | `McpClient` — JSON-RPC 2.0 over stdio communication |
-| `manager.rs` | `McpManager` — Manages multiple MCP server lifecycles |
-| `tool.rs` | `McpToolBridge` — Adapts MCP tools to `trait Tool` |
-| `types.rs` | `McpServerConfig`, `McpTool` and other type definitions |
+Gasket uses an external plugin system instead of MCP. Plugins are loaded from `~/.gasket/plugins/` via YAML manifests and exposed as native tools. See the [Plugin System documentation](plugin-en.md) for details.
 
 ---
 
@@ -431,7 +424,7 @@ Subagent spawning uses a simple pure-function approach:
 
 ```rust
 let task = TaskSpec::new("sub-1", "Execute task")
-    .with_model("openrouter/anthropic/claude-4.5-sonnet")
+    .with_model("openrouter/anthropic/claude-sonnet-4")
     .with_system_prompt("Custom prompt".to_string());
 
 let handle = spawn_subagent(

@@ -79,7 +79,7 @@ flowchart TB
 | **BeforeRequest** | 收到请求后 | 修改输入、拦截请求 | 顺序执行 |
 | **AfterHistory** | 加载历史后 | 添加上下文 | 顺序执行 |
 | **BeforeLLM** | 发送给AI前 | 最后修改（如密钥注入） | 顺序执行 |
-| **AfterToolCall** | 工具调用后 | 审计、记录 | 并行执行（定义但未触发） |
+| **AfterToolCall** | 工具调用后 | 审计、记录 | 并行执行 |
 | **AfterResponse** | 生成回复后 | 日志、通知 | 并行执行 |
 
 ```mermaid

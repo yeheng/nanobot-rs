@@ -103,7 +103,7 @@ providers:
 
 agents:
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
 ```
 
 > 💡 **省钱提示**: 可以换成 `deepseek/deepseek-chat` 或 `zhipu/glm-4-flash`，价格更低
@@ -120,7 +120,7 @@ gasket agent
 你会看到：
 ```
 🤖 Gasket v2.0.0
-Model: openrouter/anthropic/claude-4.5-sonnet
+Model: openrouter/anthropic/claude-sonnet-4
 
 你: 你好！
 🤖 Gasket: 你好！很高兴见到你，有什么我可以帮助你的吗？

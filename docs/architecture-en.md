@@ -465,23 +465,23 @@ flowchart TB
     S3 --> Core
 ```
 
-### 3. MCP: External Tool Services
+### 3. Plugin: External Tool Services
 
 ```mermaid
 flowchart TB
     Gasket[Gasket Core]
-    MCP[MCP Client]
+    Plugin[Plugin System]
     
-    subgraph External_Services["External Services"]
-        S1[Database Service]
-        S2[Image Generation]
-        S3[Enterprise API]
+    subgraph External_Services["External Scripts"]
+        S1[Python Script]
+        S2[Node.js Script]
+        S3[Custom Tool]
     end
     
-    Gasket --> MCP
-    MCP --> S1
-    MCP --> S2
-    MCP --> S3
+    Gasket --> Plugin
+    Plugin --> S1
+    Plugin --> S2
+    Plugin --> S3
 ```
 
 ---

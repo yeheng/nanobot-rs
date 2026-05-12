@@ -47,8 +47,8 @@ flowchart TB
 
 ```bash
 # Clone repository
-git clone https://github.com/YeHeng/gasket-rs.git
-cd gasket-rs
+git clone https://github.com/YeHeng/gasket.git
+cd gasket
 
 # Build (enable all channels)
 cargo build --release
@@ -219,7 +219,7 @@ data:
     
     agents:
       defaults:
-        model: openrouter/anthropic/claude-4.5-sonnet
+        model: openrouter/anthropic/claude-sonnet-4
     
     gateway:
       session_timeout: 3600

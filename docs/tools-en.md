@@ -142,7 +142,7 @@ flowchart TB
 |------|---------|--------|
 | `exec` | Run shell commands | Configurable policy |
 | `spawn` | Create subagent | Isolated execution, supports model selection |
-| `spawn_parallel` | Create multiple subagents | Max 10 tasks, 5 concurrent |
+| `spawn_parallel` | Create multiple subagents | Max 10 tasks, configurable concurrency |
 | `new_session` | Start fresh session | Clears history, new session key |
 | `clear_session` | Clear current session | Keeps session key |
 | `message` | Send message to user | For cron/background tasks |
@@ -481,22 +481,16 @@ tools:
 
 ---
 
-## MCP: External Tools
+## Plugin System: External Tools
 
-Model Context Protocol allows connecting external tool servers:
+Gasket uses an external plugin system to connect custom tools. Plugins are loaded from `~/.gasket/plugins/` via YAML manifests and exposed as native tools.
 
-```mermaid
-flowchart LR
-    Gasket["Gasket"] <-->|JSON-RPC| MCP["MCP Server"]
-    MCP --> DB[(Database)]
-    MCP --> API["External API"]
-    MCP --> Custom["Custom Tools"]
-```
-
-Example MCP servers:
+Example plugin tools:
 - Database query tools
 - GitHub integration
 - Custom business tools
+
+See [Plugin System](plugin-en.md) for details.
 
 ---
 

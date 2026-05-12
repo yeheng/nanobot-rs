@@ -42,7 +42,7 @@ let result = result_rx.recv().await;
 ```rust
 // Spawn with streaming and specific model
 let task = TaskSpec::new("sub-1", "Analyze this code")
-    .with_model("claude-4.5-sonnet")  // Better model for code
+    .with_model("claude-sonnet-4")  // Better model for code
     .with_system_prompt("You are a code reviewer".to_string());
 
 let (result_tx, mut result_rx) = mpsc::channel(1);
@@ -66,8 +66,8 @@ let result = result_rx.recv().await;
 |-----------|-------------------|-----|
 | Simple extraction | gpt-4o-mini | Fast, cheap |
 | Text summarization | gpt-4o-mini | Sufficient capability |
-| Code review | claude-4.5-sonnet | Better at code |
-| Creative writing | claude-4.5-sonnet | More creative |
+| Code review | claude-sonnet-4 | Better at code |
+| Creative writing | claude-sonnet-4 | More creative |
 | Data analysis | deepseek-chat | Good structured output |
 | Complex reasoning | deepseek-reasoner/o1 | Better reasoning |
 | Chinese tasks | glm-5/deepseek-chat | Optimized for Chinese |
@@ -98,7 +98,7 @@ let cheap_result = rx1.recv().await;
 // If result quality is insufficient, retry with better model
 if !is_quality_sufficient(&cheap_result) {
     let better_task = TaskSpec::new("sub-better", task)
-        .with_model("claude-4.5-sonnet");
+        .with_model("claude-sonnet-4");
     let (tx2, mut rx2) = mpsc::channel(1);
     spawn_subagent(
         provider,
@@ -120,7 +120,7 @@ if !is_quality_sufficient(&cheap_result) {
 let cheap_task = TaskSpec::new("sub-cheap", task.clone())
     .with_model("gpt-4o-mini");
 let expensive_task = TaskSpec::new("sub-expensive", task)
-    .with_model("claude-4.5-sonnet");
+    .with_model("claude-sonnet-4");
 
 let (tx1, mut rx1) = mpsc::channel(1);
 let (tx2, mut rx2) = mpsc::channel(1);
@@ -149,7 +149,7 @@ agents:
     
     coder:
       provider: openrouter
-      model: anthropic/claude-4.5-sonnet
+      model: anthropic/claude-sonnet-4
     
     reasoner:
       provider: deepseek

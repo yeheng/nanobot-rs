@@ -161,7 +161,7 @@ JSON-RPC 插件必须显式声明所需的引擎能力。默认策略是**全部
 ```yaml
 permissions:
   - llm_chat
-  - memory_search
+  - wiki_search
 ```
 
 如果脚本调用了未授权的 RPC 方法，Gasket 会返回：

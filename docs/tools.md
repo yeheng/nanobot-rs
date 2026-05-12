@@ -72,18 +72,25 @@ mindmap
       网页获取
     系统命令
       执行Shell
-    记忆管理
-      搜索记忆
-      保存记忆
-    Wiki知识
+    知识库 (Wiki)
       搜索Wiki
       读写Wiki
       衰减与刷新
+      搜索SOP
+    历史查询
+      关键词搜索
+      语义搜索
     任务管理
       创建子代理
+      创建计划
+      记忆提取
       定时任务
-    通信
-      发送消息 (MessageTool)
+    会话管理
+      新建会话
+      清空历史
+    交互
+      向用户提问
+      发送消息
 ```
 
 ---
@@ -116,12 +123,14 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `read_file` - 读取文件内容
 - `write_file` - 创建/覆盖文件
 - `edit_file` - 修改文件部分内容
 - `list_dir` - 查看文件夹内容
 
 **使用场景：**
+
 - 代码审查和修改
 - 配置文件编辑
 - 批量文件处理
@@ -156,10 +165,12 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `web_search` - 搜索引擎（Brave/Tavily/Exa）
 - `web_fetch` - 获取特定网页内容
 
 **使用场景：**
+
 - 获取实时信息
 - 查阅最新文档
 - 研究某个话题
@@ -185,15 +196,18 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `exec` - 执行 Shell 命令（带安全限制）
 
 **使用场景：**
+
 - 运行测试
 - 构建项目
 - 执行数据处理脚本
 - 系统管理任务
 
 **安全保护：**
+
 ```mermaid
 flowchart TB
     Command[用户命令] --> Check{安全检查}
@@ -232,6 +246,7 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `history_query` - 按关键词查询当前会话的对话历史（SQLite 本地搜索）
 - `history_search` - 语义搜索历史对话（需要 `embedding` 特性）
 
@@ -268,11 +283,14 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `wiki_search` (`WikiSearchTool`) - 使用 Tantivy BM25 搜索 Wiki 页面。参数：`query`（必填，搜索关键词），`limit`（可选，默认 10）。返回格式化的搜索结果。
 - `wiki_write` (`WikiWriteTool`) - 写入/更新 Wiki 页面。参数：`path`、`title`、`content`（必填），`page_type`（可选，默认 `"topic"`），`tags`（可选，数组）。
 - `wiki_read` (`WikiReadTool`) - 按路径读取 Wiki 页面。参数：`path`（必填）。返回完整 Markdown 内容及元数据。
 - `wiki_decay` (`WikiDecayTool`) - 运行自动化频率衰减，零 LLM 消耗。返回扫描/衰减/错误的页面统计。
 - `wiki_refresh` (`WikiRefreshTool`) - 将磁盘 Markdown 文件同步到 SQLite 和 Tantivy。参数：`action` - `"sync"`（增量同步）、`"reindex"`（完全重建）、`"stats"`（统计信息）。
+- `wiki_delete` (`WikiDeleteTool`) - 删除 Wiki 页面。参数：`path`（必填）。**需要审批**。
+- `search_sops` (`SearchSopsTool`) - 搜索 SOP（标准操作流程）页面。参数：`query`（必填）。
 
 ### 5. 子代理工具
 
@@ -306,11 +324,12 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `spawn` - 创建单个子代理
   - 参数：`task`（任务描述，必填），`model_id`（可选，使用模型配置中的 profile ID）
 - `spawn_parallel` - 并行创建最多 10 个子代理
   - 参数：`tasks`（任务列表，必填），支持简单字符串数组或带 `model_id` 的对象数组
-  - 并发限制：最多 5 个同时执行，防止 API 限流
+  - 并发限制：由 `tools.spawn.max_concurrency` 控制（默认 1）
 
 **实时流式事件（WebSocket 模式）：**
 
@@ -330,12 +349,19 @@ sequenceDiagram
 ### 6. 会话管理工具
 
 **包含的工具：**
-- `new_session` - 开启新会话，清空当前会话的所有历史消息和摘要，生成新的 session key
-- `clear_session` - 清空当前会话历史（保留 session key）
 
-### 7. 消息工具
+- `new_session` - 开启新会话，清空当前会话的所有历史消息和摘要，生成新的 session key（需要审批）
+- `clear_session` - 清空当前会话历史（保留 session key）（需要审批）
 
+### 7. 交互工具
+
+- `ask_user` (`AskUserTool`) - 向用户提问并等待回复。参数：`question`（必填），`options`（可选，选项列表）。
 - `message` (`MessageTool`) - 向用户发送消息（用于 Cron 等后台任务主动推送）
+
+### 8. 系统工具
+
+- `create_plan` (`CreatePlanTool`) - 创建执行计划。需要 LLM provider。参数：`goal`（必填）。
+- `evolution` (`EvolutionTool`) - 从对话中提取记忆并保存到 Wiki。自动触发，零用户干预。
 
 ### 工具执行签名
 
@@ -370,6 +396,7 @@ sequenceDiagram
 ```
 
 **包含的工具：**
+
 - `cron` - 管理定时任务（增删改查）
 - `script` (`PluginTool`) - 外部脚本工具（通过 YAML manifest 声明）
 
@@ -518,41 +545,41 @@ sequenceDiagram
 
 ---
 
-## MCP 工具扩展
+## 外部插件扩展
 
-Gasket 还支持**外部工具服务**（MCP）：
+Gasket 还支持**外部插件**（通过 YAML 清单声明）：
 
 ```mermaid
 flowchart TB
     subgraph Gasket
         AI[AI大脑]
-        MCP[MCP客户端]
+        Plugin[插件系统]
     end
     
-    subgraph 外部工具服务
-        S1[数据库查询服务]
-        S2[图像生成服务]
-        S3[代码分析服务]
-        S4[企业API服务]
+    subgraph 外部脚本
+        S1[Python 脚本]
+        S2[Node.js 脚本]
+        S3[Shell 脚本]
     end
     
-    AI --> MCP
-    MCP --> S1
-    MCP --> S2
-    MCP --> S3
-    MCP --> S4
+    AI --> Plugin
+    Plugin --> S1
+    Plugin --> S2
+    Plugin --> S3
     
-    S1 --> MCP
-    S2 --> MCP
-    S3 --> MCP
-    S4 --> MCP
-    MCP --> AI
+    S1 --> Plugin
+    S2 --> Plugin
+    S3 --> Plugin
+    Plugin --> AI
 ```
 
 **举例：**
-- 连接公司内部的员工查询系统
-- 连接专业的图像生成 AI
-- 连接数据库执行 SQL 查询
+
+- 用 Python 编写的天气查询工具
+- 用 Node.js 编写的翻译工具
+- 用 Shell 编写的系统监控工具
+
+详见 [插件系统文档](plugin.md)。
 
 ---
 
@@ -602,8 +629,11 @@ sequenceDiagram
 以下只读工具无需确认，直接执行：
 
 - `read_file`, `list_dir`, `web_search`, `web_fetch`
-- `wiki_search`, `wiki_read`, `history_query`
+- `wiki_search`, `wiki_read`, `wiki_write`, `wiki_decay`, `wiki_refresh`, `search_sops`
+- `history_query`, `history_search`（需 embedding 特性）
 - `spawn`, `spawn_parallel`
+- `ask_user`, `message`
+- `create_plan`, `evolution`
 
 ---
 

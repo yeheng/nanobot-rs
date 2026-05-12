@@ -161,7 +161,7 @@ Example manifest:
 ```yaml
 permissions:
   - llm_chat
-  - memory_search
+  - wiki_search
 ```
 
 If a script calls a method it doesn't have permission for, Gasket returns:
@@ -214,7 +214,7 @@ Returns:
 ```json
 {
   "task": "Refactor this Python function",
-  "model": "optional-model-id"
+  "model_id": "optional-model-id"
 }
 ```
 
