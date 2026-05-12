@@ -34,6 +34,7 @@ lancedb = { version = "0.27", optional = true }
 arrow-array = { version = "57", optional = true }
 arrow-schema = { version = "57", optional = true }
 dirs = "5"
+rig-core = { version = "0.36.0", default-features = false, features = ["reqwest", "rustls"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

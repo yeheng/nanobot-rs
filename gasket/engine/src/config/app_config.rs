@@ -386,15 +386,242 @@ impl ProviderRegistry {
         let raw_api_key = config.api_key.as_deref().unwrap_or("");
         let api_key = self.resolve_api_key(raw_api_key)?;
 
-        let mut provider_config = config.clone();
-        provider_config.api_key = Some(api_key);
-        if provider_config.default_model.is_empty() {
-            provider_config.default_model = "default".to_string();
+        let model = if config.default_model.is_empty() {
+            "default".to_string()
+        } else {
+            config.default_model.clone()
+        };
+
+        self.build_provider(name, &api_key, config, &model)
+    }
+
+    fn build_provider(
+        &self,
+        name: &str,
+        api_key: &str,
+        provider_config: &ProviderConfig,
+        model: &str,
+    ) -> anyhow::Result<std::sync::Arc<dyn gasket_providers::LlmProvider>> {
+        let proxy_url = provider_config.proxy_url.clone();
+        let proxy_username = provider_config.proxy_username.clone();
+        let proxy_password = provider_config.proxy_password.clone();
+
+        match name {
+            "minimax" | "minimaxi" => {
+                #[cfg(feature = "provider-minimax")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        gasket_providers::MinimaxProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            provider_config.client_id.clone(),
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ));
+                }
+                #[cfg(not(feature = "provider-minimax"))]
+                anyhow::bail!(
+                    "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+                )
+            }
+            "gemini" => {
+                #[cfg(feature = "provider-gemini")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        gasket_providers::GeminiProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ));
+                }
+                #[cfg(not(feature = "provider-gemini"))]
+                anyhow::bail!(
+                    "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+                )
+            }
+            "moonshot" | "kimi" => {
+                #[cfg(feature = "provider-moonshot")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        gasket_providers::MoonshotProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            None,
+                            None,
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ));
+                }
+                #[cfg(not(feature = "provider-moonshot"))]
+                anyhow::bail!(
+                    "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+                )
+            }
+            "anthropic" | "claude" => {
+                #[cfg(feature = "provider-anthropic")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        gasket_providers::AnthropicProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            None,
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ));
+                }
+                #[cfg(not(feature = "provider-anthropic"))]
+                anyhow::bail!(
+                    "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                )
+            }
+            "copilot" => {
+                #[cfg(feature = "provider-copilot")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        gasket_providers::CopilotProvider::with_proxy(
+                            api_key,
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ));
+                }
+                #[cfg(not(feature = "provider-copilot"))]
+                anyhow::bail!(
+                    "Copilot provider is not compiled in. Rebuild with --features provider-copilot"
+                )
+            }
+            _ => {}
         }
 
-        Ok(std::sync::Arc::new(
-            gasket_providers::OpenAICompatibleProvider::new(name, provider_config),
-        ))
+        // Fallback: dispatch by provider_type
+        match provider_config.provider_type {
+            ProviderType::Gemini => {
+                #[cfg(feature = "provider-gemini")]
+                {
+                    Ok(std::sync::Arc::new(
+                        gasket_providers::GeminiProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ))
+                }
+                #[cfg(not(feature = "provider-gemini"))]
+                anyhow::bail!(
+                    "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+                )
+            }
+            ProviderType::Minimax => {
+                #[cfg(feature = "provider-minimax")]
+                {
+                    Ok(std::sync::Arc::new(
+                        gasket_providers::MinimaxProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            provider_config.client_id.clone(),
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ))
+                }
+                #[cfg(not(feature = "provider-minimax"))]
+                anyhow::bail!(
+                    "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+                )
+            }
+            ProviderType::Moonshot => {
+                #[cfg(feature = "provider-moonshot")]
+                {
+                    Ok(std::sync::Arc::new(
+                        gasket_providers::MoonshotProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            None,
+                            None,
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ))
+                }
+                #[cfg(not(feature = "provider-moonshot"))]
+                anyhow::bail!(
+                    "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+                )
+            }
+            ProviderType::Anthropic => {
+                #[cfg(feature = "provider-anthropic")]
+                {
+                    Ok(std::sync::Arc::new(
+                        gasket_providers::AnthropicProvider::with_config(
+                            api_key.to_string(),
+                            Some(provider_config.api_base.clone()),
+                            Some(model.to_string()),
+                            None,
+                            proxy_url,
+                            proxy_username,
+                            proxy_password,
+                            provider_config.extra_headers.clone(),
+                        ),
+                    ))
+                }
+                #[cfg(not(feature = "provider-anthropic"))]
+                anyhow::bail!(
+                    "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+                )
+            }
+            ProviderType::Openai => {
+                let extra_headers = provider_config.extra_headers.clone();
+                let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
+                let config = gasket_providers::ProviderConfig {
+                    provider_type: ProviderType::Openai,
+                    api_base: provider_config.api_base.clone(),
+                    api_key: Some(api_key.to_string()),
+                    default_model: model.to_string(),
+                    models: std::collections::HashMap::new(),
+                    extra_headers,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    client_id: provider_config.client_id.clone(),
+                    default_currency: provider_config.default_currency.clone(),
+                    supports_thinking,
+                };
+                Ok(std::sync::Arc::new(
+                    gasket_providers::OpenAICompatibleProvider::new(name, config),
+                ))
+            }
+        }
     }
 
     pub fn get_default_provider(&self) -> Option<&str> {

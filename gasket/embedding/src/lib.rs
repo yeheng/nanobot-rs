@@ -3,6 +3,7 @@
 pub mod index;
 pub mod indexer;
 pub mod provider;
+pub mod rig_adapter;
 pub mod searcher;
 pub mod store;
 pub mod vector_store;

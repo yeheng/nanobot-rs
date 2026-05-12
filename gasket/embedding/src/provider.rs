@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use rig::client::EmbeddingsClient;
 use serde::{Deserialize, Serialize};
+
+use crate::rig_adapter::RigEmbeddingAdapter;
 
 /// Trait for embedding providers.
 #[async_trait]
@@ -67,17 +70,24 @@ impl ProviderConfig {
                 endpoint,
                 model,
                 api_key,
-                dim,
-                timeout_secs,
+                dim: _,
+                timeout_secs: _,
             } => {
-                let provider = ApiProvider::new(
-                    endpoint.clone(),
-                    model.clone(),
-                    api_key.clone(),
-                    *dim,
-                    Duration::from_secs(*timeout_secs),
-                )?;
-                Ok(Box::new(provider))
+                // Extract base URL from endpoint by stripping "/embeddings" suffix
+                // endpoint is like "https://api.openai.com/v1/embeddings"
+                // base URL should be "https://api.openai.com/v1"
+                let base_url = endpoint
+                    .trim_end_matches("/embeddings")
+                    .trim_end_matches("/v1/embeddings")
+                    .trim_end_matches("/embeddings");
+
+                let client = rig::providers::openai::Client::builder()
+                    .api_key(api_key)
+                    .base_url(base_url)
+                    .build()
+                    .map_err(|e| anyhow!("failed to build rig client: {}", e))?;
+                let embedding_model = client.embedding_model(model);
+                Ok(Box::new(RigEmbeddingAdapter::new(embedding_model)))
             }
             #[cfg(feature = "local-onnx")]
             ProviderConfig::LocalOnnx {
