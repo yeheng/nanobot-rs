@@ -13,7 +13,7 @@ pub mod lance_store;
 
 pub use index::MemoryIndex;
 pub use indexer::EmbeddingIndexer;
-pub use provider::{ApiProvider, EmbeddingProvider, ProviderConfig};
+pub use provider::{EmbeddingProvider, ProviderConfig};
 pub use searcher::{RecallConfig, RecallHit, RecallSearcher};
 pub use store::{EmbeddingStore, StoredEmbedding};
 pub use vector_store::{VectorRecord, VectorStore, VectorStoreConfig};

@@ -76,7 +76,7 @@ pub fn build_provider(
         "minimax" | "minimaxi" => {
             #[cfg(feature = "provider-minimax")]
             {
-                let provider = gasket_engine::providers::MinimaxProvider::with_config(
+                let provider = gasket_engine::providers::build_minimax_provider(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
@@ -97,7 +97,7 @@ pub fn build_provider(
         "gemini" => {
             #[cfg(feature = "provider-gemini")]
             {
-                let provider = gasket_engine::providers::GeminiProvider::with_config(
+                let provider = gasket_engine::providers::build_gemini_provider(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
@@ -122,8 +122,6 @@ pub fn build_provider(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
-                    None,
-                    None,
                     proxy_url,
                     proxy_username,
                     proxy_password,
@@ -141,7 +139,7 @@ pub fn build_provider(
         "anthropic" | "claude" => {
             #[cfg(feature = "provider-anthropic")]
             {
-                let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                let provider = gasket_engine::providers::build_anthropic_provider(
                     api_key.to_string(),
                     Some(provider_config.api_base.clone()),
                     Some(model.to_string()),
@@ -187,7 +185,7 @@ pub fn build_provider(
             ProviderType::Gemini => {
                 #[cfg(feature = "provider-gemini")]
                 {
-                    let provider = gasket_engine::providers::GeminiProvider::with_config(
+                    let provider = gasket_engine::providers::build_gemini_provider(
                         api_key.to_string(),
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),
@@ -208,7 +206,7 @@ pub fn build_provider(
             ProviderType::Minimax => {
                 #[cfg(feature = "provider-minimax")]
                 {
-                    let provider = gasket_engine::providers::MinimaxProvider::with_config(
+                    let provider = gasket_engine::providers::build_minimax_provider(
                         api_key.to_string(),
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),
@@ -233,8 +231,6 @@ pub fn build_provider(
                         api_key.to_string(),
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),
-                        None,
-                        None,
                         proxy_url,
                         proxy_username,
                         proxy_password,
@@ -252,7 +248,7 @@ pub fn build_provider(
             ProviderType::Anthropic => {
                 #[cfg(feature = "provider-anthropic")]
                 {
-                    let provider = gasket_engine::providers::AnthropicProvider::with_config(
+                    let provider = gasket_engine::providers::build_anthropic_provider(
                         api_key.to_string(),
                         Some(provider_config.api_base.clone()),
                         Some(model.to_string()),

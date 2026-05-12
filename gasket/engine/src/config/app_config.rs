@@ -411,7 +411,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-minimax")]
                 {
                     return Ok(std::sync::Arc::new(
-                        gasket_providers::MinimaxProvider::with_config(
+                        gasket_providers::build_minimax_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
@@ -431,7 +431,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-gemini")]
                 {
                     return Ok(std::sync::Arc::new(
-                        gasket_providers::GeminiProvider::with_config(
+                        gasket_providers::build_gemini_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
@@ -455,8 +455,6 @@ impl ProviderRegistry {
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
-                            None,
-                            None,
                             proxy_url,
                             proxy_username,
                             proxy_password,
@@ -473,7 +471,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-anthropic")]
                 {
                     return Ok(std::sync::Arc::new(
-                        gasket_providers::AnthropicProvider::with_config(
+                        gasket_providers::build_anthropic_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
@@ -518,7 +516,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-gemini")]
                 {
                     Ok(std::sync::Arc::new(
-                        gasket_providers::GeminiProvider::with_config(
+                        gasket_providers::build_gemini_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
@@ -538,7 +536,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-minimax")]
                 {
                     Ok(std::sync::Arc::new(
-                        gasket_providers::MinimaxProvider::with_config(
+                        gasket_providers::build_minimax_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
@@ -562,8 +560,6 @@ impl ProviderRegistry {
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),
-                            None,
-                            None,
                             proxy_url,
                             proxy_username,
                             proxy_password,
@@ -580,7 +576,7 @@ impl ProviderRegistry {
                 #[cfg(feature = "provider-anthropic")]
                 {
                     Ok(std::sync::Arc::new(
-                        gasket_providers::AnthropicProvider::with_config(
+                        gasket_providers::build_anthropic_provider(
                             api_key.to_string(),
                             Some(provider_config.api_base.clone()),
                             Some(model.to_string()),

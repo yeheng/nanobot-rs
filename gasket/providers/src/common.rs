@@ -45,8 +45,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, instrument};
 
-use rig::client::CompletionClient;
-use rig::completion::CompletionModel;
 use rig::providers::openai;
 
 /// Errors that can occur when creating or using a provider.
@@ -64,7 +62,7 @@ pub enum ProviderBuildError {
 pub type ProviderResult<T> = Result<T, ProviderBuildError>;
 
 use crate::{
-    ChatRequest, ChatResponse, ChatStream, LlmProvider,
+    ChatRequest, ChatResponse, ChatStream, LlmProvider, RigCompletionProvider,
 };
 
 /// Build an HTTP client with optional proxy support.
@@ -216,9 +214,7 @@ impl ProviderConfig {
 pub struct OpenAICompatibleProvider {
     name: String,
     config: ProviderConfig,
-    rig_client: openai::CompletionsClient<crate::logging_http::LoggingHttpClient>,
-    /// HTTP client for model_limits API calls (rig doesn't expose model introspection)
-    http_client: Client,
+    inner: RigCompletionProvider<openai::CompletionsClient<crate::logging_http::LoggingHttpClient>>,
 }
 
 impl OpenAICompatibleProvider {
@@ -265,11 +261,12 @@ impl OpenAICompatibleProvider {
                         })
                 })
         };
+        let name = name.into();
+        let inner = RigCompletionProvider::new(&name, config.default_model.clone(), rig_client);
         Self {
-            name: name.into(),
+            name,
             config,
-            rig_client,
-            http_client,
+            inner,
         }
     }
 
@@ -400,98 +397,21 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 
     fn default_model(&self) -> &str {
-        &self.config.default_model
+        self.inner.default_model()
     }
 
     fn supports_thinking(&self) -> bool {
         self.config.supports_thinking
     }
 
-    #[instrument(skip(self), fields(provider = %self.name(), model = %model))]
-    async fn model_limits(
-        &self,
-        model: &str,
-    ) -> Result<Option<crate::ModelLimits>, crate::ProviderError> {
-        let url = format!("{}/models/{}", self.config.api_base, model);
-        let mut req = self.http_client.get(&url).header(
-            "Authorization",
-            format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
-        );
-        for (key, value) in &self.config.extra_headers {
-            req = req.header(key, value);
-        }
-
-        let response = req.send().await.map_err(|e| {
-            crate::ProviderError::NetworkError(format!(
-                "{} model info request failed: {}",
-                self.name, e
-            ))
-        })?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let body = response.text().await.map_err(|e| {
-            crate::ProviderError::NetworkError(format!(
-                "{} model info response read failed: {}",
-                self.name, e
-            ))
-        })?;
-
-        let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-            crate::ProviderError::ParseError(format!(
-                "{} model info parse error: {} | body: {}",
-                self.name, e, body
-            ))
-        })?;
-
-        let max_input = value
-            .get("max_input_tokens")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .or_else(|| {
-                value
-                    .get("context_length")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize)
-            });
-        let max_output = value
-            .get("max_tokens")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .or_else(|| {
-                value
-                    .get("max_output_tokens")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize)
-            });
-
-        match (max_input, max_output) {
-            (Some(input), Some(output)) => Ok(Some(crate::ModelLimits {
-                max_input_tokens: input,
-                max_output_tokens: output,
-            })),
-            _ => Ok(None),
-        }
-    }
-
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
-        let model = self.rig_client.completion_model(&request.model);
-        let rig_request = crate::rig_bridge::to_rig_request(request);
-        let response = model.completion(rig_request).await
-            .map_err(|e| crate::ProviderError::Other(e.to_string()))?;
-        Ok(crate::rig_bridge::from_rig_response(response))
+        self.inner.chat(request).await
     }
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
-        let model = self.rig_client.completion_model(&request.model);
-        let rig_request = crate::rig_bridge::to_rig_request(request);
-        let stream = model.stream(rig_request).await
-            .map_err(|e| crate::ProviderError::Other(e.to_string()))?;
-        Ok(crate::rig_bridge::from_rig_stream(stream))
+        self.inner.chat_stream(request).await
     }
 }
 
