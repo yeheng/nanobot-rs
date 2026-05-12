@@ -43,7 +43,11 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{error, info, instrument};
+use tracing::{info, instrument};
+
+use rig::client::CompletionClient;
+use rig::completion::CompletionModel;
+use rig::providers::openai;
 
 /// Errors that can occur when creating or using a provider.
 #[derive(Debug, Error)]
@@ -60,8 +64,7 @@ pub enum ProviderBuildError {
 pub type ProviderResult<T> = Result<T, ProviderBuildError>;
 
 use crate::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
-    ToolDefinition,
+    ChatRequest, ChatResponse, ChatStream, LlmProvider,
 };
 
 /// Build an HTTP client with optional proxy support.
@@ -212,31 +215,43 @@ impl ProviderConfig {
 /// identical HTTP POST + JSON parse logic.
 pub struct OpenAICompatibleProvider {
     name: String,
-    client: Client,
     config: ProviderConfig,
+    rig_client: openai::Client,
+    /// HTTP client for model_limits API calls (rig doesn't expose model introspection)
+    http_client: Client,
 }
 
 impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
     pub fn new(name: impl Into<String>, config: ProviderConfig) -> Self {
-        let client = build_http_client(
+        let api_key = config.api_key.clone().unwrap_or_default();
+        let rig_client = if config.api_base.is_empty() {
+            openai::Client::new(api_key).unwrap_or_else(|e| {
+                tracing::warn!("Failed to create rig client: {}", e);
+                openai::Client::new("".to_string()).expect("fallback rig client creation should not fail")
+            })
+        } else {
+            openai::Client::builder()
+                .api_key(api_key.clone())
+                .base_url(&config.api_base)
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to create rig client with base_url: {}", e);
+                    openai::Client::new(api_key).unwrap_or_else(|e2| {
+                        panic!("Fallback rig client creation also failed: {}", e2)
+                    })
+                })
+        };
+        let http_client = build_http_client(
             config.proxy_url.as_deref(),
             config.proxy_username.as_deref(),
             config.proxy_password.as_deref(),
         );
         Self {
             name: name.into(),
-            client,
             config,
-        }
-    }
-
-    /// Create with custom HTTP client
-    pub fn with_client(name: impl Into<String>, config: ProviderConfig, client: Client) -> Self {
-        Self {
-            name: name.into(),
-            client,
-            config,
+            rig_client,
+            http_client,
         }
     }
 
@@ -380,7 +395,7 @@ impl LlmProvider for OpenAICompatibleProvider {
         model: &str,
     ) -> Result<Option<crate::ModelLimits>, crate::ProviderError> {
         let url = format!("{}/models/{}", self.config.api_base, model);
-        let mut req = self.client.get(&url).header(
+        let mut req = self.http_client.get(&url).header(
             "Authorization",
             format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
         );
@@ -445,216 +460,26 @@ impl LlmProvider for OpenAICompatibleProvider {
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
-        let url = format!("{}/chat/completions", self.config.api_base);
-
-        let openai_request = OpenAICompatibleRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            temperature: request.temperature,
-            max_tokens: request.max_tokens,
-            thinking: request.thinking,
-            stream: false,
-        };
-
-        info!("[{}] POST {} ", self.name, url);
-
-        let mut req = self
-            .client
-            .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
-            )
-            .header("Content-Type", "application/json");
-
-        // Apply extra headers (e.g. X-Group-Id for MiniMax)
-        for (key, value) in &self.config.extra_headers {
-            req = req.header(key, value);
-        }
-
-        let response =
-            req.json(&openai_request).send().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Request failed: {}", e))
-            })?;
-
-        let status = response.status();
-        info!("[{}] response status: {}", self.name, status);
-
-        let body = response.text().await.map_err(|e| {
-            crate::ProviderError::NetworkError(format!("Failed to read response: {}", e))
-        })?;
-
-        if !status.is_success() {
-            error!("[{}] response body:\n{}", self.name, body);
-            return Err(crate::ProviderError::ApiError {
-                status_code: status.as_u16(),
-                message: format!("{} - {}", status, body),
-            });
-        }
-
-        let api_response: OpenAICompatibleResponse = serde_json::from_str(&body).map_err(|e| {
-            crate::ProviderError::ParseError(format!(
-                "{} API response parse error: {} | body: {}",
-                self.name, e, body
-            ))
-        })?;
-
-        let choice = api_response.choices.into_iter().next().ok_or_else(|| {
-            crate::ProviderError::ParseError(format!("No choices in {} response", self.name))
-        })?;
-
-        let tool_calls: Vec<ToolCall> = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tc| {
-                ToolCall::new(
-                    tc.id,
-                    tc.function.name,
-                    parse_json_args(&tc.function.arguments),
-                )
-            })
-            .collect();
-
-        // Convert API usage to ChatResponse usage
-        let usage = api_response.usage.map(|u| crate::Usage {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            total_tokens: u.total_tokens,
-        });
-
-        Ok(ChatResponse {
-            content: choice.message.content,
-            tool_calls,
-            reasoning_content: choice.message.reasoning_content,
-            usage,
-        })
+        let model = self.rig_client.completion_model(&request.model);
+        let rig_request = crate::rig_bridge::to_rig_request(request);
+        let response = model.completion(rig_request).await
+            .map_err(|e| crate::ProviderError::Other(e.to_string()))?;
+        Ok(crate::rig_bridge::from_rig_response(response))
     }
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
-        let url = format!("{}/chat/completions", self.config.api_base);
-
-        let openai_request = OpenAICompatibleRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            temperature: request.temperature,
-            max_tokens: request.max_tokens,
-            thinking: request.thinking,
-            stream: true,
-        };
-
-        info!("[{}] POST {}", self.name, url);
-
-        let mut req = self
-            .client
-            .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.api_key.as_deref().unwrap_or("")),
-            )
-            .header("Content-Type", "application/json");
-
-        for (key, value) in &self.config.extra_headers {
-            req = req.header(key, value);
-        }
-
-        let response =
-            req.json(&openai_request).send().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Request failed: {}", e))
-            })?;
-
-        let status = response.status();
-        info!("[{}] stream response status: {}", self.name, status);
-
-        if !status.is_success() {
-            let body = response.text().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Failed to read error body: {}", e))
-            })?;
-
-            error!("[{}] POST {} response: {}", self.name, url, body);
-            return Err(crate::ProviderError::ApiError {
-                status_code: status.as_u16(),
-                message: body,
-            });
-        }
-
-        let byte_stream = response.bytes_stream();
-        let chunk_stream = crate::streaming::parse_sse_stream(byte_stream);
-
-        Ok(Box::pin(chunk_stream))
+        let model = self.rig_client.completion_model(&request.model);
+        let rig_request = crate::rig_bridge::to_rig_request(request);
+        let stream = model.stream(rig_request).await
+            .map_err(|e| crate::ProviderError::Other(e.to_string()))?;
+        Ok(crate::rig_bridge::from_rig_stream(stream))
     }
 }
 
 /// Parse JSON arguments from string
 pub fn parse_json_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or_else(|_| serde_json::json!({}))
-}
-
-// OpenAI-compatible API types
-
-#[derive(Debug, Serialize)]
-struct OpenAICompatibleRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ToolDefinition>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<ThinkingConfig>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    stream: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleResponse {
-    choices: Vec<OpenAICompatibleChoice>,
-    #[serde(default)]
-    usage: Option<OpenAICompatibleUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleUsage {
-    #[serde(default, rename = "prompt_tokens")]
-    input_tokens: usize,
-    #[serde(default, rename = "completion_tokens")]
-    output_tokens: usize,
-    #[serde(default, rename = "total_tokens")]
-    total_tokens: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleChoice {
-    message: OpenAICompatibleMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleMessage {
-    content: Option<String>,
-    tool_calls: Option<Vec<OpenAICompatibleToolCall>>,
-    /// DeepSeek R1 models return chain-of-thought here
-    reasoning_content: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    tool_type: String,
-    function: OpenAICompatibleFunctionCall,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAICompatibleFunctionCall {
-    name: String,
-    arguments: String,
 }
 
 #[cfg(test)]
