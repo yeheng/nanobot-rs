@@ -65,8 +65,6 @@ mod base;
 mod common;
 #[cfg(feature = "provider-copilot")]
 mod copilot;
-#[cfg(feature = "provider-copilot")]
-mod copilot_oauth;
 #[cfg(feature = "provider-gemini")]
 mod gemini;
 #[cfg(feature = "provider-minimax")]
@@ -95,11 +93,6 @@ pub use common::{
 pub use anthropic::AnthropicProvider;
 #[cfg(feature = "provider-copilot")]
 pub use copilot::CopilotProvider;
-#[cfg(feature = "provider-copilot")]
-pub use copilot_oauth::{
-    CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse,
-    DEFAULT_CLIENT_ID as COPILOT_DEFAULT_CLIENT_ID,
-};
 #[cfg(feature = "provider-gemini")]
 pub use gemini::GeminiProvider;
 #[cfg(feature = "provider-minimax")]

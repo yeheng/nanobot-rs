@@ -1,77 +1,35 @@
 //! GitHub Copilot LLM Provider
 //!
-//! Implements the `LlmProvider` trait for GitHub Copilot's chat API.
-//! Supports both OAuth Device Flow and Personal Access Token authentication.
+//! Implements the `LlmProvider` trait for GitHub Copilot's chat API using rig.
+//! Supports GitHub Access Token and API Key authentication.
 //!
-//! # Example
-//!
-//! ```ignore
-//! // Using PAT
-//! let provider = CopilotProvider::new("ghp_xxx", None, "gpt-4o");
-//!
-//! // Using OAuth-obtained token
-//! let provider = CopilotProvider::new("gho_xxx", None, "gpt-4o");
-//! ```
-
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+//! For OAuth, use `Client::from_env()` which handles device flow automatically.
 
 use async_trait::async_trait;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, instrument, warn};
-use uuid::Uuid;
+use rig::client::{CompletionClient, ProviderClient};
+use rig::completion::CompletionModel;
+use tracing::{debug, instrument};
 
-use crate::common::build_http_client;
-use crate::copilot_oauth::CopilotOAuth;
+use crate::rig_bridge::{from_rig_response, from_rig_stream, to_rig_request};
 use crate::{
-    ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
+    ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError,
 };
-use std::collections::HashMap;
-
-/// Default API base for Copilot
-const COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
 
 /// Default model for Copilot
 const DEFAULT_MODEL: &str = "gpt-4o";
 
-/// Token refresh buffer (refresh 60 seconds before expiry)
-const TOKEN_REFRESH_BUFFER_SECS: u64 = 60;
-
-/// Cached Copilot token with expiry
-struct CachedToken {
-    token: String,
-    expires_at: Instant,
-}
-
-impl CachedToken {
-    fn is_expired(&self) -> bool {
-        let now = Instant::now();
-        now >= self.expires_at
-            || self.expires_at.duration_since(now) < Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS)
-    }
-}
-
-/// GitHub Copilot provider
-///
-/// Implements the LlmProvider trait for GitHub Copilot's chat completions API.
-/// Handles automatic token refresh for short-lived Copilot JWTs.
+/// GitHub Copilot provider using rig
 pub struct CopilotProvider {
-    client: Client,
-    github_token: String,
-    cached_token: Mutex<Option<CachedToken>>,
-    api_base: String,
+    /// Provider name
+    name: String,
+    /// Rig copilot client
+    rig_client: rig::providers::copilot::Client,
+    /// Default model
     default_model: String,
-    proxy_url: Option<String>,
-    proxy_username: Option<String>,
-    proxy_password: Option<String>,
-
-    /// Extra HTTP headers to send with every request
-    extra_headers: HashMap<String, String>,
 }
 
 impl CopilotProvider {
-    /// Create a new Copilot provider
+    /// Create a new Copilot provider with GitHub Access Token authentication
     ///
     /// # Arguments
     /// * `github_token` - GitHub access token (PAT or OAuth token)
@@ -81,145 +39,73 @@ impl CopilotProvider {
         github_token: impl Into<String>,
         api_base: Option<String>,
         default_model: Option<String>,
-    ) -> Self {
-        Self {
-            client: build_http_client(None, None, None),
-            github_token: github_token.into(),
-            cached_token: Mutex::new(None),
-            api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
-            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            proxy_url: None,
-            proxy_username: None,
-            proxy_password: None,
-            extra_headers: HashMap::new(),
+    ) -> Result<Self, ProviderError> {
+        let mut builder = rig::providers::copilot::Client::builder();
+
+        if let Some(base) = api_base {
+            builder = builder.base_url(base);
         }
+
+        let client = builder
+            .github_access_token(github_token)
+            .build()
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
+
+        Ok(Self {
+            name: "copilot".to_string(),
+            rig_client: client,
+            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        })
     }
 
-    /// Create a new Copilot provider with proxy configuration
+    /// Create a new Copilot provider with API Key authentication
     ///
     /// # Arguments
-    /// * `github_token` - GitHub access token (PAT or OAuth token)
-    /// * `api_base` - Optional custom API base URL
+    /// * `api_key` - Copilot API key
     /// * `default_model` - Default model to use (e.g., "gpt-4o")
-    /// * `proxy_url` - Optional proxy URL (e.g., `http://127.0.0.1:7890`)
-    /// * `proxy_username` - Optional username for proxy authentication
-    /// * `proxy_password` - Optional password for proxy authentication
-    pub fn with_proxy(
-        github_token: impl Into<String>,
-        api_base: Option<String>,
+    pub fn with_api_key(
+        api_key: impl Into<String>,
         default_model: Option<String>,
-        proxy_url: Option<String>,
-        proxy_username: Option<String>,
-        proxy_password: Option<String>,
-        extra_headers: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            client: build_http_client(
-                proxy_url.as_deref(),
-                proxy_username.as_deref(),
-                proxy_password.as_deref(),
-            ),
-            github_token: github_token.into(),
-            cached_token: Mutex::new(None),
-            api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
+    ) -> Result<Self, ProviderError> {
+        use rig::providers::copilot::CopilotAuth;
+
+        let client = rig::providers::copilot::Client::builder()
+            .api_key(CopilotAuth::ApiKey(api_key.into()))
+            .build()
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
+
+        Ok(Self {
+            name: "copilot".to_string(),
+            rig_client: client,
             default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            proxy_url: proxy_url.clone(),
-            proxy_username: proxy_username.clone(),
-            proxy_password: proxy_password.clone(),
-            extra_headers,
-        }
+        })
     }
 
-    /// Get a valid Copilot JWT token, refreshing if necessary
+    /// Create a new Copilot provider from environment variables
     ///
-    /// Copilot tokens are short-lived (~30 minutes). This method handles
-    /// automatic refresh when the token is expired or about to expire.
-    async fn get_copilot_token(&self) -> anyhow::Result<String> {
-        // Check if we have a valid cached token
-        {
-            let cached = self.cached_token.lock().unwrap();
-            if let Some(ref token) = *cached {
-                if !token.is_expired() {
-                    return Ok(token.token.clone());
-                }
-            }
-        }
+    /// This method checks for:
+    /// 1. `GITHUB_COPILOT_API_KEY` or `COPILOT_API_KEY` - API key
+    /// 2. `COPILOT_GITHUB_ACCESS_TOKEN` or `GITHUB_TOKEN` - GitHub access token
+    /// 3. Falls back to OAuth if neither is found
+    ///
+    /// # Arguments
+    /// * `default_model` - Default model to use (e.g., "gpt-4o")
+    pub fn from_env(default_model: Option<String>) -> Result<Self, ProviderError> {
+        let client = rig::providers::copilot::Client::from_env()
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        // Token expired or missing - refresh it
-        self.refresh_copilot_token().await
-    }
-
-    /// Exchange GitHub token for a fresh Copilot JWT
-    async fn refresh_copilot_token(&self) -> anyhow::Result<String> {
-        debug!("Refreshing Copilot token");
-
-        let oauth = CopilotOAuth::with_proxy(
-            crate::copilot_oauth::DEFAULT_CLIENT_ID,
-            self.proxy_url.clone(),
-            self.proxy_username.clone(),
-            self.proxy_password.clone(),
-        );
-        let response = oauth.get_copilot_token(&self.github_token).await?;
-
-        let token = response.token.clone();
-        let refresh_in = response.refresh_in;
-
-        // Cache the new token
-        {
-            let mut cached = self.cached_token.lock().unwrap();
-            *cached = Some(CachedToken {
-                token: token.clone(),
-                expires_at: Instant::now() + Duration::from_secs(refresh_in as u64),
-            });
-        }
-
-        info!("Copilot token refreshed, refresh in {} seconds", refresh_in);
-        Ok(token)
-    }
-
-    /// Build headers required for Copilot API requests
-    fn build_headers(&self, copilot_token: &str) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", copilot_token).parse().unwrap(),
-        );
-        headers.insert("copilot-integration-id", "vscode-chat".parse().unwrap());
-        headers.insert("Editor-Version", "vscode/1.95.0".parse().unwrap());
-        headers.insert(
-            "Editor-Plugin-Version",
-            "copilot-chat/0.26.7".parse().unwrap(),
-        );
-        headers.insert("user-agent", "GitHubCopilotChat/0.26.7".parse().unwrap());
-        headers.insert("openai-intent", "conversation-panel".parse().unwrap());
-        headers.insert("x-github-api-version", "2025-04-01".parse().unwrap());
-        headers.insert("x-request-id", Uuid::new_v4().to_string().parse().unwrap());
-        headers.insert(
-            "x-vscode-user-agent-library-version",
-            "electron-fetch".parse().unwrap(),
-        );
-        headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            "application/json".parse().unwrap(),
-        );
-
-        // Apply user-configured extra headers
-        for (key, value) in &self.extra_headers {
-            if let Ok(header_name) = key.parse::<reqwest::header::HeaderName>() {
-                if let Ok(header_value) = value.parse::<reqwest::header::HeaderValue>() {
-                    headers.insert(header_name, header_value);
-                }
-            }
-        }
-
-        headers
+        Ok(Self {
+            name: "copilot".to_string(),
+            rig_client: client,
+            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        })
     }
 }
 
 #[async_trait]
 impl LlmProvider for CopilotProvider {
     fn name(&self) -> &str {
-        "copilot"
+        &self.name
     }
 
     fn default_model(&self) -> &str {
@@ -227,266 +113,30 @@ impl LlmProvider for CopilotProvider {
     }
 
     #[instrument(skip(self, request), fields(provider = "copilot", model = %request.model))]
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, crate::ProviderError> {
-        // Get valid Copilot token (auto-refresh if needed)
-        let copilot_token = self.get_copilot_token().await?;
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        debug!("[copilot] chat request");
 
-        let url = format!("{}/chat/completions", self.api_base);
+        let model = self.rig_client.completion_model(&request.model);
+        let rig_request = to_rig_request(request);
 
-        let openai_request = CopilotRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            temperature: request.temperature,
-            max_tokens: request.max_tokens,
-            stream: false,
-        };
+        let response = model.completion(rig_request).await
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        tracing::trace!(
-            "[copilot] POST {} | request body:\n{}",
-            url,
-            serde_json::to_string(&openai_request)
-                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.build_headers(&copilot_token))
-            .json(&openai_request)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Copilot request failed: {}", e))
-            })?;
-
-        let status = response.status();
-        info!("[copilot] response status: {}", status);
-
-        // Handle 401 - token might have expired, try once more
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            warn!("[copilot] Token unauthorized, attempting refresh");
-            let copilot_token = self.refresh_copilot_token().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!(
-                    "Failed to refresh Copilot token: {}",
-                    e
-                ))
-            })?;
-
-            let response = self
-                .client
-                .post(&url)
-                .headers(self.build_headers(&copilot_token))
-                .json(&openai_request)
-                .send()
-                .await
-                .map_err(|e| {
-                    crate::ProviderError::NetworkError(format!(
-                        "Copilot retry request failed: {}",
-                        e
-                    ))
-                })?;
-
-            let status = response.status();
-            let body = response.text().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!(
-                    "Failed to read Copilot retry response: {}",
-                    e
-                ))
-            })?;
-
-            if !status.is_success() {
-                error!("Copilot retry response failed: {}, body: {}", status, body);
-                return Err(crate::ProviderError::ApiError {
-                    status_code: status.as_u16(),
-                    message: format!("{} - {}", status, body),
-                });
-            }
-
-            return parse_copilot_response(&body);
-        }
-
-        let body = response.text().await.map_err(|e| {
-            crate::ProviderError::NetworkError(format!("Failed to read Copilot response: {}", e))
-        })?;
-        info!("[copilot] response body:\n{}", body);
-
-        if !status.is_success() {
-            error!("Copilot response failed: {}, body: {}", status, body);
-            return Err(crate::ProviderError::ApiError {
-                status_code: status.as_u16(),
-                message: format!("{} - {}", status, body),
-            });
-        }
-
-        parse_copilot_response(&body)
+        Ok(from_rig_response(response))
     }
 
     #[instrument(skip(self, request), fields(provider = "copilot", model = %request.model))]
-    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, crate::ProviderError> {
-        // Get valid Copilot token (auto-refresh if needed)
-        let copilot_token = self.get_copilot_token().await?;
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, ProviderError> {
+        debug!("[copilot] chat stream request");
 
-        let url = format!("{}/chat/completions", self.api_base);
+        let model = self.rig_client.completion_model(&request.model);
+        let rig_request = to_rig_request(request);
 
-        let openai_request = CopilotRequest {
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            temperature: request.temperature,
-            max_tokens: request.max_tokens,
-            stream: true,
-        };
+        let stream_response = model.stream(rig_request).await
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        tracing::trace!(
-            "[copilot] POST {} (stream) | request body:\n{}",
-            url,
-            serde_json::to_string(&openai_request)
-                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.build_headers(&copilot_token))
-            .json(&openai_request)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::ProviderError::NetworkError(format!("Copilot stream request failed: {}", e))
-            })?;
-
-        let status = response.status();
-        debug!("[copilot] stream response status: {}", status);
-
-        if !status.is_success() {
-            let body = response.text().await.map_err(|e| {
-                crate::ProviderError::NetworkError(format!(
-                    "Failed to read Copilot stream response: {}",
-                    e
-                ))
-            })?;
-            error!("Copilot stream response failed: {}, body: {}", status, body);
-            return Err(crate::ProviderError::ApiError {
-                status_code: status.as_u16(),
-                message: format!("{} - {}", status, body),
-            });
-        }
-
-        let byte_stream = response.bytes_stream();
-        let chunk_stream = crate::streaming::parse_sse_stream(byte_stream);
-
-        Ok(Box::pin(chunk_stream))
+        Ok(from_rig_stream(stream_response))
     }
-}
-
-/// Parse Copilot API response
-fn parse_copilot_response(body: &str) -> Result<ChatResponse, crate::ProviderError> {
-    let api_response: CopilotResponse = serde_json::from_str(body).map_err(|e| {
-        crate::ProviderError::ParseError(format!(
-            "Copilot API response parse error: {} | body: {}",
-            e, body
-        ))
-    })?;
-
-    let choice = api_response.choices.into_iter().next().ok_or_else(|| {
-        crate::ProviderError::ParseError("No choices in Copilot response".to_string())
-    })?;
-
-    let tool_calls: Vec<ToolCall> = choice
-        .message
-        .tool_calls
-        .unwrap_or_default()
-        .into_iter()
-        .map(|tc| {
-            ToolCall::new(
-                tc.id,
-                tc.function.name,
-                parse_json_args(&tc.function.arguments),
-            )
-        })
-        .collect();
-
-    let usage = api_response.usage.map(|u| crate::Usage {
-        input_tokens: u.input_tokens,
-        output_tokens: u.output_tokens,
-        total_tokens: u.total_tokens,
-    });
-
-    Ok(ChatResponse {
-        content: choice.message.content,
-        tool_calls,
-        reasoning_content: None, // Copilot doesn't support reasoning_content
-        usage,
-    })
-}
-
-/// Parse JSON arguments from string
-fn parse_json_args(args: &str) -> serde_json::Value {
-    serde_json::from_str(args).unwrap_or_else(|_| serde_json::json!({}))
-}
-
-// ---------------------------------------------------------------------------
-// Copilot API Types (OpenAI-compatible)
-// ---------------------------------------------------------------------------
-
-/// Copilot chat request (OpenAI-compatible format)
-#[derive(Debug, Clone, Serialize)]
-struct CopilotRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ToolDefinition>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    stream: bool,
-}
-
-/// Copilot chat response (OpenAI-compatible format)
-#[derive(Debug, Clone, Deserialize)]
-struct CopilotResponse {
-    choices: Vec<CopilotChoice>,
-    #[serde(default)]
-    usage: Option<crate::Usage>,
-}
-
-/// A choice in the response
-#[derive(Debug, Clone, Deserialize)]
-struct CopilotChoice {
-    message: CopilotMessage,
-    #[serde(default)]
-    #[allow(dead_code)]
-    finish_reason: Option<String>,
-}
-
-/// Message in a choice
-#[derive(Debug, Clone, Deserialize)]
-struct CopilotMessage {
-    #[allow(dead_code)]
-    role: String,
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<CopilotToolCall>>,
-}
-
-/// Tool call in a message
-#[derive(Debug, Clone, Deserialize)]
-struct CopilotToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    call_type: String,
-    function: CopilotFunctionCall,
-}
-
-/// Function call
-#[derive(Debug, Clone, Deserialize)]
-struct CopilotFunctionCall {
-    name: String,
-    arguments: String,
 }
 
 #[cfg(test)]
@@ -496,6 +146,8 @@ mod tests {
     #[test]
     fn test_copilot_provider_creation() {
         let provider = CopilotProvider::new("test_token", None, None);
+        assert!(provider.is_ok());
+        let provider = provider.unwrap();
         assert_eq!(provider.name(), "copilot");
         assert_eq!(provider.default_model(), DEFAULT_MODEL);
     }
@@ -503,54 +155,16 @@ mod tests {
     #[test]
     fn test_copilot_provider_custom_model() {
         let provider = CopilotProvider::new("test_token", None, Some("gpt-4-turbo".to_string()));
+        assert!(provider.is_ok());
+        let provider = provider.unwrap();
         assert_eq!(provider.default_model(), "gpt-4-turbo");
     }
 
     #[test]
-    fn test_parse_copilot_response() {
-        let body = r#"{
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "Hello, world!"
-                    },
-                    "finish_reason": "stop"
-                }
-            ]
-        }"#;
-
-        let response = parse_copilot_response(body).unwrap();
-        assert_eq!(response.content, Some("Hello, world!".to_string()));
-        assert!(response.tool_calls.is_empty());
-    }
-
-    #[test]
-    fn test_parse_copilot_response_with_tool_calls() {
-        let body = r#"{
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [
-                            {
-                                "id": "call_123",
-                                "type": "function",
-                                "function": {
-                                    "name": "read_file",
-                                    "arguments": "{\"path\": \"test.txt\"}"
-                                }
-                            }
-                        ]
-                    },
-                    "finish_reason": "tool_calls"
-                }
-            ]
-        }"#;
-
-        let response = parse_copilot_response(body).unwrap();
-        assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].function.name, "read_file");
+    fn test_copilot_provider_with_api_key() {
+        let provider = CopilotProvider::with_api_key("test_api_key", None);
+        assert!(provider.is_ok());
+        let provider = provider.unwrap();
+        assert_eq!(provider.name(), "copilot");
     }
 }
