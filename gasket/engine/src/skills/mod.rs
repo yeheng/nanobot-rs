@@ -8,8 +8,10 @@ mod loader;
 mod metadata;
 mod registry;
 mod skill;
+mod workflow_skill;
 
 pub use loader::{parse_skill_file, SkillsLoader};
 pub use metadata::SkillMetadata;
 pub use registry::SkillsRegistry;
 pub use skill::Skill;
+pub use workflow_skill::discover_workflow_skills;

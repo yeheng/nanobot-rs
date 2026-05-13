@@ -122,16 +122,3 @@ When reviewing code, immediately make a three-layer judgment:
 "这10行可以变成3行"
 "数据结构错了，应该是..."
 ```
-
----
-
-## Task List Requirement
-
-After analysis, always produce a Task List. Each task must include:
-
-- **What**: What needs to be done
-- **Why**: Why it matters
-- **Where**: Which files/modules are affected
-- **How**: Implementation approach
-- **Test Case**: How to verify correctness
-- **Acceptance Criteria**: Definition of done

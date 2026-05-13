@@ -1,5 +1,6 @@
 name: "dev_workflow"
 description: "Research → Plan → Implement → Review loop for code generation"
+mode: "skill"
 output_template: |
   ## Dev Workflow Result: PASS
 

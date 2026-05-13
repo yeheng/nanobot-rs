@@ -147,7 +147,7 @@ impl crate::kernel::CheckpointCallback for SessionCheckpointCallback {
 
 use crate::skills::{SkillsLoader, SkillsRegistry};
 
-/// Load skills from builtin and user directories.
+/// Load skills from builtin and user directories, plus skill-mode workflows.
 ///
 /// Returns a context summary string if any skills were loaded, or None otherwise.
 pub async fn load_skills(workspace: &Path) -> Option<String> {
@@ -158,30 +158,45 @@ pub async fn load_skills(workspace: &Path) -> Option<String> {
         debug!("Built-in skills directory not found, loading user skills only");
         if !user_skills_dir.exists() {
             debug!("No skills directories found");
-            return None;
+            // Still continue — workflow skills may exist even without regular skills
         }
     }
 
     let loader = SkillsLoader::new(user_skills_dir, builtin_skills_dir);
-    match SkillsRegistry::from_loader(loader).await {
-        Ok(registry) => {
-            let summary = registry.generate_context_summary().await;
-            if summary.is_empty() {
-                info!("No skills loaded");
-                None
-            } else {
-                info!(
-                    "Loaded {} skills ({} available)",
-                    registry.len(),
-                    registry.list_available().len()
-                );
-                Some(summary)
-            }
-        }
+    let mut registry = match SkillsRegistry::from_loader(loader).await {
+        Ok(r) => r,
         Err(e) => {
             warn!("Failed to load skills: {}", e);
-            None
+            SkillsRegistry::new()
         }
+    };
+
+    // Discover skill-mode workflows and register alongside regular skills
+    let workflows_dir = workspace.join("workflows");
+    if workflows_dir.exists() {
+        match crate::skills::discover_workflow_skills(&workflows_dir) {
+            Ok(wf_skills) => {
+                for skill in wf_skills {
+                    registry.register(skill);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to discover workflow skills: {}", e);
+            }
+        }
+    }
+
+    let summary = registry.generate_context_summary().await;
+    if summary.is_empty() {
+        info!("No skills loaded");
+        None
+    } else {
+        info!(
+            "Loaded {} skills ({} available)",
+            registry.len(),
+            registry.list_available().len()
+        );
+        Some(summary)
     }
 }
 

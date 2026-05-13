@@ -165,13 +165,21 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     }
 
     // Discover native workflows — only when subagent spawning is available.
+    // Skill-mode workflows are injected as skills via the skills system;
+    // only tool-mode workflows are registered as callable tools.
     if role.can_spawn() {
-        let workflows_dir = workspace
-            .join("workflows");
+        let workflows_dir = workspace.join("workflows");
         tracing::info!("Looking for native workflows in {:?}", workflows_dir);
         match super::discover_workflows(workflows_dir.as_path()) {
             Ok(workflow_tools) => {
                 for tool in workflow_tools {
+                    if tool.manifest().mode.as_deref() == Some("skill") {
+                        tracing::debug!(
+                            "Skipping workflow '{}' from tool registry (skill mode)",
+                            tool.manifest().name
+                        );
+                        continue;
+                    }
                     tools.register(Box::new(tool));
                 }
             }
