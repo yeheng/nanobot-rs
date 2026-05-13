@@ -93,8 +93,8 @@ impl ProviderConfig {
                 dim,
                 cache_dir,
             } => {
-                let provider = LocalOnnxProvider::new(model, *dim, cache_dir.as_deref())?;
-                Ok(Box::new(provider))
+                let fastembed_model = FastembedModel::new(model, *dim, cache_dir.as_deref())?;
+                Ok(Box::new(RigEmbeddingAdapter::new(fastembed_model)))
             }
             #[cfg(not(feature = "local-onnx"))]
             ProviderConfig::LocalOnnx => Err(anyhow!("Local ONNX provider not yet implemented")),
@@ -104,29 +104,20 @@ impl ProviderConfig {
 
 
 // ---------------------------------------------------------------------------
-// Local ONNX embedding provider (fastembed)
+// Fastembed model adapter implementing rig's EmbeddingModel trait
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "local-onnx")]
-/// Local ONNX embedding provider powered by `fastembed`.
-///
-/// Models are automatically downloaded from HuggingFace on first use
-/// and cached locally. Inference runs in a blocking thread pool so
-/// it does not starve the async runtime.
-pub struct LocalOnnxProvider {
+/// Local ONNX embedding model powered by `fastembed`, implementing rig's
+/// `EmbeddingModel` trait so it can be used through `RigEmbeddingAdapter`.
+struct FastembedModel {
     model: std::sync::Arc<parking_lot::Mutex<fastembed::TextEmbedding>>,
     dim: usize,
 }
 
 #[cfg(feature = "local-onnx")]
-impl LocalOnnxProvider {
-    /// Create a new local ONNX provider.
-    ///
-    /// `model_name` is a supported fastembed model name (case-insensitive),
-    /// e.g. `"BGESmallENV15"` or `"AllMiniLML6V2"`.
-    /// The model is downloaded from HuggingFace on first use if not cached.
-    /// `cache_dir` optionally overrides where model files are downloaded/cached.
-    pub fn new(model_name: &str, dim: usize, cache_dir: Option<&str>) -> Result<Self> {
+impl FastembedModel {
+    fn new(model_name: &str, dim: usize, cache_dir: Option<&str>) -> Result<Self> {
         let model_enum: fastembed::EmbeddingModel = model_name.parse().map_err(|e: String| {
             anyhow!("unknown local embedding model '{}': {}", model_name, e)
         })?;
@@ -148,65 +139,56 @@ impl LocalOnnxProvider {
             dim,
         })
     }
-
-    fn validate_dim(&self, vec: &[f32]) -> Result<()> {
-        if vec.len() != self.dim {
-            return Err(anyhow!(
-                "local embedding returned {} dims, expected {}",
-                vec.len(),
-                self.dim
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(feature = "local-onnx")]
-#[async_trait]
-impl EmbeddingProvider for LocalOnnxProvider {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let model = self.model.clone();
-        let text = text.to_string();
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let mut model = model.lock();
-            model.embed(vec![&text], None)
-        })
-        .await
-        .map_err(|e| anyhow!("embedding task failed: {e}"))?
-        .map_err(|e| anyhow!("local embedding failed: {e}"))?;
+impl rig::embeddings::EmbeddingModel for FastembedModel {
+    const MAX_DOCUMENTS: usize = 32;
+    type Client = ();
 
-        let v = embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("local embedding returned no results"))?;
-        self.validate_dim(&v)?;
-        Ok(v)
+    fn make(_client: &Self::Client, _model: impl Into<String>, _dims: Option<usize>) -> Self {
+        unimplemented!("Use FastembedModel::new() to construct")
     }
 
-    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    fn ndims(&self) -> usize {
+        self.dim
+    }
+
+    async fn embed_texts(
+        &self,
+        texts: impl IntoIterator<Item = String> + Send,
+    ) -> Result<Vec<rig::embeddings::Embedding>, rig::embeddings::EmbeddingError> {
+        let texts: Vec<String> = texts.into_iter().collect();
         if texts.is_empty() {
             return Ok(Vec::new());
         }
 
         let model = self.model.clone();
-        let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let texts_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let dim = self.dim;
+        let result = tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             let mut model = model.lock();
-            model.embed(&texts_refs, None)
+            model.embed(&refs, None)
         })
         .await
-        .map_err(|e| anyhow!("batch embedding task failed: {e}"))?
-        .map_err(|e| anyhow!("local batch embedding failed: {e}"))?;
+        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("embedding task failed: {e}")))?
+        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("local embedding failed: {e}")))?;
 
-        for v in &embeddings {
-            self.validate_dim(v)?;
+        if let Some(first) = result.first() {
+            if first.len() != dim {
+                return Err(rig::embeddings::EmbeddingError::ProviderError(
+                    format!("local embedding returned {} dims, expected {}", first.len(), dim)
+                ));
+            }
         }
-        Ok(embeddings)
-    }
 
-    fn dim(&self) -> usize {
-        self.dim
+        Ok(result
+            .into_iter()
+            .map(|vec| rig::embeddings::Embedding {
+                document: String::new(),
+                vec: vec.into_iter().map(|v| v as f64).collect(),
+            })
+            .collect())
     }
 }
 
