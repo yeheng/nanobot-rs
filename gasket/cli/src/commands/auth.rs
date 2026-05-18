@@ -13,7 +13,7 @@ const COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
 
 /// Login to GitHub Copilot
 #[cfg(feature = "provider-copilot")]
-pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Result<()> {
+pub async fn cmd_auth_copilot(pat: Option<String>, _client_id: Option<String>) -> Result<()> {
     println!("{}\n", "GitHub Copilot Authentication".bold());
 
     let loader = ConfigLoader::new();
@@ -29,54 +29,53 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     });
     let (proxy_url, proxy_username, proxy_password) = existing_proxy.unwrap_or((None, None, None));
 
-    let access_token = if let Some(token) = pat {
-        // PAT mode: validate and use directly
+    if let Some(token) = pat {
+        // PAT mode: validate via rig's authorize()
         println!("Validating Personal Access Token...");
 
-        let oauth = gasket_engine::providers::CopilotOAuth::with_proxy(
-            gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
-            proxy_url.clone(),
-            proxy_username.clone(),
-            proxy_password.clone(),
-        );
-        match oauth.validate_pat(&token).await {
-            Ok(true) => {
+        match gasket_engine::providers::CopilotProvider::validate_pat(&token).await {
+            Ok(()) => {
                 println!("{} Token validated successfully", "✓".green());
-                token
-            }
-            Ok(false) => {
-                anyhow::bail!(
-                    "Invalid Personal Access Token. Ensure it has 'copilot' scope.\n\
-                     Create a PAT at: https://github.com/settings/tokens"
-                );
+                save_copilot_config(
+                    &loader,
+                    &mut config,
+                    Some(token),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                )
+                .await?;
             }
             Err(e) => {
-                anyhow::bail!("Failed to validate token: {}", e);
+                anyhow::bail!(
+                    "Invalid Personal Access Token: {}\n\
+                     Ensure it has 'copilot' scope.\n\
+                     Create a PAT at: https://github.com/settings/tokens",
+                    e
+                );
             }
         }
     } else {
-        // OAuth Device Flow
-        let oauth = if let Some(ref cid) = client_id {
-            gasket_engine::providers::CopilotOAuth::with_proxy(
-                cid,
-                proxy_url.clone(),
-                proxy_username.clone(),
-                proxy_password.clone(),
-            )
-        } else {
-            gasket_engine::providers::CopilotOAuth::with_proxy(
-                gasket_engine::providers::COPILOT_DEFAULT_CLIENT_ID,
-                proxy_url.clone(),
-                proxy_username.clone(),
-                proxy_password.clone(),
-            )
-        };
+        // OAuth Device Flow: rig handles everything, prints to stdout
+        println!("Starting GitHub OAuth Device Flow...\n");
 
-        match oauth.start_device_flow().await {
-            Ok(token) => {
-                println!();
-                println!("{} Successfully authenticated!", "✓".green());
-                token
+        let gasket_dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from(".gasket"))
+            .join("gasket");
+
+        match gasket_engine::providers::CopilotProvider::oauth_device_flow(&gasket_dir).await {
+            Ok(()) => {
+                println!("\n{} Successfully authenticated!", "✓".green());
+                // OAuth tokens are cached by rig in gasket_dir — no api_key needed
+                save_copilot_config(
+                    &loader,
+                    &mut config,
+                    None,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                )
+                .await?;
             }
             Err(e) => {
                 anyhow::bail!(
@@ -89,17 +88,28 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
                 );
             }
         }
-    };
+    }
 
-    // Save to config with new explicit format
+    Ok(())
+}
+
+#[cfg(feature = "provider-copilot")]
+async fn save_copilot_config(
+    loader: &ConfigLoader,
+    config: &mut gasket_engine::config::Config,
+    api_key: Option<String>,
+    proxy_url: Option<String>,
+    proxy_username: Option<String>,
+    proxy_password: Option<String>,
+) -> Result<()> {
     config.providers.insert(
         "copilot".to_string(),
         gasket_engine::config::ProviderConfig {
             provider_type: gasket_engine::config::ProviderType::Openai,
             api_base: COPILOT_API_BASE.to_string(),
-            api_key: Some(access_token),
+            api_key,
             default_model: String::new(),
-            client_id,
+            client_id: None,
             models: Default::default(),
             extra_headers: Default::default(),
             default_currency: Some("USD".to_string()),
@@ -110,14 +120,13 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
         },
     );
 
-    loader.save(&config).await?;
+    loader.save(config).await?;
     println!(
-        "\n{} Token saved to {:?}",
+        "\n{} Config saved to {:?}",
         "✓".green(),
         loader.config_path()
     );
     println!("\nYou can now use Copilot by setting your model to 'copilot/gpt-4o'");
-
     Ok(())
 }
 

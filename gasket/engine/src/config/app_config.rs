@@ -386,15 +386,23 @@ impl ProviderRegistry {
         let raw_api_key = config.api_key.as_deref().unwrap_or("");
         let api_key = self.resolve_api_key(raw_api_key)?;
 
-        let mut provider_config = config.clone();
-        provider_config.api_key = Some(api_key);
-        if provider_config.default_model.is_empty() {
-            provider_config.default_model = "default".to_string();
-        }
+        let model = if config.default_model.is_empty() {
+            "default".to_string()
+        } else {
+            config.default_model.clone()
+        };
 
-        Ok(std::sync::Arc::new(
-            gasket_providers::OpenAICompatibleProvider::new(name, provider_config),
-        ))
+        self.build_provider(name, &api_key, config, &model)
+    }
+
+    fn build_provider(
+        &self,
+        name: &str,
+        api_key: &str,
+        provider_config: &ProviderConfig,
+        model: &str,
+    ) -> anyhow::Result<std::sync::Arc<dyn gasket_providers::LlmProvider>> {
+        gasket_providers::build_provider(name, api_key, provider_config, model)
     }
 
     pub fn get_default_provider(&self) -> Option<&str> {

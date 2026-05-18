@@ -293,7 +293,7 @@ Subagent events are forwarded to the WebSocket as `ChatEvent`s:
 | `subagent_completed` | Subagent finished with result summary |
 | `subagent_error` | Subagent encountered an error |
 
-For parallel execution, `spawn_parallel` supports up to 10 tasks with max 5 concurrent to prevent API rate limiting.
+For parallel execution, `spawn_parallel` supports up to 10 tasks with configurable concurrency (via `tools.spawn.max_concurrency`, default 1) to prevent API rate limiting.
 
 ---
 
@@ -356,8 +356,8 @@ spawn_subagent(provider, tools, workspace, task, None, result_tx, None, cancella
 | Task Type | Recommended Model | Why |
 |-----------|-------------------|-----|
 | Simple extraction | glm-4-flash | Fast, cheap |
-| Code review | claude-4.5-sonnet | Better at code |
-| Creative writing | claude-4.5-sonnet | More creative |
+| Code review | claude-sonnet-4 | Better at code |
+| Creative writing | claude-sonnet-4 | More creative |
 | Data analysis | deepseek-chat | Good at structured output |
 
 ---

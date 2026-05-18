@@ -86,6 +86,7 @@ flowchart TB
 ```
 
 **优势：**
+
 - ⚡ **更快**：并行处理，10 倍速提升
 - 🎯 **更专注**：每个子代理专注一个子任务
 - 🔄 **更灵活**：可以递归创建子-子代理
@@ -163,13 +164,12 @@ sequenceDiagram
 ```
 
 **参数：**
+
 - `task`（必填）- 任务描述
-- `model`（可选）- 模型名称，如 `"openrouter/anthropic/claude-4.5-sonnet"`，默认使用主代理模型
-- `system_prompt`（可选）- 自定义系统提示词
-- `max_turns`（可选）- 最大执行轮数
-- `thinking_enabled`（可选）- 是否启用思考模式
+- `model_id`（可选）- 模型配置中的 profile ID，如 `"fast"`, `"coder"`，默认使用主代理模型
 
 **适用场景：**
+
 - 复杂代码分析
 - 长篇文档总结
 - 独立的研究任务
@@ -203,12 +203,14 @@ sequenceDiagram
 ```
 
 **参数：**
+
 - `tasks`（必填）- 任务列表，支持两种格式：
   - 简单字符串数组：`["任务A", "任务B"]`
-  - 带模型选择的对象数组：`[{"task": "任务A", "model": "openrouter/anthropic/claude-4.5-sonnet"}, ...]`
-- 最多 10 个任务，最多 5 个并发执行（防止 API 限流）
+  - 带模型选择的对象数组：`[{"task": "任务A", "model_id": "coder"}, ...]`
+- 最多 10 个任务，由 `tools.spawn.max_concurrency` 控制并发数（默认 1）
 
 **适用场景：**
+
 - A/B/C 方案对比
 - 批量文件处理
 - 并行数据收集
@@ -386,6 +388,7 @@ sequenceDiagram
 | `subagent_error` | 子代理执行出错 |
 
 **这样用户能看到：**
+
 - `[子代理1]` 正在分析代码...
 - `[子代理1]` 正在读取文件 main.py...
 - `[子代理1]` 分析完成
@@ -496,9 +499,10 @@ graph TB
 ```
 
 **策略：**
-- 主任务用强模型（GPT-4/Claude-3）
-- 简单子任务用快模型（GPT-3.5）
-- 特定任务用专门模型（代码/CodeLlama）
+
+- 主任务用强模型（Claude/GPT-4）
+- 简单子任务用快模型（glm-4-flash/deepseek-chat）
+- 特定任务用专门模型（代码/deepseek-coder）
 
 ---
 
@@ -530,6 +534,7 @@ flowchart TB
 ```
 
 **超时配置：**
+
 - 子代理执行超时：`agents.defaults.subagent_timeout_secs`（默认 600 秒 = 10 分钟）
 - 工具执行超时：`agents.defaults.tool_timeout_secs`（默认 120 秒）
 - 失败返回错误信息，主代理决定是否重试
@@ -571,7 +576,7 @@ sequenceDiagram
 A: 子代理是无状态的，不保存历史。但可以继承主代理的配置和上下文。
 
 **Q: 可以创建多少个子代理？**
-A: `spawn_parallel` 一次最多 10 个任务，内部最多 5 个并发执行。超过会报错。
+A: `spawn_parallel` 一次最多 10 个任务。并发数由 `tools.spawn.max_concurrency` 配置控制（默认 1）。
 
 **Q: 子代理可以创建子-子代理吗？**
 A: 可以！支持递归创建，适合层层分解的复杂任务。

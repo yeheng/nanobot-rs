@@ -34,6 +34,108 @@ pub struct WorkflowManifest {
     pub steps: HashMap<String, WorkflowStep>,
     /// Optional template to render as the final output instead of raw JSON.
     pub output_template: Option<String>,
+    /// Execution mode: `"tool"` (default) for state-machine execution,
+    /// `"skill"` for LLM-autonomous execution via prompt injection.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+impl WorkflowManifest {
+    /// Convert this workflow into markdown skill content for system prompt injection.
+    ///
+    /// In skill mode the LLM executes steps autonomously through the normal
+    /// agent loop; no state machine or subagent spawning is used.
+    pub fn to_skill_content(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("## Workflow: {}\n\n", self.name));
+        out.push_str(&self.description);
+        out.push('\n');
+
+        // Parameters guidance
+        if let Some(props) = self.parameters.get("properties").and_then(|v| v.as_object()) {
+            if !props.is_empty() {
+                out.push_str("\n**参数**:\n");
+                for (k, v) in props {
+                    let desc = v.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                    let default = v.get("default").map(|d| d.to_string());
+                    out.push_str(&format!("- `{}`", k));
+                    if !desc.is_empty() {
+                        out.push_str(&format!(": {}", desc));
+                    }
+                    if let Some(d) = default {
+                        out.push_str(&format!(" (默认: {})", d));
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+
+        out.push_str("\n**执行规则**:\n");
+        out.push_str("1. 严格按以下步骤顺序执行，每步完成后确认再继续\n");
+        out.push_str("2. 上下文通过对话历史自然传递，不需要显式声明步骤编号\n");
+        out.push_str("3. 如某步明显不需要，可灵活调整，但需告知用户\n");
+
+        out.push_str("\n### 执行步骤\n");
+
+        // Traverse steps in order from start_step
+        let mut visited = std::collections::HashSet::new();
+        let mut step_names = Vec::new();
+        let mut current = self.start_step.clone();
+        while current != "DONE" && !visited.contains(&current) {
+            visited.insert(current.clone());
+            step_names.push(current.clone());
+            if let Some(step) = self.steps.get(&current) {
+                if let Some(ref next) = step.next {
+                    current = next.clone();
+                } else if let Some(ref eval) = step.evaluate {
+                    // For display, show the evaluation target
+                    current = eval.on_pass.clone();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        for (idx, name) in step_names.iter().enumerate() {
+            if let Some(step) = self.steps.get(name) {
+                out.push('\n');
+                out.push_str(&format!("#### {}. {}\n", idx + 1, name));
+                // Clean up prompt: remove {{variable}} markers but keep the text
+                let cleaned = clean_template_placeholders(&step.prompt);
+                out.push_str(&cleaned);
+                out.push('\n');
+
+                if let Some(ref eval) = step.evaluate {
+                    out.push_str("\n*审查规则*:\n");
+                    out.push_str(&format!(
+                        "- 通过后进入: **{}**\n",
+                        eval.on_pass
+                    ));
+                    out.push_str(&format!(
+                        "- 失败后回到: **{}**（最多重试 {} 次）\n",
+                        eval.on_fail, eval.max_retries
+                    ));
+                }
+            }
+        }
+
+        out.push('\n');
+        out.push_str("**结束规则**: 所有步骤完成后，输出最终结果并明确告知用户工作流已结束。\n");
+
+        out
+    }
+}
+
+/// Remove `{{key}}` template placeholders from a prompt, leaving readable text.
+///
+/// Unknown placeholders are left as-is so the LLM sees hints about expected
+/// variables (which it resolves from conversation history in skill mode).
+fn clean_template_placeholders(template: &str) -> String {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap());
+    re.replace_all(template, "[见上文]").to_string()
 }
 
 /// A single step in the workflow graph.
@@ -422,7 +524,7 @@ pub fn discover_workflows(workflows_dir: &Path) -> anyhow::Result<Vec<WorkflowTo
 }
 
 /// Load a single workflow manifest from a YAML file.
-fn load_workflow(path: &Path) -> anyhow::Result<WorkflowManifest> {
+pub(crate) fn load_workflow(path: &Path) -> anyhow::Result<WorkflowManifest> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read workflow file {:?}: {}", path, e))?;
 
@@ -582,6 +684,7 @@ steps:
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             start_step: "a".to_string(),
             output_template: None,
+            mode: None,
             steps: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -599,5 +702,57 @@ steps:
         let tool = WorkflowTool::new(manifest);
         assert_eq!(tool.name(), "my_flow");
         assert_eq!(tool.description(), "does things");
+    }
+
+    #[test]
+    fn to_skill_content_basic() {
+        let yaml = r#"
+name: "test_workflow"
+description: "A test workflow"
+mode: "skill"
+parameters:
+  type: object
+  properties:
+    task:
+      type: string
+      description: "What to do"
+start_step: "step1"
+steps:
+  step1:
+    prompt: "Do {{input.task}}"
+    next: "step2"
+  step2:
+    prompt: "Check {{step1}}"
+    evaluate:
+      on_pass: "DONE"
+      on_fail: "step1"
+      max_retries: 2
+"#;
+        let manifest: WorkflowManifest = serde_yaml::from_str(yaml).unwrap();
+        let content = manifest.to_skill_content();
+
+        assert!(content.contains("## Workflow: test_workflow"));
+        assert!(content.contains("A test workflow"));
+        assert!(content.contains("#### 1. step1"));
+        assert!(content.contains("#### 2. step2"));
+        assert!(content.contains("[见上文]"), "Template placeholders should be cleaned");
+        assert!(content.contains("通过后进入: **DONE**"));
+        assert!(content.contains("失败后回到: **step1**（最多重试 2 次）"));
+    }
+
+    #[test]
+    fn to_skill_content_dev_workflow() {
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
+        assert_eq!(manifest.mode.as_deref(), Some("skill"));
+
+        let content = manifest.to_skill_content();
+        assert!(content.contains("## Workflow: dev_workflow"));
+        assert!(content.contains("#### 1. research"));
+        assert!(content.contains("#### 2. plan"));
+        assert!(content.contains("#### 3. implement"));
+        assert!(content.contains("#### 4. review"));
+        assert!(content.contains("通过后进入: **DONE**"));
+        assert!(content.contains("失败后回到: **implement**（最多重试 3 次）"));
     }
 }

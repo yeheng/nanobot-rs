@@ -45,7 +45,7 @@ mod wiki_semantic;
 mod wiki_decay;
 mod wiki_refresh;
 mod wiki_tools;
-mod workflow;
+pub(crate) mod workflow;
 
 // Re-export tool trait and base types from gasket-types
 pub use gasket_types::{

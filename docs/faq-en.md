@@ -326,7 +326,7 @@ echo "Backup complete: ~/backup/gasket/$DATE"
 **A:**
 
 ```bash
-cd gasket-rs
+cd gasket
 git pull
 cargo build --release
 cargo install --path cli
@@ -373,7 +373,7 @@ rm -rf ~/.gasket
 
 ### Q: How to contribute code?
 
-**A:** Visit [GitHub](https://github.com/YeHeng/gasket-rs), welcome to:
+**A:** Visit [GitHub](https://github.com/YeHeng/gasket), welcome to:
 - Submit Issues to report bugs
 - Submit PRs to improve features
 - Improve documentation
@@ -384,4 +384,4 @@ rm -rf ~/.gasket
 
 - 📖 Check [Configuration Guide](config-en.md)
 - 📖 Check [Deployment Guide](deployment-en.md)
-- 🐛 Submit [Issue](https://github.com/YeHeng/gasket-rs/issues)
+- 🐛 Submit [Issue](https://github.com/YeHeng/gasket/issues)

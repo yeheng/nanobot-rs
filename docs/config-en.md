@@ -27,7 +27,7 @@ providers:
 
 agents:
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
 ```
 
 ---
@@ -83,13 +83,12 @@ providers:
 agents:
   # Default configuration
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
     temperature: 1.0
     max_tokens: 100000
     max_iterations: 100
     memory_window: 50
     thinking_enabled: false
-    historyRecallK: 5
     streaming: true
     # WebSocket subagent summary length limit (0 = unlimited, default)
     ws_summary_limit: 0
@@ -102,18 +101,11 @@ agents:
     #   evolution: "Extract memories from this conversation.\n\n{{conversation}}"
     #   planning: "Create a plan for: {{goal}}\n\nContext:\n{{context}}"
 
-    # Optional: three-phase memory token budgets (defaults shown)
-    # memory_budget:
-    #   bootstrap: 1500    # Phase 1: profile + active hot/warm
-    #   scenario: 1500     # Phase 2: scenario-specific hot + tag-matched warm
-    #   on_demand: 1000    # Phase 3: semantic search fill
-    #   total_cap: 4000    # Hard upper limit across all phases
-
   # Multi-model configuration (for dynamic switching)
   models:
     default:
       provider: openrouter
-      model: anthropic/claude-4.5-sonnet
+      model: anthropic/claude-sonnet-4
       description: "General-purpose model for everyday tasks."
       capabilities: ["general", "chat"]
       temperature: 0.7
@@ -259,7 +251,7 @@ embedding:
 model: provider/model
 
 # Examples
-model: openrouter/anthropic/claude-4.5-sonnet
+model: openrouter/anthropic/claude-sonnet-4
 model: deepseek/deepseek-chat
 model: zhipu/glm-5
 ```
@@ -295,9 +287,8 @@ Only set `provider_type` if you use a custom name (e.g., `my-proxy`) that the sy
 | `memory_window` | int | 50 | Recent messages loaded into context |
 | `thinking_enabled` | bool | false | Enable deep thinking mode (reasoning models only) |
 | `streaming` | bool | true | Enable streaming output |
-| `historyRecallK` | int | 5 | Semantic history recall count |
 | `ws_summary_limit` | int | 0 | WebSocket subagent summary length limit (chars), 0 = unlimited |
-| `memory_budget` | object | - | Three-phase memory token budget |
+| `plugin_timeout_secs` | int | 120 | Plugin script execution timeout (seconds) |
 | `prompts` | object | - | Override internal AI behavior prompt templates |
 
 ### Model Profile Options
@@ -355,7 +346,7 @@ providers:
 
 agents:
   defaults:
-    model: openrouter/anthropic/claude-4.5-sonnet
+    model: openrouter/anthropic/claude-sonnet-4
     temperature: 0.7
 
 tools:

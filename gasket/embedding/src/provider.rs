@@ -1,10 +1,11 @@
 //! Embedding provider abstraction.
 
-use std::time::Duration;
-
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use rig::client::EmbeddingsClient;
 use serde::{Deserialize, Serialize};
+
+use crate::rig_adapter::RigEmbeddingAdapter;
 
 /// Trait for embedding providers.
 #[async_trait]
@@ -67,17 +68,24 @@ impl ProviderConfig {
                 endpoint,
                 model,
                 api_key,
-                dim,
-                timeout_secs,
+                dim: _,
+                timeout_secs: _,
             } => {
-                let provider = ApiProvider::new(
-                    endpoint.clone(),
-                    model.clone(),
-                    api_key.clone(),
-                    *dim,
-                    Duration::from_secs(*timeout_secs),
-                )?;
-                Ok(Box::new(provider))
+                // Extract base URL from endpoint by stripping "/embeddings" suffix
+                // endpoint is like "https://api.openai.com/v1/embeddings"
+                // base URL should be "https://api.openai.com/v1"
+                let base_url = endpoint
+                    .trim_end_matches("/embeddings")
+                    .trim_end_matches("/v1/embeddings")
+                    .trim_end_matches("/embeddings");
+
+                let client = rig::providers::openai::Client::builder()
+                    .api_key(api_key)
+                    .base_url(base_url)
+                    .build()
+                    .map_err(|e| anyhow!("failed to build rig client: {}", e))?;
+                let embedding_model = client.embedding_model(model);
+                Ok(Box::new(RigEmbeddingAdapter::new(embedding_model)))
             }
             #[cfg(feature = "local-onnx")]
             ProviderConfig::LocalOnnx {
@@ -85,8 +93,8 @@ impl ProviderConfig {
                 dim,
                 cache_dir,
             } => {
-                let provider = LocalOnnxProvider::new(model, *dim, cache_dir.as_deref())?;
-                Ok(Box::new(provider))
+                let fastembed_model = FastembedModel::new(model, *dim, cache_dir.as_deref())?;
+                Ok(Box::new(RigEmbeddingAdapter::new(fastembed_model)))
             }
             #[cfg(not(feature = "local-onnx"))]
             ProviderConfig::LocalOnnx => Err(anyhow!("Local ONNX provider not yet implemented")),
@@ -94,232 +102,22 @@ impl ProviderConfig {
     }
 }
 
-/// HTTP-based embedding provider using OpenAI-compatible embeddings API.
-pub struct ApiProvider {
-    endpoint: String,
-    model: String,
-    api_key: String,
-    dim: usize,
-    /// True iff the endpoint path ends with `/api/embed` (Ollama native).
-    /// Ollama's native endpoint does not accept array `input`, so batch
-    /// requests fall back to sequential single-text calls.
-    is_ollama_native: bool,
-    client: reqwest::Client,
-}
-
-impl ApiProvider {
-    /// Create a new API provider.
-    pub fn new(
-        endpoint: String,
-        model: String,
-        api_key: String,
-        dim: usize,
-        timeout: Duration,
-    ) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| anyhow!("failed to build HTTP client: {e}"))?;
-        let is_ollama_native = is_ollama_native_endpoint(&endpoint);
-        Ok(Self {
-            endpoint,
-            model,
-            api_key,
-            dim,
-            is_ollama_native,
-            client,
-        })
-    }
-
-    /// Create a new API provider with a custom reqwest client (for testing).
-    pub fn with_client(
-        endpoint: String,
-        model: String,
-        api_key: String,
-        dim: usize,
-        client: reqwest::Client,
-    ) -> Self {
-        let is_ollama_native = is_ollama_native_endpoint(&endpoint);
-        Self {
-            endpoint,
-            model,
-            api_key,
-            dim,
-            is_ollama_native,
-            client,
-        }
-    }
-
-    fn validate_dim(&self, vec: &[f32]) -> Result<()> {
-        if vec.len() != self.dim {
-            return Err(anyhow!(
-                "embedding API returned {} dims, expected {}",
-                vec.len(),
-                self.dim
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Whether the endpoint is the Ollama native `/api/embed[dings]` path,
-/// which does not accept array input. We strip any trailing slash and
-/// require an exact suffix match.
-fn is_ollama_native_endpoint(endpoint: &str) -> bool {
-    let trimmed = endpoint.trim_end_matches('/');
-    trimmed.ends_with("/api/embed") || trimmed.ends_with("/api/embeddings")
-}
-
-#[async_trait]
-impl EmbeddingProvider for ApiProvider {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let body = serde_json::json!({
-            "model": self.model,
-            "input": [text],
-        });
-
-        let resp = self
-            .client
-            .post(&self.endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("embedding request failed: {e}"))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("embedding API error {status}: {body}"));
-        }
-
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow!("failed to parse embedding response: {e}"))?;
-
-        // Try OpenAI format first: { data: [{ embedding: [...] }] }
-        // Fall back to Ollama native format: { embedding: [...] }
-        let embedding = json
-            .get("data")
-            .and_then(|d| d.get(0))
-            .and_then(|d| d.get("embedding"))
-            .or_else(|| json.get("embedding"))
-            .and_then(|e| e.as_array())
-            .ok_or_else(|| anyhow!("unexpected embedding response format: {}", json))?;
-
-        let vec: Vec<f32> = embedding
-            .iter()
-            .map(|v| {
-                v.as_f64()
-                    .map(|f| f as f32)
-                    .ok_or_else(|| anyhow!("non-numeric embedding value"))
-            })
-            .collect::<Result<Vec<f32>>>()?;
-
-        self.validate_dim(&vec)?;
-        Ok(vec)
-    }
-
-    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "input": texts,
-        });
-
-        let resp = self
-            .client
-            .post(&self.endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("embedding batch request failed: {e}"))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            // Ollama native /api/embed does not support batch input — fall
-            // back to sequential calls. Only do this for a confirmed Ollama
-            // endpoint (path ends with /api/embed[dings]) and a 400-class
-            // status, to avoid mis-routing genuine errors.
-            if status.as_u16() == 400 && self.is_ollama_native {
-                tracing::debug!(
-                    "Batch not supported by Ollama, falling back to sequential embed calls"
-                );
-                let mut results = Vec::with_capacity(texts.len());
-                for text in texts {
-                    results.push(self.embed(text).await?);
-                }
-                return Ok(results);
-            }
-            return Err(anyhow!("embedding API error {status}: {body_text}"));
-        }
-
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow!("failed to parse embedding response: {e}"))?;
-
-        let data = json
-            .get("data")
-            .and_then(|d| d.as_array())
-            .ok_or_else(|| anyhow!("unexpected embedding response format"))?;
-
-        let mut results = Vec::with_capacity(texts.len());
-        for entry in data {
-            let embedding = entry
-                .get("embedding")
-                .and_then(|e| e.as_array())
-                .ok_or_else(|| anyhow!("missing embedding in response entry"))?;
-            let vec: Vec<f32> = embedding
-                .iter()
-                .map(|v| {
-                    v.as_f64()
-                        .map(|f| f as f32)
-                        .ok_or_else(|| anyhow!("non-numeric embedding value"))
-                })
-                .collect::<Result<Vec<f32>>>()?;
-            self.validate_dim(&vec)?;
-            results.push(vec);
-        }
-
-        Ok(results)
-    }
-
-    fn dim(&self) -> usize {
-        self.dim
-    }
-}
 
 // ---------------------------------------------------------------------------
-// Local ONNX embedding provider (fastembed)
+// Fastembed model adapter implementing rig's EmbeddingModel trait
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "local-onnx")]
-/// Local ONNX embedding provider powered by `fastembed`.
-///
-/// Models are automatically downloaded from HuggingFace on first use
-/// and cached locally. Inference runs in a blocking thread pool so
-/// it does not starve the async runtime.
-pub struct LocalOnnxProvider {
+/// Local ONNX embedding model powered by `fastembed`, implementing rig's
+/// `EmbeddingModel` trait so it can be used through `RigEmbeddingAdapter`.
+struct FastembedModel {
     model: std::sync::Arc<parking_lot::Mutex<fastembed::TextEmbedding>>,
     dim: usize,
 }
 
 #[cfg(feature = "local-onnx")]
-impl LocalOnnxProvider {
-    /// Create a new local ONNX provider.
-    ///
-    /// `model_name` is a supported fastembed model name (case-insensitive),
-    /// e.g. `"BGESmallENV15"` or `"AllMiniLML6V2"`.
-    /// The model is downloaded from HuggingFace on first use if not cached.
-    /// `cache_dir` optionally overrides where model files are downloaded/cached.
-    pub fn new(model_name: &str, dim: usize, cache_dir: Option<&str>) -> Result<Self> {
+impl FastembedModel {
+    fn new(model_name: &str, dim: usize, cache_dir: Option<&str>) -> Result<Self> {
         let model_enum: fastembed::EmbeddingModel = model_name.parse().map_err(|e: String| {
             anyhow!("unknown local embedding model '{}': {}", model_name, e)
         })?;
@@ -341,65 +139,56 @@ impl LocalOnnxProvider {
             dim,
         })
     }
-
-    fn validate_dim(&self, vec: &[f32]) -> Result<()> {
-        if vec.len() != self.dim {
-            return Err(anyhow!(
-                "local embedding returned {} dims, expected {}",
-                vec.len(),
-                self.dim
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(feature = "local-onnx")]
-#[async_trait]
-impl EmbeddingProvider for LocalOnnxProvider {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let model = self.model.clone();
-        let text = text.to_string();
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let mut model = model.lock();
-            model.embed(vec![&text], None)
-        })
-        .await
-        .map_err(|e| anyhow!("embedding task failed: {e}"))?
-        .map_err(|e| anyhow!("local embedding failed: {e}"))?;
+impl rig::embeddings::EmbeddingModel for FastembedModel {
+    const MAX_DOCUMENTS: usize = 32;
+    type Client = ();
 
-        let v = embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("local embedding returned no results"))?;
-        self.validate_dim(&v)?;
-        Ok(v)
+    fn make(_client: &Self::Client, _model: impl Into<String>, _dims: Option<usize>) -> Self {
+        unimplemented!("Use FastembedModel::new() to construct")
     }
 
-    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    fn ndims(&self) -> usize {
+        self.dim
+    }
+
+    async fn embed_texts(
+        &self,
+        texts: impl IntoIterator<Item = String> + Send,
+    ) -> Result<Vec<rig::embeddings::Embedding>, rig::embeddings::EmbeddingError> {
+        let texts: Vec<String> = texts.into_iter().collect();
         if texts.is_empty() {
             return Ok(Vec::new());
         }
 
         let model = self.model.clone();
-        let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        let embeddings = tokio::task::spawn_blocking(move || {
-            let texts_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let dim = self.dim;
+        let result = tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             let mut model = model.lock();
-            model.embed(&texts_refs, None)
+            model.embed(&refs, None)
         })
         .await
-        .map_err(|e| anyhow!("batch embedding task failed: {e}"))?
-        .map_err(|e| anyhow!("local batch embedding failed: {e}"))?;
+        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("embedding task failed: {e}")))?
+        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("local embedding failed: {e}")))?;
 
-        for v in &embeddings {
-            self.validate_dim(v)?;
+        if let Some(first) = result.first() {
+            if first.len() != dim {
+                return Err(rig::embeddings::EmbeddingError::ProviderError(
+                    format!("local embedding returned {} dims, expected {}", first.len(), dim)
+                ));
+            }
         }
-        Ok(embeddings)
-    }
 
-    fn dim(&self) -> usize {
-        self.dim
+        Ok(result
+            .into_iter()
+            .map(|vec| rig::embeddings::Embedding {
+                document: String::new(),
+                vec: vec.into_iter().map(|v| v as f64).collect(),
+            })
+            .collect())
     }
 }
 
@@ -529,25 +318,6 @@ dim: 1536
         }
     }
 
-    #[test]
-    fn test_ollama_native_endpoint_detection() {
-        assert!(is_ollama_native_endpoint(
-            "http://localhost:11434/api/embed"
-        ));
-        assert!(is_ollama_native_endpoint(
-            "http://localhost:11434/api/embed/"
-        ));
-        assert!(is_ollama_native_endpoint(
-            "http://localhost:11434/api/embeddings"
-        ));
-        assert!(!is_ollama_native_endpoint(
-            "https://api.openai.com/v1/embeddings"
-        ));
-        assert!(!is_ollama_native_endpoint(
-            "https://api.example.com/v1/api/embeddings/extra"
-        ));
-    }
-
     #[cfg(feature = "local-onnx")]
     #[test]
     fn test_provider_config_deserialize_local_onnx() {
@@ -619,103 +389,4 @@ cache_dir: "/tmp/gasket-models"
         }
     }
 
-    #[tokio::test]
-    async fn test_api_provider_embed_parse_response() {
-        let mut server = mockito::Server::new_async().await;
-        let response_body = serde_json::json!({
-            "data": [
-                {
-                    "embedding": [0.1, 0.2, 0.3],
-                    "index": 0
-                }
-            ],
-            "model": "test-model",
-            "usage": { "prompt_tokens": 5, "total_tokens": 5 }
-        });
-
-        let mock = server
-            .mock("POST", "/embeddings")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(serde_json::to_string(&response_body).unwrap())
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let provider = ApiProvider::with_client(
-            format!("{}/embeddings", server.url()),
-            "test-model".to_string(),
-            "sk-test".to_string(),
-            3,
-            client,
-        );
-
-        let embedding = provider.embed("hello").await.unwrap();
-        assert_eq!(embedding, vec![0.1, 0.2, 0.3]);
-
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn test_api_provider_embed_rejects_wrong_dim() {
-        let mut server = mockito::Server::new_async().await;
-        // Server returns 5 dims but we configure provider for 3.
-        let response_body = serde_json::json!({
-            "data": [{ "embedding": [0.1, 0.2, 0.3, 0.4, 0.5], "index": 0 }],
-            "model": "x"
-        });
-        let _mock = server
-            .mock("POST", "/embeddings")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(serde_json::to_string(&response_body).unwrap())
-            .create_async()
-            .await;
-
-        let provider = ApiProvider::with_client(
-            format!("{}/embeddings", server.url()),
-            "test-model".to_string(),
-            "sk-test".to_string(),
-            3,
-            reqwest::Client::new(),
-        );
-        let err = provider.embed("hi").await;
-        assert!(err.is_err(), "wrong-dim response must fail");
-    }
-
-    #[tokio::test]
-    async fn test_api_provider_embed_batch_parse_response() {
-        let mut server = mockito::Server::new_async().await;
-        let response_body = serde_json::json!({
-            "data": [
-                { "embedding": [1.0, 0.0], "index": 0 },
-                { "embedding": [0.0, 1.0], "index": 1 }
-            ],
-            "model": "test-model"
-        });
-
-        let mock = server
-            .mock("POST", "/embeddings")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(serde_json::to_string(&response_body).unwrap())
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let provider = ApiProvider::with_client(
-            format!("{}/embeddings", server.url()),
-            "test-model".to_string(),
-            "sk-test".to_string(),
-            2,
-            client,
-        );
-
-        let embeddings = provider.embed_batch(&["hello", "world"]).await.unwrap();
-        assert_eq!(embeddings.len(), 2);
-        assert_eq!(embeddings[0], vec![1.0, 0.0]);
-        assert_eq!(embeddings[1], vec![0.0, 1.0]);
-
-        mock.assert_async().await;
-    }
 }

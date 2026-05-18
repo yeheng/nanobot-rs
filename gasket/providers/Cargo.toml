@@ -41,3 +41,6 @@ uuid.workspace = true
 
 # Shared types
 gasket-types = { path = "../types" }
+
+# Rig-core for LLM integrations
+rig-core = { version = "0.36.0", default-features = false, features = ["reqwest", "rustls"] }

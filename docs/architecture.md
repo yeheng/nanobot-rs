@@ -478,23 +478,23 @@ flowchart TB
     S3 --> Core
 ```
 
-### 3. MCP：外部工具服务
+### 3. 插件：外部脚本扩展
 
 ```mermaid
 flowchart TB
     Gasket[Gasket核心]
-    MCP[MCP客户端]
+    Plugin[插件系统]
 
-    subgraph 外部服务
-        S1[数据库服务]
-        S2[图像生成]
-        S3[企业API]
+    subgraph 外部脚本
+        S1[Python 脚本]
+        S2[Node.js 脚本]
+        S3[Shell 脚本]
     end
 
-    Gasket --> MCP
-    MCP --> S1
-    MCP --> S2
-    MCP --> S3
+    Gasket --> Plugin
+    Plugin --> S1
+    Plugin --> S2
+    Plugin --> S3
 ```
 
 ---

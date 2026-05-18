@@ -1,13 +1,13 @@
 //! LLM Provider abstractions and implementations for gasket
 //!
-//! OpenAI-compatible providers (OpenAI, DashScope, Zhipu) are handled by
-//! `OpenAICompatibleProvider` with vendor-specific constructors.
-//! Providers with genuinely different API formats retain their own modules:
-//! - Anthropic: native Messages API
-//! - Gemini: native Google Generative AI API
-//! - Copilot: OAuth token management
-//! - Minimax: custom API with group_id header
-//! - Moonshot: OpenAI-compatible with Context Caching, Partial Mode, etc.
+//! All chat providers (except Copilot) are backed by the generic
+//! `RigCompletionProvider<C>` which wraps any rig `CompletionClient`.
+//! Vendor-specific workarounds are injected via normalizer hooks or thin
+//! wrapper modules:
+//! - Anthropic / Gemini / OpenAI-compatible: pure `RigCompletionProvider`
+//! - Minimax: message normalization (system→user, merge consecutive, sanitize)
+//! - Moonshot: runtime OpenAI / Anthropic format switching
+//! - Copilot: retains its own module for OAuth token management
 
 use thiserror::Error;
 
@@ -59,22 +59,16 @@ impl ProviderError {
     }
 }
 
-#[cfg(feature = "provider-anthropic")]
-mod anthropic;
 mod base;
 mod common;
 #[cfg(feature = "provider-copilot")]
 mod copilot;
-#[cfg(feature = "provider-copilot")]
-mod copilot_oauth;
-#[cfg(feature = "provider-gemini")]
-mod gemini;
-#[cfg(feature = "provider-minimax")]
-mod minimax;
+mod logging_http;
 mod model_spec;
-#[cfg(feature = "provider-moonshot")]
-mod moonshot;
-pub mod streaming;
+pub mod rig_bridge;
+pub mod rig_provider;
+mod vendor_workarounds;
+pub use rig_provider::RigCompletionProvider;
 
 // Re-export base types
 pub use base::{
@@ -85,26 +79,17 @@ pub use base::{
 
 // Re-export common types
 pub use common::{
-    build_http_client, parse_json_args, ModelConfig, OpenAICompatibleProvider, ProviderBuildError,
-    ProviderConfig, ProviderResult, ProviderType,
+    build_http_client, build_provider, parse_json_args, ModelConfig, OpenAICompatibleProvider,
+    ProviderBuildError, ProviderConfig, ProviderResult, ProviderType,
 };
 
 // Re-export specialized providers
-#[cfg(feature = "provider-anthropic")]
-pub use anthropic::AnthropicProvider;
 #[cfg(feature = "provider-copilot")]
 pub use copilot::CopilotProvider;
-#[cfg(feature = "provider-copilot")]
-pub use copilot_oauth::{
-    CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse,
-    DEFAULT_CLIENT_ID as COPILOT_DEFAULT_CLIENT_ID,
+pub use vendor_workarounds::{
+    build_anthropic_provider, build_gemini_provider, build_minimax_provider,
+    MoonshotProvider,
 };
-#[cfg(feature = "provider-gemini")]
-pub use gemini::GeminiProvider;
-#[cfg(feature = "provider-minimax")]
-pub use minimax::MinimaxProvider;
-#[cfg(feature = "provider-moonshot")]
-pub use moonshot::MoonshotProvider;
 
 // Re-export model spec
 pub use model_spec::ModelSpec;

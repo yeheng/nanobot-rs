@@ -47,8 +47,8 @@ flowchart TB
 
 ```bash
 # 克隆仓库
-git clone https://github.com/YeHeng/gasket-rs.git
-cd gasket-rs
+git clone https://github.com/YeHeng/gasket.git
+cd gasket
 
 # 构建（启用所有渠道）
 cargo build --release
