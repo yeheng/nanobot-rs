@@ -107,11 +107,11 @@ fn parse_duckduckgo_html(html: &str, count: usize) -> Result<Vec<SearchHit>, Too
             break;
         }
         let title_sel = node.select(".result__a").iter().next();
-        let url = title_sel
+        let raw_href = title_sel
             .as_ref()
             .and_then(|n| n.attr("href"))
-            .map(|s| s.to_string())
             .unwrap_or_default();
+        let url = extract_duckduckgo_url(&raw_href);
         let title = title_sel
             .map(|n| n.text().trim().to_string())
             .unwrap_or_default();
@@ -132,6 +132,39 @@ fn parse_duckduckgo_html(html: &str, count: usize) -> Result<Vec<SearchHit>, Too
     }
 
     Ok(hits)
+}
+
+/// Extract the real target URL from a DuckDuckGo redirect link.
+/// DuckDuckGo wraps result links like:
+///   //duckduckgo.com/l/?uddg=<encoded_real_url>&...
+/// We pull out the `uddg` parameter and URL-decode it.
+/// If no `uddg` is present but the href is protocol-relative (//...),
+/// prefix it with https: as a fallback.
+fn extract_duckduckgo_url(href: &str) -> String {
+    if href.is_empty() {
+        return String::new();
+    }
+
+    // Try to extract `uddg` query parameter
+    if let Some(query_start) = href.find('?') {
+        let query = &href[query_start + 1..];
+        for pair in query.split('&') {
+            if let Some((key, value)) = pair.split_once('=') {
+                if key == "uddg" {
+                    if let Ok(decoded) = urlencoding::decode(value) {
+                        return decoded.into_owned();
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: prefix protocol-relative URLs
+    if href.starts_with("//") {
+        return format!("https:{}", href);
+    }
+
+    href.to_string()
 }
 
 // -- Brave --
