@@ -87,15 +87,22 @@ async fn save_assistant_event(
     vault_values: &[String],
 ) {
     let history_content = redact_secrets(&result.content, vault_values);
+    let mut metadata = EventMetadata {
+        tools_used: result.tools_used.clone(),
+        ..Default::default()
+    };
+    if let Some(ref reasoning) = result.reasoning_content {
+        metadata.extra.insert(
+            "reasoning_content".to_string(),
+            serde_json::Value::String(reasoning.clone()),
+        );
+    }
     let assistant_event = SessionEvent {
         id: uuid::Uuid::now_v7(),
         session_key: ctx.session_key_str.to_string(),
         event_type: EventType::AssistantMessage,
         content: history_content,
-        metadata: EventMetadata {
-            tools_used: result.tools_used.clone(),
-            ..Default::default()
-        },
+        metadata,
         created_at: chrono::Utc::now(),
         sequence: 0,
     };
@@ -124,11 +131,13 @@ async fn execute_after_response_hooks(
     ctx: &FinalizeContext,
     hook_timeout_secs: u64,
 ) {
+    // ExecutionResult.tools_used carries tool names only (no call IDs).
+    // Placeholder id — no downstream code reads ToolCallInfo.id in production.
     let tools_used: Vec<ToolCallInfo> = result
         .tools_used
         .iter()
         .map(|name| ToolCallInfo {
-            id: name.clone(),
+            id: String::new(),
             name: name.clone(),
             arguments: None,
         })

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::SubagentSpawner;
-use crate::{MaintenanceStore, SessionStore};
+use gasket_storage::{MaintenanceStore, SessionStore};
 use crate::wiki::{PageIndex, PageStore};
 
 use super::{

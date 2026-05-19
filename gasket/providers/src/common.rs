@@ -633,7 +633,7 @@ fn dispatch_by_type(
             )
         }
         ProviderType::Openai => {
-            let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu");
+            let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu" | "xiaomi");
             let config = ProviderConfig {
                 provider_type: ProviderType::Openai,
                 api_base: provider_config.api_base.clone(),

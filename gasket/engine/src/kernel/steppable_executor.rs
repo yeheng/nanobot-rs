@@ -95,7 +95,11 @@ impl SteppableExecutor {
 
         if is_final {
             if let Some(ref content) = response.content {
-                messages.push(ChatMessage::assistant(content));
+                messages.push(ChatMessage::assistant_with_tools(
+                    Some(content.clone()),
+                    vec![],
+                    response.reasoning_content.clone(),
+                ));
             }
             return Ok(StepResult {
                 response,

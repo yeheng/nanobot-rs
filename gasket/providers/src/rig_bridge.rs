@@ -2,7 +2,7 @@
 
 use futures_util::stream::StreamExt;
 use rig::completion::{CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Message as RigMessage, ToolDefinition as RigToolDefinition};
-use rig::message::{AssistantContent, ReasoningContent, ToolCall as RigToolCall, ToolFunction as RigToolFunction};
+use rig::message::{AssistantContent, Reasoning, ReasoningContent, ToolCall as RigToolCall, ToolFunction as RigToolFunction};
 use rig::streaming::{StreamedAssistantContent, ToolCallDeltaContent};
 use rig::OneOrMany;
 
@@ -14,28 +14,40 @@ pub fn to_rig_message(msg: ChatMessage) -> RigMessage {
         MessageRole::System => RigMessage::system(msg.content.unwrap_or_default()),
         MessageRole::User => RigMessage::user(msg.content.unwrap_or_default()),
         MessageRole::Assistant => {
-            // Assistant messages with tool calls need special handling
+            let mut contents: Vec<AssistantContent> = Vec::new();
+
+            // Add reasoning content first if present
+            if let Some(reasoning) = msg.reasoning_content {
+                contents.push(AssistantContent::Reasoning(Reasoning::new(&reasoning)));
+            }
+
+            // Add tool calls if present
             if let Some(tool_calls) = msg.tool_calls {
-                let contents: Vec<AssistantContent> = tool_calls
-                    .into_iter()
-                    .map(|tc| {
-                        AssistantContent::ToolCall(RigToolCall::new(
-                            tc.id,
-                            RigToolFunction {
-                                name: tc.function.name,
-                                arguments: tc.function.arguments,
-                            },
-                        ))
-                    })
-                    .collect();
+                for tc in tool_calls {
+                    contents.push(AssistantContent::ToolCall(RigToolCall::new(
+                        tc.id,
+                        RigToolFunction {
+                            name: tc.function.name,
+                            arguments: tc.function.arguments,
+                        },
+                    )));
+                }
+            }
+
+            // Add text content if present
+            if let Some(content) = msg.content {
+                contents.push(AssistantContent::text(content));
+            }
+
+            if contents.is_empty() {
+                RigMessage::assistant(String::new())
+            } else {
                 RigMessage::Assistant {
                     id: None,
                     content: OneOrMany::many(contents).unwrap_or_else(|_| {
-                        OneOrMany::one(AssistantContent::text(msg.content.unwrap_or_default()))
+                        OneOrMany::one(AssistantContent::text(String::new()))
                     }),
                 }
-            } else {
-                RigMessage::assistant(msg.content.unwrap_or_default())
             }
         }
         MessageRole::Tool => {

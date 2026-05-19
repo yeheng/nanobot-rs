@@ -45,6 +45,10 @@ pub enum AgentError {
     #[error("Max iterations ({0}) reached")]
     MaxIterations(u32),
 
+    /// Step exceeded wall-clock budget
+    #[error("Step exceeded wall-clock budget of {budget_secs}s")]
+    StepTimeout { budget_secs: u64 },
+
     /// Internal error preserving the full error chain
     #[error(transparent)]
     Internal(Box<dyn std::error::Error + Send + Sync>),
@@ -106,10 +110,7 @@ impl From<crate::kernel::KernelError> for AgentError {
             }
             crate::kernel::KernelError::ToolExecution(e) => AgentError::ToolError(e),
             crate::kernel::KernelError::StepTimeout { budget_secs } => {
-                AgentError::ProviderError(ProviderError::Other(format!(
-                    "step exceeded wall-clock budget of {}s",
-                    budget_secs
-                )))
+                AgentError::StepTimeout { budget_secs }
             }
         }
     }

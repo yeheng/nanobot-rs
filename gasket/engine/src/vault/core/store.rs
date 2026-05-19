@@ -179,17 +179,20 @@ pub struct VaultStore {
 }
 
 impl VaultStore {
-    pub fn default_path() -> PathBuf {
+    pub fn default_path() -> Result<PathBuf, VaultError> {
         dirs::home_dir()
-            .expect("Could not find home directory")
-            .join(".gasket")
-            .join("vault")
-            .join("secrets.json")
+            .map(|h| h.join(".gasket").join("vault").join("secrets.json"))
+            .ok_or_else(|| {
+                VaultError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "HOME directory not found",
+                ))
+            })
     }
 
     /// Create a new VaultStore with default path
     pub fn new() -> Result<Self, VaultError> {
-        Self::with_path(Self::default_path())
+        Self::with_path(Self::default_path()?)
     }
 
     /// Create a VaultStore with a custom path
@@ -461,6 +464,13 @@ impl VaultStore {
     // Private methods
     // ========================================================================
 
+    /// Load vault entries from disk.
+    ///
+    /// # Synchronous I/O
+    ///
+    /// Uses `std::fs::read_to_string` which blocks the calling thread.
+    /// Vault files are typically small (< 100 KiB), so the blocking duration
+    /// is negligible in practice. Migration path: `tokio::task::spawn_blocking`.
     fn load(&mut self) -> Result<(), VaultError> {
         if self.path.to_str() == Some(":memory:") || !self.path.exists() {
             return Ok(());
@@ -492,6 +502,13 @@ impl VaultStore {
         Ok(())
     }
 
+    /// Persist vault entries to disk.
+    ///
+    /// # Synchronous I/O
+    ///
+    /// Uses `std::fs::write` which blocks the calling thread.
+    /// Acceptable because vault persistence is infrequent (only on set/delete/unlock)
+    /// and the data is small. Migration path: `tokio::task::spawn_blocking`.
     fn persist(&self) -> Result<(), VaultError> {
         if self.path.to_str() == Some(":memory:") {
             return Ok(());
@@ -513,6 +530,8 @@ impl VaultStore {
         Ok(())
     }
 
+    /// Persist only the vault header (version + KDF params) with empty entries.
+    /// Same synchronous I/O trade-off as [`persist`](Self::persist).
     fn persist_header(&self, kdf_params: &KdfParams) -> Result<(), VaultError> {
         if self.path.to_str() == Some(":memory:") {
             return Ok(());

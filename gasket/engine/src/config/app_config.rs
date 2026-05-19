@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config_dir;
+use crate::config::config_dir;
 use crate::error::ConfigValidationError;
 use crate::vault::contains_placeholders;
 use crate::vault::VaultStore;

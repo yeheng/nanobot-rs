@@ -309,7 +309,17 @@ impl ContextBuilder {
                     messages.push(ChatMessage::user(event.content))
                 }
                 gasket_types::EventType::AssistantMessage => {
-                    messages.push(ChatMessage::assistant(event.content))
+                    let reasoning_content = event
+                        .metadata
+                        .extra
+                        .get("reasoning_content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    messages.push(ChatMessage::assistant_with_tools(
+                        Some(event.content),
+                        vec![],
+                        reasoning_content,
+                    ));
                 }
                 _ => {}
             }
