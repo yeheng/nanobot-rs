@@ -49,9 +49,14 @@ fn default_spawn_max_concurrency() -> usize {
 /// Web tools configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebToolsConfig {
-    /// Provider to use for web search (brave, tavily, exa, firecrawl)
+    /// Provider to use for web search (brave, tavily, exa, firecrawl, google, duckduckgo)
     #[serde(default, alias = "searchProvider")]
     pub search_provider: Option<String>,
+
+    /// Fallback provider when primary provider fails or has no API key.
+    /// Set to "duckduckgo" for a free no-key fallback, or "google" etc.
+    #[serde(default, alias = "searchFallback")]
+    pub search_fallback: Option<String>,
 
     /// Brave Search API key for web_search tool
     #[serde(default, alias = "braveApiKey")]
@@ -68,6 +73,8 @@ pub struct WebToolsConfig {
     /// Firecrawl API key
     #[serde(default, alias = "firecrawlApiKey")]
     pub firecrawl_api_key: Option<String>,
+
+
 
     /// HTTP proxy URL (e.g., "http://127.0.0.1:7890")
     #[serde(default, alias = "httpProxy")]

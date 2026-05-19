@@ -62,6 +62,78 @@ fn format_hits(hits: &[SearchHit]) -> String {
 
 // ── Provider implementations ────────────────────────────────
 
+// -- DuckDuckGo (no API key required) --
+
+struct DuckDuckGoProvider;
+
+#[async_trait]
+impl SearchProvider for DuckDuckGoProvider {
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        let url = format!(
+            "https://html.duckduckgo.com/html/?q={}",
+            urlencoding::encode(query)
+        );
+
+        let response = client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::ExecutionError(format!("DuckDuckGo request failed: {}", e))
+            })?;
+
+        check_status(&response, "DuckDuckGo").await?;
+
+        let html = response.text().await.map_err(|e| {
+            ToolError::ExecutionError(format!("DuckDuckGo response read failed: {}", e))
+        })?;
+
+        parse_duckduckgo_html(&html, count)
+    }
+}
+
+fn parse_duckduckgo_html(html: &str, count: usize) -> Result<Vec<SearchHit>, ToolError> {
+    let doc = dom_query::Document::from(html);
+    let mut hits = Vec::new();
+
+    for node in doc.select(".result").iter() {
+        if hits.len() >= count {
+            break;
+        }
+        let title_sel = node.select(".result__a").iter().next();
+        let url = title_sel
+            .as_ref()
+            .and_then(|n| n.attr("href"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let title = title_sel
+            .map(|n| n.text().trim().to_string())
+            .unwrap_or_default();
+        let snippet = node
+            .select(".result__snippet")
+            .iter()
+            .next()
+            .map(|n| n.text().trim().to_string())
+            .unwrap_or_default();
+
+        if !url.is_empty() && !title.is_empty() {
+            hits.push(SearchHit {
+                title,
+                snippet,
+                url,
+            });
+        }
+    }
+
+    Ok(hits)
+}
+
 // -- Brave --
 
 struct BraveProvider<'a> {
@@ -289,15 +361,17 @@ async fn send_get<T: serde::de::DeserializeOwned>(
     api_key: &str,
     provider_name: &str,
 ) -> Result<T, ToolError> {
-    let response = client
+    let mut req = client
         .get(url)
-        .header(key_header, api_key)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| {
-            ToolError::ExecutionError(format!("{} API request failed: {}", provider_name, e))
-        })?;
+        .header("Accept", "application/json");
+
+    if !key_header.is_empty() {
+        req = req.header(key_header, api_key);
+    }
+
+    let response = req.send().await.map_err(|e| {
+        ToolError::ExecutionError(format!("{} API request failed: {}", provider_name, e))
+    })?;
 
     check_status(&response, provider_name).await?;
 
@@ -378,6 +452,7 @@ impl WebSearchTool {
     }
 
     /// Resolve the configured provider and execute the search.
+    /// Falls back to the configured fallback provider on key-missing or request failure.
     async fn do_search(&self, query: &str, count: usize) -> ToolResult {
         let provider_name = self
             .config
@@ -386,39 +461,75 @@ impl WebSearchTool {
             .unwrap_or("brave")
             .to_lowercase();
 
+        let fallback_name = self
+            .config
+            .as_ref()
+            .and_then(|c| c.search_fallback.as_deref())
+            .map(|s| s.to_lowercase());
+
         info!(
             "[WebSearch] Using '{}' API to search for: {}",
             provider_name, query
         );
 
-        let hits = match provider_name.as_str() {
+        match self.run_provider(&provider_name, query, count).await {
+            Ok(hits) => Ok(format_hits(&hits)),
+            Err(primary_err) => {
+                // Try fallback if configured
+                if let Some(ref fallback) = fallback_name {
+                    warn!(
+                        "[WebSearch] Primary provider '{}' failed: {}. Trying fallback '{}'...",
+                        provider_name, primary_err, fallback
+                    );
+                    match self.run_provider(fallback, query, count).await {
+                        Ok(hits) => return Ok(format_hits(&hits)),
+                        Err(fb_err) => {
+                            warn!(
+                                "[WebSearch] Fallback provider '{}' also failed: {}",
+                                fallback, fb_err
+                            );
+                        }
+                    }
+                }
+                Err(primary_err)
+            }
+        }
+    }
+
+    /// Execute a single provider by name.
+    async fn run_provider(
+        &self,
+        name: &str,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        match name {
             "tavily" => {
                 let key = self.require_key(|c| c.tavily_api_key.as_ref(), "Tavily")?;
                 TavilyProvider { api_key: &key }
                     .search(&self.client, query, count)
-                    .await?
+                    .await
             }
             "exa" => {
                 let key = self.require_key(|c| c.exa_api_key.as_ref(), "Exa")?;
                 ExaProvider { api_key: &key }
                     .search(&self.client, query, count)
-                    .await?
+                    .await
             }
             "firecrawl" => {
                 let key = self.require_key(|c| c.firecrawl_api_key.as_ref(), "Firecrawl")?;
                 FirecrawlProvider { api_key: &key }
                     .search(&self.client, query, count)
-                    .await?
+                    .await
             }
+            "duckduckgo" => DuckDuckGoProvider.search(&self.client, query, count).await,
             _ => {
                 let key = self.require_key(|c| c.brave_api_key.as_ref(), "Brave")?;
                 BraveProvider { api_key: &key }
                     .search(&self.client, query, count)
-                    .await?
+                    .await
             }
-        };
-
-        Ok(format_hits(&hits))
+        }
     }
 
     /// Extract an API key from config, or return a descriptive error.
@@ -441,7 +552,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web using the configured provider (Brave, Tavily, Exa, Firecrawl)"
+        "Search the web using the configured provider (Brave, Tavily, Exa, Firecrawl, DuckDuckGo). Falls back automatically when primary provider fails."
     }
 
     fn parameters(&self) -> Value {

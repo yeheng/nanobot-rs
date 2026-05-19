@@ -33,6 +33,7 @@ parking_lot = "0.12"
 
 which = "8.0"
 dom_smoothie = "0.17"
+dom_query = "0.27"
 fast_html2md = "0.0.62"
 regex = "1"
 bytes = "1"
