@@ -73,12 +73,13 @@ steps:
         "critical_issues": [
           {"dimension": "...", "location": "...", "problem": "...", "improvement": "..."}
         ],
-        "pass_gate": true/false
+        "verdict": "PASS" | "FAIL",
+        "reason": "<one sentence explaining the decision>"
       }
     evaluate:
       on_pass: "validate"
       on_fail: "diagnose"
-      condition: "overall_score >= 10"
+      max_retries: 3
 
   diagnose:
     prompt: |
@@ -155,7 +156,8 @@ steps:
 
       Final verdict (JSON):
       {
-        "validation_passed": true/false,
+        "verdict": "PASS" | "FAIL",
+        "reason": "<one sentence>",
         "items": {"1": "PASS/FAIL: evidence", "2": "...", "3": "...", "4": "...", "5": "..."},
         "quality_delta": "improved|unchanged|degraded vs expected baseline",
         "recommendation": "accept|re_refine|escalate_to_human"

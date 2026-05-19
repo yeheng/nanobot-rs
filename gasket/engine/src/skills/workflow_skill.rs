@@ -11,7 +11,7 @@ use std::path::Path;
 use tracing::{info, warn};
 
 use crate::skills::{Skill, SkillMetadata};
-use crate::tools::workflow::load_workflow;
+use crate::tools::workflow::{load_workflow, Workflow, WorkflowMode};
 
 /// Discover skill-mode workflows in `workflows_dir` and convert them to `Skill`s.
 ///
@@ -58,23 +58,34 @@ pub fn discover_workflow_skills(workflows_dir: &Path) -> anyhow::Result<Vec<Skil
 
         match load_workflow(&path) {
             Ok(manifest) => {
-                if manifest.mode.as_deref() != Some("skill") {
+                if manifest.mode != WorkflowMode::Skill {
                     continue;
                 }
 
+                let workflow = match Workflow::from_manifest(&manifest) {
+                    Ok(wf) => wf,
+                    Err(e) => {
+                        warn!(
+                            "Failed to validate workflow-skill from {:?}: {}",
+                            path, e
+                        );
+                        continue;
+                    }
+                };
+
                 let metadata = SkillMetadata {
-                    name: manifest.name.clone(),
-                    description: manifest.description.clone(),
-                    always: true, // workflow skills are always injected
+                    name: workflow.name.clone(),
+                    description: workflow.description.clone(),
+                    always: workflow.always,
                     bins: Vec::new(),
                     env_vars: Vec::new(),
                     extra: Default::default(),
                 };
 
-                let content = manifest.to_skill_content();
+                let content = workflow.to_skill_content();
                 info!(
                     "Discovered workflow-skill '{}' from {:?}",
-                    manifest.name, path
+                    workflow.name, path
                 );
                 skills.push(Skill::new(metadata, content, path));
             }

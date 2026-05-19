@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
@@ -24,136 +25,84 @@ use super::spawn_common::spawn_event_forwarder;
 
 // ── Data structures ─────────────────────────────────────────────────────────
 
+/// Execution mode for a workflow.
+///
+/// `Tool` (default): the workflow is registered as a callable tool and
+/// executed as a state machine via subagent spawning.
+/// `Skill`: the workflow is injected into the system prompt as a markdown
+/// skill and executed autonomously by the LLM.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowMode {
+    Tool,
+    Skill,
+}
+
+fn default_workflow_mode() -> WorkflowMode {
+    WorkflowMode::Tool
+}
+
+fn default_always_load() -> bool {
+    true
+}
+
 /// A workflow manifest loaded from a YAML file.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowManifest {
     pub name: String,
     pub description: String,
     pub parameters: Value,
     pub start_step: String,
-    pub steps: HashMap<String, WorkflowStep>,
+    pub steps: HashMap<String, WorkflowStepDef>,
     /// Optional template to render as the final output instead of raw JSON.
-    pub output_template: Option<String>,
-    /// Execution mode: `"tool"` (default) for state-machine execution,
-    /// `"skill"` for LLM-autonomous execution via prompt injection.
     #[serde(default)]
-    pub mode: Option<String>,
+    pub output_template: Option<String>,
+    /// Execution mode (see [`WorkflowMode`]). Defaults to `Tool`.
+    #[serde(default = "default_workflow_mode")]
+    pub mode: WorkflowMode,
+    /// Whether this workflow (in skill mode) is eagerly injected into the
+    /// system prompt. Ignored in tool mode. Defaults to `true`.
+    #[serde(default = "default_always_load")]
+    pub always: bool,
 }
 
-impl WorkflowManifest {
-    /// Convert this workflow into markdown skill content for system prompt injection.
-    ///
-    /// In skill mode the LLM executes steps autonomously through the normal
-    /// agent loop; no state machine or subagent spawning is used.
-    pub fn to_skill_content(&self) -> String {
-        let mut out = String::new();
-        out.push_str(&format!("## Workflow: {}\n\n", self.name));
-        out.push_str(&self.description);
-        out.push('\n');
-
-        // Parameters guidance
-        if let Some(props) = self.parameters.get("properties").and_then(|v| v.as_object()) {
-            if !props.is_empty() {
-                out.push_str("\n**参数**:\n");
-                for (k, v) in props {
-                    let desc = v.get("description").and_then(|d| d.as_str()).unwrap_or("");
-                    let default = v.get("default").map(|d| d.to_string());
-                    out.push_str(&format!("- `{}`", k));
-                    if !desc.is_empty() {
-                        out.push_str(&format!(": {}", desc));
-                    }
-                    if let Some(d) = default {
-                        out.push_str(&format!(" (默认: {})", d));
-                    }
-                    out.push('\n');
-                }
-            }
-        }
-
-        out.push_str("\n**执行规则**:\n");
-        out.push_str("1. 严格按以下步骤顺序执行，每步完成后确认再继续\n");
-        out.push_str("2. 上下文通过对话历史自然传递，不需要显式声明步骤编号\n");
-        out.push_str("3. 如某步明显不需要，可灵活调整，但需告知用户\n");
-
-        out.push_str("\n### 执行步骤\n");
-
-        // Traverse steps in order from start_step
-        let mut visited = std::collections::HashSet::new();
-        let mut step_names = Vec::new();
-        let mut current = self.start_step.clone();
-        while current != "DONE" && !visited.contains(&current) {
-            visited.insert(current.clone());
-            step_names.push(current.clone());
-            if let Some(step) = self.steps.get(&current) {
-                if let Some(ref next) = step.next {
-                    current = next.clone();
-                } else if let Some(ref eval) = step.evaluate {
-                    // For display, show the evaluation target
-                    current = eval.on_pass.clone();
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        for (idx, name) in step_names.iter().enumerate() {
-            if let Some(step) = self.steps.get(name) {
-                out.push('\n');
-                out.push_str(&format!("#### {}. {}\n", idx + 1, name));
-                // Clean up prompt: remove {{variable}} markers but keep the text
-                let cleaned = clean_template_placeholders(&step.prompt);
-                out.push_str(&cleaned);
-                out.push('\n');
-
-                if let Some(ref eval) = step.evaluate {
-                    out.push_str("\n*审查规则*:\n");
-                    out.push_str(&format!(
-                        "- 通过后进入: **{}**\n",
-                        eval.on_pass
-                    ));
-                    out.push_str(&format!(
-                        "- 失败后回到: **{}**（最多重试 {} 次）\n",
-                        eval.on_fail, eval.max_retries
-                    ));
-                }
-            }
-        }
-
-        out.push('\n');
-        out.push_str("**结束规则**: 所有步骤完成后，输出最终结果并明确告知用户工作流已结束。\n");
-
-        out
-    }
-}
-
-/// Remove `{{key}}` template placeholders from a prompt, leaving readable text.
+/// Shared regex for `{{key}}` template placeholders.
 ///
-/// Unknown placeholders are left as-is so the LLM sees hints about expected
-/// variables (which it resolves from conversation history in skill mode).
-fn clean_template_placeholders(template: &str) -> String {
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap());
-    re.replace_all(template, "[见上文]").to_string()
+/// Key matches alphanumeric + dots + underscores + slashes.
+static PLACEHOLDER_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+fn placeholder_re() -> &'static Regex {
+    PLACEHOLDER_RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap())
 }
 
-/// A single step in the workflow graph.
+/// Strip all `{{key}}` template placeholders from a prompt, replacing them
+/// with the literal text `[see above]` for readability in skill-mode output.
+fn clean_template_placeholders(template: &str) -> String {
+    placeholder_re().replace_all(template, "[see above]").to_string()
+}
+
+/// Step definition as it appears in the YAML manifest.
 #[derive(Debug, Clone, Deserialize)]
-pub struct WorkflowStep {
+#[serde(deny_unknown_fields)]
+pub struct WorkflowStepDef {
     /// Prompt template with `{{key}}` placeholders.
     pub prompt: String,
     /// Optional model override for this step.
+    #[serde(default)]
     pub model: Option<String>,
     /// Next step name. Absent when `evaluate` is present.
+    #[serde(default)]
     pub next: Option<String>,
     /// Evaluation configuration for verdict-based branching.
-    pub evaluate: Option<EvaluateConfig>,
+    #[serde(default)]
+    pub evaluate: Option<EvaluateConfigDef>,
 }
 
-/// Configuration for evaluating a step's output and deciding the next step.
+/// Evaluation configuration as it appears in the YAML manifest.
 #[derive(Debug, Clone, Deserialize)]
-pub struct EvaluateConfig {
+#[serde(deny_unknown_fields)]
+pub struct EvaluateConfigDef {
     /// Step to go to when evaluation passes.
     pub on_pass: String,
     /// Step to go to when evaluation fails.
@@ -167,6 +116,288 @@ fn default_max_retries() -> usize {
     3
 }
 
+// ── Internal execution structures ───────────────────────────────────────────
+
+/// A validated workflow ready for state-machine execution.
+/// Steps are indexed by `usize` rather than string names — no runtime lookups.
+#[derive(Clone)]
+pub struct Workflow {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+    pub steps: Vec<Step>,
+    pub start_idx: usize,
+    pub output_template: Option<String>,
+    /// Whether this workflow (in skill mode) is eagerly loaded into the
+    /// system prompt. Tool-mode workflows ignore this field.
+    pub always: bool,
+}
+
+/// A single step in the validated workflow.
+#[derive(Clone)]
+pub struct Step {
+    pub name: String,
+    pub prompt: String,
+    pub model: Option<String>,
+    pub transition: Transition,
+}
+
+/// How execution continues after a step completes.
+#[derive(Clone)]
+pub enum Transition {
+    /// Proceed to the step at the given index.
+    Next(usize),
+    /// Evaluate the step output and branch.
+    Evaluate(EvalGate),
+    /// Terminate the workflow.
+    Done,
+}
+
+/// Branching gate for evaluate transitions.
+///
+/// `None` means terminate the workflow (the YAML `"DONE"` sentinel).
+#[derive(Clone)]
+pub struct EvalGate {
+    pub on_pass: Option<usize>,
+    pub on_fail: Option<usize>,
+    pub max_retries: usize,
+}
+
+impl Workflow {
+    /// Validate a manifest and build the indexed execution graph.
+    ///
+    /// Steps are ordered by the primary execution path (starting from
+    /// `start_step` and following `next` / `evaluate.on_pass` chains).
+    /// Branches reached only via `evaluate.on_fail` are appended after the
+    /// primary path in the order they were first encountered. Steps
+    /// unreachable from `start_step` cause an error — no silent dead steps.
+    pub fn from_manifest(manifest: &WorkflowManifest) -> anyhow::Result<Self> {
+        // Basic sanity checks.
+        if manifest.name.is_empty() {
+            return Err(anyhow::anyhow!("Workflow has empty name"));
+        }
+        if manifest.description.is_empty() {
+            return Err(anyhow::anyhow!("Workflow has empty description"));
+        }
+        if manifest.steps.is_empty() {
+            return Err(anyhow::anyhow!("Workflow has no steps"));
+        }
+        if !manifest.steps.contains_key(&manifest.start_step) {
+            return Err(anyhow::anyhow!(
+                "start_step '{}' not found in steps",
+                manifest.start_step
+            ));
+        }
+
+        // Build deterministic ordering: walk primary path (next / on_pass)
+        // first, queueing on_fail targets for traversal after the primary
+        // path is exhausted.
+        let mut ordered = Vec::with_capacity(manifest.steps.len());
+        let mut visited = std::collections::HashSet::new();
+        let mut secondary: std::collections::VecDeque<String> =
+            std::collections::VecDeque::new();
+        let mut current = manifest.start_step.clone();
+
+        loop {
+            while current != "DONE" && !visited.contains(&current) {
+                let Some(step) = manifest.steps.get(&current) else { break };
+                visited.insert(current.clone());
+                ordered.push(current.clone());
+                if let Some(ref eval) = step.evaluate {
+                    if eval.on_fail != "DONE" {
+                        secondary.push_back(eval.on_fail.clone());
+                    }
+                    current = eval.on_pass.clone();
+                } else if let Some(ref next) = step.next {
+                    current = next.clone();
+                } else {
+                    break;
+                }
+            }
+            match secondary.pop_front() {
+                Some(name) => current = name,
+                None => break,
+            }
+        }
+
+        // Reject unreachable steps. A defined-but-unreachable step is almost
+        // always a YAML typo or refactoring leftover; fail loudly.
+        let mut unreachable: Vec<String> = manifest
+            .steps
+            .keys()
+            .filter(|n| !visited.contains(*n))
+            .cloned()
+            .collect();
+        if !unreachable.is_empty() {
+            unreachable.sort();
+            return Err(anyhow::anyhow!(
+                "Workflow has unreachable steps: {:?}",
+                unreachable
+            ));
+        }
+
+        let name_to_idx: HashMap<String, usize> =
+            ordered.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+        let start_idx = *name_to_idx
+            .get(&manifest.start_step)
+            .expect("invariant: start_step is the first entry in `ordered`");
+
+        let mut steps = Vec::with_capacity(ordered.len());
+        for name in &ordered {
+            let def = manifest
+                .steps
+                .get(name)
+                .expect("invariant: `ordered` only contains names from `manifest.steps`");
+            let transition = if let Some(ref eval_def) = def.evaluate {
+                let on_pass = if eval_def.on_pass == "DONE" {
+                    None
+                } else {
+                    Some(*name_to_idx.get(&eval_def.on_pass).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "step '{}' evaluate.on_pass '{}' not found",
+                            name,
+                            eval_def.on_pass
+                        )
+                    })?)
+                };
+                let on_fail = if eval_def.on_fail == "DONE" {
+                    None
+                } else {
+                    Some(*name_to_idx.get(&eval_def.on_fail).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "step '{}' evaluate.on_fail '{}' not found",
+                            name,
+                            eval_def.on_fail
+                        )
+                    })?)
+                };
+                Transition::Evaluate(EvalGate {
+                    on_pass,
+                    on_fail,
+                    max_retries: eval_def.max_retries,
+                })
+            } else if let Some(ref next) = def.next {
+                if next == "DONE" {
+                    Transition::Done
+                } else {
+                    let next_idx = *name_to_idx.get(next).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "step '{}' next '{}' not found",
+                            name,
+                            next
+                        )
+                    })?;
+                    Transition::Next(next_idx)
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "step '{}' has neither 'next' nor 'evaluate'",
+                    name
+                ));
+            };
+
+            steps.push(Step {
+                name: name.clone(),
+                prompt: def.prompt.clone(),
+                model: def.model.clone(),
+                transition,
+            });
+        }
+
+        Ok(Self {
+            name: manifest.name.clone(),
+            description: manifest.description.clone(),
+            parameters: manifest.parameters.clone(),
+            steps,
+            start_idx,
+            output_template: manifest.output_template.clone(),
+            always: manifest.always,
+        })
+    }
+
+    /// Convert this workflow into markdown skill content for system prompt injection.
+    ///
+    /// In skill mode the LLM executes steps autonomously through the normal
+    /// agent loop; no state machine or subagent spawning is used.
+    pub fn to_skill_content(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("## Workflow: {}\n\n", self.name));
+        out.push_str(&self.description);
+        out.push('\n');
+
+        // Parameters guidance
+        if let Some(props) = self.parameters.get("properties").and_then(|v| v.as_object()) {
+            if !props.is_empty() {
+                out.push_str("\n**Parameters**:\n");
+                for (k, v) in props {
+                    let desc = v.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                    let default = v.get("default").map(|d| d.to_string());
+                    out.push_str(&format!("- `{}`", k));
+                    if !desc.is_empty() {
+                        out.push_str(&format!(": {}", desc));
+                    }
+                    if let Some(d) = default {
+                        out.push_str(&format!(" (default: {})", d));
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+
+        out.push_str("\n**Execution Rules**:\n");
+        out.push_str("1. Execute the following steps in order. Confirm completion before proceeding.\n");
+        out.push_str("2. Context flows naturally through conversation history; explicit step numbers are not required.\n");
+        out.push_str("3. If a step is clearly unnecessary, skip it flexibly but inform the user.\n");
+
+        out.push_str("\n### Execution Steps\n");
+
+        // Traverse primary path (same logic as execution, but only for display).
+        let mut visited = std::collections::HashSet::new();
+        let mut current = self.start_idx;
+        let mut step_num = 1;
+
+        while !visited.contains(&current) {
+            visited.insert(current);
+            let step = &self.steps[current];
+
+            out.push('\n');
+            out.push_str(&format!("#### {}. {}\n", step_num, step.name));
+            let cleaned = clean_template_placeholders(&step.prompt);
+            out.push_str(&cleaned);
+            out.push('\n');
+
+            if let Transition::Evaluate(gate) = &step.transition {
+                let pass_name = gate.on_pass.map(|idx| self.steps[idx].name.as_str()).unwrap_or("DONE");
+                let fail_name = gate.on_fail.map(|idx| self.steps[idx].name.as_str()).unwrap_or("DONE");
+                out.push_str("\n*Review Rules*:\n");
+                out.push_str(&format!(
+                    "- On pass proceed to: **{}**\n",
+                    pass_name
+                ));
+                out.push_str(&format!(
+                    "- On fail return to: **{}** (max retries: {})\n",
+                    fail_name, gate.max_retries
+                ));
+            }
+
+            match &step.transition {
+                Transition::Next(idx) => current = *idx,
+                Transition::Evaluate(gate) => match gate.on_pass {
+                    Some(idx) => current = idx,
+                    None => break,
+                },
+                Transition::Done => break,
+            }
+            step_num += 1;
+        }
+
+        out.push('\n');
+        out.push_str("**End Rule**: After all steps are complete, output the final result and explicitly inform the user that the workflow has finished.\n");
+
+        out
+    }
+}
+
 // ── Template substitution ───────────────────────────────────────────────────
 
 /// Substitute `{{key}}` placeholders in a template using values from `ctx`.
@@ -174,72 +405,70 @@ fn default_max_retries() -> usize {
 /// Unknown keys are left as-is so that missing variables are obvious in the
 /// LLM prompt rather than silently replaced with empty strings.
 fn substitute_template(template: &str, ctx: &HashMap<String, String>) -> String {
-    // Regex for {{key}} where key is alphanumeric + dots + underscores + slashes
-    // SAFETY: static regex pattern, compiles infallibly.
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"\{\{([a-zA-Z0-9_./]+)\}\}").unwrap());
-    let mut result = String::with_capacity(template.len());
-    let mut last_end = 0;
-    for caps in re.captures_iter(template) {
-        // SAFETY: captures_iter always yields group 0 (full match).
-        let m = caps.get(0).unwrap();
-        result.push_str(&template[last_end..m.start()]);
+    placeholder_re().replace_all(template, |caps: &regex::Captures| {
         let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        if let Some(val) = ctx.get(key) {
-            result.push_str(val);
-        } else {
-            result.push_str(m.as_str());
-        }
-        last_end = m.end();
-    }
-    result.push_str(&template[last_end..]);
-    result
+        ctx.get(key)
+            .cloned()
+            .unwrap_or_else(|| caps.get(0).unwrap().as_str().to_owned())
+    })
+    .to_string()
 }
 
 // ── Verdict parsing ─────────────────────────────────────────────────────────
 
+/// Extract the first complete JSON object from arbitrary LLM output.
+///
+/// Tolerates surrounding prose, markdown fences, and trailing commentary by
+/// locating the first `{` and using `serde_json`'s streaming deserializer to
+/// stop at the matching `}`. This is the right level of robustness for LLM
+/// output: strict prompting can't always prevent trailing explanations.
+fn extract_first_json_object(text: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| "No JSON object found in output".to_string())?;
+    let slice = &trimmed[start..];
+    serde_json::Deserializer::from_str(slice)
+        .into_iter::<Value>()
+        .next()
+        .ok_or_else(|| "No JSON object found in output".to_string())?
+        .map_err(|e| format!("JSON parse error: {}", e))
+}
+
 /// Parse a verdict from LLM output.
 ///
-/// Tolerates ```json fences and missing fields. Unparseable input is treated
-/// as FAIL so the workflow retries rather than silently proceeding.
-/// Parse a verdict from LLM output.
-///
-/// Tolerates missing fields and surrounding markdown. Unparseable input is treated
-/// as FAIL so the workflow retries rather than silently proceeding.
+/// Primary schema: `{"verdict": "PASS"|"FAIL", "reason": "..."}`.
+/// For backward compatibility this also accepts the legacy boolean aliases
+/// `pass_gate` and `validation_passed` (with a deprecation warning) and
+/// synthesizes a `reason` from the object when missing. Unparseable input is
+/// an error so the caller can decide to retry.
 fn parse_verdict(text: &str) -> Result<(String, String), String> {
-    let txt = text.trim();
+    let obj = extract_first_json_object(text)?;
 
-    // Try finding JSON object boundaries to be robust against leading/trailing text
-    let obj: Value = match serde_json::from_str(txt) {
-        Ok(val) => val,
-        Err(_) => {
-            let start = txt.find('{').ok_or_else(|| "Failed to extract JSON object".to_string())?;
-            let json_part = &txt[start..];
-
-            // Use streaming deserializer: it stops after the first valid JSON object,
-            // ignoring any trailing garbage (e.g. code blocks with braces).
-            serde_json::Deserializer::from_str(json_part)
-                .into_iter::<Value>()
-                .next()
-                .ok_or_else(|| "Failed to extract JSON object".to_string())?
-                .map_err(|e| format!("JSON parse error: {}", e))?
-        }
-    };
-
-    let verdict = if let Some(v) = obj.get("verdict") {
-        v.as_str().unwrap_or("FAIL").to_uppercase()
-    } else if let Some(v) = obj.get("pass_gate").or_else(|| obj.get("validation_passed")) {
-        // Fallback for self-evolution and similar workflows using booleans
-        if v.as_bool().unwrap_or(false) {
-            "PASS".to_string()
-        } else {
-            "FAIL".to_string()
-        }
+    let verdict = if let Some(s) = obj.get("verdict").and_then(|v| v.as_str()) {
+        s.to_uppercase()
+    } else if let Some(b) = obj.get("pass_gate").and_then(|v| v.as_bool()) {
+        warn!(
+            "Workflow verdict using deprecated alias 'pass_gate'; \
+             please migrate to {{\"verdict\":\"PASS|FAIL\",\"reason\":...}}"
+        );
+        if b { "PASS".to_string() } else { "FAIL".to_string() }
+    } else if let Some(b) = obj.get("validation_passed").and_then(|v| v.as_bool()) {
+        warn!(
+            "Workflow verdict using deprecated alias 'validation_passed'; \
+             please migrate to {{\"verdict\":\"PASS|FAIL\",\"reason\":...}}"
+        );
+        if b { "PASS".to_string() } else { "FAIL".to_string() }
     } else {
-        "FAIL".to_string()
+        return Err("Missing 'verdict' field".to_string());
     };
 
-    // Extract reason, or serialize the whole object as feedback if reason is absent
+    if verdict != "PASS" && verdict != "FAIL" {
+        return Err(format!("Invalid verdict '{}', expected PASS or FAIL", verdict));
+    }
+
+    // `reason` is informational. Prefer the explicit field; otherwise serialize
+    // the object so the downstream loop-back step still has something to use.
     let reason = obj
         .get("reason")
         .and_then(|v| v.as_str())
@@ -254,27 +483,21 @@ fn parse_verdict(text: &str) -> Result<(String, String), String> {
 /// A tool that executes a YAML-defined workflow as a state machine.
 #[derive(Clone)]
 pub struct WorkflowTool {
-    manifest: WorkflowManifest,
+    workflow: Workflow,
 }
 
 impl WorkflowTool {
-    /// Create a new workflow tool from a manifest.
-    pub fn new(manifest: WorkflowManifest) -> Self {
-        Self { manifest }
-    }
-
-    /// Get the underlying manifest.
-    pub fn manifest(&self) -> &WorkflowManifest {
-        &self.manifest
+    /// Create a new workflow tool from a validated workflow.
+    pub fn new(workflow: Workflow) -> Self {
+        Self { workflow }
     }
 
     /// Execute a single step: spawn subagent, stream events, collect result.
     async fn run_step(
         &self,
-        step_name: &str,
+        step: &Step,
         prompt: &str,
-        model: Option<String>,
-        step_index: u32,
+        step_index: usize,
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         let spawner = ctx.spawner.as_ref().ok_or_else(|| {
@@ -285,12 +508,12 @@ impl WorkflowTool {
 
         info!(
             "[Workflow {}] Step '{}' spawning subagent",
-            self.manifest.name, step_name
+            self.workflow.name, step.name
         );
 
         // Spawn with streaming so the frontend sees real-time progress.
         let (subagent_id, event_rx, result_rx, _cancel_token) = spawner
-            .spawn_with_stream(prompt.to_string(), model, ctx)
+            .spawn_with_stream(prompt.to_string(), step.model.clone(), ctx)
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
@@ -302,8 +525,8 @@ impl WorkflowTool {
                 ctx.session_key.chat_id.clone(),
                 gasket_types::events::ChatEvent::subagent_started(
                     subagent_id.clone(),
-                    step_name,
-                    step_index,
+                    &step.name,
+                    step_index as u32,
                 ),
             ))
             .await;
@@ -326,8 +549,8 @@ impl WorkflowTool {
 
         info!(
             "[Workflow {}] Step '{}' completed (tools_used: {})",
-            self.manifest.name,
-            step_name,
+            self.workflow.name,
+            step.name,
             result.response.tools_used.len()
         );
 
@@ -339,7 +562,7 @@ impl WorkflowTool {
                 ctx.session_key.chat_id.clone(),
                 gasket_types::events::ChatEvent::subagent_completed(
                     subagent_id,
-                    step_index,
+                    step_index as u32,
                     result.response.content.clone(),
                     result.response.tools_used.len() as u32,
                 ),
@@ -353,22 +576,22 @@ impl WorkflowTool {
 #[async_trait]
 impl Tool for WorkflowTool {
     fn name(&self) -> &str {
-        &self.manifest.name
+        &self.workflow.name
     }
 
     fn description(&self) -> &str {
-        &self.manifest.description
+        &self.workflow.description
     }
 
     fn parameters(&self) -> Value {
-        self.manifest.parameters.clone()
+        self.workflow.parameters.clone()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
-    #[tracing::instrument(name = "tool.workflow", skip_all, fields(workflow = %self.manifest.name))]
+    #[tracing::instrument(name = "tool.workflow", skip_all, fields(workflow = %self.workflow.name))]
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         // Flatten user arguments into the context map under the "input." prefix.
         let mut context_map = HashMap::new();
@@ -379,81 +602,75 @@ impl Tool for WorkflowTool {
             }
         }
 
-        let mut current_step = self.manifest.start_step.clone();
-        let mut retry_counts: HashMap<String, usize> = HashMap::new();
-        let mut step_index = 0u32;
-
-        // Defense against infinite loops from malformed YAML logic
-        let mut step_count = 0;
+        let mut current_idx = self.workflow.start_idx;
+        let mut retry_counts: HashMap<usize, usize> = HashMap::new();
+        let mut step_index = 0usize;
         const MAX_WORKFLOW_STEPS: usize = 100;
 
         loop {
-            if current_step == "DONE" {
-                break;
+            if step_index >= MAX_WORKFLOW_STEPS {
+                return Err(ToolError::ExecutionError(format!(
+                    "Workflow exceeded maximum step limit ({})",
+                    MAX_WORKFLOW_STEPS
+                )));
             }
-            if step_count >= MAX_WORKFLOW_STEPS {
-                return Err(ToolError::ExecutionError(
-                    format!("Workflow exceeded maximum step limit ({})", MAX_WORKFLOW_STEPS)
-                ));
-            }
-            step_count += 1;
 
-            let step = self.manifest.steps.get(&current_step).ok_or_else(|| {
-                ToolError::ExecutionError(format!("Workflow step '{}' not found", current_step))
-            })?;
+            let step = &self.workflow.steps[current_idx];
 
             // Substitute template variables.
             let prompt = substitute_template(&step.prompt, &context_map);
 
             // Execute the step via subagent.
             let result = self
-                .run_step(&current_step, &prompt, step.model.clone(), step_index, ctx)
+                .run_step(step, &prompt, step_index, ctx)
                 .await?;
             step_index += 1;
 
-            // Store result keyed by step name.
-            context_map.insert(current_step.clone(), result);
+            // Store result keyed by step name so templates like {{research}} resolve.
+            context_map.insert(step.name.clone(), result);
 
             // Determine next step.
-            if let Some(ref eval) = step.evaluate {
-                let review_text = context_map.get(&current_step).cloned().unwrap_or_default();
-                let (verdict, reason) = parse_verdict(&review_text).unwrap_or_else(|e| {
-                    warn!(
-                        "[Workflow {}] Verdict parse failed for step '{}': {}",
-                        self.manifest.name, current_step, e
-                    );
-                    ("FAIL".to_string(), e)
-                });
+            match &step.transition {
+                Transition::Next(idx) => current_idx = *idx,
+                Transition::Evaluate(gate) => {
+                    let review_text = context_map.get(&step.name).cloned().unwrap_or_default();
+                    let (verdict, reason) = parse_verdict(&review_text).unwrap_or_else(|e| {
+                        warn!(
+                            "[Workflow {}] Verdict parse failed for step '{}': {}",
+                            self.workflow.name, step.name, e
+                        );
+                        ("FAIL".to_string(), e)
+                    });
 
-                // Store reason for template use in the loop-back step.
-                // Use '{}.reason' so that templates like `{{review.reason}}` resolve correctly.
-                context_map.insert(format!("{}.reason", current_step), reason.clone());
+                    // Store reason for template use in the loop-back step.
+                    context_map.insert(format!("{}.reason", step.name), reason.clone());
 
-                if verdict == "PASS" {
-                    current_step = eval.on_pass.clone();
-                } else {
-                    let retries = retry_counts.entry(current_step.clone()).or_insert(0);
-                    *retries += 1;
-                    if *retries > eval.max_retries {
-                        return Err(ToolError::ExecutionError(format!(
-                            "Workflow step '{}' failed after {} retries. Last reason: {}",
-                            current_step, eval.max_retries, reason
-                        )));
+                    if verdict == "PASS" {
+                        match gate.on_pass {
+                            Some(idx) => current_idx = idx,
+                            None => break,
+                        }
+                    } else {
+                        let retries = retry_counts.entry(current_idx).or_insert(0);
+                        *retries += 1;
+                        if *retries > gate.max_retries {
+                            return Err(ToolError::ExecutionError(format!(
+                                "Workflow step '{}' failed after {} retries. Last reason: {}",
+                                step.name, gate.max_retries, reason
+                            )));
+                        }
+                        match gate.on_fail {
+                            Some(idx) => current_idx = idx,
+                            None => break,
+                        }
                     }
-                    current_step = eval.on_fail.clone();
                 }
-            } else if let Some(ref next) = step.next {
-                current_step = next.clone();
-            } else {
-                return Err(ToolError::ExecutionError(format!(
-                    "Workflow step '{}' has no 'next' and no 'evaluate'",
-                    current_step
-                )));
+                Transition::Done => break,
             }
         }
 
         // If an output_template is defined, render it; otherwise return the raw context JSON.
-        if let Some(ref template) = self.manifest.output_template {
+        if let Some(ref template) = self.workflow.output_template {
             Ok(substitute_template(template, &context_map))
         } else {
             let final_output = serde_json::json!({
@@ -482,21 +699,12 @@ pub fn discover_workflows(workflows_dir: &Path) -> anyhow::Result<Vec<WorkflowTo
         return Ok(tools);
     }
 
-    let entries = std::fs::read_dir(workflows_dir).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to read workflows directory {:?}: {}",
-            workflows_dir,
-            e
-        )
-    })?;
+    let entries = std::fs::read_dir(workflows_dir)
+        .with_context(|| format!("Failed to read workflows directory {:?}", workflows_dir))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to read directory entry in {:?}: {}",
-                workflows_dir,
-                e
-            )
+        let entry = entry.with_context(|| {
+            format!("Failed to read directory entry in {:?}", workflows_dir)
         })?;
 
         let path = entry.path();
@@ -511,8 +719,22 @@ pub fn discover_workflows(workflows_dir: &Path) -> anyhow::Result<Vec<WorkflowTo
 
         match load_workflow(&path) {
             Ok(manifest) => {
-                info!("Discovered workflow '{}' from {:?}", manifest.name, path);
-                tools.push(WorkflowTool::new(manifest));
+                if manifest.mode == WorkflowMode::Skill {
+                    tracing::debug!(
+                        "Skipping workflow '{}' from tool registry (skill mode)",
+                        manifest.name
+                    );
+                    continue;
+                }
+                match Workflow::from_manifest(&manifest) {
+                    Ok(workflow) => {
+                        info!("Discovered workflow '{}' from {:?}", workflow.name, path);
+                        tools.push(WorkflowTool::new(workflow));
+                    }
+                    Err(e) => {
+                        warn!("Failed to validate workflow from {:?}: {}", path, e);
+                    }
+                }
             }
             Err(e) => {
                 warn!("Failed to load workflow from {:?}: {}", path, e);
@@ -524,43 +746,15 @@ pub fn discover_workflows(workflows_dir: &Path) -> anyhow::Result<Vec<WorkflowTo
 }
 
 /// Load a single workflow manifest from a YAML file.
+///
+/// Performs only YAML parsing; structural validation happens in
+/// `Workflow::from_manifest` when the workflow is prepared for execution.
 pub(crate) fn load_workflow(path: &Path) -> anyhow::Result<WorkflowManifest> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read workflow file {:?}: {}", path, e))?;
 
     let manifest: WorkflowManifest = serde_yaml::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse workflow YAML from {:?}: {}", path, e))?;
-
-    if manifest.name.is_empty() {
-        return Err(anyhow::anyhow!("Workflow from {:?} has empty name", path));
-    }
-    if manifest.description.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Workflow from {:?} has empty description",
-            path
-        ));
-    }
-    if manifest.steps.is_empty() {
-        return Err(anyhow::anyhow!("Workflow from {:?} has no steps", path));
-    }
-    if !manifest.steps.contains_key(&manifest.start_step) {
-        return Err(anyhow::anyhow!(
-            "Workflow from {:?} start_step '{}' not found in steps",
-            path,
-            manifest.start_step
-        ));
-    }
-
-    // Validate each step has either `next` or `evaluate`.
-    for (name, step) in &manifest.steps {
-        if step.next.is_none() && step.evaluate.is_none() {
-            return Err(anyhow::anyhow!(
-                "Workflow step '{}' in {:?} has neither 'next' nor 'evaluate'",
-                name,
-                path
-            ));
-        }
-    }
 
     Ok(manifest)
 }
@@ -609,20 +803,50 @@ mod tests {
     }
 
     #[test]
-    fn parse_verdict_with_trailing_braces() {
-        let text = r#"{"verdict": "PASS"} \n Some code: if (true) { do_something(); }"#;
+    fn parse_verdict_tolerates_trailing_prose() {
+        let text = r#"{"verdict": "PASS", "reason": "ok"}
+
+Note: this was a clean run with no issues."#;
         let (v, r) = parse_verdict(text).unwrap();
         assert_eq!(v, "PASS");
-        // When reason is absent, the whole object is serialized as fallback
-        assert!(r.contains("PASS"));
+        assert_eq!(r, "ok");
     }
 
     #[test]
-    fn parse_verdict_missing_verdict_defaults_to_fail() {
-        let text = r#"{"reason": "no verdict field"}"#;
+    fn parse_verdict_tolerates_leading_prose() {
+        let text = "Here is my verdict:\n{\"verdict\": \"FAIL\", \"reason\": \"x\"}";
         let (v, r) = parse_verdict(text).unwrap();
         assert_eq!(v, "FAIL");
-        assert_eq!(r, "no verdict field");
+        assert_eq!(r, "x");
+    }
+
+    #[test]
+    fn parse_verdict_missing_verdict_is_error() {
+        let text = r#"{"reason": "no verdict field"}"#;
+        let result = parse_verdict(text);
+        assert!(result.is_err(), "Missing verdict should be an error");
+    }
+
+    #[test]
+    fn parse_verdict_falls_back_to_pass_gate() {
+        let (v, _) = parse_verdict(r#"{"pass_gate": true}"#).unwrap();
+        assert_eq!(v, "PASS");
+        let (v, _) = parse_verdict(r#"{"pass_gate": false, "reason": "nope"}"#).unwrap();
+        assert_eq!(v, "FAIL");
+    }
+
+    #[test]
+    fn parse_verdict_falls_back_to_validation_passed() {
+        let (v, _) = parse_verdict(r#"{"validation_passed": true}"#).unwrap();
+        assert_eq!(v, "PASS");
+    }
+
+    #[test]
+    fn parse_verdict_synthesizes_missing_reason() {
+        let text = r#"{"verdict": "FAIL"}"#;
+        let (v, r) = parse_verdict(text).unwrap();
+        assert_eq!(v, "FAIL");
+        assert!(r.contains("FAIL"), "fallback reason should include serialized object");
     }
 
     #[test]
@@ -684,12 +908,13 @@ steps:
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             start_step: "a".to_string(),
             output_template: None,
-            mode: None,
+            mode: WorkflowMode::Tool,
+            always: true,
             steps: {
                 let mut m = HashMap::new();
                 m.insert(
                     "a".to_string(),
-                    WorkflowStep {
+                    WorkflowStepDef {
                         prompt: "hello".to_string(),
                         model: None,
                         next: Some("DONE".to_string()),
@@ -699,7 +924,8 @@ steps:
                 m
             },
         };
-        let tool = WorkflowTool::new(manifest);
+        let workflow = Workflow::from_manifest(&manifest).unwrap();
+        let tool = WorkflowTool::new(workflow);
         assert_eq!(tool.name(), "my_flow");
         assert_eq!(tool.description(), "does things");
     }
@@ -729,30 +955,168 @@ steps:
       max_retries: 2
 "#;
         let manifest: WorkflowManifest = serde_yaml::from_str(yaml).unwrap();
-        let content = manifest.to_skill_content();
+        let workflow = Workflow::from_manifest(&manifest).unwrap();
+        let content = workflow.to_skill_content();
 
         assert!(content.contains("## Workflow: test_workflow"));
         assert!(content.contains("A test workflow"));
         assert!(content.contains("#### 1. step1"));
         assert!(content.contains("#### 2. step2"));
-        assert!(content.contains("[见上文]"), "Template placeholders should be cleaned");
-        assert!(content.contains("通过后进入: **DONE**"));
-        assert!(content.contains("失败后回到: **step1**（最多重试 2 次）"));
+        assert!(content.contains("[see above]"), "Template placeholders should be cleaned");
+        assert!(content.contains("On pass proceed to: **DONE**"));
+        assert!(content.contains("On fail return to: **step1** (max retries: 2)"));
     }
 
     #[test]
     fn to_skill_content_dev_workflow() {
         let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let manifest = load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
-        assert_eq!(manifest.mode.as_deref(), Some("skill"));
+        assert_eq!(manifest.mode, WorkflowMode::Skill);
 
-        let content = manifest.to_skill_content();
+        let workflow = Workflow::from_manifest(&manifest).unwrap();
+        let content = workflow.to_skill_content();
         assert!(content.contains("## Workflow: dev_workflow"));
         assert!(content.contains("#### 1. research"));
         assert!(content.contains("#### 2. plan"));
         assert!(content.contains("#### 3. implement"));
         assert!(content.contains("#### 4. review"));
-        assert!(content.contains("通过后进入: **DONE**"));
-        assert!(content.contains("失败后回到: **implement**（最多重试 3 次）"));
+        assert!(content.contains("On pass proceed to: **DONE**"));
+        assert!(content.contains("On fail return to: **implement** (max retries: 3)"));
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_top_level_field() {
+        let yaml = r#"
+name: "x"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "a"
+condition: "leftover_field"
+steps:
+  a:
+    prompt: "p"
+    next: "DONE"
+"#;
+        let result: Result<WorkflowManifest, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err(), "unknown top-level field should be rejected");
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_evaluate_field() {
+        let yaml = r#"
+name: "x"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "a"
+steps:
+  a:
+    prompt: "p"
+    evaluate:
+      on_pass: "DONE"
+      on_fail: "DONE"
+      condition: "x > 0"
+"#;
+        let result: Result<WorkflowManifest, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unknown field on evaluate config should be rejected"
+        );
+    }
+
+    #[test]
+    fn mode_defaults_to_tool_when_omitted() {
+        let yaml = r#"
+name: "x"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "a"
+steps:
+  a:
+    prompt: "p"
+    next: "DONE"
+"#;
+        let manifest: WorkflowManifest = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(manifest.mode, WorkflowMode::Tool);
+        assert!(manifest.always, "always should default to true");
+    }
+
+    #[test]
+    fn mode_rejects_invalid_string() {
+        let yaml = r#"
+name: "x"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "a"
+mode: "skil"
+steps:
+  a:
+    prompt: "p"
+    next: "DONE"
+"#;
+        let result: Result<WorkflowManifest, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err(), "typo in mode should be rejected");
+    }
+
+    #[test]
+    fn from_manifest_rejects_unreachable_step() {
+        let yaml = r#"
+name: "x"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "a"
+steps:
+  a:
+    prompt: "p"
+    next: "DONE"
+  orphan:
+    prompt: "never used"
+    next: "DONE"
+"#;
+        let manifest: WorkflowManifest = serde_yaml::from_str(yaml).unwrap();
+        let result = Workflow::from_manifest(&manifest);
+        let err = result.err().expect("unreachable step should be an error");
+        assert!(
+            err.to_string().contains("unreachable"),
+            "error message should mention unreachable: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn from_manifest_accepts_on_fail_only_branches() {
+        // self-evolution.yaml shape: `diagnose` and `refine` are only
+        // reachable via evaluate.on_fail of `evaluate` / `validate`.
+        let yaml = r#"
+name: "selfev"
+description: "y"
+parameters: {type: object, properties: {}}
+start_step: "execute"
+steps:
+  execute:
+    prompt: "do work"
+    next: "evaluate"
+  evaluate:
+    prompt: "score"
+    evaluate:
+      on_pass: "validate"
+      on_fail: "diagnose"
+      max_retries: 3
+  diagnose:
+    prompt: "why fail"
+    next: "refine"
+  refine:
+    prompt: "fix"
+    next: "validate"
+  validate:
+    prompt: "verify"
+    evaluate:
+      on_pass: "DONE"
+      on_fail: "diagnose"
+      max_retries: 3
+"#;
+        let manifest: WorkflowManifest = serde_yaml::from_str(yaml).unwrap();
+        let workflow = Workflow::from_manifest(&manifest)
+            .expect("workflow with on_fail-only branches should validate");
+        assert_eq!(workflow.steps.len(), 5);
     }
 }

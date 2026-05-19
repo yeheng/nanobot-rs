@@ -84,4 +84,4 @@ pub use wiki_refresh::WikiRefreshTool;
 #[cfg(feature = "embedding")]
 pub use wiki_semantic::{WikiEmbeddingAdapter, WikiVectorAdapter};
 pub use wiki_tools::{WikiDeleteTool, WikiReadTool, WikiSearchTool, WikiWriteTool};
-pub use workflow::{discover_workflows, WorkflowManifest, WorkflowStep, WorkflowTool};
+pub use workflow::{discover_workflows, Workflow, WorkflowManifest, WorkflowMode, WorkflowStepDef, WorkflowTool};

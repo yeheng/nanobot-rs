@@ -173,13 +173,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         match super::discover_workflows(workflows_dir.as_path()) {
             Ok(workflow_tools) => {
                 for tool in workflow_tools {
-                    if tool.manifest().mode.as_deref() == Some("skill") {
-                        tracing::debug!(
-                            "Skipping workflow '{}' from tool registry (skill mode)",
-                            tool.manifest().name
-                        );
-                        continue;
-                    }
                     tools.register(Box::new(tool));
                 }
             }
