@@ -72,7 +72,24 @@ impl SteppableExecutor {
             .await
             .map_err(|e| KernelError::Provider(e.to_string()))?;
 
-        let response = self.get_response(stream_result, event_tx, ledger).await?;
+        // Bound the entire response collection in wall-clock time. The per-chunk
+        // timeout below only enforces "between chunks"; without this outer cap
+        // a dripping provider (one chunk every chunk_timeout - 1 seconds) could
+        // hold the loop open up to MAX_STREAM_CHUNKS * chunk_timeout (years).
+        let step_budget_secs = self.ctx.config.tool_timeout_secs.saturating_mul(2).max(60);
+        let response = match timeout(
+            Duration::from_secs(step_budget_secs),
+            self.get_response(stream_result, event_tx, ledger),
+        )
+        .await
+        {
+            Ok(inner) => inner?,
+            Err(_) => {
+                return Err(KernelError::StepTimeout {
+                    budget_secs: step_budget_secs,
+                });
+            }
+        };
 
         let is_final = !response.has_tool_calls();
 

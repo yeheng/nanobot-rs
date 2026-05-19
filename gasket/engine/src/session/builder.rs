@@ -169,6 +169,7 @@ impl SessionBuilder {
                 pending_asks: Some(
                     pending_asks.clone() as gasket_types::pending_ask::DynPendingAskRegistry
                 ),
+                synthesis_callback: None,
             },
         };
         // ── 4. Context compactor ─────────────────────────────────────

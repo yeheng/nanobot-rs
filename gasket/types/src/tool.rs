@@ -182,6 +182,11 @@ pub struct SessionRefs {
     pub token_tracker: Option<Arc<crate::token_tracker::TokenTracker>>,
     pub aggregator_cancel: Option<AggregatorCancel>,
     pub pending_asks: Option<DynPendingAskRegistry>,
+    /// Optional synthesis callback. When `Some`, spawn tools operate in
+    /// non-blocking mode and delegate result aggregation to this callback.
+    /// Session/gateway layers decide which concrete implementation to
+    /// inject — the kernel only forwards the value.
+    pub synthesis_callback: Option<Arc<dyn SynthesisCallback>>,
 }
 
 impl Default for SessionRefs {
@@ -193,6 +198,7 @@ impl Default for SessionRefs {
             token_tracker: None,
             aggregator_cancel: None,
             pending_asks: None,
+            synthesis_callback: None,
         }
     }
 }
@@ -206,6 +212,7 @@ impl std::fmt::Debug for SessionRefs {
             .field("token_tracker", &self.token_tracker.is_some())
             .field("aggregator_cancel", &self.aggregator_cancel.is_some())
             .field("pending_asks", &self.pending_asks.is_some())
+            .field("synthesis_callback", &self.synthesis_callback.is_some())
             .finish()
     }
 }
@@ -346,6 +353,9 @@ impl ToolContext {
         }
         if let Some(ref registry) = refs.pending_asks {
             self.pending_asks = Some(registry.clone());
+        }
+        if let Some(ref cb) = refs.synthesis_callback {
+            self.synthesis_callback = Some(cb.clone());
         }
     }
 }

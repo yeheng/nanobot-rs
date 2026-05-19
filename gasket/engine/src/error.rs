@@ -105,6 +105,12 @@ impl From<crate::kernel::KernelError> for AgentError {
                 AgentError::ProviderError(ProviderError::Other(e))
             }
             crate::kernel::KernelError::ToolExecution(e) => AgentError::ToolError(e),
+            crate::kernel::KernelError::StepTimeout { budget_secs } => {
+                AgentError::ProviderError(ProviderError::Other(format!(
+                    "step exceeded wall-clock budget of {}s",
+                    budget_secs
+                )))
+            }
         }
     }
 }

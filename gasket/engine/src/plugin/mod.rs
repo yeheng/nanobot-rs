@@ -26,23 +26,40 @@ pub use runner::{run_simple, JsonRpcDaemon, PluginError, PluginResult};
 /// Plugin that implements the Tool trait for external scripts.
 ///
 /// PluginTool wraps an external script with a YAML manifest and exposes
-/// it as a native Gasket tool. It supports both Simple and JSON-RPC protocols.
-///
-/// JSON-RPC fields are `Option`al and filled by `with_engine_refs()`; the
-/// protocol itself is determined by `manifest.protocol`, eliminating the
-/// invalid-state matrix that required `unreachable!`.
+/// it as a native Gasket tool. The `runtime` field is an enum that captures
+/// exactly the state needed by each protocol — no `Option` clusters, no
+/// "this should never happen" runtime checks.
 #[derive(Clone)]
 pub struct PluginTool {
     /// Parsed manifest describing the script
     manifest: PluginManifest,
     /// Directory containing the manifest (for resolving paths)
     manifest_dir: PathBuf,
-    /// Dispatcher for JSON-RPC method routing (None for Simple plugins)
-    dispatcher: Option<Arc<RpcDispatcher>>,
-    /// Engine resources for JSON-RPC callbacks (None for Simple plugins)
-    resources: Option<EngineResources>,
-    /// Lazily spawned JSON-RPC daemon (None for Simple plugins)
-    daemon: Option<Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>>,
+    /// Protocol-specific runtime state.
+    runtime: PluginRuntime,
+}
+
+/// Protocol-specific runtime state for a `PluginTool`.
+///
+/// One variant per `PluginProtocol`. Each variant carries exactly the
+/// fields its protocol needs — no shared `Option` baggage.
+#[derive(Clone)]
+enum PluginRuntime {
+    /// Simple stdin/stdout JSON. Stateless; no daemon, no dispatcher.
+    Simple,
+    /// JSON-RPC 2.0 over stdio. Holds dispatcher + engine resources +
+    /// lazy daemon handle, all required fields, never `None`.
+    JsonRpc(JsonRpcState),
+}
+
+/// Runtime state for a JSON-RPC plugin.
+#[derive(Clone)]
+struct JsonRpcState {
+    dispatcher: Arc<RpcDispatcher>,
+    resources: EngineResources,
+    /// Lazy daemon: `None` until first call, then populated and reused
+    /// until idle-expired.
+    daemon: Arc<tokio::sync::RwLock<Option<Arc<JsonRpcDaemon>>>>,
 }
 
 impl PluginTool {
@@ -53,79 +70,69 @@ impl PluginTool {
 
     /// Create a new PluginTool from a manifest.
     ///
-    /// Engine resources are injected at construction time. JSON-RPC plugins
-    /// are fully initialized if `resources` is provided; otherwise they
-    /// behave like Simple plugins (no callbacks).
+    /// JSON-RPC plugins require `resources` to be `Some`. If a manifest
+    /// declares `protocol: json_rpc` but no engine resources are supplied,
+    /// the plugin is downgraded to Simple mode (with a warning) so that
+    /// discovery doesn't fail outright — callers can still execute it,
+    /// they just don't get JSON-RPC callbacks.
     pub fn new(
         manifest: PluginManifest,
         manifest_dir: PathBuf,
         resources: Option<EngineResources>,
     ) -> Self {
-        let (dispatcher, resources, daemon) =
-            if manifest.protocol == PluginProtocol::JsonRpc && resources.is_some() {
-                (
-                    Some(Arc::new(build_dispatcher())),
-                    resources,
-                    Some(Arc::new(tokio::sync::RwLock::new(None))),
-                )
-            } else {
-                (None, None, None)
-            };
+        let runtime = match (manifest.protocol, resources) {
+            (PluginProtocol::JsonRpc, Some(resources)) => PluginRuntime::JsonRpc(JsonRpcState {
+                dispatcher: Arc::new(build_dispatcher()),
+                resources,
+                daemon: Arc::new(tokio::sync::RwLock::new(None)),
+            }),
+            (PluginProtocol::JsonRpc, None) => {
+                warn!(
+                    "Plugin '{}' declares protocol=json_rpc but no engine resources \
+                     were supplied; falling back to simple mode",
+                    manifest.name
+                );
+                PluginRuntime::Simple
+            }
+            (PluginProtocol::Simple, _) => PluginRuntime::Simple,
+        };
         Self {
             manifest,
             manifest_dir,
-            dispatcher,
-            resources,
-            daemon,
+            runtime,
         }
     }
+}
 
+impl JsonRpcState {
     /// Build a dispatcher context from a tool context.
-    ///
-    /// Replaces the `session_key`, `outbound_tx`, `spawner` and `token_tracker`
-    /// in the stored engine handle with the values from the current ToolContext.
-    fn make_dispatch_ctx(&self, ctx: &ToolContext) -> Result<DispatcherContext, ToolError> {
-        use dispatcher::EngineHandle;
-
-        let resources = self.resources.as_ref().ok_or_else(|| {
-            ToolError::ExecutionError(format!(
-                "JSON-RPC plugin '{}' has not been initialized with engine resources. Ensure link_engine_refs() is called before execution.",
-                self.manifest.name
-            ))
-        })?;
-
-        Ok(DispatcherContext {
+    fn make_dispatch_ctx(&self, ctx: &ToolContext) -> DispatcherContext {
+        DispatcherContext {
             engine: Arc::new(EngineHandle {
                 session_key: ctx.session_key.clone(),
                 outbound_tx: ctx.outbound_tx.clone(),
                 spawner: ctx.spawner.clone(),
                 token_tracker: ctx.token_tracker.clone(),
-                tool_registry: resources.tool_registry.clone(),
-                provider: resources.provider.clone(),
+                tool_registry: self.resources.tool_registry.clone(),
+                provider: self.resources.provider.clone(),
                 pending_asks: ctx.pending_asks.clone(),
             }),
-        })
+        }
     }
 
-    /// Get or spawn the JSON-RPC daemon, handling idle expiration and deduplication.
+    /// Get or spawn the JSON-RPC daemon, handling idle expiration and
+    /// double-checked locking.
     async fn get_or_spawn_daemon(
         &self,
+        manifest: &PluginManifest,
+        manifest_dir: &Path,
         dispatch_ctx: &DispatcherContext,
+        call_timeout_secs: u64,
         idle_timeout_secs: u64,
     ) -> Result<Arc<JsonRpcDaemon>, ToolError> {
-        let daemon = self.daemon.as_ref().ok_or_else(|| {
-            ToolError::ExecutionError(
-                "get_or_spawn_daemon called on non-JSON-RPC plugin".to_string(),
-            )
-        })?;
-
-        let dispatcher = self.dispatcher.as_ref().ok_or_else(|| {
-            ToolError::ExecutionError("JSON-RPC plugin missing dispatcher".to_string())
-        })?;
-
-        // Fast path: check existing daemon
+        // Fast path: existing live daemon.
         {
-            let guard = daemon.read().await;
+            let guard = self.daemon.read().await;
             if let Some(d) = guard.as_ref() {
                 if !d.is_idle_expired() {
                     return Ok(d.clone());
@@ -133,8 +140,8 @@ impl PluginTool {
             }
         }
 
-        // Slow path: acquire write lock and double-check
-        let mut guard = daemon.write().await;
+        // Slow path: take write lock and double-check.
+        let mut guard = self.daemon.write().await;
         if let Some(d) = guard.as_ref() {
             if !d.is_idle_expired() {
                 return Ok(d.clone());
@@ -143,11 +150,12 @@ impl PluginTool {
 
         let new_daemon = Arc::new(
             JsonRpcDaemon::spawn(
-                &self.manifest,
-                &self.manifest_dir,
+                manifest,
+                manifest_dir,
+                call_timeout_secs,
                 idle_timeout_secs,
-                &self.manifest.permissions,
-                dispatcher,
+                &manifest.permissions,
+                &self.dispatcher,
                 dispatch_ctx,
             )
             .await
@@ -192,25 +200,33 @@ impl Tool for PluginTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> ToolResult {
         let start = std::time::Instant::now();
+        let call_timeout_secs = self
+            .manifest
+            .runtime
+            .timeout_secs
+            .unwrap_or(ctx.plugin_timeout_secs);
 
-        let result = match self.manifest.protocol {
-            PluginProtocol::Simple => {
-                let timeout_secs = self
-                    .manifest
-                    .runtime
-                    .timeout_secs
-                    .unwrap_or(ctx.plugin_timeout_secs);
-                run_simple(&self.manifest, &self.manifest_dir, &args, timeout_secs).await
+        let result = match &self.runtime {
+            PluginRuntime::Simple => {
+                run_simple(&self.manifest, &self.manifest_dir, &args, call_timeout_secs).await
             }
-            PluginProtocol::JsonRpc => {
-                let dispatch_ctx = self.make_dispatch_ctx(ctx)?;
+            PluginRuntime::JsonRpc(state) => {
+                let dispatch_ctx = state.make_dispatch_ctx(ctx);
+                // Default idle = 4 × call timeout: keep the daemon warm across
+                // a few quiet calls without pinning the process forever.
                 let idle_timeout_secs = self
                     .manifest
                     .runtime
-                    .timeout_secs
-                    .unwrap_or(ctx.plugin_timeout_secs);
-                let daemon = self
-                    .get_or_spawn_daemon(&dispatch_ctx, idle_timeout_secs)
+                    .idle_timeout_secs
+                    .unwrap_or(call_timeout_secs.saturating_mul(4));
+                let daemon = state
+                    .get_or_spawn_daemon(
+                        &self.manifest,
+                        &self.manifest_dir,
+                        &dispatch_ctx,
+                        call_timeout_secs,
+                        idle_timeout_secs,
+                    )
                     .await?;
                 // Inject default model so the SDK can fall back when plugin omits it
                 let mut init_args = args.clone();
@@ -245,7 +261,7 @@ impl Tool for PluginTool {
                 output.insert("result".to_string(), script_result.output);
 
                 // Attach stderr as _debug_stderr field in JSON-RPC mode
-                if self.manifest.protocol == PluginProtocol::JsonRpc
+                if matches!(self.runtime, PluginRuntime::JsonRpc(_))
                     && !script_result.stderr.is_empty()
                 {
                     output.insert("_debug_stderr".to_string(), script_result.stderr.into());
@@ -438,6 +454,7 @@ mod tests {
                 args: vec![],
                 working_dir: ".".to_string(),
                 timeout_secs: Some(120),
+                idle_timeout_secs: None,
                 env: Default::default(),
             },
             protocol: PluginProtocol::Simple,
@@ -604,6 +621,7 @@ parameters:
                 args: vec![],
                 working_dir: ".".to_string(),
                 timeout_secs: Some(120),
+                idle_timeout_secs: None,
                 env: Default::default(),
             },
             protocol: PluginProtocol::JsonRpc,
@@ -633,7 +651,41 @@ parameters:
             .spawner(Arc::new(MockSpawner))
             .token_tracker(Arc::new(TokenTracker::unlimited("USD")));
 
-        // Just verify it doesn't crash when all required refs are present
-        let _dispatch_ctx = tool.make_dispatch_ctx(&ctx);
+        // Verify the JsonRpc runtime variant was constructed and can build
+        // a dispatcher context without panicking.
+        match &tool.runtime {
+            PluginRuntime::JsonRpc(state) => {
+                let _dispatch_ctx = state.make_dispatch_ctx(&ctx);
+            }
+            PluginRuntime::Simple => {
+                panic!("Expected JsonRpc runtime, got Simple");
+            }
+        }
+    }
+
+    #[test]
+    fn test_json_rpc_without_resources_falls_back_to_simple() {
+        let dir = TempDir::new().unwrap();
+        let manifest = PluginManifest {
+            name: "needs_engine".to_string(),
+            description: "Declares JSON-RPC but no engine resources are provided".to_string(),
+            version: "1.0.0".to_string(),
+            runtime: RuntimeConfig {
+                command: "cat".to_string(),
+                args: vec![],
+                working_dir: ".".to_string(),
+                timeout_secs: Some(120),
+                idle_timeout_secs: None,
+                env: Default::default(),
+            },
+            protocol: PluginProtocol::JsonRpc,
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            permissions: vec![],
+        };
+        let tool = PluginTool::new(manifest, dir.path().to_path_buf(), None);
+        assert!(
+            matches!(tool.runtime, PluginRuntime::Simple),
+            "JSON-RPC plugin without engine resources should downgrade to Simple"
+        );
     }
 }

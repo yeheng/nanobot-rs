@@ -554,8 +554,26 @@ impl AgentSession {
         let (kernel_tx, kernel_rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let (chat_tx, chat_rx) = tokio::sync::mpsc::channel(64);
 
-        ctx.runtime_ctx.refs.outbound_tx = Some(bridge_outbound_to_chat(chat_tx.clone()));
+        let outbound_tx = bridge_outbound_to_chat(chat_tx.clone());
+        ctx.runtime_ctx.refs.outbound_tx = Some(outbound_tx.clone());
         ctx.runtime_ctx.config.tool_filter = tool_filter;
+
+        // Inject the synthesis callback at the session layer — the kernel
+        // itself stays oblivious to specific channel implementations.
+        let synth_session_key = ctx
+            .runtime_ctx
+            .refs
+            .session_key
+            .clone()
+            .unwrap_or_else(|| gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default"));
+        ctx.runtime_ctx.refs.synthesis_callback = Some(Arc::new(
+            crate::kernel::synthesis::WebSocketSynthesizer::new(
+                ctx.runtime_ctx.provider.clone(),
+                ctx.runtime_ctx.provider.default_model().to_string(),
+                outbound_tx,
+                synth_session_key,
+            ),
+        ));
 
         // Reset any previous aggregator left from the prior turn.
         let cancel = ctx

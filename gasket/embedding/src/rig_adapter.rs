@@ -7,12 +7,22 @@ use rig::embeddings::EmbeddingModel;
 /// Adapter that wraps rig's `EmbeddingModel` to implement gasket's `EmbeddingProvider` trait.
 pub struct RigEmbeddingAdapter<M: EmbeddingModel> {
     model: M,
+    dim: Option<usize>,
 }
 
 impl<M: EmbeddingModel> RigEmbeddingAdapter<M> {
     /// Create a new adapter wrapping the given rig embedding model.
     pub fn new(model: M) -> Self {
-        Self { model }
+        Self { model, dim: None }
+    }
+
+    /// Create a new adapter with an explicit dimension override.
+    /// The configured `dim` takes precedence over `model.ndims()`.
+    pub fn new_with_dim(model: M, dim: usize) -> Self {
+        Self {
+            model,
+            dim: Some(dim),
+        }
     }
 }
 
@@ -41,6 +51,6 @@ impl<M: EmbeddingModel + Send + Sync> EmbeddingProvider for RigEmbeddingAdapter<
     }
 
     fn dim(&self) -> usize {
-        self.model.ndims()
+        self.dim.unwrap_or_else(|| self.model.ndims())
     }
 }

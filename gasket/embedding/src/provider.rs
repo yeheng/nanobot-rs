@@ -68,7 +68,7 @@ impl ProviderConfig {
                 endpoint,
                 model,
                 api_key,
-                dim: _,
+                dim,
                 timeout_secs: _,
             } => {
                 // Extract base URL from endpoint by stripping "/embeddings" suffix
@@ -85,7 +85,10 @@ impl ProviderConfig {
                     .build()
                     .map_err(|e| anyhow!("failed to build rig client: {}", e))?;
                 let embedding_model = client.embedding_model(model);
-                Ok(Box::new(RigEmbeddingAdapter::new(embedding_model)))
+                Ok(Box::new(RigEmbeddingAdapter::new_with_dim(
+                    embedding_model,
+                    *dim,
+                )))
             }
             #[cfg(feature = "local-onnx")]
             ProviderConfig::LocalOnnx {

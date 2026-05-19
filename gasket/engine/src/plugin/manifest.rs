@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// should be executed, what protocol it uses, what permissions it needs,
 /// and what parameters it accepts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     /// Tool name (must be unique across all tools)
     pub name: String,
@@ -64,6 +65,7 @@ pub enum PluginProtocol {
 
 /// Runtime configuration for script execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
     /// Command to execute (e.g., "python", "node", "/path/to/script")
     pub command: String,
@@ -76,10 +78,22 @@ pub struct RuntimeConfig {
     #[serde(default = "default_working_dir")]
     pub working_dir: String,
 
-    /// Timeout in seconds.
-    /// When omitted, the global `plugin_timeout_secs` from agent config is used.
-    #[serde(default = "default_timeout")]
+    /// Per-call timeout in seconds.
+    ///
+    /// Bounds the wait time for a single tool invocation (Simple mode: total
+    /// process runtime; JSON-RPC mode: one `call()` round-trip). When omitted,
+    /// the global `plugin_timeout_secs` from agent config is used.
+    #[serde(default)]
     pub timeout_secs: Option<u64>,
+
+    /// Idle timeout in seconds for JSON-RPC daemon processes.
+    ///
+    /// After this much idle time the daemon is considered expired and a fresh
+    /// process is spawned on next call. Ignored in Simple mode. When omitted,
+    /// defaults to `4 × call_timeout` (i.e. keep the daemon alive across a few
+    /// idle calls but not forever).
+    #[serde(default)]
+    pub idle_timeout_secs: Option<u64>,
 
     /// Environment variables to pass to the script (default: {})
     #[serde(default)]
@@ -88,10 +102,6 @@ pub struct RuntimeConfig {
 
 fn default_working_dir() -> String {
     ".".to_string()
-}
-
-fn default_timeout() -> Option<u64> {
-    None
 }
 
 /// Permission grants access to specific Gasket capabilities.
@@ -297,5 +307,43 @@ parameters:
         assert!(yaml.contains("user_ask"));
         let parsed: Vec<Permission> = serde_yaml::from_str(&yaml).expect("deserialize");
         assert_eq!(parsed, vec![Permission::UserAsk]);
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_top_level_field() {
+        let yaml = r#"
+name: "x"
+description: "y"
+runtime:
+  command: "cat"
+parameters:
+  type: object
+  properties: {}
+unknownfield: "leftover"
+"#;
+        let result: Result<PluginManifest, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unknown top-level field should be rejected"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_runtime_field() {
+        let yaml = r#"
+name: "x"
+description: "y"
+runtime:
+  command: "cat"
+  time_secs: 30   # typo for timeout_secs
+parameters:
+  type: object
+  properties: {}
+"#;
+        let result: Result<PluginManifest, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "typo in runtime field should be rejected (not silently dropped)"
+        );
     }
 }

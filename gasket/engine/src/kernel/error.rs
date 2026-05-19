@@ -10,4 +10,6 @@ pub enum KernelError {
     MaxIterations(u32),
     #[error("Tool execution failed: {0}")]
     ToolExecution(String),
+    #[error("Step exceeded wall-clock budget of {budget_secs}s")]
+    StepTimeout { budget_secs: u64 },
 }

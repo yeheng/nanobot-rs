@@ -28,6 +28,9 @@ pub struct JsonRpcDaemon {
     write_tx: mpsc::UnboundedSender<RpcMessage>,
     next_id: AtomicI64,
     last_used_ms: AtomicI64,
+    /// Max wait for a single `call()` round-trip.
+    call_timeout_ms: i64,
+    /// Daemon is considered idle-expired (and replaced) after this many ms.
     idle_timeout_ms: i64,
     stderr: Arc<tokio::sync::Mutex<String>>,
     alive: Arc<AtomicBool>,
@@ -40,9 +43,14 @@ pub struct JsonRpcDaemon {
 
 impl JsonRpcDaemon {
     /// Spawn a new persistent JSON-RPC process.
+    ///
+    /// `call_timeout_secs` bounds a single `call()` round-trip;
+    /// `idle_timeout_secs` bounds how long the daemon stays alive between
+    /// calls before being considered expired by `is_idle_expired()`.
     pub async fn spawn(
         manifest: &PluginManifest,
         manifest_dir: &Path,
+        call_timeout_secs: u64,
         idle_timeout_secs: u64,
         permissions: &[Permission],
         dispatcher: &RpcDispatcher,
@@ -191,6 +199,7 @@ impl JsonRpcDaemon {
             write_tx,
             next_id: AtomicI64::new(1),
             last_used_ms: AtomicI64::new(chrono::Utc::now().timestamp_millis()),
+            call_timeout_ms: (call_timeout_secs as i64) * 1000,
             idle_timeout_ms: (idle_timeout_secs as i64) * 1000,
             stderr: stderr_buffer,
             alive,
@@ -212,13 +221,12 @@ impl JsonRpcDaemon {
             ));
         }
 
-        // Backward compatibility: initialize always uses id 0, matching the
-        // original one-shot run_jsonrpc behaviour.
-        let id = if method == "initialize" {
-            0
-        } else {
-            self.next_id.fetch_add(1, Ordering::Relaxed)
-        };
+        // Every call gets a fresh, monotonic ID. Using a magic id=0 for
+        // `initialize` causes DashMap key collisions when callers issue
+        // concurrent initializes — the second insert silently overwrites the
+        // first oneshot::Sender, dooming the first caller to wait until
+        // timeout.
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id, tx);
 
@@ -234,7 +242,7 @@ impl JsonRpcDaemon {
 
         self.touch();
 
-        let timeout_duration = Duration::from_millis(self.idle_timeout_ms.max(5000) as u64);
+        let timeout_duration = Duration::from_millis(self.call_timeout_ms.max(5000) as u64);
         let response = match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(_)) => {
@@ -246,7 +254,7 @@ impl JsonRpcDaemon {
             Err(_) => {
                 self.pending.remove(&id);
                 return Err(PluginError::Timeout(
-                    self.idle_timeout_ms.max(5000) as u64 / 1000,
+                    self.call_timeout_ms.max(5000) as u64 / 1000,
                 ));
             }
         };
@@ -285,6 +293,7 @@ impl JsonRpcDaemon {
         let daemon = Self::spawn(
             manifest,
             manifest_dir,
+            timeout_secs,
             timeout_secs,
             permissions,
             dispatcher,

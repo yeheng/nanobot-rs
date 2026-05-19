@@ -72,33 +72,17 @@ impl RuntimeContext {
 
     /// Build a `ToolContext` from this RuntimeContext.
     ///
-    /// Applies session refs (spawner, session_key, etc.) onto a `ToolContext`
-    /// pre-filled with kernel config values. This is the single mapping point
-    /// between kernel context and tool context.
+    /// Pure mapping from `SessionRefs` onto a `ToolContext` pre-filled with
+    /// kernel config values. The kernel does *not* know about specific
+    /// channel implementations (WebSocket, CLI, etc.) — the session/gateway
+    /// layer is responsible for populating `refs.synthesis_callback` with
+    /// the appropriate concrete type before invoking the kernel.
     pub fn build_tool_context(&self) -> ToolContext {
-        use crate::kernel::synthesis::WebSocketSynthesizer;
-
         let mut ctx = ToolContext::default()
             .ws_summary_limit(self.config.ws_summary_limit)
             .plugin_timeout_secs(self.config.plugin_timeout_secs);
 
         ctx.apply_session_refs(&self.refs);
-
-        // Inject SynthesisCallback when outbound channel is present (WebSocket mode).
-        if let Some(outbound_tx) = self.refs.outbound_tx.clone() {
-            let provider = &self.provider;
-            let model = provider.default_model().to_string();
-            let session_key = self.refs.session_key.clone().unwrap_or_else(|| {
-                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
-            });
-            let callback = std::sync::Arc::new(WebSocketSynthesizer::new(
-                provider.clone(),
-                model,
-                outbound_tx,
-                session_key,
-            ));
-            ctx = ctx.synthesis_callback(callback);
-        }
 
         ctx
     }
