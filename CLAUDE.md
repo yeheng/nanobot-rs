@@ -4,8 +4,6 @@ Behavioral guidelines and role definition for this project. These rules apply to
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-**When reviewing code:** Read [review.md](review.md) for Linus-style review standards.
-
 ---
 
 ## Language Constraint
