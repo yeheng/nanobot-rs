@@ -94,7 +94,9 @@ impl MemoryBroker {
 
     /// Blocking publish — awaits when queue is full (natural backpressure).
     pub async fn publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        self.ensure_queue(&envelope.topic);
+        if !self.queues.contains_key(&envelope.topic) {
+            self.ensure_queue(&envelope.topic);
+        }
 
         let mut cq = self
             .queues
@@ -120,7 +122,9 @@ impl MemoryBroker {
 
     /// Non-blocking publish — returns QueueFull immediately.
     pub fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        self.ensure_queue(&envelope.topic);
+        if !self.queues.contains_key(&envelope.topic) {
+            self.ensure_queue(&envelope.topic);
+        }
 
         let cq = self
             .queues
@@ -147,7 +151,9 @@ impl MemoryBroker {
 
     /// Subscribe to a topic.
     pub async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
-        self.ensure_queue(topic);
+        if !self.queues.contains_key(topic) {
+            self.ensure_queue(topic);
+        }
 
         let mut cq = self.queues.get_mut(topic).ok_or(BrokerError::Internal(
             "queue just created but not found".into(),

@@ -1,135 +1,128 @@
 //! Database schema migrations.
 //!
-//! Base table creation via `run_schema` (idempotent, backward compatible).
-//! Column additions via defensive `column_exists` checks.
-//! The `./migrations` directory is reserved for future use.
+//! All schema changes are applied idempotently.
+//! Base tables and indexes use `CREATE ... IF NOT EXISTS`.
+//! Incremental column additions use `ALTER TABLE`; duplicate-column and
+//! missing-table errors are silently ignored so these can run on any state.
 
 use sqlx::SqlitePool;
 
-pub mod cron;
-pub mod kv;
-pub mod maintenance;
-pub mod memory;
-pub mod session;
+/// Base schema: tables and indexes. Every statement is idempotent.
+const BASE_SCHEMA: &[&str] = &[
+    // sessions_v2
+    r#"CREATE TABLE IF NOT EXISTS sessions_v2 (
+        key             TEXT PRIMARY KEY,
+        channel         TEXT NOT NULL DEFAULT '',
+        chat_id         TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        last_consolidated_event TEXT,
+        total_events    INTEGER NOT NULL DEFAULT 0,
+        total_tokens    INTEGER NOT NULL DEFAULT 0
+    )"#,
+    // session_events
+    r#"CREATE TABLE IF NOT EXISTS session_events (
+        id              TEXT PRIMARY KEY,
+        session_key     TEXT NOT NULL,
+        channel         TEXT NOT NULL DEFAULT '',
+        chat_id         TEXT NOT NULL DEFAULT '',
+        event_type      TEXT NOT NULL,
+        content         TEXT NOT NULL,
+        tools_used      TEXT DEFAULT '[]',
+        token_usage     TEXT,
+        token_len       INTEGER NOT NULL DEFAULT 0,
+        event_data      TEXT,
+        extra           TEXT DEFAULT '{}',
+        created_at      TEXT NOT NULL,
+        sequence        INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
+    )"#,
+    // session_summaries
+    r#"CREATE TABLE IF NOT EXISTS session_summaries (
+        session_key            TEXT PRIMARY KEY,
+        content                TEXT NOT NULL,
+        covered_upto_sequence  INTEGER NOT NULL DEFAULT 0,
+        created_at             TEXT NOT NULL,
+        compaction_in_progress INTEGER NOT NULL DEFAULT 0,
+        compaction_started_at  TEXT
+    )"#,
+    // session_checkpoints
+    r#"CREATE TABLE IF NOT EXISTS session_checkpoints (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key     TEXT NOT NULL,
+        target_sequence INTEGER NOT NULL,
+        summary         TEXT NOT NULL,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(session_key, target_sequence)
+    )"#,
+    // session_embeddings
+    r#"CREATE TABLE IF NOT EXISTS session_embeddings (
+        message_id  TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        embedding   BLOB NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
+    )"#,
+    // cron_state
+    r#"CREATE TABLE IF NOT EXISTS cron_state (
+        job_id      TEXT PRIMARY KEY,
+        last_run_at TEXT,
+        next_run_at TEXT
+    )"#,
+    // maintenance_state
+    r#"CREATE TABLE IF NOT EXISTS maintenance_state (
+        task_name       TEXT NOT NULL,
+        target_id       TEXT NOT NULL,
+        last_watermark  INTEGER NOT NULL DEFAULT 0,
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (task_name, target_id)
+    )"#,
+    // kv_store
+    r#"CREATE TABLE IF NOT EXISTS kv_store (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )"#,
+    // indexes
+    "CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions_v2(channel)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON sessions_v2(chat_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_v2_channel_chat ON sessions_v2(channel, chat_id)",
+    "CREATE INDEX IF NOT EXISTS idx_events_channel_chat ON session_events(channel, chat_id)",
+    "CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_events_session_type_created ON session_events(session_key, event_type, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_events_channel_chat_sequence ON session_events(channel, chat_id, sequence)",
+    "CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON session_events(session_key, sequence)",
+    "CREATE INDEX IF NOT EXISTS idx_session_checkpoints_key_seq ON session_checkpoints(session_key, target_sequence)",
+    "CREATE INDEX IF NOT EXISTS idx_session_embeddings_session_key ON session_embeddings(session_key)",
+    "CREATE INDEX IF NOT EXISTS idx_cron_state_next_run ON cron_state(next_run_at)",
+];
+
+/// Incremental schema changes (column additions). Errors for missing tables or
+/// duplicate columns are silently ignored so these can run on any database state.
+const INCREMENTAL_SCHEMA: &[&str] = &[
+    "ALTER TABLE session_summaries ADD COLUMN covered_upto_sequence INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE session_summaries ADD COLUMN compaction_in_progress INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE session_summaries ADD COLUMN compaction_started_at TEXT",
+    "ALTER TABLE wiki_pages ADD COLUMN sync_sequence INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE wiki_pages ADD COLUMN summary TEXT",
+];
 
 /// Run all migrations on an existing pool.
 pub async fn run_all(pool: &SqlitePool) -> anyhow::Result<()> {
-    // Run schema migrations first (table creation, idempotent via CREATE TABLE IF NOT EXISTS)
-    session::run_schema(pool).await?;
-    memory::run_schema(pool).await?;
-    cron::run_schema(pool).await?;
-    maintenance::run_schema(pool).await?;
-    kv::run_schema(pool).await?;
-
-    // Run incremental migrations (column additions) with defensive checks
-    run_incremental(pool).await?;
-
-    Ok(())
-}
-
-/// Incremental migrations for adding columns to existing tables.
-async fn run_incremental(pool: &SqlitePool) -> anyhow::Result<()> {
-    migrate_add_watermark_to_summaries(pool).await?;
-    migrate_add_sequence_to_events(pool).await?;
-    migrate_add_session_sequence_index(pool).await?;
-    migrate_add_compaction_state(pool).await?;
-    migrate_add_sync_sequence_to_wiki_pages(pool).await?;
-    migrate_add_summary_to_wiki_pages(pool).await?;
-    Ok(())
-}
-
-/// Add `sync_sequence` column to `wiki_pages` if it doesn't exist.
-async fn migrate_add_sync_sequence_to_wiki_pages(pool: &SqlitePool) -> anyhow::Result<()> {
-    if table_exists(pool, "wiki_pages").await
-        && !column_exists(pool, "wiki_pages", "sync_sequence").await
-    {
-        sqlx::query("ALTER TABLE wiki_pages ADD COLUMN sync_sequence INTEGER NOT NULL DEFAULT 0")
-            .execute(pool)
-            .await?;
+    for sql in BASE_SCHEMA {
+        sqlx::query(sql).execute(pool).await?;
     }
-    Ok(())
-}
-
-// ─── Migration helpers ───────────────────────────────────────────────────────
-
-async fn table_exists(pool: &SqlitePool, table: &str) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-    )
-    .bind(table)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(false)
-}
-
-async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
-    sqlx::query_scalar::<_, bool>("SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2")
-        .bind(table)
-        .bind(column)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false)
-}
-
-// ─── Incremental migrations ────────────────────────────────────────────────────
-
-/// Add `covered_upto_sequence` column to `session_summaries` if it doesn't exist.
-async fn migrate_add_watermark_to_summaries(pool: &SqlitePool) -> anyhow::Result<()> {
-    if !column_exists(pool, "session_summaries", "covered_upto_sequence").await {
-        sqlx::query(
-            "ALTER TABLE session_summaries ADD COLUMN covered_upto_sequence INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-/// Add `sequence` column to `session_events` if it doesn't exist.
-async fn migrate_add_sequence_to_events(pool: &SqlitePool) -> anyhow::Result<()> {
-    if !column_exists(pool, "session_events", "sequence").await {
-        sqlx::query("ALTER TABLE session_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0")
-            .execute(pool)
-            .await?;
-    }
-    Ok(())
-}
-
-/// Add the composite sequence index on `session_events` for watermark-based queries.
-async fn migrate_add_session_sequence_index(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON session_events(session_key, sequence)",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Add compaction-state columns to `session_summaries` if they don't exist.
-async fn migrate_add_compaction_state(pool: &SqlitePool) -> anyhow::Result<()> {
-    if !column_exists(pool, "session_summaries", "compaction_in_progress").await {
-        sqlx::query(
-            "ALTER TABLE session_summaries ADD COLUMN compaction_in_progress INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(pool)
-        .await?;
-    }
-    if !column_exists(pool, "session_summaries", "compaction_started_at").await {
-        sqlx::query("ALTER TABLE session_summaries ADD COLUMN compaction_started_at TEXT")
-            .execute(pool)
-            .await?;
-    }
-    Ok(())
-}
-
-/// Add `summary` column to `wiki_pages` if it doesn't exist.
-async fn migrate_add_summary_to_wiki_pages(pool: &SqlitePool) -> anyhow::Result<()> {
-    if table_exists(pool, "wiki_pages").await
-        && !column_exists(pool, "wiki_pages", "summary").await
-    {
-        sqlx::query("ALTER TABLE wiki_pages ADD COLUMN summary TEXT")
-            .execute(pool)
-            .await?;
+    for sql in INCREMENTAL_SCHEMA {
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            if let Some(db_err) = e.as_database_error() {
+                let msg = db_err.message().to_lowercase();
+                if msg.contains("duplicate column name") || msg.contains("no such table") {
+                    continue;
+                }
+            }
+            return Err(e.into());
+        }
     }
     Ok(())
 }

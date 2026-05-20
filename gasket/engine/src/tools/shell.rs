@@ -262,39 +262,14 @@ impl Tool for ExecTool {
 
 /// Build a gasket-sandbox SandboxConfig from gasket-core ExecToolConfig.
 ///
-/// This function maps the core configuration types to the sandbox configuration,
-/// handling differences in field names and structure.
+/// Starts from the user-provided sandbox configuration and injects the
+/// workspace path, resource limits, and policy from the top-level exec config.
 fn build_sandbox_config(config: &ExecToolConfig, workspace: &Path) -> SandboxExecutorConfig {
-    use gasket_sandbox::config::{
-        ApprovalConfig, AuditConfig, CommandPolicyConfig as SandboxPolicyConfig,
-        ResourceLimits as SandboxLimits,
-    };
-
-    // Build resource limits
-    let limits = SandboxLimits {
-        max_memory_mb: config.limits.max_memory_mb,
-        max_cpu_secs: config.limits.max_cpu_secs,
-        max_output_bytes: config.limits.max_output_bytes,
-        ..Default::default()
-    };
-
-    // Build command policy
-    let policy = SandboxPolicyConfig {
-        allowlist: config.policy.allowlist.clone(),
-        denylist: config.policy.denylist.clone(),
-    };
-
-    // Build full sandbox config
-    SandboxExecutorConfig {
-        enabled: config.sandbox.enabled,
-        backend: config.sandbox.backend.clone(),
-        tmp_size_mb: config.sandbox.tmp_size_mb,
-        workspace: Some(workspace.to_path_buf()),
-        limits,
-        policy,
-        approval: ApprovalConfig::default(),
-        audit: AuditConfig::default(),
-    }
+    let mut sandbox_config = config.sandbox.clone();
+    sandbox_config.workspace = Some(workspace.to_path_buf());
+    sandbox_config.limits = config.limits.clone();
+    sandbox_config.policy = config.policy.clone();
+    sandbox_config
 }
 
 #[cfg(test)]

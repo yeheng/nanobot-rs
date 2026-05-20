@@ -4,6 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
+// Re-export sandbox config types to eliminate duplication.
+pub use gasket_sandbox::config::{CommandPolicyConfig, ResourceLimits as ResourceLimitsConfig, SandboxConfig};
+
 /// Tools configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolsConfig {
@@ -118,94 +121,10 @@ pub struct ExecToolConfig {
     pub limits: ResourceLimitsConfig,
 }
 
-/// Sandbox execution backend configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SandboxConfig {
-    /// Enable sandbox (default: false, opt-in)
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// Sandbox backend (currently only "bwrap" supported)
-    #[serde(default = "default_sandbox_backend")]
-    pub backend: String,
-
-    /// Size of /tmp tmpfs inside sandbox in MB (default: 64)
-    #[serde(default = "default_tmp_size_mb")]
-    pub tmp_size_mb: u32,
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            backend: default_sandbox_backend(),
-            tmp_size_mb: default_tmp_size_mb(),
-        }
-    }
-}
-
-/// Command allowlist/denylist policy configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CommandPolicyConfig {
-    /// Allowed command binaries (first token). Empty = allow all.
-    #[serde(default)]
-    pub allowlist: Vec<String>,
-
-    /// Denied command patterns (substring match). Empty = deny none.
-    #[serde(default)]
-    pub denylist: Vec<String>,
-}
-
-/// Resource limits for shell execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceLimitsConfig {
-    /// Maximum memory in MB (default: 512)
-    #[serde(default = "default_max_memory_mb")]
-    pub max_memory_mb: u32,
-
-    /// Maximum CPU time in seconds (default: 60)
-    #[serde(default = "default_max_cpu_secs")]
-    pub max_cpu_secs: u32,
-
-    /// Maximum output size in bytes (default: 1MB)
-    #[serde(default = "default_max_output_bytes")]
-    pub max_output_bytes: usize,
-}
-
-impl Default for ResourceLimitsConfig {
-    fn default() -> Self {
-        Self {
-            max_memory_mb: default_max_memory_mb(),
-            max_cpu_secs: default_max_cpu_secs(),
-            max_output_bytes: default_max_output_bytes(),
-        }
-    }
-}
-
 // ── Default Functions ─────────────────────────────────────────────────────
 
 fn default_true() -> bool {
     true
-}
-
-fn default_sandbox_backend() -> String {
-    "bwrap".to_string()
-}
-
-fn default_tmp_size_mb() -> u32 {
-    64
-}
-
-fn default_max_memory_mb() -> u32 {
-    512
-}
-
-fn default_max_cpu_secs() -> u32 {
-    60
-}
-
-fn default_max_output_bytes() -> usize {
-    1_048_576 // 1 MB
 }
 
 fn default_exec_timeout() -> u64 {
