@@ -116,7 +116,15 @@ impl EmbeddingIndexer {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
     }
+}
 
+impl Drop for EmbeddingIndexer {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+impl EmbeddingIndexer {
     /// Cold-start: load stored embeddings and insert into the in-memory index.
     ///
     /// When `limit` is `Some(n)`, only the most recent `n` embeddings are loaded

@@ -331,6 +331,7 @@ pub struct SystemToolProvider {
     provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
     model: Option<String>,
     evolution_prompt: Option<String>,
+    distill_prompt: Option<String>,
     event_store: Option<gasket_storage::EventStore>,
 }
 
@@ -342,6 +343,7 @@ impl SystemToolProvider {
         provider: Option<Arc<dyn gasket_providers::LlmProvider>>,
         model: Option<String>,
         evolution_prompt: Option<String>,
+        distill_prompt: Option<String>,
         event_store: Option<gasket_storage::EventStore>,
     ) -> Self {
         Self {
@@ -351,6 +353,7 @@ impl SystemToolProvider {
             provider,
             model,
             evolution_prompt,
+            distill_prompt,
             event_store,
         }
     }
@@ -376,6 +379,7 @@ impl ToolProvider for SystemToolProvider {
                     event_store: es.clone(),
                     default_threshold: 20,
                     evolution_prompt: self.evolution_prompt.clone(),
+                    distill_prompt: self.distill_prompt.clone(),
                     concurrency: 3,
                 }),
                 "Evolution",

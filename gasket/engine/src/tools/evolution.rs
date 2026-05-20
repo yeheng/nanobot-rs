@@ -35,6 +35,50 @@ struct EvolutionMemory {
     confidence: f32,
 }
 
+/// Result of the distill meta-analysis step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DistillResult {
+    /// Transferable skill patterns discovered across memories.
+    #[serde(default)]
+    skill_patterns: Vec<DistillItem>,
+    /// Common mistakes or anti-patterns to avoid.
+    #[serde(default)]
+    anti_patterns: Vec<DistillItem>,
+    /// Meta-observations about capability gaps or recurring themes.
+    #[serde(default)]
+    meta_observations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DistillItem {
+    title: String,
+    content: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Prompt for the distill meta-analysis step.
+/// Takes extracted memories as input and produces higher-order learnings.
+const DISTILL_PROMPT_TEMPLATE: &str =
+    "You are a knowledge distillation engine. Given a list of extracted memories from conversation sessions, \
+     perform meta-analysis to discover PATTERNS, SKILLS, and ANTI-PATTERNS that are NOT visible in individual items.\n\n\
+     Input memories (JSON array):\n{{memories}}\n\n\
+     Produce:\n\n\
+     1. **Skill Patterns**: Identify transferable procedural patterns that span multiple memories.\n\
+        - title: short name for the pattern\n\
+        - content: step-by-step procedure or reusable technique\n\
+        - tags: relevant categories\n\n\
+     2. **Anti-Patterns**: Identify common mistakes, misconceptions, or inefficient approaches observed.\n\
+        - title: name of the anti-pattern\n\
+        - content: how to detect it and what to do instead\n\
+        - tags: relevant categories\n\n\
+     3. **Meta-Observations**: One-sentence insights about the user's overall workflow, preferences, or gaps.\n\n\
+     RULES:\n\
+     - Only produce items that synthesize insights from MULTIPLE memories.\n\
+     - If no genuine patterns exist, return empty arrays.\n\
+     - Do NOT simply restate individual memories.\n\n\
+     Output strict JSON: {\"skill_patterns\": [...], \"anti_patterns\": [...], \"meta_observations\": [...]}";
+
 /// Default evolution user prompt template (fallback when not configured).
 /// Must contain `{{conversation}}` which will be replaced with the transcript.
 const DEFAULT_EVOLUTION_TEMPLATE: &str =
@@ -81,6 +125,7 @@ pub struct EvolutionConfig {
     pub event_store: gasket_storage::EventStore,
     pub default_threshold: usize,
     pub evolution_prompt: Option<String>,
+    pub distill_prompt: Option<String>,
     /// Maximum number of concurrent evolution tasks (default: 3).
     pub concurrency: usize,
 }
@@ -95,6 +140,7 @@ pub struct EvolutionTool {
     event_store: gasket_storage::EventStore,
     default_threshold: usize,
     evolution_prompt: Option<String>,
+    distill_prompt: Option<String>,
     concurrency: usize,
 }
 
@@ -110,6 +156,7 @@ impl EvolutionTool {
             event_store: config.event_store,
             default_threshold: config.default_threshold,
             evolution_prompt: config.evolution_prompt,
+            distill_prompt: config.distill_prompt,
             concurrency: config.concurrency,
         }
     }
@@ -282,7 +329,7 @@ impl EvolutionTool {
         };
 
         let mut persisted = 0;
-        for mem in memories {
+        for mem in &memories {
             match mem.memory_type.as_str() {
                 "skill" => {
                     if self
@@ -342,7 +389,7 @@ impl EvolutionTool {
                         // New page — create fresh.
                         let mut page = WikiPage::new(
                             page_path,
-                            mem.title,
+                            mem.title.clone(),
                             page_type,
                             mem.content.clone(),
                         );
@@ -355,6 +402,20 @@ impl EvolutionTool {
                             persisted += 1;
                         }
                     }
+                }
+            }
+        }
+
+        // Distill meta-analysis: produce higher-order learnings from extracted memories.
+        if let Some(ps) = &self.page_store {
+            match self.distill_memories(&memories, ps).await {
+                Ok(distill_count) => {
+                    if distill_count > 0 {
+                        info!("Evolution: distilled {} meta-item(s) for session {}", distill_count, session_key);
+                    }
+                }
+                Err(e) => {
+                    warn!("Evolution: distill failed for session {}: {}", session_key, e);
                 }
             }
         }
@@ -409,6 +470,136 @@ impl EvolutionTool {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Run the distill meta-analysis on extracted memories.
+    ///
+    /// Produces higher-order learnings: skill patterns, anti-patterns,
+    /// and meta-observations. Only runs when ≥3 memories were extracted.
+    async fn distill_memories(
+        &self,
+        memories: &[EvolutionMemory],
+        page_store: &PageStore,
+    ) -> Result<usize, ToolError> {
+        if memories.len() < 3 {
+            debug!("Evolution: skipping distill — only {} memories (< 3)", memories.len());
+            return Ok(0);
+        }
+
+        let memories_json = serde_json::to_string(memories)
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize memories for distill: {}", e)))?;
+
+        let template = self
+            .distill_prompt
+            .as_deref()
+            .unwrap_or(DISTILL_PROMPT_TEMPLATE);
+        let user_prompt = template.replace("{{memories}}", &memories_json);
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage::user(user_prompt)],
+            tools: None,
+            temperature: Some(0.0),
+            max_tokens: Some(4096),
+            thinking: None,
+        };
+
+        let response = self.provider.chat(request).await.map_err(|e| {
+            ToolError::ExecutionError(format!("Distill LLM call failed: {}", e))
+        })?;
+
+        let content = response.content.unwrap_or_default();
+        let distill: DistillResult = match extract_distill_json(&content) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!("Evolution: distill parse failed: {}. Skipping.", e);
+                return Ok(0);
+            }
+        };
+
+        let mut persisted = 0;
+
+        // Persist skill patterns as SOP pages.
+        for skill in &distill.skill_patterns {
+            if self.persist_distill_item(skill, "sops", "auto_distilled", PageType::Sop, page_store).await.is_ok() {
+                persisted += 1;
+            }
+        }
+
+        // Persist anti-patterns as topic pages.
+        for anti in &distill.anti_patterns {
+            if self.persist_distill_item(anti, "topics/anti-patterns", "auto_distilled", PageType::Topic, page_store).await.is_ok() {
+                persisted += 1;
+            }
+        }
+
+        // Persist meta-observations as a single page per session batch.
+        if !distill.meta_observations.is_empty() {
+            let path = format!("topics/meta-observations/{}", Utc::now().format("%Y-%m-%d"));
+            let content = distill.meta_observations.iter().enumerate()
+                .map(|(i, obs)| format!("{}. {}", i + 1, obs))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+
+            let mut page = WikiPage::new(
+                path,
+                format!("Meta Observations ({})", Utc::now().format("%Y-%m-%d")),
+                PageType::Topic,
+                content,
+            );
+            page.tags = vec!["auto_distilled".to_string(), "meta".to_string()];
+
+            if page_store.write(&page).await.is_ok() {
+                persisted += 1;
+            }
+        }
+
+        if persisted > 0 {
+            info!("Evolution: distill produced {} persisted item(s)", persisted);
+        }
+
+        Ok(persisted)
+    }
+
+    /// Persist a DistillItem as a wiki page.
+    async fn persist_distill_item(
+        &self,
+        item: &DistillItem,
+        prefix: &str,
+        tag: &str,
+        page_type: PageType,
+        page_store: &PageStore,
+    ) -> Result<(), ToolError> {
+        let slug = slugify(&item.title);
+        let path = format!("{}/{}", prefix, slug);
+        let mut tags = item.tags.clone();
+        tags.push(tag.to_string());
+
+        if page_store.exists(&path).await.unwrap_or(false) {
+            match page_store.read(&path).await {
+                Ok(mut existing) => {
+                    let today = Utc::now().format("%Y-%m-%d").to_string();
+                    existing.content.push_str(&format!(
+                        "\n\n### {} Update\n\n{}",
+                        today, item.content
+                    ));
+                    merge_tags(&mut existing.tags, &tags);
+                    page_store.write(&existing).await.map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to append distilled page: {}", e))
+                    })?;
+                }
+                Err(e) => {
+                    warn!("Evolution: failed to read existing distilled page '{}': {}", path, e);
+                }
+            }
+        } else {
+            let mut page = WikiPage::new(path, item.title.clone(), page_type, item.content.clone());
+            page.tags = tags;
+            page_store.write(&page).await.map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to write distilled page: {}", e))
+            })?;
+        }
+        Ok(())
     }
 
     /// Persist a skill-type memory as an SOP wiki page.
@@ -469,6 +660,11 @@ impl EvolutionTool {
             Ok(())
         }
     }
+}
+
+/// Extract `DistillResult` JSON from an LLM response.
+fn extract_distill_json(text: &str) -> Result<DistillResult, serde_json::Error> {
+    super::extract_json_object(text)
 }
 
 /// Format an EvolutionMemory as SOP Markdown content.

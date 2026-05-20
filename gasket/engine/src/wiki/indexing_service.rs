@@ -172,10 +172,10 @@ impl WikiIndexingService {
                 if let (Some(provider), Some(vstore)) =
                     (&self.embedding_provider, &self.vector_store)
                 {
-                    // Use title + summary + first 500 chars of content for embedding.
+                    // Use title + summary + full content for embedding.
                     let embed_text = match &page.summary {
-                        Some(s) => format!("{} {}\n{}", page.title, s, &page.content[..page.content.len().min(500)]),
-                        None => format!("{}\n{}", page.title, &page.content[..page.content.len().min(500)]),
+                        Some(s) => format!("{} {}\n{}", page.title, s, page.content),
+                        None => format!("{}\n{}", page.title, page.content),
                     };
                     match provider.embed(&embed_text).await {
                         Ok(vector) => {

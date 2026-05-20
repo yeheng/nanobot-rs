@@ -370,6 +370,27 @@ impl SimpleSpawner {
         self
     }
 
+    /// Build `SessionRefs` for a subagent worker context.
+    ///
+    /// Forwards the session-level refs that subagents need:
+    /// token tracking, pending-ask routing, session identity, and outbound events.
+    /// Fields intentionally not forwarded (spawner, synthesis_callback, aggregator_cancel)
+    /// are either not applicable to workers or would violate the single-parent invariant.
+    fn refs_for_subagent(
+        &self,
+        ctx: &gasket_types::tool::ToolContext,
+    ) -> gasket_types::SessionRefs {
+        gasket_types::SessionRefs {
+            token_tracker: self.token_tracker.clone(),
+            pending_asks: self.pending_asks.clone(),
+            session_key: Some(ctx.session_key.clone()),
+            outbound_tx: Some(ctx.outbound_tx.clone()),
+            spawner: None,
+            aggregator_cancel: None,
+            synthesis_callback: None,
+        }
+    }
+
     /// Resolve provider and model from an optional model_id.
     ///
     /// When both `model_id` and `model_resolver` are present, attempts resolution.
@@ -415,13 +436,7 @@ impl SubagentSpawner for SimpleSpawner {
             task_spec
         };
 
-        let refs = gasket_types::SessionRefs {
-            token_tracker: self.token_tracker.clone(),
-            pending_asks: self.pending_asks.clone(),
-            session_key: Some(ctx.session_key.clone()),
-            outbound_tx: Some(ctx.outbound_tx.clone()),
-            ..Default::default()
-        };
+        let refs = self.refs_for_subagent(ctx);
         let join_handle = spawn_subagent(
             provider,
             self.worker_tools.clone(),
@@ -517,13 +532,7 @@ impl SubagentSpawner for SimpleSpawner {
         let workspace = self.workspace.clone();
         let timeout_secs = self.timeout_secs;
 
-        let refs = gasket_types::SessionRefs {
-            token_tracker: self.token_tracker.clone(),
-            pending_asks: self.pending_asks.clone(),
-            session_key: Some(ctx.session_key.clone()),
-            outbound_tx: Some(ctx.outbound_tx.clone()),
-            ..Default::default()
-        };
+        let refs = self.refs_for_subagent(ctx);
 
         tokio::spawn(async move {
             let _permit = budget.acquire().await;

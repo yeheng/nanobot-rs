@@ -268,12 +268,10 @@ impl WikiPage {
             .map_err(|_| anyhow::anyhow!("Unknown page type: {}", fm.page_type))?;
 
         let summary = fm.summary.or_else(|| {
-            if body.len() > 100 {
-                Some(format!("{}...", &body[..100]))
-            } else if !body.is_empty() {
-                Some(body.to_string())
-            } else {
+            if body.is_empty() {
                 None
+            } else {
+                Some(body.to_string())
             }
         });
 

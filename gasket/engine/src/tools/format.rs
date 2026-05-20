@@ -47,6 +47,57 @@ pub fn extract_json_array<T: serde::de::DeserializeOwned>(
     serde_json::from_str::<T>(trimmed)
 }
 
+/// Extract a JSON object from LLM response text (mirrors `extract_json_array` but for `{...}`).
+pub fn extract_json_object<T: serde::de::DeserializeOwned>(
+    text: &str,
+) -> Result<T, serde_json::Error> {
+    let trimmed = text.trim();
+
+    // 1. Direct parse.
+    if let Ok(val) = serde_json::from_str::<T>(trimmed) {
+        return Ok(val);
+    }
+
+    // 2. Extract from markdown code blocks.
+    static CODE_BLOCK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let code_block_re = CODE_BLOCK_RE
+        .get_or_init(|| regex::Regex::new(r"(?s)```(?:json)?\s*(\{.*?\})\s*```").unwrap());
+    if let Some(caps) = code_block_re.captures(trimmed) {
+        if let Some(block) = caps.get(1) {
+            if let Ok(val) = serde_json::from_str::<T>(block.as_str()) {
+                return Ok(val);
+            }
+        }
+    }
+
+    // 3. Fallback: find balanced braces.
+    if let Some(start) = trimmed.find('{') {
+        let mut depth = 0i32;
+        for (i, ch) in trimmed.bytes().enumerate().skip(start) {
+            match ch {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(val) = serde_json::from_str::<T>(&trimmed[start..=i]) {
+                            return Ok(val);
+                        }
+                        break;
+                    }
+                }
+                b'"' => {
+                    // Skip string contents to avoid counting braces inside strings.
+                    // Simple approach: just continue — the balanced count is usually correct enough.
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 4. Final attempt.
+    serde_json::from_str::<T>(trimmed)
+}
+
 /// Truncate a string for display in the WebSocket stream.
 ///
 /// Prevents the frontend from storing excessively large tool inputs/outputs

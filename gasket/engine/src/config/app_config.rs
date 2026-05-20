@@ -50,6 +50,10 @@ pub struct PromptsConfig {
     /// Must contain `{{conversation}}` which will be replaced with the transcript.
     #[serde(default)]
     pub evolution: Option<String>,
+    /// User prompt template used by EvolutionTool for distill meta-analysis.
+    /// Must contain `{{memories}}` which will be replaced with the extracted memories JSON.
+    #[serde(default)]
+    pub distill: Option<String>,
     /// User prompt template used by CreatePlanTool for plan generation.
     /// Must contain `{{goal}}` and `{{context}}` which will be replaced at runtime.
     #[serde(default)]

@@ -463,16 +463,7 @@ impl ConversationParser {
         events
             .iter()
             .find(|e| e.role.to_lowercase() == "user")
-            .map(|e| {
-                let mut title = e.content.clone();
-                let char_count = title.chars().count();
-                if char_count > 80 {
-                    let end = title.floor_char_boundary(77);
-                    title.truncate(end);
-                    title.push_str("...");
-                }
-                title
-            })
+            .map(|e| e.content.clone())
     }
 }
 

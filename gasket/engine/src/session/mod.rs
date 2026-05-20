@@ -86,16 +86,24 @@ pub(crate) struct FinalizeContext {
 }
 
 impl FinalizeContext {
+    /// Minimal constructor — used by abort path and as a base for `from_request`.
+    fn new(session_key: &SessionKey, content: &str) -> Self {
+        Self {
+            session_key: session_key.clone(),
+            session_key_str: session_key.to_string(),
+            content: content.to_string(),
+            local_vault_values: vec![],
+            estimated_tokens: 0,
+        }
+    }
+
     fn from_request(req: &history::builder::ChatRequest) -> Self {
         let session_key = SessionKey::parse(&req.session_key)
             .unwrap_or_else(|| SessionKey::new(gasket_types::ChannelType::Cli, &req.session_key));
-        Self {
-            session_key,
-            session_key_str: req.session_key.clone(),
-            content: req.user_content.clone(),
-            local_vault_values: req.vault_values.clone(),
-            estimated_tokens: req.estimated_tokens,
-        }
+        let mut ctx = Self::new(&session_key, &req.user_content);
+        ctx.local_vault_values = req.vault_values.clone();
+        ctx.estimated_tokens = req.estimated_tokens;
+        ctx
     }
 }
 
@@ -278,8 +286,8 @@ pub struct AgentSession {
     pending_done: tokio_util::task::TaskTracker,
     /// Pending-ask registry shared with tools through `RuntimeContext`.
     pending_asks: Arc<PendingAskRegistryImpl>,
-    /// Background embedding indexer (kept alive for the session lifetime).
-    #[allow(dead_code)]
+    /// RAII guard for the background embedding indexer.
+    /// Held alive for the session lifetime; `Drop` cancels the background task.
     #[cfg(feature = "embedding")]
     embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>,
 }
@@ -643,13 +651,7 @@ impl AgentSession {
                 let ctx = PipelineContext {
                     runtime_ctx: self.runtime_ctx.clone(),
                     messages: vec![],
-                    fctx: FinalizeContext {
-                        session_key: session_key.clone(),
-                        session_key_str: session_key.to_string(),
-                        content: content.to_string(),
-                        local_vault_values: vec![],
-                        estimated_tokens: 0,
-                    },
+                    fctx: FinalizeContext::new(session_key, content),
                     model: self.model(),
                     finalizer: self.finalizer.clone(),
                 };

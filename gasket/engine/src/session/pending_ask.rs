@@ -13,10 +13,17 @@ use gasket_types::pending_ask::{AskAnswer, AskError, AskRegistration, PendingAsk
 struct Slot {
     ask_id: uuid::Uuid,
     answer_tx: oneshot::Sender<AskAnswer>,
+    /// Stored for debugging/logging; not read by current fulfillment logic.
     #[allow(dead_code)]
     prompt: String,
-    #[allow(dead_code)]
     deadline: Instant,
+}
+
+impl Slot {
+    /// True when the deadline has passed — the ask should be treated as expired.
+    fn is_expired(&self) -> bool {
+        Instant::now() > self.deadline
+    }
 }
 
 /// In-memory `PendingAskRegistry`. Single slot per `SessionKey`.
@@ -50,9 +57,9 @@ impl PendingAskRegistry for PendingAskRegistryImpl {
             .lock()
             .expect("PendingAskRegistry mutex poisoned");
 
-        // Evict a stale slot if its receiver has been dropped.
+        // Evict stale/expired slots so a new registration can succeed.
         if let Some(existing) = guard.get(&key) {
-            if existing.answer_tx.is_closed() {
+            if existing.answer_tx.is_closed() || existing.is_expired() {
                 guard.remove(&key);
             }
         }
@@ -94,9 +101,9 @@ impl PendingAskRegistry for PendingAskRegistryImpl {
             .lock()
             .expect("PendingAskRegistry mutex poisoned");
 
-        // Evict a stale slot if its receiver has been dropped, then miss.
+        // Evict stale/expired slots before attempting to fulfill.
         if let Some(existing) = guard.get(key) {
-            if existing.answer_tx.is_closed() {
+            if existing.answer_tx.is_closed() || existing.is_expired() {
                 guard.remove(key);
                 return Err(msg);
             }
@@ -235,5 +242,33 @@ mod tests {
         let _r2 = reg
             .register(k.clone(), "q2".into(), deadline())
             .expect("register evicts stale slot");
+    }
+
+    #[test]
+    fn try_fulfill_evicts_expired_slot() {
+        let reg = PendingAskRegistryImpl::new();
+        let k = key("a");
+        // Deadline in the past — slot is immediately expired.
+        let _r = reg
+            .register(k.clone(), "q".into(), Instant::now() - Duration::from_secs(1))
+            .unwrap();
+
+        let msg = dummy_inbound("answer", &k);
+        let returned = reg.try_fulfill(&k, msg).unwrap_err();
+        assert_eq!(returned.content, "answer");
+    }
+
+    #[test]
+    fn register_evicts_expired_slot() {
+        let reg = PendingAskRegistryImpl::new();
+        let k = key("a");
+        let _r1 = reg
+            .register(k.clone(), "q".into(), Instant::now() - Duration::from_secs(1))
+            .unwrap();
+
+        // Even though the receiver is still alive, the expired slot is evicted.
+        let _r2 = reg
+            .register(k.clone(), "q2".into(), deadline())
+            .expect("register evicts expired slot");
     }
 }

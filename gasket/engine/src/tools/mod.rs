@@ -64,7 +64,7 @@ pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
 pub use evolution::{EvolutionConfig, EvolutionTool};
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
-pub use format::{extract_json_array, format_subagent_response, truncate_for_display};
+pub use format::{extract_json_array, extract_json_object, format_subagent_response, truncate_for_display};
 pub use history_query::HistoryQueryTool;
 #[cfg(feature = "embedding")]
 pub use history_search::HistorySearchTool;

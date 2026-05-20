@@ -143,6 +143,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         provider.clone(),
         model,
         prompts.evolution.clone(),
+        prompts.distill.clone(),
         event_store,
     )
     .register_tools(&mut tools);
