@@ -1,40 +1,36 @@
 # gasket Configuration Example
-# This file demonstrates the provider configuration format
+# This file demonstrates the configuration format.
+# Required fields have definite values; optional fields are commented out.
 
-# Provider configurations
+# ── Provider configurations ──────────────────────────────────────────────
 #
 # Provider name determines the native implementation automatically.
-# You usually do NOT need to set 'provider_type' — the name is enough:
-#   "minimax"/"minimaxi" → native MiniMax API
-#   "gemini"             → native Gemini API
-#   "moonshot"/"kimi"    → native Moonshot API (OpenAI-compatible or Anthropic format)
-#   "anthropic"/"claude" → native Anthropic Messages API
-#   "copilot"            → native GitHub Copilot API
-#   "openai", "deepseek", "zhipu", "openrouter", "ollama", "litellm" → OpenAI-compatible
+# You usually do NOT need to set 'provider_type':
+#   "minimax"/"minimaxi"   → native MiniMax API
+#   "gemini"               → native Gemini API
+#   "moonshot"/"kimi"      → native Moonshot API
+#   "anthropic"/"claude"   → native Anthropic Messages API
+#   "copilot"              → native GitHub Copilot API
+#   "openai", "deepseek", "zhipu", "openrouter", "ollama", "litellm"
+#                          → OpenAI-compatible
 #
-# Only set 'provider_type' if you use a custom provider name that the system
-# cannot recognize (e.g., "my-proxy" with provider_type: anthropic).
+# Only set 'provider_type' if your provider name is unrecognizable
+# (e.g. "my-proxy" with provider_type: anthropic).
 #
-# Required fields:
-#   - api_base: The API endpoint URL
-#   - api_key:  Your API key (optional for local providers)
+# Per-provider model pricing is optional — without it, cost tracking is disabled.
 providers:
-  # OpenAI - uses OpenAI-compatible protocol
   openai:
     api_base: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
 
-  # Anthropic - native Messages API
   anthropic:
     api_base: "https://api.anthropic.com/v1"
     api_key: "${ANTHROPIC_API_KEY}"
 
-  # Zhipu (智谱) - Chinese LLM provider, OpenAI-compatible
   zhipu:
     api_base: "https://open.bigmodel.cn/api/paas/v4"
     api_key: "${ZHIPU_API_KEY}"
 
-  # DeepSeek - with model-level configuration
   deepseek:
     api_base: "https://api.deepseek.com/v1"
     api_key: "${DEEPSEEK_API_KEY}"
@@ -49,28 +45,23 @@ providers:
         thinking_enabled: true
         max_tokens: 8192
 
-  # OpenRouter - multi-provider gateway, OpenAI-compatible
   openrouter:
     api_base: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
 
-  # Google Gemini - uses native Gemini protocol
   gemini:
     api_base: "https://generativelanguage.googleapis.com/v1beta"
     api_key: "${GOOGLE_API_KEY}"
 
-  # Ollama - local provider, OpenAI-compatible (no API key needed)
   ollama:
     api_base: "http://localhost:11434/v1"
 
-  # LiteLLM - local proxy server, OpenAI-compatible
   litellm:
     api_base: "http://localhost:4000/v1"
 
-# Agent configuration with model profiles
+# ── Agent configuration ──────────────────────────────────────────────────
 agents:
   defaults:
-    # Default model (format: provider/model)
     model: "zhipu/glm-5"
     max_iterations: 100
     temperature: 0.7
@@ -78,195 +69,152 @@ agents:
     memory_window: 10
     thinking_enabled: false
     streaming: true
-    # Plugin execution timeout in seconds (default: 120).
-    # Used when a plugin manifest omits its own timeout_secs.
     plugin_timeout_secs: 120
-    # Maximum characters for WebSocket subagent summary (0 = unlimited, default)
     ws_summary_limit: 0
     # Optional: override internal AI behavior prompts.
     # All prompts support runtime placeholders:
-    #   {{conversation}} — evolution template
+    #   {{conversation}} — evolution / distill templates
     #   {{goal}}, {{context}} — planning template
-    #
-    # Uncomment 'evolution' below to customize the memory-extraction prompt.
-    # If omitted, the built-in default (shown below) is used.
+    #   {{memories}} — distill template
     # prompts:
-    #   identity_prefix: "You are a cat. Meow.\nYour working directory: {workspace}."
+    #   identity_prefix: "You are a helpful assistant.\nWorking directory: {workspace}."
     #   summarization: "Summarize the following conversation in bullet points."
     #   checkpoint: "Summarize current task state for working memory."
     #   planning: "Create a plan for: {{goal}}\n\nContext:\n{{context}}"
     #   evolution: |
     #     You are a memory extraction sub-system.
-    #     Analyze the following conversation transcript and extract ONLY NEW, PERSISTENT facts, preferences, or actionable skills.
-    #
-    #     CRITICAL RULES:
-    #     1. DO NOT extract transient context (e.g., 'User said hello', 'thanks', 'bye').
-    #     2. DO NOT extract generic world knowledge unless the user explicitly adopted it as their own preference or decision.
-    #     3. DO NOT extract casual conversation, temporary tasks, or trivial facts.
-    #     4. ONLY extract highly reusable skills, permanent user preferences, or verified factual knowledge.
-    #     5. If nothing meets this high bar, return an empty array [].
-    #     6. Focus on concrete, personal signals: server names, product preferences, budget habits, explicit choices, recurring topics.
-    #     7. 'User said it, it counts' — facts and preferences explicitly stated by the user are valuable even if no tool was executed. Tool results add confidence but are NOT required.
-    #     8. Classify each item:
-    #        - type: 'note' (factual) or 'skill' (procedural)
-    #        - scenario: 'profile' (user pref), 'knowledge' (env fact), 'procedure' (task skill)
-    #        - verified: true ONLY if backed by a successful tool result; false for user-stated facts
-    #        - confidence: 0.0-1.0 — 0.9+ for tool-confirmed, 0.6-0.8 for user explicitly stated, 0.3-0.5 for inferred
-    #
-    #     EXAMPLES OF GOOD EXTRACTIONS:
-    #     - User asked about 'tx-cloud-3' server and uses tmux → note, knowledge, content: 'User manages a server named tx-cloud-3 and prefers tmux for persistent sessions', verified: false, confidence: 0.75
-    #     - User compared Dyson V15 vs 追觅Z20 and preferred the latter for auto-dust-collection → note, profile, content: 'User values automatic dust-collection feature in vacuum cleaners; prefers 追觅Z20 over Dyson V15 for this reason', verified: false, confidence: 0.8
-    #     - User repeatedly asks about budget-friendly options before considering premium → note, profile, content: 'User typically evaluates budget/性价比 options before premium alternatives', verified: false, confidence: 0.65
-    #
-    #     EXAMPLES OF BAD EXTRACTIONS (do NOT include):
-    #     - 'User greeted the assistant'
-    #     - 'User asked about vacuum cleaners' (too vague; extract specific models or preferences instead)
-    #     - 'Dyson is a well-known brand' (generic knowledge, not user-specific)
-    #     - 'User wants to fix a bug today' (temporary task, not persistent knowledge)
-    #
-    #     If nothing NEW and VALUABLE is found, return an empty array [].
-    #
-    #     Output strict JSON array: [{"title": string, "type": "note"|"skill", "scenario": "profile"|"knowledge"|"procedure", "content": string, "tags": [string], "verified": bool, "confidence": float}].
-    #
+    #     ... (custom evolution prompt)
     #     {{conversation}}
+    #   distill: |
+    #     You are a knowledge distillation engine.
+    #     ... (custom distill prompt)
+    #     {{memories}}
 
-  # Model profiles for dynamic switching
-  # The LLM can use the switch_model tool to delegate tasks to these models
+  # Model profiles — used by switch_model tool for dynamic delegation.
+  # Only these fields are recognized:
+  #   model (required), provider (required),
+  #   temperature, max_tokens, thinking_enabled
   models:
-    # Default model for general tasks
     default:
       provider: "zhipu"
       model: "glm-5"
-      description: "General-purpose model for everyday tasks. Good balance of speed and quality."
-      capabilities: ["general", "chat"]
       temperature: 0.7
 
-    # Fast model for quick responses
     fast:
       provider: "zhipu"
       model: "glm-4-flash"
-      description: "Fast responses for simple queries and quick tasks"
-      capabilities: ["fast", "chat"]
       temperature: 0.7
       max_tokens: 2048
 
-    # Code expert model
     coder:
       provider: "deepseek"
       model: "deepseek-coder"
-      description: "Specialized for code generation, refactoring, and debugging"
-      capabilities: ["code", "reasoning"]
       temperature: 0.3
       thinking_enabled: true
 
-    # Reasoning model for complex analysis
     reasoner:
       provider: "deepseek"
       model: "deepseek-reasoner"
-      description: "Advanced reasoning for complex problems, math, and logic"
-      capabilities: ["reasoning", "math", "analysis"]
       temperature: 0.7
       thinking_enabled: true
       max_tokens: 8192
 
-    # Creative model for writing and content
     creative:
       provider: "anthropic"
       model: "claude-sonnet-4-20250514"
-      description: "Creative writing, content generation, and nuanced communication"
-      capabilities: ["creative", "writing", "communication"]
       temperature: 0.9
 
-    # Research model with extended context
-    researcher:
-      provider: "openrouter"
-      model: "anthropic/claude-sonnet-4"
-      description: "Deep research and analysis with extended context window"
-      capabilities: ["research", "analysis", "long-context"]
-      temperature: 0.5
-      max_tokens: 16384
-
-    # Local model for privacy-sensitive tasks
-    local:
-      provider: "ollama"
-      model: "llama3"
-      description: "Local model for privacy-sensitive tasks. No data leaves your machine."
-      capabilities: ["local", "private"]
-      temperature: 0.7
-
-# Channel configurations (optional)
+# ── Channel configurations ──────────────────────────────────────────────
 channels:
-  telegram:
-    enabled: false
-    token: ""
-    allow_from: []
+  # telegram:
+  #   token: "${TELEGRAM_BOT_TOKEN}"
+  #   allow_from: []
 
-  discord:
-    enabled: false
-    token: ""
-    allow_from: []
+  # discord:
+  #   token: "${DISCORD_BOT_TOKEN}"
+  #   allow_from: []
+  #   proxy_url: null
 
-  slack:
-    enabled: false
-    bot_token: ""
-    app_token: ""
-    allow_from: []
+  # slack:
+  #   bot_token: "${SLACK_BOT_TOKEN}"
+  #   app_token: "${SLACK_APP_TOKEN}"
+  #   allow_from: []
+  #   group_policy: "mention"  # "mention" | "open" | "allowlist"
+
+  # feishu:
+  #   app_id: "${FEISHU_APP_ID}"
+  #   app_secret: "${FEISHU_APP_SECRET}"
+  #   verification_token: null
+  #   encrypt_key: null
+  #   allow_from: []
+
+  # wechat:
+  #   base_url: "https://ilinkai.weixin.qq.com"
+  #   cred_path: "~/.wechatbot/credentials.json"
+  #   allow_from: []
 
   websocket:
     enabled: true
 
-  wechat:
-    enabled: false
-    # baseUrl: "https://ilinkai.weixin.qq.com"  # optional
-    # credPath: "~/.wechatbot/credentials.json"  # optional
-    allowFrom: []
-
-# Embedding configuration (optional)
-# Enable semantic search and history recall features
-# Requires: cargo build --features embedding
-#
-# Provider types:
-#   - Api:    OpenAI-compatible HTTP API (OpenAI, Ollama, etc.)
-#   - LocalOnnx: Local ONNX model via fastembed (requires --features local-onnx)
-#
-embedding:
-  provider:
-    type: Api
-    endpoint: "https://api.openai.com/v1/embeddings"
-    model: "text-embedding-3-small"
-    api_key: "${OPENAI_API_KEY}"
-    dim: 1536
-
-  # Local ONNX example (no API key needed, runs entirely offline)
-  # Requires: cargo build --features "embedding local-onnx"
-  # provider:
-  #   type: LocalOnnx
-  #   model: "BGESmallENV15"   # Case-insensitive, see fastembed model list
-  #   dim: 384
-  #   cache_dir: "/path/to/embedding_cache"  # Optional directory for caching embeddings
-
-  recall:
-    top_k: 5
-    token_budget: 500
-    min_score: 0.3
-  hot_limit: 1000  # Max embeddings kept in memory index (0 = pure SQLite)
-
-# Tool configurations
+# ── Tool configurations ────────────────────────────────────────────────
 tools:
   restrict_to_workspace: false
   web:
-    user_agent: "Mozilla/5.0"
-    timeout_seconds: 30
-    # search_provider: tavily
+    # search_provider: tavily  # "tavily" | "brave" | "exa"
+    # search_fallback: duckduckgo
     # brave_api_key: null
     # tavily_api_key: null
     # exa_api_key: null
     # firecrawl_api_key: null
+    # http_proxy: "http://proxy:8080"
+    # https_proxy: "http://proxy:8080"
+    # socks5_proxy: "socks5://proxy:1080"
+    # use_env_proxy: true  # reads HTTP_PROXY / HTTPS_PROXY env vars (default: true)
+
   exec:
-    enabled: true
-    timeout_seconds: 60
+    timeout: 120
+    # workspace: "~/.gasket"
+    # sandbox:
+    #   enabled: false
+    #   backend: "bwrap"  # "bwrap" (default)
+    #   tmp_size_mb: 64
+    # policy:
+    #   allowlist: []
+    #   denylist: ["rm -rf", "mkfs", "dd if="]
+    # limits:
+    #   max_memory_mb: 512
+    #   max_cpu_secs: 60
+    #   max_output_bytes: 1048576  # 1 MB
+
   spawn:
-    # Global subagent concurrency cap. All spawn paths share this budget.
-    # Default 1: the main agent runs only one subagent at a time; further
-    # spawn requests queue until the running one finishes.
     max_concurrency: 1
+
+# ── Embedding configuration (optional) ─────────────────────────────────
+# Enable semantic search and history recall features.
+# Requires: cargo build --features embedding
+#
+# embedding:
+#   provider:
+#     type: Api
+#     endpoint: "https://api.openai.com/v1/embeddings"
+#     model: "text-embedding-3-small"
+#     api_key: "${OPENAI_API_KEY}"
+#     dim: 1536
+#   recall:
+#     top_k: 5
+#     token_budget: 500
+#     min_score: 0.3
+#   hot_limit: 1000
+#
+# Local ONNX example (offline, no API key):
+# Requires: cargo build --features "embedding local-onnx"
+# embedding:
+#   provider:
+#     type: LocalOnnx
+#     model: "BGESmallENV15"
+#     dim: 384
+#   hot_limit: 1000
+
+# ── Misc ────────────────────────────────────────────────────────────────
+# Optional: path to a custom stop-words file for keyword-based history recall.
+# stop_words_path: null
