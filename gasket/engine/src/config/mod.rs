@@ -1,6 +1,7 @@
 //! Configuration types for gasket-engine
 
 pub mod app_config;
+pub mod config_manager;
 pub mod global;
 mod tools;
 
@@ -13,6 +14,7 @@ pub use app_config::{
     ModelProfile, ModelRegistry, ProviderConfig, ProviderRegistry, ProviderType,
 };
 pub use global::{get_config, init_config};
+pub use config_manager::{ConfigManager, ProviderConfigUpdate, ProviderSummary};
 pub use tools::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, SpawnToolConfig,
     ToolsConfig, WebToolsConfig,
