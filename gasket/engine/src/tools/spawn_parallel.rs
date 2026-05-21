@@ -178,7 +178,7 @@ impl Tool for SpawnParallelTool {
                 let spawner_clone = spawner.clone();
 
                 let (subagent_id, event_rx, result_rx, cancel_token) = spawner_clone
-                    .spawn_with_stream(spec.task.clone(), spec.model_id, ctx)
+                    .spawn_with_stream(spec.task.clone(), spec.model_id, ctx, None)
                     .await
                     .map_err(|e| {
                         ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
@@ -242,7 +242,7 @@ impl Tool for SpawnParallelTool {
             let ws_summary_limit = ctx.ws_summary_limit;
             let handle = tokio::spawn(async move {
                 let (subagent_id, event_rx, result_rx, _cancel_token) = spawner_clone
-                    .spawn_with_stream(spec.task.clone(), spec.model_id, &task_ctx)
+                    .spawn_with_stream(spec.task.clone(), spec.model_id, &task_ctx, None)
                     .await
                     .map_err(|e| {
                         ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))

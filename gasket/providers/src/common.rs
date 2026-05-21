@@ -428,6 +428,7 @@ impl LlmProvider for OpenAICompatibleProvider {
 ///
 /// Routes to the appropriate native provider when the name is recognized,
 /// falling back to `provider_type` dispatch for unknown names.
+#[allow(unused_variables)]
 pub fn build_provider(
     name: &str,
     api_key: &str,
@@ -542,6 +543,7 @@ pub fn build_provider(
 }
 
 /// Fallback: dispatch by `provider_type` for unknown provider names.
+#[allow(unused_variables)]
 fn dispatch_by_type(
     name: &str,
     api_key: &str,

@@ -35,7 +35,7 @@ fn expand_tilde(path: &str) -> String {
 /// Approximate row count above which an IVF-PQ index is worth building.
 /// Below this, brute force scan is fast enough and IVF-PQ training is
 /// unstable.
-pub const ANN_THRESHOLD: i64 = 1024;
+pub const ANN_THRESHOLD: i64 = 5000;
 
 /// LanceDB-backed vector store.
 pub struct LanceVectorStore {

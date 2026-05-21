@@ -107,6 +107,7 @@ pub trait SubagentSpawner: Send + Sync {
         task: String,
         model_id: Option<String>,
         ctx: &ToolContext,
+        _tool_filter: Option<Vec<String>>,
     ) -> Result<
         (
             String,

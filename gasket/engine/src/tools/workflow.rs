@@ -97,6 +97,9 @@ pub struct WorkflowStepDef {
     /// Evaluation configuration for verdict-based branching.
     #[serde(default)]
     pub evaluate: Option<EvaluateConfigDef>,
+    /// Optional whitelist of tool names visible to the LLM for this step.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
 }
 
 /// Evaluation configuration as it appears in the YAML manifest.
@@ -140,6 +143,8 @@ pub struct Step {
     pub prompt: String,
     pub model: Option<String>,
     pub transition: Transition,
+    /// Optional whitelist of tool names visible to the LLM for this step.
+    pub tools: Option<Vec<String>>,
 }
 
 /// How execution continues after a step completes.
@@ -301,6 +306,7 @@ impl Workflow {
                 prompt: def.prompt.clone(),
                 model: def.model.clone(),
                 transition,
+                tools: def.tools.clone(),
             });
         }
 
@@ -523,7 +529,7 @@ impl WorkflowTool {
 
         // Spawn with streaming so the frontend sees real-time progress.
         let (subagent_id, event_rx, result_rx, _cancel_token) = spawner
-            .spawn_with_stream(prompt.to_string(), step.model.clone(), ctx)
+            .spawn_with_stream(prompt.to_string(), step.model.clone(), ctx, step.tools.clone())
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
@@ -985,6 +991,7 @@ steps:
                         model: None,
                         next: Some("DONE".to_string()),
                         evaluate: None,
+                        tools: None,
                     },
                 );
                 m

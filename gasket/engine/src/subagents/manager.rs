@@ -43,6 +43,8 @@ pub struct TaskSpec {
     pub system_prompt: Option<String>,
     pub max_turns: Option<u32>,
     pub thinking_enabled: bool,
+    /// Optional whitelist of tool names visible to the LLM for this run.
+    pub tool_filter: Option<Vec<String>>,
 }
 
 impl TaskSpec {
@@ -54,6 +56,7 @@ impl TaskSpec {
             system_prompt: None,
             max_turns: None,
             thinking_enabled: false,
+            tool_filter: None,
         }
     }
 
@@ -75,6 +78,11 @@ impl TaskSpec {
 
     pub fn with_max_turns(mut self, turns: u32) -> Self {
         self.max_turns = Some(turns);
+        self
+    }
+
+    pub fn with_tool_filter(mut self, filter: Option<Vec<String>>) -> Self {
+        self.tool_filter = filter;
         self
     }
 }
@@ -149,6 +157,7 @@ pub fn spawn_subagent(
                 .unwrap_or_else(|| provider.default_model().to_string()),
             max_iterations: crate::session::config::DEFAULT_MAX_ITERATIONS,
             thinking_enabled: task.thinking_enabled,
+            tool_filter: task.tool_filter.clone(),
             ..Default::default()
         };
         let ctx = {
@@ -489,6 +498,7 @@ impl SubagentSpawner for SimpleSpawner {
         task: String,
         model_id: Option<String>,
         ctx: &gasket_types::tool::ToolContext,
+        tool_filter: Option<Vec<String>>,
     ) -> Result<
         (
             String,
@@ -508,7 +518,8 @@ impl SubagentSpawner for SimpleSpawner {
         let (provider, model) = self.resolve_provider_model(model_id.as_deref());
 
         let task_spec = TaskSpec::new(&subagent_id, task)
-            .with_thinking_enabled(self.thinking_enabled);
+            .with_thinking_enabled(self.thinking_enabled)
+            .with_tool_filter(tool_filter);
         let task_spec = if let Some(m) = model {
             task_spec.with_model(m)
         } else {

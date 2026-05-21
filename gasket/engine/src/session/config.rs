@@ -214,6 +214,8 @@ pub struct AgentConfig {
     pub plugin_timeout_secs: u64,
     /// Subagent execution timeout in seconds
     pub subagent_timeout_secs: u64,
+    /// Optional whitelist of tool names visible to the LLM for this run.
+    pub tool_filter: Option<Vec<String>>,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
     /// Cooldown after a failed compaction LLM call (default: 60s).
@@ -249,6 +251,7 @@ impl Default for AgentConfig {
             tool_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             plugin_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            tool_filter: None,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             compaction_cooldown_secs: DEFAULT_COMPACTION_COOLDOWN_SECS,
             after_response_hook_timeout_secs: DEFAULT_AFTER_RESPONSE_HOOK_TIMEOUT_SECS,
@@ -280,7 +283,7 @@ impl AgentConfigExt for AgentConfig {
             tool_timeout_secs: self.tool_timeout_secs,
             plugin_timeout_secs: self.plugin_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
-            tool_filter: None,
+            tool_filter: self.tool_filter.clone(),
         }
     }
 }
