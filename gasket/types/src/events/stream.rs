@@ -258,6 +258,12 @@ pub enum ChatEvent {
         #[serde(default)]
         remember: bool,
     },
+
+    /// Model was switched at runtime
+    ModelSwitched {
+        previous: Arc<str>,
+        current: Arc<str>,
+    },
 }
 
 impl ChatEvent {
@@ -420,6 +426,14 @@ impl ChatEvent {
             request_id: Arc::from(request_id.into()),
             approved,
             remember,
+        }
+    }
+
+    /// Create a model_switched message
+    pub fn model_switched(previous: impl Into<String>, current: impl Into<String>) -> Self {
+        Self::ModelSwitched {
+            previous: Arc::from(previous.into()),
+            current: Arc::from(current.into()),
         }
     }
 
@@ -717,6 +731,19 @@ mod tests {
         let event = ChatEvent::subagent_synthesizing();
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"subagent_synthesizing""#));
+
+        // Round-trip
+        let de: ChatEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
+    }
+
+    #[test]
+    fn test_model_switched_serialization() {
+        let event = ChatEvent::model_switched("zhipu/glm-5", "anthropic/claude-sonnet-4");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"model_switched""#));
+        assert!(json.contains(r#""previous":"zhipu/glm-5""#));
+        assert!(json.contains(r#""current":"anthropic/claude-sonnet-4""#));
 
         // Round-trip
         let de: ChatEvent = serde_json::from_str(&json).unwrap();
