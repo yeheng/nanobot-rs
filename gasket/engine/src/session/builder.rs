@@ -266,6 +266,7 @@ impl SessionBuilder {
         Ok(AgentSession {
             runtime_ctx,
             active_model: parking_lot::Mutex::new(initial_model),
+            active_provider: parking_lot::Mutex::new(self.provider.clone()),
             context_builder,
             compactor,
             pricing: None,
