@@ -344,6 +344,27 @@ impl ContextCompactor {
         .await
     }
 
+    /// Save an ask-user semantic checkpoint for working-memory recovery.
+    ///
+    /// Called when the agent issues an `ask_user` tool call so the session
+    /// can be resumed after a long timeout.
+    pub async fn save_ask_checkpoint(
+        &self,
+        session_key: &SessionKey,
+        messages: &[gasket_providers::ChatMessage],
+        pending_question: &str,
+    ) -> Result<()> {
+        checkpoint::save_ask_checkpoint(
+            &*self.provider,
+            &self.model,
+            &self.session_store,
+            session_key,
+            messages,
+            pending_question,
+        )
+        .await
+    }
+
     /// Try to trigger background compaction.
     ///
     /// This is the main entry point, called from `finalize_response()`.

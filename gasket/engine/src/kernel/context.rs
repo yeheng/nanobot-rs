@@ -17,7 +17,19 @@ use gasket_types::SessionRefs;
 /// request during context construction).
 #[async_trait]
 pub trait CheckpointCallback: Send + Sync {
+    /// Inject a proactive checkpoint before the LLM call (read path).
     async fn get_checkpoint(&self, msg_len: usize) -> Option<String>;
+
+    /// Save a semantic checkpoint when the agent asks the user a question.
+    ///
+    /// Called from `SteppableExecutor` when an `ask_user` tool call is
+    /// detected, so that if the user returns hours later the agent can
+    /// resume from the exact task context.
+    async fn save_ask_checkpoint(
+        &self,
+        messages: &[gasket_providers::ChatMessage],
+        pending_question: &str,
+    ) -> Result<(), String>;
 }
 
 /// Everything the kernel needs to execute one LLM request.

@@ -149,6 +149,17 @@ impl crate::kernel::CheckpointCallback for SessionCheckpointCallback {
             }
         }
     }
+
+    async fn save_ask_checkpoint(
+        &self,
+        messages: &[gasket_providers::ChatMessage],
+        pending_question: &str,
+    ) -> Result<(), String> {
+        self.compactor
+            .save_ask_checkpoint(&self.session_key, messages, pending_question)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 // ── Skill loading (inlined from agent/core/mod.rs) ──

@@ -131,3 +131,110 @@ pub async fn checkpoint(
 
     Ok(Some(summary))
 }
+
+/// Timeout for ask-user checkpoint LLM calls — shorter than the proactive
+/// checkpoint timeout because this fires inline with tool execution.
+const ASK_CHECKPOINT_TIMEOUT_SECS: u64 = 15;
+
+/// Maximum recent messages to include in the ask checkpoint context.
+const ASK_CHECKPOINT_MAX_MESSAGES: usize = 20;
+
+/// Generate a semantic checkpoint for an `ask_user` suspension point.
+///
+/// Unlike the proactive `checkpoint()`, this takes the current in-memory
+/// `messages` (which include the assistant's tool-call turn) and produces
+/// a recovery summary focused on the pending question.
+pub async fn save_ask_checkpoint(
+    provider: &dyn LlmProvider,
+    model: &str,
+    session_store: &SessionStore,
+    session_key: &SessionKey,
+    messages: &[ChatMessage],
+    pending_question: &str,
+) -> Result<()> {
+    // Build a concise transcript from recent messages.
+    let transcript = messages
+        .iter()
+        .rev()
+        .take(ASK_CHECKPOINT_MAX_MESSAGES)
+        .rev()
+        .map(|m| {
+            let role = format!("{:?}", m.role).to_lowercase();
+            let content = m.content.as_deref().unwrap_or("");
+            format!("{}: {}", role, content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "Summarize the current task state for working memory recovery.\
+         The agent has just asked the user a question and is now waiting.\
+         \n\nPending question: {}\
+         \n\nRecent conversation context:\n{}\
+         \n\nOutput ONLY in this format:\n\
+         <key_info>\n\
+         - Current goal: [one sentence]\n\
+         - Completed: [list]\n\
+         - Blocked on: [the pending question]\n\
+         - Next step: [one sentence]\n\
+         - Key facts learned: [list]\n\
+         </key_info>\n\n\
+         Be concise.",
+        pending_question, transcript
+    );
+
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![
+            ChatMessage::system("You are a state summarizer."),
+            ChatMessage::user(prompt),
+        ],
+        tools: None,
+        temperature: Some(0.2),
+        max_tokens: Some(512),
+        thinking: None,
+    };
+
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_secs(ASK_CHECKPOINT_TIMEOUT_SECS),
+        provider.chat(request),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            warn!(
+                "Ask checkpoint LLM call failed for {}: {}",
+                session_key, e
+            );
+            return Ok(());
+        }
+        Err(_) => {
+            warn!(
+                "Ask checkpoint LLM call timed out after {}s for {}",
+                ASK_CHECKPOINT_TIMEOUT_SECS, session_key
+            );
+            return Ok(());
+        }
+    };
+
+    let summary = response.content.unwrap_or_default().trim().to_string();
+
+    if summary.is_empty() {
+        warn!("Ask checkpoint generated empty summary for {}", session_key);
+        return Ok(());
+    }
+
+    // target_sequence = 0 distinguishes ask-checkpoints from proactive ones.
+    session_store
+        .save_checkpoint(&session_key.to_string(), 0, &summary)
+        .await?;
+
+    info!(
+        "Ask checkpoint saved for {} ({} chars)",
+        session_key,
+        summary.len()
+    );
+
+    Ok(())
+}

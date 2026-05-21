@@ -196,6 +196,29 @@ impl SteppableExecutor {
             response.reasoning_content.clone(),
         ));
 
+        // Fire-and-forget ask checkpoint before tools block.
+        // When ask_user is invoked the thread may hang for hours waiting
+        // for a reply; we eagerly write a semantic checkpoint so the
+        // session can resume after a long timeout.
+        for tc in &response.tool_calls {
+            if tc.function.name == "ask_user" {
+                if let (Some(cb), Some(prompt)) = (
+                    self.ctx.checkpoint_callback.as_ref(),
+                    tc.function.arguments.get("prompt").and_then(|v| v.as_str()),
+                ) {
+                    let cb = cb.clone();
+                    let prompt = prompt.to_string();
+                    let messages_clone = messages.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cb.save_ask_checkpoint(&messages_clone, &prompt).await {
+                            warn!("Failed to save ask checkpoint: {}", e);
+                        }
+                    });
+                }
+                break;
+            }
+        }
+
         let ctx = self.ctx.build_tool_context();
 
         let results: Vec<_> =
