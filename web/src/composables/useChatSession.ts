@@ -300,6 +300,11 @@ export function useChatSession(chatId: { value: string }) {
           arguments: msg.arguments,
         });
         break;
+      case 'model_switched':
+        // Model switched via REST API — consumed silently.
+        // ModelSelector component tracks currentModel independently.
+        console.log(`Model switched: ${msg.previous} → ${msg.current}`);
+        break;
     }
   };
 
