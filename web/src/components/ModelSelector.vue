@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { useConfig } from '@/composables/useConfig';
 
-const { models, currentModel, fetchModels, fetchCurrentModel, switchModel } = useConfig();
+const { models, currentModel, switchModel } = useConfig();
 
 const open = ref(false);
 const switching = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
-
-onMounted(async () => {
-  await Promise.all([fetchModels(), fetchCurrentModel()]);
-});
 
 onClickOutside(dropdownRef, () => {
   open.value = false;

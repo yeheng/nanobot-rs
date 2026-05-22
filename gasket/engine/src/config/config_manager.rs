@@ -11,7 +11,7 @@ use super::app_config::{Config, ModelProfile};
 use super::ProviderConfig;
 use crate::vault::{contains_placeholders, VaultStore};
 
-/// Summary of a provider for API responses (API key masked).
+/// Summary of a provider for API responses (sensitive fields masked).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderSummary {
     pub name: String,
@@ -21,6 +21,16 @@ pub struct ProviderSummary {
     pub default_model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_username: Option<String>,
+    pub proxy_password_set: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_currency: Option<String>,
+    pub supports_thinking: bool,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_headers: HashMap<String, String>,
 }
 
 /// Centralized configuration management — runtime state + YAML persistence.
@@ -91,6 +101,12 @@ impl ConfigManager {
                 api_key_set: pc.api_key.is_some(),
                 default_model: pc.default_model.clone(),
                 proxy_url: pc.proxy_url.clone(),
+                proxy_username: pc.proxy_username.clone(),
+                proxy_password_set: pc.proxy_password.is_some(),
+                client_id: pc.client_id.clone(),
+                default_currency: pc.default_currency.clone(),
+                supports_thinking: pc.supports_thinking,
+                extra_headers: pc.extra_headers.clone(),
             })
             .collect()
     }
@@ -106,13 +122,31 @@ impl ConfigManager {
             pc.api_base = v;
         }
         if let Some(v) = update.api_key {
-            pc.api_key = Some(v);
+            pc.api_key = if v.is_empty() { None } else { Some(v) };
         }
         if let Some(v) = update.default_model {
             pc.default_model = v;
         }
         if let Some(v) = update.proxy_url {
-            pc.proxy_url = Some(v);
+            pc.proxy_url = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = update.proxy_username {
+            pc.proxy_username = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = update.proxy_password {
+            pc.proxy_password = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = update.client_id {
+            pc.client_id = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = update.default_currency {
+            pc.default_currency = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = update.supports_thinking {
+            pc.supports_thinking = v;
+        }
+        if let Some(v) = update.extra_headers {
+            pc.extra_headers = v;
         }
 
         self.persist(&cfg).await?;
@@ -221,6 +255,7 @@ impl ConfigManager {
 }
 
 /// Update payload for provider config — all fields optional (partial update).
+/// Send empty string to clear optional fields (api_key, proxy_url, etc.).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderConfigUpdate {
     #[serde(default)]
@@ -231,4 +266,16 @@ pub struct ProviderConfigUpdate {
     pub default_model: Option<String>,
     #[serde(default, alias = "proxyUrl")]
     pub proxy_url: Option<String>,
+    #[serde(default, alias = "proxyUsername")]
+    pub proxy_username: Option<String>,
+    #[serde(default, alias = "proxyPassword")]
+    pub proxy_password: Option<String>,
+    #[serde(default, alias = "clientId")]
+    pub client_id: Option<String>,
+    #[serde(default, alias = "defaultCurrency")]
+    pub default_currency: Option<String>,
+    #[serde(default, alias = "supportsThinking")]
+    pub supports_thinking: Option<bool>,
+    #[serde(default, alias = "extraHeaders")]
+    pub extra_headers: Option<HashMap<String, String>>,
 }

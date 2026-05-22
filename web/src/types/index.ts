@@ -159,6 +159,12 @@ export interface ProviderSummary {
   api_key_set: boolean;
   default_model: string;
   proxy_url?: string;
+  proxy_username?: string;
+  proxy_password_set: boolean;
+  client_id?: string;
+  default_currency?: string;
+  supports_thinking: boolean;
+  extra_headers: Record<string, string>;
 }
 
 export interface ModelSwitchInfo {

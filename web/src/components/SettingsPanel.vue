@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, reactive } from 'vue';
 import { useConfig } from '@/composables/useConfig';
 import type { ModelProfile, ProviderSummary } from '@/types';
 
 const emit = defineEmits<{ close: [] }>();
 
-const { models, providers, loading, fetchModels, fetchProviders, createModel, updateModel, deleteModel, updateProvider } = useConfig();
+const { models, providers, loading, createModel, updateModel, deleteModel, updateProvider } = useConfig();
 
 const activeTab = ref<'models' | 'providers'>('models');
 
@@ -43,32 +43,79 @@ async function saveModelEdit(name: string) {
 }
 
 // ── Providers tab state ──
+
+interface ProviderEditState {
+  api_base: string;
+  api_key: string;
+  default_model: string;
+  proxy_url: string;
+  proxy_username: string;
+  proxy_password: string;
+  client_id: string;
+  default_currency: string;
+  supports_thinking: boolean;
+  extra_headers: { key: string; value: string }[];
+}
+
 const editingProvider = ref<string | null>(null);
-const providerEdits = ref<Record<string, { api_base: string; api_key: string; default_model: string }>>({});
+const providerEdits = reactive<Record<string, ProviderEditState>>({});
+
+function toEditState(p: ProviderSummary): ProviderEditState {
+  return {
+    api_base: p.api_base,
+    api_key: '',
+    default_model: p.default_model,
+    proxy_url: p.proxy_url || '',
+    proxy_username: p.proxy_username || '',
+    proxy_password: '',
+    client_id: p.client_id || '',
+    default_currency: p.default_currency || '',
+    supports_thinking: p.supports_thinking,
+    extra_headers: Object.entries(p.extra_headers || {}).map(([key, value]) => ({ key, value })),
+  };
+}
 
 function startEditProvider(name: string) {
-  editingProvider.value = name;
   const p = providers.value.find(p => p.name === name);
   if (p) {
-    providerEdits.value[name] = { api_base: p.api_base, api_key: '', default_model: p.default_model };
+    providerEdits[name] = toEditState(p);
+    editingProvider.value = name;
   }
+}
+
+function addHeader(name: string) {
+  providerEdits[name]?.extra_headers.push({ key: '', value: '' });
+}
+
+function removeHeader(name: string, idx: number) {
+  providerEdits[name]?.extra_headers.splice(idx, 1);
 }
 
 async function saveProviderEdit(name: string) {
-  const edits = providerEdits.value[name];
-  if (edits) {
-    const update: Record<string, string> = {};
-    if (edits.api_base) update.api_base = edits.api_base;
-    if (edits.api_key) update.api_key = edits.api_key;
-    if (edits.default_model) update.default_model = edits.default_model;
-    await updateProvider(name, update);
+  const edits = providerEdits[name];
+  if (!edits) return;
+
+  const headers: Record<string, string> = {};
+  for (const h of edits.extra_headers) {
+    if (h.key.trim()) headers[h.key.trim()] = h.value;
   }
+
+  const update: Record<string, any> = {};
+  update.api_base = edits.api_base;
+  update.api_key = edits.api_key;
+  update.default_model = edits.default_model;
+  update.proxy_url = edits.proxy_url;
+  update.proxy_username = edits.proxy_username;
+  update.proxy_password = edits.proxy_password;
+  update.client_id = edits.client_id;
+  update.default_currency = edits.default_currency;
+  update.supports_thinking = edits.supports_thinking;
+  update.extra_headers = headers;
+
+  await updateProvider(name, update);
   editingProvider.value = null;
 }
 
-onMounted(async () => {
-  await Promise.all([fetchModels(), fetchProviders()]);
-});
 </script>
 
 <template>
@@ -158,31 +205,108 @@ onMounted(async () => {
 
         <!-- Providers Tab -->
         <template v-else-if="activeTab === 'providers'">
-          <div v-for="p in providers" :key="p.name" class="p-3 border rounded-lg mb-2">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-xs font-medium">{{ p.name }}</span>
-              <span class="text-xs px-1.5 py-0.5 rounded bg-secondary">{{ p.provider_type }}</span>
-            </div>
-            <div class="text-xs text-muted-foreground space-y-0.5">
-              <div>{{ p.api_base }}</div>
-              <div>API Key: {{ p.api_key_set ? '••••••••' : 'not set' }}</div>
-              <div>Default: {{ p.default_model }}</div>
+          <div v-for="p in providers" :key="p.name" class="p-3 border rounded-lg mb-3">
+            <!-- Header -->
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold">{{ p.name }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-secondary font-mono">{{ p.provider_type }}</span>
             </div>
 
-            <!-- Edit mode -->
-            <div v-if="editingProvider === p.name" class="mt-2 space-y-1">
-              <input v-model="providerEdits[p.name]!.api_base" class="cfg-input" placeholder="API Base" />
-              <input v-model="providerEdits[p.name]!.api_key" type="password" class="cfg-input" placeholder="New API Key" />
-              <input v-model="providerEdits[p.name]!.default_model" class="cfg-input" placeholder="Default Model" />
-              <div class="flex gap-2 mt-1">
-                <button @click="saveProviderEdit(p.name)"
-                  class="text-xs px-2 py-0.5 rounded bg-primary text-primary-foreground">Save</button>
-                <button @click="editingProvider = null"
-                  class="text-xs px-2 py-0.5 rounded hover:bg-secondary">Cancel</button>
+            <!-- ── View mode ── -->
+            <template v-if="editingProvider !== p.name">
+              <div class="space-y-0.5 text-[11px] text-muted-foreground">
+                <div><span class="text-foreground/50">Base:</span> {{ p.api_base }}</div>
+                <div><span class="text-foreground/50">Key:</span> {{ p.api_key_set ? '••••••••' : 'not set' }}</div>
+                <div><span class="text-foreground/50">Model:</span> {{ p.default_model }}</div>
+                <div v-if="p.proxy_url"><span class="text-foreground/50">Proxy:</span> {{ p.proxy_url }}<span v-if="p.proxy_username"> ({{ p.proxy_username }}:••••)</span></div>
+                <div v-if="p.client_id"><span class="text-foreground/50">Client ID:</span> {{ p.client_id }}</div>
+                <div v-if="p.default_currency"><span class="text-foreground/50">Currency:</span> {{ p.default_currency }}</div>
+                <div><span class="text-foreground/50">Thinking:</span> {{ p.supports_thinking ? 'Yes' : 'No' }}</div>
+                <div v-if="p.extra_headers && Object.keys(p.extra_headers).length > 0">
+                  <span class="text-foreground/50">Headers:</span> {{ Object.keys(p.extra_headers).join(', ') }}
+                </div>
               </div>
-            </div>
-            <button v-else @click="startEditProvider(p.name)"
-              class="mt-2 text-xs px-2 py-0.5 rounded hover:bg-secondary">Edit</button>
+              <button @click="startEditProvider(p.name)"
+                class="mt-2 text-xs px-2 py-0.5 rounded hover:bg-secondary">Edit</button>
+            </template>
+
+            <!-- ── Edit mode ── -->
+            <template v-else>
+              <div class="mt-1 space-y-2">
+                <!-- Connection -->
+                <div class="cfg-group">
+                  <div class="cfg-label">API Base</div>
+                  <input v-model="providerEdits[p.name]!.api_base" class="cfg-input" />
+                </div>
+                <div class="cfg-group">
+                  <div class="cfg-label">API Key <span class="text-muted-foreground font-normal">(leave empty to keep current)</span></div>
+                  <input v-model="providerEdits[p.name]!.api_key" type="password" class="cfg-input" placeholder="Enter new key to update" />
+                </div>
+
+                <!-- Model -->
+                <div class="cfg-group">
+                  <div class="cfg-label">Default Model</div>
+                  <input v-model="providerEdits[p.name]!.default_model" class="cfg-input" />
+                </div>
+                <div class="cfg-group flex items-center gap-2">
+                  <input type="checkbox" v-model="providerEdits[p.name]!.supports_thinking" class="rounded" />
+                  <span class="cfg-label !mb-0">Supports Thinking</span>
+                </div>
+
+                <!-- Proxy -->
+                <div class="border-t pt-2 mt-1">
+                  <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Proxy</div>
+                </div>
+                <div class="cfg-group">
+                  <div class="cfg-label">Proxy URL</div>
+                  <input v-model="providerEdits[p.name]!.proxy_url" class="cfg-input" placeholder="http://127.0.0.1:7890" />
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div class="cfg-group">
+                    <div class="cfg-label">Username</div>
+                    <input v-model="providerEdits[p.name]!.proxy_username" class="cfg-input" />
+                  </div>
+                  <div class="cfg-group">
+                    <div class="cfg-label">Password</div>
+                    <input v-model="providerEdits[p.name]!.proxy_password" type="password" class="cfg-input" />
+                  </div>
+                </div>
+
+                <!-- Advanced -->
+                <div class="border-t pt-2 mt-1">
+                  <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Advanced</div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div class="cfg-group">
+                    <div class="cfg-label">Client ID</div>
+                    <input v-model="providerEdits[p.name]!.client_id" class="cfg-input" />
+                  </div>
+                  <div class="cfg-group">
+                    <div class="cfg-label">Currency</div>
+                    <input v-model="providerEdits[p.name]!.default_currency" class="cfg-input" placeholder="USD" />
+                  </div>
+                </div>
+
+                <!-- Extra Headers -->
+                <div class="border-t pt-2 mt-1">
+                  <div class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Extra Headers</div>
+                </div>
+                <div v-for="(h, idx) in providerEdits[p.name]!.extra_headers" :key="idx" class="flex gap-1 items-center">
+                  <input v-model="h.key" class="cfg-input flex-1" placeholder="Header name" />
+                  <input v-model="h.value" class="cfg-input flex-1" placeholder="Value" />
+                  <button @click="removeHeader(p.name, idx)" class="text-xs px-1.5 py-1 rounded hover:bg-destructive/10 text-destructive shrink-0">&times;</button>
+                </div>
+                <button @click="addHeader(p.name)" class="text-xs text-primary hover:underline">+ Add Header</button>
+
+                <!-- Actions -->
+                <div class="flex gap-2 pt-2 border-t mt-1">
+                  <button @click="saveProviderEdit(p.name)"
+                    class="text-xs px-3 py-1 rounded bg-primary text-primary-foreground">Save</button>
+                  <button @click="editingProvider = null"
+                    class="text-xs px-3 py-1 rounded hover:bg-secondary">Cancel</button>
+                </div>
+              </div>
+            </template>
           </div>
         </template>
       </div>
@@ -193,5 +317,11 @@ onMounted(async () => {
 <style scoped>
 .cfg-input {
   @apply w-full px-2 py-1 text-xs border rounded bg-background;
+}
+.cfg-label {
+  @apply text-[11px] font-medium mb-0.5;
+}
+.cfg-group {
+  @apply flex flex-col;
 }
 </style>

@@ -1,6 +1,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useChatStore } from '@/stores/chatStore';
 import { useIMWebSocket } from '@/hooks/useIMWebSocket';
+import { useConfig } from '@/composables/useConfig';
 import type { ApprovalRequest, Message, SubagentState } from '@/types';
 
 export function useChatSession(chatId: { value: string }) {
@@ -301,9 +302,8 @@ export function useChatSession(chatId: { value: string }) {
         });
         break;
       case 'model_switched':
-        // Model switched via REST API — consumed silently.
-        // ModelSelector component tracks currentModel independently.
-        console.log(`Model switched: ${msg.previous} → ${msg.current}`);
+        // Sync shared config state so ModelSelector reflects the change
+        useConfig().setCurrentModel(msg.current);
         break;
     }
   };
