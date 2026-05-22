@@ -141,3 +141,27 @@ export interface ApprovalResponse {
   approved: boolean;
   remember?: boolean;
 }
+
+// ── Config Types ──────────────────────────────────────────
+
+export interface ModelProfile {
+  model: string;
+  provider: string;
+  temperature?: number;
+  max_tokens?: number;
+  thinking_enabled?: boolean;
+}
+
+export interface ProviderSummary {
+  name: string;
+  provider_type: string;
+  api_base: string;
+  api_key_set: boolean;
+  default_model: string;
+  proxy_url?: string;
+}
+
+export interface ModelSwitchInfo {
+  previous: string;
+  current: string;
+}
