@@ -5,6 +5,7 @@ mod auth;
 mod broker_outbound;
 mod channels;
 mod command_host;
+mod config_api;
 mod cron;
 mod dispatching_handler;
 mod embedding;
