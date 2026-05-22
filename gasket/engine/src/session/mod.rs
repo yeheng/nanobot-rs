@@ -285,6 +285,8 @@ pub struct AgentSession {
     /// Mutable model name — supports runtime switching via `/model <id>`.
     /// Read on every request via `model()`, written by `switch_model()`.
     active_model: parking_lot::Mutex<String>,
+    /// Mutable provider — supports runtime cross-provider switching.
+    active_provider: parking_lot::Mutex<Arc<dyn gasket_providers::LlmProvider>>,
     context_builder: history::builder::ContextBuilder,
     compactor: Option<Arc<ContextCompactor>>,
     /// Pricing config for cost tracking. None when cost tracking is disabled.
@@ -445,6 +447,29 @@ impl AgentSession {
         Ok(gasket_types::ModelSwitchInfo {
             previous,
             current: new.to_string(),
+        })
+    }
+
+    /// Switch both the model and the provider for cross-provider switching.
+    pub async fn switch_model_with_provider(
+        &self,
+        new_model: &str,
+        provider: Arc<dyn gasket_providers::LlmProvider>,
+    ) -> Result<gasket_types::ModelSwitchInfo, String> {
+        let previous = self.model();
+
+        {
+            let mut model_guard = self.active_model.lock();
+            *model_guard = new_model.to_string();
+        }
+        {
+            let mut provider_guard = self.active_provider.lock();
+            *provider_guard = provider;
+        }
+
+        Ok(gasket_types::ModelSwitchInfo {
+            previous,
+            current: new_model.to_string(),
         })
     }
 
@@ -674,6 +699,11 @@ impl AgentSession {
         let fctx = FinalizeContext::from_request(&request);
         let messages = request.messages;
         let mut runtime_ctx = self.runtime_ctx.clone();
+        // Use the active provider (may have been switched at runtime)
+        {
+            let provider = self.active_provider.lock().clone();
+            runtime_ctx.provider = provider;
+        }
         runtime_ctx.refs.session_key = Some(session_key.clone());
 
         if let Some(ref compactor) = &self.compactor {

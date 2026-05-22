@@ -9,7 +9,7 @@ use tracing::info;
 
 use gasket_engine::bus_adapter::EngineHandler;
 
-use gasket_engine::config::{load_config, ModelRegistry};
+use gasket_engine::config::{load_config, ConfigManager, ModelRegistry};
 use gasket_engine::cron::CronService;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentSession, ContextCompactor};
@@ -27,6 +27,7 @@ use crate::commands::broker_outbound::OutboundDispatcher;
 use gasket_types::SessionKey;
 
 use super::registry::CliModelResolver;
+use super::config_api::{self, AppState};
 use crate::provider::setup_vault;
 use axum::response::IntoResponse;
 use tower_http::cors::CorsLayer;
@@ -100,7 +101,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     let (agent, tools, subagent_spawner) = setup_agent_pipeline(
         &config,
-        vault,
+        vault.clone(),
         &workspace,
         &sqlite_store,
         page_store.clone(),
@@ -109,6 +110,14 @@ pub async fn cmd_gateway() -> Result<()> {
         approval_callback,
     )
     .await?;
+
+    // ── ConfigManager for REST API config management ──
+    let config_path = gasket_engine::config::config_path()?;
+    let config_manager = Arc::new(ConfigManager::new(
+        config.clone(),
+        config_path,
+        vault,
+    ));
 
     // Build the slash-command dispatcher for WebSocket clients.
     // Built-ins are registered here; user YAML commands are loaded from ~/.gasket/commands.
@@ -142,7 +151,15 @@ pub async fn cmd_gateway() -> Result<()> {
     );
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    setup_http_server(&providers, &agent, &dispatcher, &mut tasks).await;
+    setup_http_server(
+        &providers,
+        &agent,
+        &dispatcher,
+        &config_manager,
+        &broker,
+        &mut tasks,
+    )
+    .await;
     setup_broker_pipeline(broker.clone(), &providers, &agent, &dispatcher, &mut tasks);
     start_heartbeat_service(broker.clone(), &workspace, &mut tasks);
     // Spawn wiki indexing service to auto-update Tantivy + vectors on WikiChanged events
@@ -555,6 +572,8 @@ async fn setup_http_server(
     providers: &Arc<gasket_channels::ImProviders>,
     agent: &Arc<AgentSession>,
     dispatcher: &Arc<gasket_command::Dispatcher>,
+    config_manager: &Arc<ConfigManager>,
+    broker: &Arc<gasket_engine::broker::MemoryBroker>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     #[cfg(any(feature = "websocket", feature = "feishu"))]
@@ -562,6 +581,8 @@ async fn setup_http_server(
         let providers_for_http = providers.clone();
         let agent_for_http = agent.clone();
         let dispatcher_for_http = dispatcher.clone();
+        let config_manager_for_http = config_manager.clone();
+        let broker_for_http = broker.clone();
         tasks.push(tokio::spawn(async move {
             let mut app = axum::Router::new();
             for provider in providers_for_http.iter() {
@@ -569,7 +590,16 @@ async fn setup_http_server(
                     app = app.merge(router);
                 }
             }
-            app = add_context_routes(app, agent_for_http, dispatcher_for_http);
+            app = add_context_routes(app, agent_for_http.clone(), dispatcher_for_http);
+
+            // Mount config management REST API
+            let app_state = AppState {
+                config_manager: config_manager_for_http,
+                agent: agent_for_http,
+                broker: broker_for_http,
+            };
+            app = app.merge(config_api::config_router(app_state));
+
             app = app.layer(CorsLayer::permissive());
 
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));

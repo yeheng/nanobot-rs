@@ -1,6 +1,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useChatStore } from '@/stores/chatStore';
 import { useIMWebSocket } from '@/hooks/useIMWebSocket';
+import { useConfig } from '@/composables/useConfig';
 import type { ApprovalRequest, Message, SubagentState } from '@/types';
 
 export function useChatSession(chatId: { value: string }) {
@@ -299,6 +300,10 @@ export function useChatSession(chatId: { value: string }) {
           description: msg.description,
           arguments: msg.arguments,
         });
+        break;
+      case 'model_switched':
+        // Sync shared config state so ModelSelector reflects the change
+        useConfig().setCurrentModel(msg.current);
         break;
     }
   };

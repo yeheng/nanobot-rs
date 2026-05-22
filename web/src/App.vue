@@ -3,11 +3,17 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useResizableSidebar } from './composables/useResizableSidebar';
 import { MessageSquare, Pencil, Plus, X, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next';
-import { onUnmounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import ChatArea from './components/ChatArea.vue';
 import { useChatStore } from './stores/chatStore';
+import { useConfig } from './composables/useConfig';
 
 const chatStore = useChatStore();
+const { initConfig } = useConfig();
+
+onMounted(() => {
+  initConfig();
+});
 
 const isCollapsed = ref(false);
 const { sidebarWidth, isResizing, onResizeStart } = useResizableSidebar(isCollapsed);
