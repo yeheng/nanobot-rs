@@ -10,8 +10,23 @@ use super::lifecycle::{DecayReport, FrequencyManager};
 use super::page_store::WikiPageStore;
 use super::types::Frequency;
 
-/// PageStore: CRUD operations on wiki pages.
-/// Markdown files on disk are the SSOT. SQLite is a derived index (cache + query projection).
+/// PageStore: CRUD operations on wiki pages with a **two-layer SSOT contract**.
+///
+/// - **Disk markdown files are the SSOT for content** (title, type, category,
+///   tags, summary, body). Whatever is in `wiki_root/<path>.md` is the truth.
+/// - **SQLite is the SSOT for runtime/index state** (access_count, frequency,
+///   last_accessed, created/updated timestamps, source_count, confidence).
+///   It is also a derived query projection — `list`/`read_many`/`read_summaries`
+///   serve their result directly out of SQLite without touching disk.
+///
+/// `read(path)` enforces the contract: it pulls the markdown off disk first,
+/// then overlays the runtime fields from the DB row. This guarantees that
+/// out-of-band edits (e.g. `vim wiki_root/topics/foo.md`) are visible to
+/// callers, while preserving the runtime stats that only the DB tracks.
+///
+/// `write(page)` writes disk first, then upserts the DB index — the order
+/// matters: if the process crashes between disk-write and DB-upsert, the next
+/// `sync_db_from_disk()` reconstructs the missing DB row from disk.
 #[derive(Clone)]
 pub struct PageStore {
     db: WikiPageStore,
@@ -69,17 +84,41 @@ impl PageStore {
         Ok(())
     }
 
-    /// Read a page — pure query, no sync side effects.
+    /// Read a page. Disk is SSOT for content; DB overlays runtime state.
+    ///
+    /// Resolution order:
+    /// 1. Read `wiki_root/<path>.md` from disk → parse frontmatter + body.
+    ///    Defaults for runtime fields (`access_count = 0`, `frequency = default`,
+    ///    `created/updated = now`) are filled in by `from_markdown`.
+    /// 2. If a matching DB row exists, overlay the runtime fields from it
+    ///    (access_count, frequency, last_accessed, created, updated,
+    ///    source_count, confidence). Content fields stay disk-fresh.
+    /// 3. If disk file is missing, fall back to DB and surface a debug log —
+    ///    that is a damaged-index state which `sync_db_from_disk` will fix.
     pub async fn read(&self, path: &str) -> Result<WikiPage> {
-        if let Some(row) = self.db.get(path).await? {
-            return Ok(Self::row_to_page(row));
-        }
-
         let disk_path = self.wiki_root.join(format!("{}.md", path));
-        let markdown = fs::read_to_string(&disk_path).await?;
-        let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
-        page.file_mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
-        Ok(page)
+        match fs::read_to_string(&disk_path).await {
+            Ok(markdown) => {
+                let mut page = WikiPage::from_markdown(path.to_string(), &markdown)?;
+                page.file_mtime = Self::file_mtime(&disk_path).await.unwrap_or(0);
+                if let Some(row) = self.db.get(path).await? {
+                    Self::overlay_runtime_state(&mut page, &row);
+                }
+                Ok(page)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(row) = self.db.get(path).await? {
+                    tracing::debug!(
+                        "PageStore::read('{}'): disk file missing, returning stale DB row \
+                         (run sync_db_from_disk to repair)",
+                        path
+                    );
+                    return Ok(Self::row_to_page(row));
+                }
+                Err(e.into())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Batch-read full pages from SQLite.
@@ -229,6 +268,21 @@ impl PageStore {
             last_accessed: Self::parse_optional_rfc3339(row.last_accessed.as_deref()),
             file_mtime: row.file_mtime,
         }
+    }
+
+    /// Overlay DB runtime state onto a disk-loaded `WikiPage`.
+    ///
+    /// Disk supplies content fields (title/type/category/tags/summary/content);
+    /// DB supplies the runtime/index fields that cannot live in the markdown
+    /// frontmatter (timestamps, access stats, frequency, confidence).
+    fn overlay_runtime_state(page: &mut WikiPage, row: &super::page_store::PageRow) {
+        page.created = Self::parse_rfc3339(&row.created);
+        page.updated = Self::parse_rfc3339(&row.updated);
+        page.source_count = row.source_count as u32;
+        page.confidence = row.confidence;
+        page.frequency = Frequency::from_str_lossy(&row.frequency);
+        page.access_count = row.access_count as u64;
+        page.last_accessed = Self::parse_optional_rfc3339(row.last_accessed.as_deref());
     }
 
     fn row_to_summary(row: &super::page_store::PageRow, content_length: u64) -> PageSummary {

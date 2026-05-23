@@ -1,7 +1,15 @@
-//! SQLite-backed embedding persistence.
+//! SQLite-backed embedding persistence + `VectorStore` trait.
+//!
+//! Previously this trait lived in a separate `vector_store.rs` module with
+//! its own duplicate `StoredEmbedding`. That layer added no behavior — only
+//! a second struct definition that required pointless conversion code in
+//! every backend. Consolidated here so there is exactly one `StoredEmbedding`
+//! and one trait declaration.
 
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use futures::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 
 /// An embedding record stored in SQLite.
@@ -11,6 +19,115 @@ pub struct StoredEmbedding {
     pub embedding: Vec<f32>,
     pub event_type: String,
     pub created_at: String,
+}
+
+/// A single embedding record to be upserted into a vector store.
+pub struct VectorRecord {
+    pub id: String,
+    pub vector: Vec<f32>,
+    pub session_key: String,
+    pub event_type: String,
+    pub content_hash: String,
+}
+
+/// Result from a vector similarity search.
+pub struct SearchResult {
+    pub id: String,
+    pub score: f32,
+}
+
+/// Backend-agnostic vector storage interface.
+///
+/// Every implementation must be `Send + Sync` so it can be shared across
+/// async tasks via `Arc<dyn VectorStore>`.
+#[async_trait]
+pub trait VectorStore: Send + Sync {
+    /// Upsert a batch of records. Idempotent — duplicate IDs are ignored.
+    async fn upsert(&self, records: Vec<VectorRecord>) -> Result<()>;
+
+    /// Approximate nearest-neighbor search.
+    ///
+    /// Returns up to `top_k` results with score >= `min_score`, sorted by
+    /// descending similarity. IDs in `exclude` are skipped.
+    async fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: f32,
+        exclude: &std::collections::HashSet<String>,
+    ) -> Result<Vec<SearchResult>>;
+
+    /// Delete records by ID. Returns the number of records removed.
+    async fn delete(&self, ids: &[String]) -> Result<u64>;
+
+    /// Check whether a record with the given ID exists.
+    async fn exists(&self, id: &str) -> Result<bool>;
+
+    /// Total number of stored records.
+    async fn count(&self) -> Result<i64>;
+
+    /// Return the embedding dimension this store was created with.
+    fn dim(&self) -> usize;
+
+    // -- Cold-start helpers ---------------------------------------------------
+
+    /// Load all stored embeddings (for full index rebuild).
+    async fn load_all(&self) -> Result<Vec<StoredEmbedding>>;
+
+    /// Load the most recent `limit` embeddings, ordered by created_at DESC.
+    async fn load_recent(&self, limit: usize) -> Result<Vec<StoredEmbedding>>;
+}
+
+/// Configuration for selecting a vector store backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[derive(Default)]
+pub enum VectorStoreConfig {
+    /// SQLite-backed brute-force search (default, zero extra dependencies).
+    #[serde(rename = "SQLite")]
+    #[default]
+    SQLite,
+
+    /// LanceDB embedded vector database with persistent ANN index.
+    #[cfg(feature = "lancedb")]
+    LanceDB {
+        /// Path to the LanceDB database directory.
+        /// e.g. "~/.gasket/vectors"
+        path: String,
+        /// Table name inside the database. Defaults to "event_embeddings".
+        #[serde(default = "default_table_name")]
+        table: String,
+    },
+}
+
+#[cfg(feature = "lancedb")]
+fn default_table_name() -> String {
+    "event_embeddings".to_string()
+}
+
+/// Build a `VectorStore` from configuration.
+///
+/// - `SQLite` backend requires a `SqlitePool` (passed in from the caller).
+/// - `LanceDB` backend opens/creates the database at the configured path.
+pub async fn build_vector_store(
+    config: &VectorStoreConfig,
+    dim: usize,
+    sqlite_pool: Option<&sqlx::SqlitePool>,
+) -> Result<std::sync::Arc<dyn VectorStore>> {
+    match config {
+        VectorStoreConfig::SQLite => {
+            let pool = sqlite_pool
+                .ok_or_else(|| anyhow!("SQLite pool required for SQLite backend"))?;
+            let store = EmbeddingStore::new(pool.clone(), dim);
+            store.run_migration().await?;
+            Ok(std::sync::Arc::new(store))
+        }
+        #[cfg(feature = "lancedb")]
+        VectorStoreConfig::LanceDB { path, table } => {
+            let store = crate::lance_store::LanceVectorStore::open(path, table, dim).await?;
+            Ok(std::sync::Arc::new(store))
+        }
+    }
 }
 
 /// Store for persisting embeddings in SQLite.
@@ -392,8 +509,8 @@ fn bytes_to_embedding_into(bytes: &[u8], out: &mut Vec<f32>) -> anyhow::Result<(
 // VectorStore trait implementation
 // ---------------------------------------------------------------------------
 #[async_trait::async_trait]
-impl crate::vector_store::VectorStore for EmbeddingStore {
-    async fn upsert(&self, records: Vec<crate::vector_store::VectorRecord>) -> anyhow::Result<()> {
+impl VectorStore for EmbeddingStore {
+    async fn upsert(&self, records: Vec<VectorRecord>) -> anyhow::Result<()> {
         if records.is_empty() {
             return Ok(());
         }
@@ -416,13 +533,13 @@ impl crate::vector_store::VectorStore for EmbeddingStore {
         top_k: usize,
         min_score: f32,
         exclude: &std::collections::HashSet<String>,
-    ) -> anyhow::Result<Vec<crate::vector_store::SearchResult>> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         let raw = self
             .search_similar(query, top_k, min_score, exclude)
             .await?;
         Ok(raw
             .into_iter()
-            .map(|(id, score)| crate::vector_store::SearchResult { id, score })
+            .map(|(id, score)| SearchResult { id, score })
             .collect())
     }
 
@@ -442,35 +559,12 @@ impl crate::vector_store::VectorStore for EmbeddingStore {
         self.dim
     }
 
-    async fn load_all(&self) -> anyhow::Result<Vec<crate::vector_store::StoredEmbedding>> {
-        let raw = self.load_all().await?;
-        Ok(raw
-            .into_iter()
-            .map(|e| crate::vector_store::StoredEmbedding {
-                event_id: e.event_id,
-                session_key: e.session_key,
-                embedding: e.embedding,
-                event_type: e.event_type,
-                created_at: e.created_at,
-            })
-            .collect())
+    async fn load_all(&self) -> anyhow::Result<Vec<StoredEmbedding>> {
+        self.load_all().await
     }
 
-    async fn load_recent(
-        &self,
-        limit: usize,
-    ) -> anyhow::Result<Vec<crate::vector_store::StoredEmbedding>> {
-        let raw = self.load_recent(limit).await?;
-        Ok(raw
-            .into_iter()
-            .map(|e| crate::vector_store::StoredEmbedding {
-                event_id: e.event_id,
-                session_key: e.session_key,
-                embedding: e.embedding,
-                event_type: e.event_type,
-                created_at: e.created_at,
-            })
-            .collect())
+    async fn load_recent(&self, limit: usize) -> anyhow::Result<Vec<StoredEmbedding>> {
+        self.load_recent(limit).await
     }
 }
 

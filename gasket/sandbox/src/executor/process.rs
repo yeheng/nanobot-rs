@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tracing::instrument;
 
 use super::ExecutionResult;
-use crate::backend::{create_backend, SandboxBackend};
+use crate::backend::{create_backend, IsolationLevel, SandboxBackend};
 use crate::config::{CommandPolicy, PolicyVerdict, SandboxConfig};
 use crate::error::{Result, SandboxError};
 
@@ -30,13 +30,19 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
-    /// Create a new process manager
-    pub fn new(config: SandboxConfig) -> Self {
-        let backend = create_backend(&config);
+    /// Create a new process manager.
+    ///
+    /// Returns `Err(SandboxError::ConfigError)` if `config.enabled = true` but
+    /// the requested backend is not available on this platform. This is the
+    /// fail-closed behavior: never silently degrade to an unsandboxed
+    /// executor behind the caller's back. Callers that explicitly want
+    /// unsandboxed execution must set `config.enabled = false`.
+    pub fn new(config: SandboxConfig) -> Result<Self> {
+        let backend = create_backend(&config)?;
         let policy = CommandPolicy::from_config(&config.policy);
         let timeout = Duration::from_secs(120);
 
-        Self {
+        Ok(Self {
             config,
             policy,
             backend,
@@ -45,7 +51,7 @@ impl ProcessManager {
             approval: None,
             #[cfg(feature = "audit")]
             audit: None,
-        }
+        })
     }
 
     /// Create with custom timeout
@@ -167,8 +173,21 @@ impl ProcessManager {
         self.backend.name()
     }
 
+    /// Effective isolation level provided by the active backend.
+    ///
+    /// Prefer this over `is_sandboxed()` — "sandboxed" is a yes/no whose
+    /// answer is misleading on Windows (resource limits only) and macOS
+    /// (deprecated Seatbelt).
+    pub fn isolation_level(&self) -> IsolationLevel {
+        self.backend.isolation_level()
+    }
+
+    /// Returns `true` if the user enabled sandboxing AND the backend
+    /// actually provides some form of isolation. Kept for backward
+    /// compatibility with existing callers; new code should use
+    /// [`isolation_level`](Self::isolation_level) for a precise answer.
     pub fn is_sandboxed(&self) -> bool {
-        self.config.enabled
+        self.config.enabled && self.backend.isolation_level() != IsolationLevel::None
     }
 
     pub fn provides_filesystem_isolation(&self) -> bool {
@@ -191,15 +210,16 @@ mod tests {
     #[tokio::test]
     async fn test_process_manager_fallback() {
         let config = SandboxConfig::fallback();
-        let manager = ProcessManager::new(config);
+        let manager = ProcessManager::new(config).expect("fallback always available");
         assert_eq!(manager.backend_name(), "fallback");
         assert!(!manager.is_sandboxed());
+        assert_eq!(manager.isolation_level(), IsolationLevel::None);
     }
 
     #[tokio::test]
     async fn test_execute_simple_command() {
         let config = SandboxConfig::fallback();
-        let manager = ProcessManager::new(config);
+        let manager = ProcessManager::new(config).expect("fallback always available");
         let result = manager.execute("echo hello", Path::new("/tmp")).await;
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -210,11 +230,27 @@ mod tests {
     #[tokio::test]
     async fn test_execute_with_timeout() {
         let config = SandboxConfig::fallback();
-        let manager = ProcessManager::new(config);
+        let manager = ProcessManager::new(config).expect("fallback always available");
         let result = manager
             .execute_with_timeout("sleep 10", Path::new("/tmp"), Duration::from_millis(100))
             .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SandboxError::Timeout { .. }));
+    }
+
+    /// Regression: requesting a backend not available on the current platform
+    /// must FAIL CLOSED — never silently fall back to the unsandboxed executor.
+    #[tokio::test]
+    async fn test_unknown_backend_is_hard_error() {
+        let mut config = SandboxConfig::fallback();
+        config.enabled = true;
+        config.backend = "no-such-backend".into();
+        let result = ProcessManager::new(config);
+        assert!(result.is_err(), "unknown backend must error");
+        match result {
+            Err(SandboxError::ConfigError(_)) => {}
+            Err(other) => panic!("expected ConfigError, got {:?}", other),
+            Ok(_) => unreachable!("checked is_err above"),
+        }
     }
 }

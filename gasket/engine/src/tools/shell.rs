@@ -66,8 +66,22 @@ impl ExecTool {
         // Convert gasket-core config to gasket-sandbox config
         let sandbox_config = build_sandbox_config(config, &working_dir);
 
-        // Create process manager with the sandbox configuration
-        let process_manager = ProcessManager::new(sandbox_config).with_timeout(timeout);
+        // Create process manager with the sandbox configuration.
+        //
+        // `ProcessManager::new` now fail-closes when `sandbox.enabled = true`
+        // but the requested backend is unavailable. We surface that as a panic
+        // here because tool registration happens once at boot and bad sandbox
+        // config is fundamentally unrecoverable — the operator must either
+        // fix `sandbox.backend` or set `sandbox.enabled = false`.
+        let process_manager = ProcessManager::new(sandbox_config)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "ExecTool: sandbox initialization failed: {}. \
+                     Fix `sandbox.backend` or set `sandbox.enabled = false` in config.",
+                    e
+                )
+            })
+            .with_timeout(timeout);
 
         info!(
             "ExecTool initialized: sandbox={}, working_dir={:?}, timeout={}s{}",
@@ -102,7 +116,10 @@ impl ExecTool {
     ) -> Self {
         let working_dir = working_dir.into();
         let sandbox_config = SandboxExecutorConfig::fallback();
-        let process_manager = ProcessManager::new(sandbox_config).with_timeout(timeout);
+        // `fallback` is always available, so this cannot fail.
+        let process_manager = ProcessManager::new(sandbox_config)
+            .expect("FallbackBackend is always available")
+            .with_timeout(timeout);
 
         Self {
             working_dir,

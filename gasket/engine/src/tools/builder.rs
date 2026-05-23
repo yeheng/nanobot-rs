@@ -187,12 +187,12 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     // Discover external plugins — engine resources are injected at construction time.
     let engine_resources = provider.map(|p| {
         let tools_arc = Arc::new(tools.clone());
-        crate::plugin::EngineResources {
+        crate::external_tools::EngineResources {
             tool_registry: tools_arc,
             provider: p,
         }
     });
-    if let Err(e) = crate::plugin::discover_plugins(&mut tools, engine_resources) {
+    if let Err(e) = crate::external_tools::discover_plugins(&mut tools, engine_resources) {
         tracing::warn!("Failed to discover script tools: {}", e);
     }
 

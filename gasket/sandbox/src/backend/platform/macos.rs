@@ -165,6 +165,10 @@ impl SandboxBackend for MacOsSandboxBackend {
         &[Platform::MacOS]
     }
 
+    fn isolation_level(&self) -> crate::backend::IsolationLevel {
+        crate::backend::IsolationLevel::SeatbeltProfile
+    }
+
     fn provides_filesystem_isolation(&self) -> bool {
         true
     }

@@ -23,6 +23,20 @@ enum QueueInner {
     },
 }
 
+/// Senders cloned out of a `QueueInner` so we can drop the DashMap guard
+/// before awaiting on `tx.send`. Holding the guard across `.await` would
+/// pin the bucket lock for arbitrary time and is a known deadlock pattern.
+enum QueueSenders {
+    PointToPoint {
+        tx: async_channel::Sender<Envelope>,
+        stats: Arc<QueueStats>,
+    },
+    Broadcast {
+        tx: tokio::sync::broadcast::Sender<Envelope>,
+        stats: Arc<QueueStats>,
+    },
+}
+
 struct QueueStats {
     published: AtomicU64,
     consumed: AtomicU64,
@@ -70,49 +84,59 @@ impl MemoryBroker {
         }
     }
 
-    fn ensure_queue(&self, topic: &Topic) {
-        self.queues
+    fn build_queue(&self, topic: &Topic) -> QueueInner {
+        match topic.delivery_mode() {
+            DeliveryMode::PointToPoint => {
+                let (tx, rx) = async_channel::bounded(self.p2p_capacity);
+                QueueInner::PointToPoint {
+                    tx,
+                    rx,
+                    stats: Arc::new(QueueStats::new()),
+                }
+            }
+            DeliveryMode::Broadcast => {
+                let (tx, _rx) = tokio::sync::broadcast::channel(self.broadcast_capacity);
+                QueueInner::Broadcast {
+                    tx,
+                    stats: Arc::new(QueueStats::new()),
+                }
+            }
+        }
+    }
+
+    /// Atomically obtain (or create) the sender side of the topic's queue.
+    ///
+    /// Returns a cloned snapshot — the DashMap guard is dropped before the
+    /// caller awaits anything, which avoids holding a bucket lock across
+    /// `tx.send().await` (a deadlock risk in the prior implementation).
+    fn sender_snapshot(&self, topic: &Topic) -> QueueSenders {
+        let entry = self
+            .queues
             .entry(topic.clone())
-            .or_insert_with(|| match topic.delivery_mode() {
-                DeliveryMode::PointToPoint => {
-                    let (tx, rx) = async_channel::bounded(self.p2p_capacity);
-                    QueueInner::PointToPoint {
-                        tx,
-                        rx,
-                        stats: Arc::new(QueueStats::new()),
-                    }
-                }
-                DeliveryMode::Broadcast => {
-                    let (tx, _rx) = tokio::sync::broadcast::channel(self.broadcast_capacity);
-                    QueueInner::Broadcast {
-                        tx,
-                        stats: Arc::new(QueueStats::new()),
-                    }
-                }
-            });
+            .or_insert_with(|| self.build_queue(topic));
+        match entry.value() {
+            QueueInner::PointToPoint { tx, stats, .. } => QueueSenders::PointToPoint {
+                tx: tx.clone(),
+                stats: stats.clone(),
+            },
+            QueueInner::Broadcast { tx, stats } => QueueSenders::Broadcast {
+                tx: tx.clone(),
+                stats: stats.clone(),
+            },
+        }
     }
 
     /// Blocking publish — awaits when queue is full (natural backpressure).
     pub async fn publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        if !self.queues.contains_key(&envelope.topic) {
-            self.ensure_queue(&envelope.topic);
-        }
-
-        let mut cq = self
-            .queues
-            .get_mut(&envelope.topic)
-            .ok_or(BrokerError::Internal(
-                "queue just created but not found".into(),
-            ))?;
-
-        match cq.value_mut() {
-            QueueInner::PointToPoint { tx, stats, .. } => {
+        let senders = self.sender_snapshot(&envelope.topic);
+        match senders {
+            QueueSenders::PointToPoint { tx, stats } => {
                 tx.send(envelope)
                     .await
                     .map_err(|_| BrokerError::ChannelClosed)?;
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
-            QueueInner::Broadcast { tx, stats } => {
+            QueueSenders::Broadcast { tx, stats } => {
                 let _ = tx.send(envelope);
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
@@ -122,26 +146,16 @@ impl MemoryBroker {
 
     /// Non-blocking publish — returns QueueFull immediately.
     pub fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        if !self.queues.contains_key(&envelope.topic) {
-            self.ensure_queue(&envelope.topic);
-        }
-
-        let cq = self
-            .queues
-            .get(&envelope.topic)
-            .ok_or(BrokerError::Internal(
-                "queue just created but not found".into(),
-            ))?;
-
-        match cq.value() {
-            QueueInner::PointToPoint { tx, stats, .. } => {
+        let senders = self.sender_snapshot(&envelope.topic);
+        match senders {
+            QueueSenders::PointToPoint { tx, stats } => {
                 tx.try_send(envelope).map_err(|e| match e {
                     async_channel::TrySendError::Full(_) => BrokerError::QueueFull,
                     async_channel::TrySendError::Closed(_) => BrokerError::ChannelClosed,
                 })?;
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
-            QueueInner::Broadcast { tx, stats } => {
+            QueueSenders::Broadcast { tx, stats } => {
                 let _ = tx.send(envelope);
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
@@ -151,15 +165,11 @@ impl MemoryBroker {
 
     /// Subscribe to a topic.
     pub async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
-        if !self.queues.contains_key(topic) {
-            self.ensure_queue(topic);
-        }
-
-        let mut cq = self.queues.get_mut(topic).ok_or(BrokerError::Internal(
-            "queue just created but not found".into(),
-        ))?;
-
-        match cq.value_mut() {
+        let entry = self
+            .queues
+            .entry(topic.clone())
+            .or_insert_with(|| self.build_queue(topic));
+        match entry.value() {
             QueueInner::PointToPoint { rx, .. } => Ok(Subscriber::PointToPoint(rx.clone())),
             QueueInner::Broadcast { tx, .. } => Ok(Subscriber::Broadcast(tx.subscribe())),
         }

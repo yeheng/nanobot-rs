@@ -1,7 +1,13 @@
 //! Session management layer — wraps the kernel with stateful lifecycle.
 //!
 //! AgentSession owns session state (events, prompts, memory, compaction)
-//! and delegates the core LLM loop to `kernel::execute()`.
+//! and delegates per-turn request orchestration to
+//! [`pipeline::RequestPipeline`]. The session crate is split into two halves:
+//!
+//! - **Lifecycle (here in `mod.rs`):** clear/list/switch_model/force_compact/
+//!   graceful_shutdown — operations whose lifetime spans many turns.
+//! - **Per-turn pipeline (`pipeline.rs`):** preprocess → execute → postprocess.
+//!   Owned by `AgentSession` as a field, never carries session-level state.
 
 pub mod builder;
 pub mod compactor;
@@ -9,11 +15,14 @@ pub mod config;
 pub mod finalizer;
 pub mod history;
 pub mod pending_ask;
+pub(crate) mod pipeline;
 pub mod prompt;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use pending_ask::PendingAskRegistryImpl;
+
+pub(crate) use pipeline::{bridge_outbound_to_chat, early_abort_response, RequestPipeline};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,20 +31,14 @@ use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use crate::hooks::HookRegistry;
-use crate::kernel::{self, ExecutionResult, RuntimeContext, StreamEvent};
-use crate::session::finalizer::ResponseFinalizer;
+use crate::kernel::{ExecutionResult, RuntimeContext, StreamEvent};
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;
-use gasket_providers::ChatMessage;
 use gasket_storage::SqliteStore;
 use gasket_types::events::ChatEvent;
 use gasket_types::pending_ask::PendingAskRegistry;
 use gasket_types::SessionKey;
-
-use futures_util::StreamExt;
-use history::builder::BuildOutcome;
-use tokio_stream::wrappers::ReceiverStream;
 
 /// Outcome of `handle_inbound`.
 pub enum HandleOutcome {
@@ -124,10 +127,24 @@ impl FinalizeContext {
 ///
 /// Bridges the kernel's checkpoint hook to the session's compactor,
 /// eliminating the need for `block_in_place` + `block_on` hacks.
-struct SessionCheckpointCallback {
+pub(crate) struct SessionCheckpointCallback {
     session_key: SessionKey,
     compactor: Arc<ContextCompactor>,
     event_store: gasket_storage::EventStore,
+}
+
+impl SessionCheckpointCallback {
+    pub(crate) fn new(
+        session_key: SessionKey,
+        compactor: Arc<ContextCompactor>,
+        event_store: gasket_storage::EventStore,
+    ) -> Self {
+        Self {
+            session_key,
+            compactor,
+            event_store,
+        }
+    }
 }
 
 #[async_trait]
@@ -289,10 +306,15 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
-/// Owns session state (events, prompts, compaction) and delegates
-/// the core LLM loop to `kernel::execute()`.
-/// Optional subsystems (wiki, cost tracking) are stored as direct Option fields
-/// to avoid the indirection and dynamic dispatch of a plugin trait.
+/// Owns session-level state (events, prompts, compaction, cost tracking) and
+/// delegates per-turn request orchestration to `pipeline: RequestPipeline`.
+/// The split decouples two responsibilities that were previously crammed
+/// into one god-object:
+///
+/// - **Session lifecycle:** active model, history, compactor, pending asks,
+///   embedding index, graceful shutdown.
+/// - **Per-turn pipeline:** finalizer + tracked task spawning. Lives in
+///   `pipeline.rs` and never touches session-only state.
 #[allow(unused_variables)]
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
@@ -303,12 +325,9 @@ pub struct AgentSession {
     compactor: Option<Arc<ContextCompactor>>,
     /// Pricing config for cost tracking. None when cost tracking is disabled.
     pricing: Option<ModelPricing>,
-    /// Response finalizer — owns post-processing logic.
-    finalizer: ResponseFinalizer,
-    /// Task tracker for graceful shutdown of spawned finalization tasks.
-    /// `TaskTracker` is lock-free and purpose-built for "spawn N tasks, then
-    /// await all" patterns. Replaces the previous `Mutex<Vec<oneshot::Receiver>>`.
-    pending_done: tokio_util::task::TaskTracker,
+    /// Per-turn request orchestration. Holds the response finalizer and a
+    /// `TaskTracker` so that `graceful_shutdown` can await in-flight turns.
+    pipeline: RequestPipeline,
     /// Pending-ask registry shared with tools through `RuntimeContext`.
     pending_asks: Arc<PendingAskRegistryImpl>,
     /// RAII guard for the background embedding indexer.
@@ -317,14 +336,7 @@ pub struct AgentSession {
     embedding_indexer: Option<gasket_embedding::EmbeddingIndexer>,
 }
 
-/// Context carried through the PreProcess → Execute → PostProcess pipeline.
-struct PipelineContext {
-    runtime_ctx: RuntimeContext,
-    messages: Vec<ChatMessage>,
-    fctx: FinalizeContext,
-    model: String,
-    finalizer: ResponseFinalizer,
-}
+// `PipelineContext` now lives in `pipeline.rs` as `pub(crate)`.
 
 impl AgentSession {
     /// Create a new session with default services.
@@ -519,15 +531,15 @@ impl AgentSession {
     /// all pending `finalize_response` calls complete. This prevents data loss where
     /// an assistant message has been generated but not yet persisted to the EventStore.
     pub async fn graceful_shutdown(&self) {
-        // Close the tracker (no new tasks accepted) and await all in-flight work.
-        self.pending_done.close();
-        if !self.pending_done.is_empty() {
+        let tracker = self.pipeline.pending_done();
+        tracker.close();
+        if !tracker.is_empty() {
             info!(
                 "Graceful shutdown: awaiting {} pending finalization task(s)",
-                self.pending_done.len()
+                tracker.len()
             );
         }
-        self.pending_done.wait().await;
+        tracker.wait().await;
     }
 
     /// Inbound entry: try to deliver to a pending ask first, otherwise run
@@ -563,9 +575,11 @@ impl AgentSession {
 
     /// Process a message with streaming.
     ///
-    /// Returns a receiver of `ChatEvent` (user-facing data-plane events) and a
-    /// join handle for the final response. System events (`TokenStats`, subagent
-    /// lifecycle) are consumed internally and do not flow to the returned channel.
+    /// Delegates per-turn orchestration to [`RequestPipeline`]. This method
+    /// stays on `AgentSession` because external callers depend on it, but it
+    /// now contains only the wiring (channels, synthesis callback,
+    /// aggregator-cancel) that is genuinely session-scoped. The
+    /// preprocess/execute/postprocess stages live in `pipeline.rs`.
     pub async fn process_direct_streaming_with_channel(
         &self,
         content: &str,
@@ -578,7 +592,17 @@ impl AgentSession {
         ),
         AgentError,
     > {
-        let (mut ctx, aborted) = self.preprocess(content, session_key).await?;
+        let (mut ctx, aborted) = self
+            .pipeline
+            .preprocess(
+                &self.runtime_ctx,
+                self.model(),
+                &self.context_builder,
+                self.compactor.as_ref(),
+                content,
+                session_key,
+            )
+            .await?;
 
         if let Some(msg) = aborted {
             return Ok(early_abort_response(msg, ctx.model));
@@ -598,7 +622,9 @@ impl AgentSession {
             .refs
             .session_key
             .clone()
-            .unwrap_or_else(|| gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default"));
+            .unwrap_or_else(|| {
+                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
+            });
         ctx.runtime_ctx.refs.synthesis_callback = Some(Arc::new(
             crate::kernel::synthesis::WebSocketSynthesizer::new(
                 ctx.runtime_ctx.provider.clone(),
@@ -617,170 +643,13 @@ impl AgentSession {
         cancel.cancel_current();
 
         let messages = std::mem::take(&mut ctx.messages);
-        let result_handle = self.spawn_pipeline_task(ctx, messages, kernel_tx, kernel_rx, chat_tx);
+        let result_handle = self
+            .pipeline
+            .spawn_pipeline_task(ctx, messages, kernel_tx, kernel_rx, chat_tx);
 
         Ok((chat_rx, result_handle))
     }
-
-    /// Spawn the kernel + stream-forwarding pipeline as a tracked task.
-    ///
-    /// Joins the kernel execution future with a stream that forwards
-    /// `StreamEvent`s to `ChatEvent`s, then runs postprocessing.
-    fn spawn_pipeline_task(
-        &self,
-        ctx: PipelineContext,
-        messages: Vec<ChatMessage>,
-        kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
-        kernel_rx: tokio::sync::mpsc::Receiver<StreamEvent>,
-        chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
-    ) -> tokio::task::JoinHandle<Result<AgentResponse, AgentError>> {
-        let chat_tx_err = chat_tx.clone();
-        self.pending_done.spawn(async move {
-            let stream_future = ReceiverStream::new(kernel_rx)
-                .filter_map(|event| futures_util::future::ready(event.to_chat_event()))
-                .for_each(|chat| {
-                    let chat_tx = chat_tx.clone();
-                    async move {
-                        let _ = chat_tx.send(chat).await;
-                    }
-                });
-
-            let exec_future = Self::execute(&ctx.runtime_ctx, messages, kernel_tx);
-            let (result, _) = tokio::join!(exec_future, stream_future);
-
-            if let Err(ref e) = result {
-                let _ = chat_tx_err
-                    .send(ChatEvent::error(format!("Agent error: {}", e)))
-                    .await;
-                let _ = chat_tx_err.send(ChatEvent::done()).await;
-            }
-
-            let result = result?;
-            let response = Self::postprocess(result, &ctx).await;
-
-            Ok(response)
-        })
-    }
-
-    // ── Pipeline stages ──────────────────────────────────────────────────────
-
-    /// Stage 1: PreProcess — build request, wire checkpoint callback.
-    async fn preprocess(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-    ) -> Result<(PipelineContext, Option<String>), AgentError> {
-        let outcome = self.prepare_pipeline(content, session_key).await?;
-        let request = match outcome {
-            BuildOutcome::Aborted(msg) => {
-                let ctx = PipelineContext {
-                    runtime_ctx: self.runtime_ctx.clone(),
-                    messages: vec![],
-                    fctx: FinalizeContext::new(session_key, content),
-                    model: self.model(),
-                    finalizer: self.finalizer.clone(),
-                };
-                return Ok((ctx, Some(msg)));
-            }
-            BuildOutcome::Ready(req) => req,
-        };
-
-        let fctx = FinalizeContext::from_request(&request);
-        let messages = request.messages;
-        let mut runtime_ctx = self.runtime_ctx.clone();
-        runtime_ctx.refs.session_key = Some(session_key.clone());
-
-        if let Some(ref compactor) = &self.compactor {
-            runtime_ctx.checkpoint_callback = Some(Arc::new(SessionCheckpointCallback {
-                session_key: fctx.session_key.clone(),
-                compactor: compactor.clone(),
-                event_store: self.context_builder.event_store().clone(),
-            }));
-        }
-
-        let ctx = PipelineContext {
-            runtime_ctx,
-            messages,
-            fctx,
-            model: self.model(),
-            finalizer: self.finalizer.clone(),
-        };
-        Ok((ctx, None))
-    }
-
-    /// Stage 2: Execute — run the kernel streaming loop.
-    async fn execute(
-        runtime_ctx: &RuntimeContext,
-        messages: Vec<ChatMessage>,
-        kernel_tx: tokio::sync::mpsc::Sender<StreamEvent>,
-    ) -> Result<ExecutionResult, AgentError> {
-        match kernel::execute_streaming(runtime_ctx, messages, kernel_tx).await {
-            Ok(r) => Ok(r),
-            Err(crate::kernel::KernelError::MaxIterations(n)) => Ok(ExecutionResult {
-                content: format!("Maximum iterations ({}) reached.", n),
-                reasoning_content: None,
-                tools_used: vec![],
-                token_usage: None,
-            }),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Stage 3: PostProcess — finalize response, persist events, trigger compaction.
-    async fn postprocess(result: ExecutionResult, ctx: &PipelineContext) -> AgentResponse {
-        ctx.finalizer.finalize(result, &ctx.fctx, &ctx.model).await
-    }
-
-    /// Common pre-processing pipeline.
-    async fn prepare_pipeline(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-    ) -> Result<history::builder::BuildOutcome, AgentError> {
-        self.context_builder.build(content, session_key).await
-    }
 }
 
-// Post-processing logic lives in `session::finalizer::ResponseFinalizer`.
-
-// ── Free-function helpers for streaming entry point ─────────────────────────
-
-/// Construct the response pair for the early-abort path (BeforeRequest hook
-/// aborted the pipeline). No kernel is invoked; just emits the abort message.
-fn early_abort_response(
-    msg: String,
-    model: String,
-) -> (
-    tokio::sync::mpsc::Receiver<ChatEvent>,
-    tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
-) {
-    let (_tx, rx) = tokio::sync::mpsc::channel(1);
-    let handle = tokio::spawn(async move {
-        Ok(AgentResponse {
-            content: msg,
-            reasoning_content: None,
-            tools_used: vec![],
-            model: Some(model),
-            token_usage: None,
-            cost: 0.0,
-        })
-    });
-    (rx, handle)
-}
-
-/// Spawn a bridge task: every `OutboundMessage::Stream` payload is forwarded
-/// as a `ChatEvent` onto `chat_tx`. Returns the sender for tools to use.
-fn bridge_outbound_to_chat(
-    chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
-) -> tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage> {
-    let (outbound_tx, mut outbound_rx) =
-        tokio::sync::mpsc::channel::<gasket_types::events::OutboundMessage>(64);
-    tokio::spawn(async move {
-        while let Some(msg) = outbound_rx.recv().await {
-            if let gasket_types::events::OutboundPayload::Stream(chat_event) = msg.payload {
-                let _ = chat_tx.send(chat_event).await;
-            }
-        }
-    });
-    outbound_tx
-}
+// Pipeline stages (preprocess / execute / postprocess / spawn_pipeline_task /
+// early_abort_response / bridge_outbound_to_chat) moved into `pipeline.rs`.

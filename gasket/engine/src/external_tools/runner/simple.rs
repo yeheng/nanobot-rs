@@ -13,9 +13,9 @@ use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use crate::plugin::manifest::PluginManifest;
-use crate::plugin::rpc::MAX_MESSAGE_SIZE;
-use crate::plugin::runner::{PluginError, PluginResult};
+use crate::external_tools::manifest::PluginManifest;
+use crate::external_tools::rpc::MAX_MESSAGE_SIZE;
+use crate::external_tools::runner::{PluginError, PluginResult};
 
 /// Run a script in simple mode (one-shot JSON input/output).
 ///
@@ -162,7 +162,7 @@ pub(super) fn spawn_process(
 #[cfg(test)]
 mod tests {
 
-    use crate::plugin::{PluginProtocol, RuntimeConfig};
+    use crate::external_tools::{PluginProtocol, RuntimeConfig};
 
     use super::*;
     use serde_json::json;

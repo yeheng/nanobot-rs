@@ -424,10 +424,112 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 }
 
+/// Provider kinds the dispatch table can resolve to.
+///
+/// Each value maps to exactly one builder. The mapping from user-visible
+/// provider *name* to kind goes through [`resolve_kind`]; the mapping from
+/// the `ProviderType` enum (config-supplied) is the fallback path. Either
+/// way the result is a single dispatch on this enum — no parallel match
+/// statements, no name-vs-type drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderKind {
+    Anthropic,
+    Gemini,
+    Minimax,
+    Moonshot,
+    Copilot,
+    /// OpenAI-compatible — covers the long tail of vendors that speak the
+    /// OpenAI HTTP shape (DeepSeek, Zhipu, Xiaomi, plain OpenAI…). The
+    /// `supports_thinking` bit is carried in the metadata table.
+    OpenAi,
+}
+
+/// Per-name metadata. Adding a new OpenAI-compatible vendor = one new line.
+///
+/// Replaces the previous hardcoded `matches!(name, "deepseek" | "kimi" | …)`
+/// string list — declarative, grep-friendly, single source of truth.
+struct ProviderProfile {
+    /// Canonical provider name (and any aliases). First entry is the canonical name.
+    aliases: &'static [&'static str],
+    kind: ProviderKind,
+    supports_thinking: bool,
+}
+
+const PROVIDER_REGISTRY: &[ProviderProfile] = &[
+    ProviderProfile {
+        aliases: &["anthropic", "claude"],
+        kind: ProviderKind::Anthropic,
+        supports_thinking: true,
+    },
+    ProviderProfile {
+        aliases: &["gemini"],
+        kind: ProviderKind::Gemini,
+        supports_thinking: true,
+    },
+    ProviderProfile {
+        aliases: &["minimax", "minimaxi"],
+        kind: ProviderKind::Minimax,
+        supports_thinking: false,
+    },
+    ProviderProfile {
+        aliases: &["moonshot", "kimi"],
+        kind: ProviderKind::Moonshot,
+        supports_thinking: true,
+    },
+    ProviderProfile {
+        aliases: &["copilot"],
+        kind: ProviderKind::Copilot,
+        supports_thinking: false,
+    },
+    // OpenAI-compatible flavors with reasoning/thinking mode.
+    ProviderProfile {
+        aliases: &["deepseek"],
+        kind: ProviderKind::OpenAi,
+        supports_thinking: true,
+    },
+    ProviderProfile {
+        aliases: &["zhipu"],
+        kind: ProviderKind::OpenAi,
+        supports_thinking: true,
+    },
+    ProviderProfile {
+        aliases: &["xiaomi"],
+        kind: ProviderKind::OpenAi,
+        supports_thinking: true,
+    },
+];
+
+/// Look up a provider profile by user-visible name. Case-insensitive.
+fn lookup_profile(name: &str) -> Option<&'static ProviderProfile> {
+    let lower = name.to_lowercase();
+    PROVIDER_REGISTRY
+        .iter()
+        .find(|p| p.aliases.iter().any(|a| *a == lower))
+}
+
+/// Resolve `(name, provider_type)` to a single `ProviderKind`.
+///
+/// Priority:
+/// 1. Exact match in the registry → that profile's kind.
+/// 2. Otherwise fall back to `provider_type` from config.
+fn resolve_kind(name: &str, provider_type: ProviderType) -> ProviderKind {
+    if let Some(profile) = lookup_profile(name) {
+        return profile.kind;
+    }
+    match provider_type {
+        ProviderType::Anthropic => ProviderKind::Anthropic,
+        ProviderType::Gemini => ProviderKind::Gemini,
+        ProviderType::Minimax => ProviderKind::Minimax,
+        ProviderType::Moonshot => ProviderKind::Moonshot,
+        ProviderType::Openai => ProviderKind::OpenAi,
+    }
+}
+
 /// Build a provider instance by name and config.
 ///
-/// Routes to the appropriate native provider when the name is recognized,
-/// falling back to `provider_type` dispatch for unknown names.
+/// Dispatch is single-pass through the [`PROVIDER_REGISTRY`] table; the prior
+/// two-step "by-name then by-type" fan-out is collapsed into one
+/// [`resolve_kind`] call plus one match on [`ProviderKind`].
 #[allow(unused_variables)]
 pub fn build_provider(
     name: &str,
@@ -441,8 +543,8 @@ pub fn build_provider(
     let extra_headers = provider_config.extra_headers.clone();
     let api_base = provider_config.api_base.clone();
 
-    match name {
-        "minimax" | "minimaxi" => {
+    match resolve_kind(name, provider_config.provider_type) {
+        ProviderKind::Minimax => {
             #[cfg(feature = "provider-minimax")]
             {
                 let provider = crate::build_minimax_provider(
@@ -461,7 +563,7 @@ pub fn build_provider(
                 "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
             )
         }
-        "gemini" => {
+        ProviderKind::Gemini => {
             #[cfg(feature = "provider-gemini")]
             {
                 let provider = crate::build_gemini_provider(
@@ -480,7 +582,7 @@ pub fn build_provider(
                 "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
             )
         }
-        "moonshot" | "kimi" => {
+        ProviderKind::Moonshot => {
             #[cfg(feature = "provider-moonshot")]
             {
                 let provider = crate::MoonshotProvider::with_config(
@@ -499,7 +601,7 @@ pub fn build_provider(
                 "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
             )
         }
-        "anthropic" | "claude" => {
+        ProviderKind::Anthropic => {
             #[cfg(feature = "provider-anthropic")]
             {
                 let provider = crate::build_anthropic_provider(
@@ -519,7 +621,7 @@ pub fn build_provider(
                 "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
             )
         }
-        "copilot" => {
+        ProviderKind::Copilot => {
             #[cfg(feature = "provider-copilot")]
             {
                 let provider = crate::CopilotProvider::with_proxy(
@@ -538,104 +640,13 @@ pub fn build_provider(
                 "Copilot provider is not compiled in. Rebuild with --features provider-copilot"
             )
         }
-        _ => dispatch_by_type(name, api_key, provider_config, model),
-    }
-}
-
-/// Fallback: dispatch by `provider_type` for unknown provider names.
-#[allow(unused_variables)]
-fn dispatch_by_type(
-    name: &str,
-    api_key: &str,
-    provider_config: &ProviderConfig,
-    model: &str,
-) -> anyhow::Result<std::sync::Arc<dyn crate::LlmProvider>> {
-    let proxy_url = provider_config.proxy_url.clone();
-    let proxy_username = provider_config.proxy_username.clone();
-    let proxy_password = provider_config.proxy_password.clone();
-    let extra_headers = provider_config.extra_headers.clone();
-    let api_base = provider_config.api_base.clone();
-
-    match provider_config.provider_type {
-        ProviderType::Gemini => {
-            #[cfg(feature = "provider-gemini")]
-            {
-                let provider = crate::build_gemini_provider(
-                    api_key.to_string(),
-                    Some(api_base),
-                    Some(model.to_string()),
-                    proxy_url,
-                    proxy_username,
-                    proxy_password,
-                    extra_headers,
-                );
-                Ok(std::sync::Arc::new(provider))
-            }
-            #[cfg(not(feature = "provider-gemini"))]
-            anyhow::bail!(
-                "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
-            )
-        }
-        ProviderType::Minimax => {
-            #[cfg(feature = "provider-minimax")]
-            {
-                let provider = crate::build_minimax_provider(
-                    api_key.to_string(),
-                    Some(api_base),
-                    Some(model.to_string()),
-                    proxy_url,
-                    proxy_username,
-                    proxy_password,
-                    extra_headers,
-                );
-                Ok(std::sync::Arc::new(provider))
-            }
-            #[cfg(not(feature = "provider-minimax"))]
-            anyhow::bail!(
-                "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
-            )
-        }
-        ProviderType::Moonshot => {
-            #[cfg(feature = "provider-moonshot")]
-            {
-                let provider = crate::MoonshotProvider::with_config(
-                    api_key.to_string(),
-                    Some(api_base),
-                    Some(model.to_string()),
-                    proxy_url,
-                    proxy_username,
-                    proxy_password,
-                    extra_headers,
-                );
-                Ok(std::sync::Arc::new(provider))
-            }
-            #[cfg(not(feature = "provider-moonshot"))]
-            anyhow::bail!(
-                "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
-            )
-        }
-        ProviderType::Anthropic => {
-            #[cfg(feature = "provider-anthropic")]
-            {
-                let provider = crate::build_anthropic_provider(
-                    api_key.to_string(),
-                    Some(api_base),
-                    Some(model.to_string()),
-                    None,
-                    proxy_url,
-                    proxy_username,
-                    proxy_password,
-                    extra_headers,
-                );
-                Ok(std::sync::Arc::new(provider))
-            }
-            #[cfg(not(feature = "provider-anthropic"))]
-            anyhow::bail!(
-                "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
-            )
-        }
-        ProviderType::Openai => {
-            let supports_thinking = matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu" | "xiaomi");
+        ProviderKind::OpenAi => {
+            // `supports_thinking` is driven by the registry — adding a new
+            // OpenAI-compatible vendor only requires one row in
+            // PROVIDER_REGISTRY, no edits here.
+            let supports_thinking = lookup_profile(name)
+                .map(|p| p.supports_thinking)
+                .unwrap_or(false);
             let config = ProviderConfig {
                 provider_type: ProviderType::Openai,
                 api_base: provider_config.api_base.clone(),

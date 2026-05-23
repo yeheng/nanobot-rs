@@ -22,7 +22,7 @@ use gasket_engine::EventStore;
 use gasket_engine::SqliteStore;
 use gasket_engine::SubagentSpawner;
 
-use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
+use gasket_engine::broker::{BrokerPayload, SessionManager};
 use crate::commands::broker_outbound::OutboundDispatcher;
 use gasket_types::SessionKey;
 
@@ -51,14 +51,16 @@ pub async fn cmd_gateway() -> Result<()> {
         return Ok(());
     }
 
-    // ── Infrastructure initialization (explicit, once) ──
-    gasket_engine::config::init_config(config.clone());
-    let broker = Arc::new(MemoryBroker::new(1024, 256));
-    let sqlite_store = SqliteStore::new()
-        .await
-        .expect("Failed to open SqliteStore");
-    gasket_storage::init_db(sqlite_store);
-    let sqlite_store = Arc::new(gasket_storage::get_db().clone());
+    // ── Infrastructure initialization (Linus refactor: extracted to engine) ──
+    let gasket_engine::bootstrap::EngineInfra {
+        config,
+        broker,
+        sqlite_store,
+    } = gasket_engine::bootstrap::init_engine_infra(
+        gasket_engine::bootstrap::BrokerCapacity::gateway(),
+    )
+    .await
+    .context("Failed to initialize engine infrastructure")?;
 
     let vault = setup_vault(&config)?;
 

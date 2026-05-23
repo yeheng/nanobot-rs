@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::process::Command as AsyncCommand;
 use tracing::debug;
 
-use super::{ExecutionResult, Platform, SandboxBackend};
+use super::{ExecutionResult, IsolationLevel, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
@@ -38,6 +38,11 @@ impl SandboxBackend for FallbackBackend {
 
     fn supported_platforms(&self) -> &[Platform] {
         &[Platform::Linux, Platform::MacOS, Platform::Windows]
+    }
+
+    fn isolation_level(&self) -> IsolationLevel {
+        // Fallback runs `sh -c` directly. No isolation. Be honest about it.
+        IsolationLevel::None
     }
 
     fn provides_filesystem_isolation(&self) -> bool {
