@@ -22,8 +22,8 @@
 //!     // Create a fallback (no sandbox) configuration
 //!     let config = SandboxConfig::fallback();
 //!
-//!     // Create a process manager
-//!     let manager = ProcessManager::new(config);
+//!     // Create a process manager (fails if no isolation backend can be built).
+//!     let manager = ProcessManager::new(config)?;
 //!
 //!     // Execute a command
 //!     let result = manager.execute("echo hello", Path::new("/tmp")).await?;

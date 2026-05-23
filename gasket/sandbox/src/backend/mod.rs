@@ -15,7 +15,7 @@ use std::process::Command;
 use async_trait::async_trait;
 
 use crate::config::SandboxConfig;
-use crate::error::Result;
+use crate::error::{Result, SandboxError};
 
 /// Platform enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,6 +59,47 @@ impl Platform {
     }
 }
 
+/// Honest classification of what a backend actually enforces.
+///
+/// The crate previously returned `bool is_sandboxed()` and let callers
+/// figure out the difference between bwrap-namespaces and `sh -c`. That is
+/// the wrong abstraction: "sandbox" means radically different things on
+/// different backends. Callers should branch on this enum instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IsolationLevel {
+    /// No isolation. Equivalent to calling `Command::new()` directly.
+    /// `FallbackBackend` returns this. NEVER lie about this.
+    None,
+    /// Resource limits only (CPU/memory/wall-clock). No filesystem or
+    /// network isolation. Windows Job Objects sit here.
+    ResourceLimits,
+    /// Filesystem isolation via a security profile (macOS sandbox-exec
+    /// Seatbelt). Stronger than `ResourceLimits` but enforcement is
+    /// best-effort and the Apple API is deprecated.
+    SeatbeltProfile,
+    /// Full namespace isolation (mount/pid/ipc/net). Linux bwrap sits here.
+    Namespaces,
+}
+
+impl IsolationLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IsolationLevel::None => "none",
+            IsolationLevel::ResourceLimits => "resource_limits",
+            IsolationLevel::SeatbeltProfile => "seatbelt_profile",
+            IsolationLevel::Namespaces => "namespaces",
+        }
+    }
+
+    /// Whether this level actually constrains filesystem access.
+    pub fn isolates_filesystem(self) -> bool {
+        matches!(
+            self,
+            IsolationLevel::SeatbeltProfile | IsolationLevel::Namespaces
+        )
+    }
+}
+
 /// Execution result from sandbox backend
 ///
 /// This is a re-export of `executor::ExecutionResult` to avoid duplication.
@@ -80,11 +121,21 @@ pub trait SandboxBackend: Send + Sync {
     /// Get supported platforms
     fn supported_platforms(&self) -> &[Platform];
 
+    /// What kind of isolation this backend actually provides.
+    ///
+    /// Default implementation returns `None` so any backend that does NOT
+    /// override this is honestly labelled as "no isolation".
+    fn isolation_level(&self) -> IsolationLevel {
+        IsolationLevel::None
+    }
+
     /// Whether this backend provides true filesystem isolation.
     ///
-    /// Used by callers to decide whether redirection patterns (`>`, `<`)
-    /// need to be blocked at the command-policy level.
-    fn provides_filesystem_isolation(&self) -> bool;
+    /// Default derives from `isolation_level()`. Overriding individually is
+    /// allowed but discouraged — keep the two methods consistent.
+    fn provides_filesystem_isolation(&self) -> bool {
+        self.isolation_level().isolates_filesystem()
+    }
 
     /// Build a Command for execution
     fn build_command(
@@ -104,74 +155,81 @@ pub trait SandboxBackend: Send + Sync {
 }
 
 /// Create the appropriate sandbox backend based on configuration and platform.
-pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
+///
+/// Returns an error when the requested backend is unavailable on this platform,
+/// instead of silently falling back to an unsandboxed executor. Pass
+/// `config.enabled = false` if you explicitly want unsandboxed execution; the
+/// crate will not pick that for you behind your back.
+///
+/// Linus rule: never lie about isolation. If the user said "sandbox", and we
+/// can't deliver, we error out so the caller can decide whether to abort.
+pub fn create_backend(config: &SandboxConfig) -> Result<Box<dyn SandboxBackend>> {
     if !config.enabled {
-        return Box::new(FallbackBackend::new());
+        return Ok(Box::new(FallbackBackend::new()));
     }
 
     let platform = Platform::current();
-    let backend_name = config.backend.to_lowercase();
+    let backend_name_lower = config.backend.to_lowercase();
 
-    // Handle "auto" backend selection
-    let backend_name = if backend_name == "auto" {
+    // Resolve "auto" to a concrete name. On Windows there is no real sandbox,
+    // so "auto" maps to host-executor + a loud warning — never silently.
+    let backend_name = if backend_name_lower == "auto" {
         match platform {
             Platform::Linux => "bwrap",
             Platform::MacOS => "sandbox-exec",
             Platform::Windows => {
                 tracing::warn!(
-                    "Windows has no true sandbox backend; falling back to host-executor with \
-                     Job Object resource limits only. For real isolation, run gasket inside WSL2."
+                    "Windows has no true sandbox backend; using host-executor with Job Object \
+                     resource limits only. For real isolation, run gasket inside WSL2."
                 );
                 "host-executor"
             }
         }
     } else {
-        &backend_name
+        backend_name_lower.as_str()
     };
 
-    // All known backend names across platforms
-    const KNOWN_BACKENDS: &[&str] = &[
-        "fallback",
-        "bwrap",
-        "sandbox-exec",
-        "job-objects",
-        "windows-fallback",
-        "unsafe-direct",
-    ];
-
     match backend_name {
-        "fallback" => Box::new(FallbackBackend::new()),
+        "fallback" => Ok(Box::new(FallbackBackend::new())),
+
         #[cfg(target_os = "linux")]
-        "bwrap" => Box::new(LinuxBwrapBackend::new()),
+        "bwrap" => Ok(Box::new(LinuxBwrapBackend::new())),
+        #[cfg(not(target_os = "linux"))]
+        "bwrap" => Err(SandboxError::ConfigError(format!(
+            "backend 'bwrap' is only available on Linux (current platform: {}); \
+             set `sandbox.backend = \"auto\"` or `sandbox.enabled = false`",
+            platform.as_str()
+        ))),
+
         #[cfg(target_os = "macos")]
-        "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
+        "sandbox-exec" => Ok(Box::new(MacOsSandboxBackend::new())),
+        #[cfg(not(target_os = "macos"))]
+        "sandbox-exec" => Err(SandboxError::ConfigError(format!(
+            "backend 'sandbox-exec' is only available on macOS (current platform: {}); \
+             set `sandbox.backend = \"auto\"` or `sandbox.enabled = false`",
+            platform.as_str()
+        ))),
+
         #[cfg(target_os = "windows")]
         "job-objects" | "windows-fallback" | "host-executor" | "unsafe-direct" => {
-            Box::new(HostExecutor::new())
+            Ok(Box::new(HostExecutor::new()))
         }
-        name if KNOWN_BACKENDS.contains(&name) => {
-            tracing::warn!(
-                "Backend '{}' is not available on {}, using platform default instead",
+        #[cfg(not(target_os = "windows"))]
+        "job-objects" | "windows-fallback" | "host-executor" | "unsafe-direct" => {
+            Err(SandboxError::ConfigError(format!(
+                "backend '{}' is only available on Windows (current platform: {}); \
+                 set `sandbox.backend = \"auto\"` or `sandbox.enabled = false`",
                 backend_name,
                 platform.as_str()
-            );
-            match platform {
-                #[cfg(target_os = "linux")]
-                Platform::Linux => Box::new(LinuxBwrapBackend::new()),
-                #[cfg(target_os = "macos")]
-                Platform::MacOS => Box::new(MacOsSandboxBackend::new()),
-                #[cfg(target_os = "windows")]
-                Platform::Windows => Box::new(HostExecutor::new()),
-                _ => Box::new(FallbackBackend::new()),
-            }
+            )))
         }
-        _ => {
-            tracing::warn!(
-                "Unknown backend '{}', falling back to unsandboxed execution",
-                backend_name
-            );
-            Box::new(FallbackBackend::new())
-        }
+
+        // Unknown name → loud error.
+        _ => Err(SandboxError::ConfigError(format!(
+            "unknown sandbox backend '{}'; expected one of: auto, fallback, bwrap, sandbox-exec, \
+             host-executor",
+            backend_name
+        ))),
     }
 }
 

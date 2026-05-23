@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gasket_engine::wiki::{
-    slugify, PageFilter, PageIndex, PageStore, PageType, WikiLinter, WikiPage,
+    slugify, Frequency, PageFilter, PageIndex, PageStore, PageType, WikiLinter, WikiPage,
 };
 use gasket_storage::wiki::TantivyPageIndex;
 use tempfile::TempDir;
@@ -176,4 +176,70 @@ async fn test_slugify_consistency() {
     assert_eq!(slugify("Rust & LLM Agents"), "rust-llm-agents");
     assert_eq!(slugify("test/page"), "test-page");
     assert_eq!(slugify("UPPER CASE"), "upper-case");
+}
+
+/// SSOT contract: disk wins for content. Editing the `.md` directly (e.g. vim)
+/// must be visible to `read()` even though the DB still holds an older copy.
+/// Regression for the silent staleness bug where read() short-circuited on DB.
+#[tokio::test]
+async fn test_read_returns_disk_content_when_disk_is_newer_than_db() {
+    let (store, dir) = setup_store().await;
+
+    let mut page = make_page(
+        "topics/ssot-test",
+        "SSOT Test",
+        "Original content from write()",
+        vec!["v1"],
+    );
+    store.write(&page).await.unwrap();
+
+    // Simulate an out-of-band edit (e.g. `vim wiki/topics/ssot-test.md`).
+    page.tags = vec!["v2".to_string()];
+    page.content = "Edited content from vim".to_string();
+    page.summary = Some("Edited summary".to_string());
+    let disk_path = dir.path().join("topics/ssot-test.md");
+    tokio::fs::write(&disk_path, page.to_markdown()).await.unwrap();
+
+    let loaded = store.read("topics/ssot-test").await.unwrap();
+    assert!(
+        loaded.content.contains("Edited content from vim"),
+        "read() must reflect disk content, got: {}",
+        loaded.content
+    );
+    assert_eq!(loaded.tags, vec!["v2".to_string()]);
+    assert_eq!(loaded.summary.as_deref(), Some("Edited summary"));
+}
+
+/// SSOT contract: DB wins for runtime state. When disk is updated out-of-band,
+/// the access stats / frequency / last_accessed maintained only in the DB must
+/// survive the next `read()` call.
+#[tokio::test]
+async fn test_read_preserves_db_runtime_state_after_disk_edit() {
+    let (store, dir) = setup_store().await;
+
+    let mut page = make_page(
+        "topics/runtime-state",
+        "Runtime State",
+        "Initial content.",
+        vec![],
+    );
+    page.access_count = 42;
+    page.frequency = Frequency::Hot;
+    page.last_accessed = Some(chrono::Utc::now());
+    store.write(&page).await.unwrap();
+
+    // Edit only the content on disk; runtime stats only exist in the DB.
+    let mut edited = page.clone();
+    edited.tags = vec![];
+    edited.category = None;
+    edited.summary = None;
+    edited.content = "Disk-edited content".to_string();
+    let disk_path = dir.path().join("topics/runtime-state.md");
+    tokio::fs::write(&disk_path, edited.to_markdown()).await.unwrap();
+
+    let loaded = store.read("topics/runtime-state").await.unwrap();
+    assert!(loaded.content.contains("Disk-edited content"));
+    assert_eq!(loaded.access_count, 42, "DB access_count must be overlaid");
+    assert!(matches!(loaded.frequency, Frequency::Hot), "DB frequency must be overlaid");
+    assert!(loaded.last_accessed.is_some(), "DB last_accessed must be overlaid");
 }

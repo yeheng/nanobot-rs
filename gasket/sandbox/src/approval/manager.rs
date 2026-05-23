@@ -53,19 +53,35 @@ impl RuleEngine {
             .find(|r| self.matches(&r.operation, operation))
     }
 
-    /// Check if an operation matches a pattern
+    /// Check if an operation matches a pattern.
+    ///
+    /// For `Command` operations the semantics are:
+    /// - `pattern.args == None` → rule does not constrain args; match by binary only.
+    /// - `pattern.args == Some(p)` → operation must have `args = Some(o)` and
+    ///   `pattern_matches(p, o)`. A rule that constrains args never matches an
+    ///   operation that has no args, so a rule for `git status` does NOT
+    ///   silently authorize `git push`.
     fn matches(&self, pattern: &OperationType, operation: &OperationType) -> bool {
         match (pattern, operation) {
             (
                 OperationType::Command {
                     binary: pb,
-                    args: _,
+                    args: pa,
                 },
                 OperationType::Command {
                     binary: ob,
-                    args: _,
+                    args: oa,
                 },
-            ) => self.pattern_matches(pb, ob),
+            ) => {
+                if !self.pattern_matches(pb, ob) {
+                    return false;
+                }
+                match (pa, oa) {
+                    (None, _) => true,
+                    (Some(p), Some(o)) => self.pattern_matches(p, o),
+                    (Some(_), None) => false,
+                }
+            }
             (
                 OperationType::FileRead { path_pattern: pp },
                 OperationType::FileRead { path_pattern: op },
@@ -400,6 +416,72 @@ mod tests {
         assert!(engine.pattern_matches("/tmp/*", "/tmp/file.txt"));
         assert!(engine.pattern_matches("*.txt", "file.txt"));
         assert!(engine.pattern_matches("*test*", "my_test_file"));
+    }
+
+    /// Regression: a rule that constrains `args` must NOT match operations
+    /// whose args differ. Previously the matcher ignored `args` entirely,
+    /// so `allow git status` silently matched `git push`.
+    #[test]
+    fn test_command_args_are_enforced() {
+        let mut engine = RuleEngine::new();
+        engine.add_rule(ApprovalRule::new(
+            OperationType::command_with_args("git", "git status"),
+            PermissionLevel::Allowed,
+        ));
+
+        // Exact args → match
+        let op = OperationType::command_with_args("git", "git status");
+        assert!(engine.find_match(&op).is_some());
+
+        // Same binary, different args → must NOT match
+        let op = OperationType::command_with_args("git", "git push");
+        assert!(
+            engine.find_match(&op).is_none(),
+            "rule constraining args must not match different args"
+        );
+
+        // Same binary, no args on operation → must NOT match
+        let op = OperationType::command("git");
+        assert!(
+            engine.find_match(&op).is_none(),
+            "rule constraining args must not match arg-less operation"
+        );
+    }
+
+    /// A rule without args (the lenient form) keeps the original
+    /// "any-args" semantics: matches binary regardless of args.
+    #[test]
+    fn test_command_no_args_pattern_is_wildcard() {
+        let mut engine = RuleEngine::new();
+        engine.add_rule(ApprovalRule::new(
+            OperationType::command("ls"),
+            PermissionLevel::Allowed,
+        ));
+
+        assert!(engine.find_match(&OperationType::command("ls")).is_some());
+        assert!(engine
+            .find_match(&OperationType::command_with_args("ls", "ls -la"))
+            .is_some());
+    }
+
+    /// Wildcards inside the args pattern work the same as for paths.
+    #[test]
+    fn test_command_args_glob_match() {
+        let mut engine = RuleEngine::new();
+        engine.add_rule(ApprovalRule::new(
+            OperationType::command_with_args("git", "git status*"),
+            PermissionLevel::Allowed,
+        ));
+
+        assert!(engine
+            .find_match(&OperationType::command_with_args(
+                "git",
+                "git status --short"
+            ))
+            .is_some());
+        assert!(engine
+            .find_match(&OperationType::command_with_args("git", "git push"))
+            .is_none());
     }
 
     #[tokio::test]

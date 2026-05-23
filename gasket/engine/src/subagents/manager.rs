@@ -150,19 +150,21 @@ pub fn spawn_subagent(
             }
         };
 
-        // Build kernel context
-        let config = AgentConfig {
+        // Build kernel context. `tool_filter` is per-execution and lives on
+        // KernelConfig, not AgentConfig — set it after `to_kernel_config()`.
+        let agent_config = AgentConfig {
             model: model
                 .clone()
                 .unwrap_or_else(|| provider.default_model().to_string()),
             max_iterations: crate::session::config::DEFAULT_MAX_ITERATIONS,
             thinking_enabled: task.thinking_enabled,
-            tool_filter: task.tool_filter.clone(),
             ..Default::default()
         };
+        let mut kernel_config = agent_config.to_kernel_config();
+        kernel_config.tool_filter = task.tool_filter.clone();
         let ctx = {
             let mut c =
-                kernel::RuntimeContext::new_worker(provider, tools, config.to_kernel_config());
+                kernel::RuntimeContext::new_worker(provider, tools, kernel_config);
             c.refs = refs.clone();
             c
         };

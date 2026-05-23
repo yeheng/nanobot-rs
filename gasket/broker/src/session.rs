@@ -189,7 +189,6 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
 
     async fn dispatch_to_session(&self, msg: InboundMessage) {
         let key = msg.session_key().clone();
-        let mut needs_respawn = true;
 
         tracing::info!(
             target: "gasket::broker",
@@ -214,29 +213,59 @@ impl<H: MessageHandler + 'static> SessionManager<H> {
             Err(m) => m,
         };
 
-        if let Some(tx) = self.sessions.get(&key) {
-            if tx.send(msg.clone()).await.is_ok() {
-                needs_respawn = false;
-            } else {
-                tracing::info!("Session [{}] channel dead, respawning...", key);
+        // Fast path: existing live sender. Avoids the slow-path lock dance.
+        if let Some(tx) = self.sessions.get(&key).map(|e| e.value().clone()) {
+            match tx.send(msg).await {
+                Ok(()) => return,
+                Err(send_err) => {
+                    tracing::info!("Session [{}] channel dead, respawning...", key);
+                    return self.spawn_session(key, send_err.0).await;
+                }
             }
         }
 
-        if needs_respawn {
-            let (tx, rx) = mpsc::channel(32);
+        self.spawn_session(key, msg).await;
+    }
+
+    /// Atomically claim the session slot, spawning a fresh task if (and only
+    /// if) we win the race. Losers piggyback on whichever channel ended up in
+    /// the map. Prevents the prior `get → spawn → insert` window that could
+    /// produce two live tasks for the same session_key.
+    async fn spawn_session(&self, key: SessionKey, msg: InboundMessage) {
+        use dashmap::mapref::entry::Entry;
+
+        // Allocate the channel up front so the entry guard is held only for
+        // the comparison + insert, not across any await.
+        let (new_tx, new_rx) = mpsc::channel(32);
+
+        let (tx, rx_to_spawn) = match self.sessions.entry(key.clone()) {
+            Entry::Occupied(mut occ) => {
+                if !occ.get().is_closed() {
+                    // Another dispatcher already replaced the slot; reuse it.
+                    (occ.get().clone(), None)
+                } else {
+                    occ.insert(new_tx.clone());
+                    (new_tx, Some(new_rx))
+                }
+            }
+            Entry::Vacant(vac) => {
+                vac.insert(new_tx.clone());
+                (new_tx, Some(new_rx))
+            }
+        }; // entry guard dropped here — safe to await below
+
+        if let Some(rx) = rx_to_spawn {
             let broker = self.broker.clone();
             let handler = self.handler.clone();
             let session_key = key.clone();
             let idle_timeout = self.idle_timeout;
-
             tokio::spawn(async move {
                 run_session_task(session_key, rx, broker, handler, idle_timeout).await;
             });
+        }
 
-            if let Err(e) = tx.send(msg).await {
-                tracing::error!("Failed to send to fresh session [{}]: {}", key, e);
-            }
-            self.sessions.insert(key, tx);
+        if let Err(e) = tx.send(msg).await {
+            tracing::error!("Failed to send to session [{}]: {}", key, e);
         }
     }
 }

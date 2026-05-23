@@ -207,6 +207,12 @@ impl SandboxBackend for HostExecutor {
         &[Platform::Windows]
     }
 
+    fn isolation_level(&self) -> crate::backend::IsolationLevel {
+        // Windows Job Objects only enforce resource limits (CPU/memory/wall),
+        // not filesystem isolation. Be honest about that.
+        crate::backend::IsolationLevel::ResourceLimits
+    }
+
     fn provides_filesystem_isolation(&self) -> bool {
         false
     }

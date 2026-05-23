@@ -192,40 +192,61 @@ impl Default for WikiLintConfig {
 /// Prompt templates — re-export from config layer (single source of truth).
 pub use crate::config::app_config::PromptsConfig;
 
-/// Agent loop configuration
+/// Agent loop configuration.
+///
+/// **Layer model (per Linus review):** these fields fall into three lifetimes.
+/// They are kept flat here for backward compatibility with existing call
+/// sites, but the comment groups indicate the lifetime each field belongs to.
+/// New code should prefer `to_kernel_config()` and the session/infra accessors
+/// over reaching into individual fields, so the layering stays meaningful.
+///
+/// 1. **Per-execution (kernel-layer)** — re-resolved on every LLM turn. These
+///    are funneled into `KernelConfig` via [`AgentConfigExt::to_kernel_config`].
+///    `tool_filter` is intentionally NOT here: it varies per inbound request
+///    and is threaded as a parameter through `handle_inbound`, then set on
+///    the runtime context's `KernelConfig.tool_filter`.
+///
+/// 2. **Per-session (session-layer)** — locked in when the session is built;
+///    changing them mid-session has no effect.
+///
+/// 3. **Infrastructure (constructor-time)** — wired once at startup; treated
+///    as immutable for the lifetime of the process.
 #[derive(Clone)]
 pub struct AgentConfig {
+    // ── Layer 1: per-execution (kernel-layer) ─────────────────────────────
     pub model: String,
     pub max_iterations: u32,
     pub temperature: f32,
     pub max_tokens: u32,
-    pub memory_window: usize,
     /// Maximum characters for tool result output (0 = unlimited)
     pub max_tool_result_chars: usize,
     /// Maximum retries for transient provider errors
     pub max_retries: u32,
     /// Enable thinking/reasoning mode for deep reasoning models
     pub thinking_enabled: bool,
-    /// Enable streaming mode for progressive output
-    pub streaming: bool,
     /// Tool execution timeout in seconds
     pub tool_timeout_secs: u64,
-    /// Plugin execution timeout in seconds (fallback when manifest omits it)
+    /// External-tool execution timeout in seconds (fallback when manifest omits it)
     pub plugin_timeout_secs: u64,
+    /// Maximum characters for WebSocket subagent summary (0 = unlimited).
+    pub ws_summary_limit: usize,
+
+    // ── Layer 2: per-session (session-layer) ──────────────────────────────
+    pub memory_window: usize,
+    /// Enable streaming mode for progressive output
+    pub streaming: bool,
     /// Subagent execution timeout in seconds
     pub subagent_timeout_secs: u64,
-    /// Optional whitelist of tool names visible to the LLM for this run.
-    pub tool_filter: Option<Vec<String>>,
     /// Session idle timeout in seconds
     pub session_idle_timeout_secs: u64,
     /// Cooldown after a failed compaction LLM call (default: 60s).
     pub compaction_cooldown_secs: u64,
+
+    // ── Layer 3: infrastructure (constructor-time) ────────────────────────
     /// Timeout for after-response hooks in seconds (default: 30s).
     pub after_response_hook_timeout_secs: u64,
     /// Timeout for external shell hooks in seconds (default: 2s).
     pub external_hook_timeout_secs: u64,
-    /// Maximum characters for WebSocket subagent summary (0 = unlimited).
-    pub ws_summary_limit: usize,
     /// Prompt configuration for internal AI behaviors.
     pub prompts: PromptsConfig,
     /// Self-evolution configuration (auto-learning from conversations).
@@ -239,24 +260,26 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            // Layer 1
             model: DEFAULT_MODEL.to_string(),
             max_iterations: DEFAULT_MAX_ITERATIONS,
             temperature: DEFAULT_TEMPERATURE,
             max_tokens: DEFAULT_MAX_TOKENS,
-            memory_window: DEFAULT_MEMORY_WINDOW,
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
             max_retries: DEFAULT_MAX_RETRIES,
             thinking_enabled: false,
-            streaming: true,
             tool_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
             plugin_timeout_secs: DEFAULT_TOOL_TIMEOUT_SECS,
+            ws_summary_limit: 0,
+            // Layer 2
+            memory_window: DEFAULT_MEMORY_WINDOW,
+            streaming: true,
             subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
-            tool_filter: None,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
             compaction_cooldown_secs: DEFAULT_COMPACTION_COOLDOWN_SECS,
+            // Layer 3
             after_response_hook_timeout_secs: DEFAULT_AFTER_RESPONSE_HOOK_TIMEOUT_SECS,
             external_hook_timeout_secs: DEFAULT_EXTERNAL_HOOK_TIMEOUT_SECS,
-            ws_summary_limit: 0,
             prompts: PromptsConfig::default(),
             evolution: Some(EvolutionConfig::default()),
             wiki: None,
@@ -283,7 +306,10 @@ impl AgentConfigExt for AgentConfig {
             tool_timeout_secs: self.tool_timeout_secs,
             plugin_timeout_secs: self.plugin_timeout_secs,
             ws_summary_limit: self.ws_summary_limit,
-            tool_filter: self.tool_filter.clone(),
+            // tool_filter is per-request data, not per-config.
+            // `session::process_direct_streaming_with_channel` overwrites this
+            // field on every turn with the inbound message's tool_filter.
+            tool_filter: None,
         }
     }
 }

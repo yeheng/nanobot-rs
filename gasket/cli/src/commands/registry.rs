@@ -74,7 +74,6 @@ impl gasket_engine::ModelResolver for CliModelResolver {
 pub fn build_agent_config(config: &Config) -> AgentConfig {
     let defaults = AgentConfig::default();
     AgentConfig {
-        tool_filter: None,
         model: String::new(), // caller overrides with resolved model
         max_iterations: match config.agents.defaults.max_iterations {
             0 => defaults.max_iterations,

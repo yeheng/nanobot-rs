@@ -19,7 +19,7 @@ use lancedb::index::{vector::IvfPqIndexBuilder, Index};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::DistanceType;
 
-use crate::vector_store::{SearchResult, StoredEmbedding, VectorRecord, VectorStore};
+use crate::store::{SearchResult, StoredEmbedding, VectorRecord, VectorStore};
 
 /// Expand leading `~` in a path to the user's home directory.
 fn expand_tilde(path: &str) -> String {

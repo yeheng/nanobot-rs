@@ -163,6 +163,10 @@ impl SandboxBackend for LinuxBwrapBackend {
         &[Platform::Linux]
     }
 
+    fn isolation_level(&self) -> crate::backend::IsolationLevel {
+        crate::backend::IsolationLevel::Namespaces
+    }
+
     fn provides_filesystem_isolation(&self) -> bool {
         true
     }

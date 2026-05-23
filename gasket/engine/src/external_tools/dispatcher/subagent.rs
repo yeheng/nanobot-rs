@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{DispatcherContext, RpcHandler};
-use crate::plugin::manifest::Permission;
-use crate::plugin::rpc::RpcError;
+use crate::external_tools::manifest::Permission;
+use crate::external_tools::rpc::RpcError;
 use crate::tools::ToolContext;
 
 /// Handler for `subagent/spawn` RPC method calls.
