@@ -272,8 +272,6 @@ pub enum RuleSource {
     User,
     /// System-generated rule
     System,
-    /// Auto-learned from user behavior
-    AutoLearned,
     /// Imported from config
     Imported,
 }
@@ -283,7 +281,6 @@ impl std::fmt::Display for RuleSource {
         match self {
             RuleSource::User => write!(f, "user"),
             RuleSource::System => write!(f, "system"),
-            RuleSource::AutoLearned => write!(f, "auto_learned"),
             RuleSource::Imported => write!(f, "imported"),
         }
     }
@@ -296,7 +293,6 @@ impl std::str::FromStr for RuleSource {
         match s.to_lowercase().as_str() {
             "user" => Ok(Self::User),
             "system" => Ok(Self::System),
-            "auto_learned" | "autolearned" => Ok(Self::AutoLearned),
             "imported" => Ok(Self::Imported),
             _ => Err(format!("Invalid rule source: {}", s)),
         }

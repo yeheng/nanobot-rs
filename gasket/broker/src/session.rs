@@ -120,7 +120,7 @@ impl<H: MessageHandler + 'static> Clone for SessionManager<H> {
         Self {
             broker: self.broker.clone(),
             handler: self.handler.clone(),
-            sessions: DashMap::new(),
+            sessions: self.sessions.clone(),
             idle_timeout: self.idle_timeout,
         }
     }

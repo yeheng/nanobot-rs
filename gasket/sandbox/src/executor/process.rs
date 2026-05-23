@@ -118,7 +118,9 @@ impl ProcessManager {
         #[cfg(feature = "audit")]
         {
             if let Some(ref audit) = self.audit {
-                let _ = audit.log_command(command, working_dir, None).await;
+                if let Err(e) = audit.log_command(command, working_dir, None).await {
+                    tracing::warn!("Audit log command start failed: {}", e);
+                }
             }
         }
 
@@ -143,7 +145,7 @@ impl ProcessManager {
         #[cfg(feature = "audit")]
         {
             if let Some(ref audit) = self.audit {
-                let _ = audit
+                if let Err(e) = audit
                     .log_command_end(
                         command,
                         exec_result.exit_code,
@@ -151,7 +153,10 @@ impl ProcessManager {
                         exec_result.timed_out,
                         None,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!("Audit log command end failed: {}", e);
+                }
             }
         }
 

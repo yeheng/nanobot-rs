@@ -14,12 +14,6 @@ pub struct HistoryQuery {
 
     pub event_types: Vec<String>,
 
-    /// 语义搜索
-    pub semantic_query: Option<SemanticQuery>,
-
-    /// 工具使用过滤
-    pub tools_filter: Vec<String>,
-
     /// 分页
     pub offset: usize,
     pub limit: usize,
@@ -61,21 +55,6 @@ impl HistoryQueryBuilder {
         self
     }
 
-    pub fn semantic_text(mut self, text: impl Into<String>) -> Self {
-        self.query.semantic_query = Some(SemanticQuery::Text(text.into()));
-        self
-    }
-
-    pub fn semantic_embedding(mut self, embedding: Vec<f32>) -> Self {
-        self.query.semantic_query = Some(SemanticQuery::Embedding(embedding));
-        self
-    }
-
-    pub fn tools(mut self, tools: Vec<String>) -> Self {
-        self.query.tools_filter = tools;
-        self
-    }
-
     pub fn limit(mut self, limit: usize) -> Self {
         self.query.limit = limit;
         self
@@ -94,12 +73,6 @@ impl HistoryQueryBuilder {
     pub fn build(self) -> HistoryQuery {
         self.query
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum SemanticQuery {
-    Text(String),
-    Embedding(Vec<f32>),
 }
 
 #[derive(Debug, Clone, Default)]

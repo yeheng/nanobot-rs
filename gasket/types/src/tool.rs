@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::events::{OutboundMessage, SessionKey};
 use crate::pending_ask::DynPendingAskRegistry;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Shared handle for the "cancel previous aggregator" pattern used by spawn tools.
@@ -24,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 /// take/cancel/store sequence.
 #[derive(Clone, Default)]
 pub struct AggregatorCancel {
-    inner: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
+    inner: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl AggregatorCancel {
@@ -37,20 +38,18 @@ impl AggregatorCancel {
     /// Uses `try_lock`: if contention occurs the previous token is left intact
     /// — matching the original best-effort semantics.
     pub fn swap_and_cancel_old(&self, new: CancellationToken) {
-        if let Ok(mut guard) = self.inner.try_lock() {
-            if let Some(old) = guard.take() {
-                old.cancel();
-            }
-            *guard = Some(new);
+        let mut guard = self.inner.lock();
+        if let Some(old) = guard.take() {
+            old.cancel();
         }
+        *guard = Some(new);
     }
 
     /// Cancel and forget the current token, if any.
     pub fn cancel_current(&self) {
-        if let Ok(mut guard) = self.inner.try_lock() {
-            if let Some(old) = guard.take() {
-                old.cancel();
-            }
+        let mut guard = self.inner.lock();
+        if let Some(old) = guard.take() {
+            old.cancel();
         }
     }
 }
@@ -149,16 +148,8 @@ pub struct SubagentResponse {
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
     pub model: Option<String>,
-    pub token_usage: Option<TokenUsage>,
+    pub token_usage: Option<crate::token_tracker::TokenUsage>,
     pub cost: f64,
-}
-
-/// Token usage statistics.
-#[derive(Debug, Clone, Default)]
-pub struct TokenUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
 }
 
 /// Callback for synthesizing subagent results into a final response.

@@ -197,7 +197,6 @@ impl ApprovalManager {
                     reason: "Previously denied in this session".into(),
                 },
                 _ => PermissionVerdict::NeedsConfirmation {
-                    request_id: uuid::Uuid::new_v4(),
                     suggested_level: level,
                 },
             };
@@ -218,12 +217,10 @@ impl ApprovalManager {
                 PermissionLevel::AskOnce => {
                     // Needs confirmation, but will be cached for the session
                     PermissionVerdict::NeedsConfirmation {
-                        request_id: uuid::Uuid::new_v4(),
                         suggested_level: PermissionLevel::AskOnce,
                     }
                 }
                 PermissionLevel::AskAlways => PermissionVerdict::NeedsConfirmation {
-                    request_id: uuid::Uuid::new_v4(),
                     suggested_level: PermissionLevel::AskAlways,
                 },
             };
@@ -240,7 +237,6 @@ impl ApprovalManager {
                 reason: "Denied by default policy".into(),
             },
             _ => PermissionVerdict::NeedsConfirmation {
-                request_id: uuid::Uuid::new_v4(),
                 suggested_level: default_level,
             },
         }
@@ -263,10 +259,7 @@ impl ApprovalManager {
         match verdict {
             PermissionVerdict::Allowed => Ok(PermissionLevel::Allowed),
             PermissionVerdict::Denied { reason } => Err(SandboxError::PermissionDenied(reason)),
-            PermissionVerdict::NeedsConfirmation {
-                request_id: _,
-                suggested_level,
-            } => {
+            PermissionVerdict::NeedsConfirmation { suggested_level } => {
                 // Create approval request
                 let request = ApprovalRequest::new(operation.clone(), operation.description())
                     .with_suggested_level(suggested_level);

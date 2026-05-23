@@ -34,8 +34,7 @@ pub use session_store::SessionStore;
 // ── History re-exports ──
 pub use processor::{count_tokens, process_history, HistoryConfig, ProcessedHistory};
 pub use query::{
-    HistoryQuery, HistoryQueryBuilder, HistoryResult, QueryOrder, ResultMeta, SemanticQuery,
-    TimeRange,
+    HistoryQuery, HistoryQueryBuilder, HistoryResult, QueryOrder, ResultMeta, TimeRange,
 };
 
 // Re-export sqlx types for consumers that need direct pool access

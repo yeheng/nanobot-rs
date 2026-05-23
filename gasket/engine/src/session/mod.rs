@@ -76,6 +76,19 @@ impl AgentResponse {
     }
 }
 
+impl From<AgentResponse> for gasket_types::SubagentResponse {
+    fn from(r: AgentResponse) -> Self {
+        Self {
+            content: r.content,
+            reasoning_content: r.reasoning_content,
+            tools_used: r.tools_used,
+            model: r.model,
+            token_usage: r.token_usage,
+            cost: r.cost,
+        }
+    }
+}
+
 /// Owned snapshot for post-response finalization.
 pub(crate) struct FinalizeContext {
     session_key: SessionKey,
@@ -280,6 +293,7 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 /// the core LLM loop to `kernel::execute()`.
 /// Optional subsystems (wiki, cost tracking) are stored as direct Option fields
 /// to avoid the indirection and dynamic dispatch of a plugin trait.
+#[allow(unused_variables)]
 pub struct AgentSession {
     runtime_ctx: RuntimeContext,
     /// Mutable model name — supports runtime switching via `/model <id>`.

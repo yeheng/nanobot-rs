@@ -142,7 +142,21 @@ impl SandboxBackend for LinuxBwrapBackend {
     }
 
     async fn is_available(&self) -> bool {
-        self.bwrap_path.exists()
+        if self.bwrap_path.exists() {
+            return true;
+        }
+        // If bwrap_path is just a bare executable name (e.g. "bwrap"),
+        // check whether it exists in PATH.
+        if self.bwrap_path.components().count() == 1 {
+            let output = std::process::Command::new("which")
+                .arg(&self.bwrap_path)
+                .output()
+                .ok();
+            if let Some(out) = output {
+                return out.status.success() && !out.stdout.is_empty();
+            }
+        }
+        false
     }
 
     fn supported_platforms(&self) -> &[Platform] {

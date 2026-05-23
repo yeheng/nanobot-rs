@@ -209,9 +209,7 @@ pub fn spawn_subagent(
         // Accumulate token usage
         if let Some(ref tracker) = ctx.refs.token_tracker {
             if let Some(ref usage) = response.token_usage {
-                let token_usage =
-                    gasket_types::TokenUsage::new(usage.input_tokens, usage.output_tokens);
-                tracker.accumulate(&token_usage, 0.0);
+                tracker.accumulate(usage, 0.0);
             }
         }
 
@@ -416,6 +414,26 @@ impl SimpleSpawner {
             _ => (self.provider.clone(), None),
         }
     }
+
+    fn error_result(
+        id: &str,
+        task: &str,
+        message: &str,
+    ) -> TypesSubagentResult {
+        TypesSubagentResult {
+            id: id.to_string(),
+            task: task.to_string(),
+            response: SubagentResponse {
+                content: format!("Error: {}", message),
+                reasoning_content: None,
+                tools_used: vec![],
+                model: None,
+                token_usage: None,
+                cost: 0.0,
+            },
+            model: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -474,21 +492,7 @@ impl SubagentSpawner for SimpleSpawner {
         Ok(TypesSubagentResult {
             id: result.id,
             task: result.task,
-            response: SubagentResponse {
-                content: result.response.content,
-                reasoning_content: result.response.reasoning_content,
-                tools_used: result.response.tools_used,
-                model: result.response.model,
-                token_usage: result
-                    .response
-                    .token_usage
-                    .map(|t| gasket_types::tool::TokenUsage {
-                        prompt_tokens: t.input_tokens as u32,
-                        completion_tokens: t.output_tokens as u32,
-                        total_tokens: t.total_tokens as u32,
-                    }),
-                cost: result.response.cost,
-            },
+            response: result.response.into(),
             model: result.model,
         })
     }
@@ -565,49 +569,12 @@ impl SubagentSpawner for SimpleSpawner {
                     Some(result) => TypesSubagentResult {
                         id: result.id,
                         task: result.task,
-                        response: SubagentResponse {
-                            content: result.response.content,
-                            reasoning_content: result.response.reasoning_content,
-                            tools_used: result.response.tools_used,
-                            model: result.response.model,
-                            token_usage: result.response.token_usage.map(|t| {
-                                gasket_types::tool::TokenUsage {
-                                    prompt_tokens: t.input_tokens as u32,
-                                    completion_tokens: t.output_tokens as u32,
-                                    total_tokens: t.total_tokens as u32,
-                                }
-                            }),
-                            cost: result.response.cost,
-                        },
+                        response: result.response.into(),
                         model: result.model,
                     },
-                    None => TypesSubagentResult {
-                        id: result_subagent_id.clone(),
-                        task: task_desc.clone(),
-                        response: SubagentResponse {
-                            content: "Error: Subagent completed but no result received".to_string(),
-                            reasoning_content: None,
-                            tools_used: vec![],
-                            model: None,
-                            token_usage: None,
-                            cost: 0.0,
-                        },
-                        model: None,
-                    },
+                    None => Self::error_result(&result_subagent_id, &task_desc, "Subagent completed but no result received"),
                 },
-                Err(e) => TypesSubagentResult {
-                    id: result_subagent_id,
-                    task: task_desc,
-                    response: SubagentResponse {
-                        content: format!("Error: {}", e),
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        model: None,
-                        token_usage: None,
-                        cost: 0.0,
-                    },
-                    model: None,
-                },
+                Err(e) => Self::error_result(&result_subagent_id, &task_desc, &e.to_string()),
             };
             let _ = completion_tx.send(types_result);
         });

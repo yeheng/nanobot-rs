@@ -564,8 +564,8 @@ impl StreamEvent {
     /// Unlike [`to_chat_event`](Self::to_chat_event), this does **not** filter
     /// out subagent events.  Useful when the caller explicitly wants to forward
     /// subagent reasoning / tool calls to the WebSocket.
-    pub fn to_chat_event_unconditional(&self) -> Option<ChatEvent> {
-        Some(self.event.clone())
+    pub fn to_chat_event_unconditional(&self) -> ChatEvent {
+        self.event.clone()
     }
 
     /// Serialize to JSON string

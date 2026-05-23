@@ -26,8 +26,6 @@ pub enum PermissionVerdict {
     Denied { reason: String },
     /// User confirmation is required
     NeedsConfirmation {
-        /// The approval request to present to the user
-        request_id: Uuid,
         /// Suggested permission level
         suggested_level: PermissionLevel,
     },

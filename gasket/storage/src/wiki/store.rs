@@ -49,31 +49,7 @@ impl PageStore {
     /// Get metadata for a page by path (lightweight, no content).
     pub async fn get_metadata(&self, path: &str) -> Result<Option<PageSummary>> {
         match self.db.get(path).await? {
-            Some(row) => Ok(Some(PageSummary {
-                path: row.path,
-                title: row.title,
-                page_type: row.page_type.parse().unwrap_or(PageType::Topic),
-                category: row.category,
-                tags: row
-                    .tags
-                    .as_ref()
-                    .and_then(|t| serde_json::from_str(t).ok())
-                    .unwrap_or_default(),
-                updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_default(),
-                confidence: row.confidence,
-                frequency: Frequency::from_str_lossy(&row.frequency),
-                access_count: row.access_count as u64,
-                last_accessed: row
-                    .last_accessed
-                    .as_deref()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&chrono::Utc)),
-                summary: row.summary,
-                content_length: row.content.len() as u64,
-                file_mtime: row.file_mtime,
-            })),
+            Some(row) => Ok(Some(Self::row_to_summary(&row, row.content.len() as u64))),
             None => Ok(None),
         }
     }
@@ -96,7 +72,7 @@ impl PageStore {
     /// Read a page — pure query, no sync side effects.
     pub async fn read(&self, path: &str) -> Result<WikiPage> {
         if let Some(row) = self.db.get(path).await? {
-            return Ok(self.row_to_page(row));
+            return Ok(Self::row_to_page(row));
         }
 
         let disk_path = self.wiki_root.join(format!("{}.md", path));
@@ -109,7 +85,7 @@ impl PageStore {
     /// Batch-read full pages from SQLite.
     pub async fn read_many(&self, paths: &[String]) -> Result<Vec<WikiPage>> {
         let rows = self.db.get_many(paths).await?;
-        Ok(rows.into_iter().map(|row| self.row_to_page(row)).collect())
+        Ok(rows.into_iter().map(|row| Self::row_to_page(row)).collect())
     }
 
     /// Write page: disk is SSOT. Atomic write to disk first, then update SQLite.
@@ -148,31 +124,7 @@ impl PageStore {
         };
         Ok(rows
             .iter()
-            .map(|r| PageSummary {
-                path: r.path.clone(),
-                title: r.title.clone(),
-                page_type: r.page_type.parse().unwrap_or(PageType::Topic),
-                category: r.category.clone(),
-                tags: r
-                    .tags
-                    .as_ref()
-                    .and_then(|t| serde_json::from_str(t).ok())
-                    .unwrap_or_default(),
-                updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_default(),
-                confidence: r.confidence,
-                frequency: Frequency::from_str_lossy(&r.frequency),
-                access_count: r.access_count as u64,
-                last_accessed: r
-                    .last_accessed
-                    .as_deref()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&chrono::Utc)),
-                summary: r.summary.clone(),
-                content_length: r.content.len() as u64,
-                file_mtime: r.file_mtime,
-            })
+            .map(|r| Self::row_to_summary(r, r.content.len() as u64))
             .collect())
     }
 
@@ -181,31 +133,7 @@ impl PageStore {
         let rows = self.db.get_summaries_by_paths(paths).await?;
         Ok(rows
             .into_iter()
-            .map(|r| PageSummary {
-                path: r.path,
-                title: r.title,
-                page_type: r.page_type.parse().unwrap_or(PageType::Topic),
-                category: r.category,
-                tags: r
-                    .tags
-                    .as_ref()
-                    .and_then(|t| serde_json::from_str(t).ok())
-                    .unwrap_or_default(),
-                updated: chrono::DateTime::parse_from_rfc3339(&r.updated)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_default(),
-                confidence: r.confidence,
-                frequency: Frequency::from_str_lossy(&r.frequency),
-                access_count: r.access_count as u64,
-                last_accessed: r
-                    .last_accessed
-                    .as_deref()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&chrono::Utc)),
-                summary: r.summary,
-                content_length: r.content_length as u64,
-                file_mtime: r.file_mtime,
-            })
+            .map(|r| Self::summary_row_to_summary(r))
             .collect())
     }
 
@@ -268,34 +196,73 @@ impl PageStore {
 
     // -- private helpers --
 
-    fn row_to_page(&self, row: super::page_store::PageRow) -> WikiPage {
+    fn parse_tags(tags: Option<&str>) -> Vec<String> {
+        tags.and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default()
+    }
+
+    fn parse_rfc3339(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_default()
+    }
+
+    fn parse_optional_rfc3339(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+        s.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
+
+    fn row_to_page(row: super::page_store::PageRow) -> WikiPage {
         WikiPage {
             path: row.path,
             title: row.title,
             page_type: row.page_type.parse().unwrap_or(PageType::Topic),
             category: row.category,
-            tags: row
-                .tags
-                .as_ref()
-                .and_then(|t| serde_json::from_str(t).ok())
-                .unwrap_or_default(),
+            tags: Self::parse_tags(row.tags.as_deref()),
             summary: row.summary,
             content: row.content,
-            created: chrono::DateTime::parse_from_rfc3339(&row.created)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_default(),
-            updated: chrono::DateTime::parse_from_rfc3339(&row.updated)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_default(),
+            created: Self::parse_rfc3339(&row.created),
+            updated: Self::parse_rfc3339(&row.updated),
             source_count: row.source_count as u32,
             confidence: row.confidence,
             frequency: Frequency::from_str_lossy(&row.frequency),
             access_count: row.access_count as u64,
-            last_accessed: row
-                .last_accessed
-                .as_deref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
+            last_accessed: Self::parse_optional_rfc3339(row.last_accessed.as_deref()),
+            file_mtime: row.file_mtime,
+        }
+    }
+
+    fn row_to_summary(row: &super::page_store::PageRow, content_length: u64) -> PageSummary {
+        PageSummary {
+            path: row.path.clone(),
+            title: row.title.clone(),
+            page_type: row.page_type.parse().unwrap_or(PageType::Topic),
+            category: row.category.clone(),
+            tags: Self::parse_tags(row.tags.as_deref()),
+            updated: Self::parse_rfc3339(&row.updated),
+            confidence: row.confidence,
+            frequency: Frequency::from_str_lossy(&row.frequency),
+            access_count: row.access_count as u64,
+            last_accessed: Self::parse_optional_rfc3339(row.last_accessed.as_deref()),
+            summary: row.summary.clone(),
+            content_length,
+            file_mtime: row.file_mtime,
+        }
+    }
+
+    fn summary_row_to_summary(row: super::page_store::PageSummaryRow) -> PageSummary {
+        PageSummary {
+            path: row.path,
+            title: row.title,
+            page_type: row.page_type.parse().unwrap_or(PageType::Topic),
+            category: row.category,
+            tags: Self::parse_tags(row.tags.as_deref()),
+            updated: Self::parse_rfc3339(&row.updated),
+            confidence: row.confidence,
+            frequency: Frequency::from_str_lossy(&row.frequency),
+            access_count: row.access_count as u64,
+            last_accessed: Self::parse_optional_rfc3339(row.last_accessed.as_deref()),
+            summary: row.summary,
+            content_length: row.content_length as u64,
             file_mtime: row.file_mtime,
         }
     }

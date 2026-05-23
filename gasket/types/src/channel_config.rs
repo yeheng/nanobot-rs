@@ -243,11 +243,6 @@ fn default_true() -> bool {
 // ── Validation ────────────────────────────────────────────────────────────
 
 impl ChannelsConfig {
-    /// Validate all enabled channels
-    pub fn validate(&self) -> Vec<ChannelConfigError> {
-        Vec::new()
-    }
-
     /// Count enabled channels
     pub fn enabled_count(&self) -> usize {
         let mut count = 0;

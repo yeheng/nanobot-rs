@@ -34,6 +34,7 @@ impl SpawnBudget {
     /// spawned worker's tokio task; on drop it returns the permit.
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
         // The Semaphore is held inside this Budget's Arc and is never closed.
+        // clone() is required because acquire_owned consumes the Arc.
         self.semaphore
             .clone()
             .acquire_owned()

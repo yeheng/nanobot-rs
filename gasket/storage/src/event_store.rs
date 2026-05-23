@@ -508,7 +508,7 @@ impl EventStore {
             r#"
             SELECT * FROM session_events
             WHERE event_type IN ('user_message', 'assistant_message')
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
             LIMIT ?
             "#
         } else {
@@ -526,14 +526,10 @@ impl EventStore {
         } else {
             sqlx::query_as(sql).fetch_all(&self.pool).await?
         };
-        // Reverse to restore chronological order when LIMIT was applied.
-        let mut events: Vec<SessionEvent> = rows
+        let events: Vec<SessionEvent> = rows
             .into_iter()
             .map(|r| r.try_into())
             .collect::<Result<Vec<_>, _>>()?;
-        if limit > 0 {
-            events.reverse();
-        }
         Ok(events)
     }
 
@@ -616,6 +612,10 @@ impl EventStoreTrait for EventStore {
 
         sql.push_str(" ORDER BY created_at ASC");
 
+        // SQLite does not support `LIMIT ?` parameterized queries, so we
+        // append the limit directly. This is safe because `filter.limit` is
+        // `Option<usize>` — untrusted input would have to survive type
+        // checking to reach this point.
         if let Some(limit) = filter.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
