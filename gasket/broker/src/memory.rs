@@ -126,61 +126,16 @@ impl MemoryBroker {
         }
     }
 
-    fn get_queue(
-        &self,
-        topic: &Topic,
-    ) -> Result<dashmap::mapref::one::Ref<'_, Topic, QueueInner>, BrokerError> {
-        self.ensure_queue(topic);
-        self.queues.get(topic).ok_or(BrokerError::Internal(
-            "queue just created but not found".into(),
-        ))
-    }
-
-    fn get_queue_mut(
-        &self,
-        topic: &Topic,
-    ) -> Result<dashmap::mapref::one::RefMut<'_, Topic, QueueInner>, BrokerError> {
-        self.ensure_queue(topic);
-        self.queues.get_mut(topic).ok_or(BrokerError::Internal(
-            "queue just created but not found".into(),
-        ))
-    }
-
     /// Blocking publish — awaits when queue is full (natural backpressure).
     pub async fn publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        enum SendTarget {
-            PointToPoint {
-                tx: async_channel::Sender<Envelope>,
-                stats: Arc<QueueStats>,
-            },
-            Broadcast {
-                tx: tokio::sync::broadcast::Sender<Envelope>,
-                stats: Arc<QueueStats>,
-            },
-        }
-
-        let target = {
-            let cq = self.get_queue(&envelope.topic)?;
-            match cq.value() {
-                QueueInner::PointToPoint { tx, stats, .. } => SendTarget::PointToPoint {
-                    tx: tx.clone(),
-                    stats: Arc::clone(stats),
-                },
-                QueueInner::Broadcast { tx, stats } => SendTarget::Broadcast {
-                    tx: tx.clone(),
-                    stats: Arc::clone(stats),
-                },
-            }
-        };
-
-        match target {
-            SendTarget::PointToPoint { tx, stats } => {
+        match self.sender_snapshot(&envelope.topic) {
+            QueueSenders::PointToPoint { tx, stats } => {
                 tx.send(envelope)
                     .await
                     .map_err(|_| BrokerError::ChannelClosed)?;
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
-            SendTarget::Broadcast { tx, stats } => {
+            QueueSenders::Broadcast { tx, stats } => {
                 let _ = tx.send(envelope);
                 stats.published.fetch_add(1, Ordering::Relaxed);
             }
@@ -190,10 +145,8 @@ impl MemoryBroker {
 
     /// Non-blocking publish — returns QueueFull immediately.
     pub fn try_publish(&self, envelope: Envelope) -> Result<(), BrokerError> {
-        let cq = self.get_queue(&envelope.topic)?;
-
-        match cq.value() {
-            QueueInner::PointToPoint { tx, stats, .. } => {
+        match self.sender_snapshot(&envelope.topic) {
+            QueueSenders::PointToPoint { tx, stats } => {
                 tx.try_send(envelope).map_err(|e| match e {
                     async_channel::TrySendError::Full(_) => BrokerError::QueueFull,
                     async_channel::TrySendError::Closed(_) => BrokerError::ChannelClosed,
@@ -210,9 +163,12 @@ impl MemoryBroker {
 
     /// Subscribe to a topic.
     pub async fn subscribe(&self, topic: &Topic) -> Result<Subscriber, BrokerError> {
-        let mut cq = self.get_queue_mut(topic)?;
+        let mut entry = self
+            .queues
+            .entry(topic.clone())
+            .or_insert_with(|| self.build_queue(topic));
 
-        match cq.value_mut() {
+        match entry.value_mut() {
             QueueInner::PointToPoint { rx, stats, .. } => {
                 Ok(Subscriber::p2p(rx.clone()).with_counter(Arc::clone(&stats.consumed)))
             }

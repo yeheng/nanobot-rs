@@ -198,7 +198,9 @@ async fn test_read_returns_disk_content_when_disk_is_newer_than_db() {
     page.content = "Edited content from vim".to_string();
     page.summary = Some("Edited summary".to_string());
     let disk_path = dir.path().join("topics/ssot-test.md");
-    tokio::fs::write(&disk_path, page.to_markdown()).await.unwrap();
+    tokio::fs::write(&disk_path, page.to_markdown())
+        .await
+        .unwrap();
 
     let loaded = store.read("topics/ssot-test").await.unwrap();
     assert!(
@@ -235,11 +237,19 @@ async fn test_read_preserves_db_runtime_state_after_disk_edit() {
     edited.summary = None;
     edited.content = "Disk-edited content".to_string();
     let disk_path = dir.path().join("topics/runtime-state.md");
-    tokio::fs::write(&disk_path, edited.to_markdown()).await.unwrap();
+    tokio::fs::write(&disk_path, edited.to_markdown())
+        .await
+        .unwrap();
 
     let loaded = store.read("topics/runtime-state").await.unwrap();
     assert!(loaded.content.contains("Disk-edited content"));
     assert_eq!(loaded.access_count, 42, "DB access_count must be overlaid");
-    assert!(matches!(loaded.frequency, Frequency::Hot), "DB frequency must be overlaid");
-    assert!(loaded.last_accessed.is_some(), "DB last_accessed must be overlaid");
+    assert!(
+        matches!(loaded.frequency, Frequency::Hot),
+        "DB frequency must be overlaid"
+    );
+    assert!(
+        loaded.last_accessed.is_some(),
+        "DB last_accessed must be overlaid"
+    );
 }

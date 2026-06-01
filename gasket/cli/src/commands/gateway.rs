@@ -23,7 +23,7 @@ use gasket_engine::SqliteStore;
 use gasket_engine::SubagentSpawner;
 
 use crate::commands::broker_outbound::OutboundDispatcher;
-use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
+use gasket_engine::broker::{BrokerPayload, SessionManager};
 use gasket_types::SessionKey;
 
 use super::registry::CliModelResolver;

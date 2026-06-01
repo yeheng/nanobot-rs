@@ -116,8 +116,8 @@ pub async fn build_vector_store(
 ) -> Result<std::sync::Arc<dyn VectorStore>> {
     match config {
         VectorStoreConfig::SQLite => {
-            let pool = sqlite_pool
-                .ok_or_else(|| anyhow!("SQLite pool required for SQLite backend"))?;
+            let pool =
+                sqlite_pool.ok_or_else(|| anyhow!("SQLite pool required for SQLite backend"))?;
             let store = EmbeddingStore::new(pool.clone(), dim);
             store.run_migration().await?;
             Ok(std::sync::Arc::new(store))

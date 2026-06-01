@@ -12,16 +12,13 @@ use gasket_channels::SessionKey;
 use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
 use gasket_command::dispatcher::shared_help_snapshot;
 use gasket_command::{CommandCompleter, CommandResult, DispatcherBuilder, RouteOutcome};
-use gasket_engine::config::{load_config, ModelRegistry};
+use gasket_engine::config::ModelRegistry;
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::ModelResolver;
-use gasket_engine::SqliteStore;
 use gasket_types::events::ChatEvent;
-
-use gasket_engine::broker::MemoryBroker;
 
 use super::command_host::CliCommandHost;
 use super::registry::CliModelResolver;

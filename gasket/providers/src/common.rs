@@ -512,6 +512,12 @@ fn resolve_kind(name: &str, provider_type: ProviderType) -> ProviderKind {
     }
 }
 
+fn supports_thinking_by_name(name: &str) -> bool {
+    lookup_profile(name)
+        .map(|profile| profile.supports_thinking)
+        .unwrap_or(false)
+}
+
 /// Build a provider instance by name and config.
 ///
 /// Dispatch is single-pass through the [`PROVIDER_REGISTRY`] table; the prior
@@ -724,8 +730,7 @@ fn dispatch_by_type(
             )
         }
         ProviderType::Openai => {
-            let supports_thinking =
-                matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu" | "xiaomi");
+            let supports_thinking = supports_thinking_by_name(name);
             let config = ProviderConfig {
                 provider_type: ProviderType::Openai,
                 api_base: provider_config.api_base.clone(),

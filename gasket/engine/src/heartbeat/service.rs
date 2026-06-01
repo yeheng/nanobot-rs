@@ -66,10 +66,8 @@ impl HeartbeatService {
 
         for line in content.lines().take(Self::MAX_TASK_LINES) {
             let trimmed = line.trim();
-            if trimmed.starts_with("- [ ]") {
-                if pending.len() < Self::MAX_TASK_LINES {
-                    pending.push(trimmed.trim_start_matches("- [ ]").trim().to_string());
-                }
+            if trimmed.starts_with("- [ ]") && pending.len() < Self::MAX_TASK_LINES {
+                pending.push(trimmed.trim_start_matches("- [ ]").trim().to_string());
             }
         }
 

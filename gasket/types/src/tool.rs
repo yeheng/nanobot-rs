@@ -166,7 +166,7 @@ pub trait SynthesisCallback: Send + Sync {
 /// Groups the 6 fields that both contexts need, so adding a new session-scoped
 /// reference only requires changing this struct + `apply_to_tool_context()`,
 /// not three separate locations.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SessionRefs {
     pub session_key: Option<SessionKey>,
     pub outbound_tx: Option<tokio::sync::mpsc::Sender<OutboundMessage>>,
@@ -179,20 +179,6 @@ pub struct SessionRefs {
     /// Session/gateway layers decide which concrete implementation to
     /// inject — the kernel only forwards the value.
     pub synthesis_callback: Option<Arc<dyn SynthesisCallback>>,
-}
-
-impl Default for SessionRefs {
-    fn default() -> Self {
-        Self {
-            session_key: None,
-            outbound_tx: None,
-            spawner: None,
-            token_tracker: None,
-            aggregator_cancel: None,
-            pending_asks: None,
-            synthesis_callback: None,
-        }
-    }
 }
 
 impl std::fmt::Debug for SessionRefs {

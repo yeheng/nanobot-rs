@@ -174,6 +174,7 @@ impl RequestPipeline {
 
 /// Construct the response pair for the early-abort path (BeforeRequest hook
 /// aborted the pipeline). No kernel is invoked; just emits the abort message.
+#[allow(dead_code)]
 pub(crate) fn early_abort_response(
     msg: String,
     model: String,
@@ -197,6 +198,7 @@ pub(crate) fn early_abort_response(
 
 /// Spawn a bridge task: every `OutboundMessage::Stream` payload is forwarded
 /// as a `ChatEvent` onto `chat_tx`. Returns the sender for tools to use.
+#[allow(dead_code)]
 pub(crate) fn bridge_outbound_to_chat(
     chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
 ) -> tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage> {

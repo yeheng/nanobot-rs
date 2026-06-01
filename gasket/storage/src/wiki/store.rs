@@ -124,7 +124,7 @@ impl PageStore {
     /// Batch-read full pages from SQLite.
     pub async fn read_many(&self, paths: &[String]) -> Result<Vec<WikiPage>> {
         let rows = self.db.get_many(paths).await?;
-        Ok(rows.into_iter().map(|row| Self::row_to_page(row)).collect())
+        Ok(rows.into_iter().map(Self::row_to_page).collect())
     }
 
     /// Write page: disk is SSOT. Atomic write to disk first, then update SQLite.
@@ -170,10 +170,7 @@ impl PageStore {
     /// Batch-load lightweight page summaries for a set of paths.
     pub async fn read_summaries(&self, paths: &[String]) -> Result<Vec<PageSummary>> {
         let rows = self.db.get_summaries_by_paths(paths).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Self::summary_row_to_summary(r))
-            .collect())
+        Ok(rows.into_iter().map(Self::summary_row_to_summary).collect())
     }
 
     /// Sync page to disk as markdown using atomic write (crash-safe).

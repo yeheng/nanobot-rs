@@ -332,7 +332,7 @@ impl EvolutionTool {
         for mem in &memories {
             match mem.memory_type.as_str() {
                 "skill" => {
-                    if self.persist_as_sop(&mem, page_store).await.is_ok() {
+                    if self.persist_as_sop(mem, page_store).await.is_ok() {
                         persisted += 1;
                     }
                 }

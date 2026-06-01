@@ -32,6 +32,7 @@ use tracing::{info, warn};
 use crate::error::AgentError;
 use crate::hooks::HookRegistry;
 use crate::kernel::{ExecutionResult, RuntimeContext, StreamEvent};
+use crate::session::pipeline::RequestPipeline;
 use crate::token_tracker::ModelPricing;
 use crate::tools::{SubagentSpawner, ToolRegistry};
 use async_trait::async_trait;

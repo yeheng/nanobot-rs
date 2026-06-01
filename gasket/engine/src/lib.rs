@@ -21,10 +21,10 @@ pub mod bus_adapter;
 pub mod config;
 pub mod cron;
 pub mod error;
+pub mod external_tools;
 pub mod heartbeat;
 pub mod hooks;
 pub mod kernel;
-pub mod external_tools;
 
 /// Deprecated alias for [`external_tools`]. The crate was renamed because
 /// "plugin" implies a dynamic extension system (dlopen/cdylib), while this

@@ -162,8 +162,7 @@ pub fn spawn_subagent(
         let mut kernel_config = agent_config.to_kernel_config();
         kernel_config.tool_filter = task.tool_filter.clone();
         let ctx = {
-            let mut c =
-                kernel::RuntimeContext::new_worker(provider, tools, kernel_config);
+            let mut c = kernel::RuntimeContext::new_worker(provider, tools, kernel_config);
             c.refs = refs.clone();
             c
         };

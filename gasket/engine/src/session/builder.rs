@@ -274,7 +274,7 @@ impl SessionBuilder {
             context_builder,
             compactor,
             pricing: None,
-            pipeline: crate::session::RequestPipeline::new(finalizer, pending_done),
+            pipeline: crate::session::pipeline::RequestPipeline::new(finalizer, pending_done),
             pending_asks,
             #[cfg(feature = "embedding")]
             embedding_indexer,
