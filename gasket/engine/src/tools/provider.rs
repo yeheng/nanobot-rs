@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::wiki::{PageIndex, PageStore};
 use crate::SubagentSpawner;
 use gasket_storage::{MaintenanceStore, SessionStore};
-use crate::wiki::{PageIndex, PageStore};
 
 use super::{
     registry::ToolRegistry, AskUserTool, ClearSessionTool, CreatePlanTool, EditFileTool,

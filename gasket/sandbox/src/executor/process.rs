@@ -88,14 +88,15 @@ impl ProcessManager {
         working_dir: &Path,
         timeout: Duration,
     ) -> Result<ExecutionResult> {
-        tokio::time::timeout(timeout, self.execute_inner(command, working_dir))
-            .await
-            .map_err(|_| SandboxError::Timeout {
-                timeout_secs: timeout.as_secs(),
-            })?
+        self.execute_inner(command, working_dir, timeout).await
     }
 
-    async fn execute_inner(&self, command: &str, working_dir: &Path) -> Result<ExecutionResult> {
+    async fn execute_inner(
+        &self,
+        command: &str,
+        working_dir: &Path,
+        timeout: Duration,
+    ) -> Result<ExecutionResult> {
         // Step 1: Policy check
         if let PolicyVerdict::Deny(reason) = self.policy.check(command) {
             return Err(SandboxError::PolicyDenied(reason));
@@ -134,7 +135,7 @@ impl ProcessManager {
         let start = Instant::now();
         let result = self
             .backend
-            .execute(command, working_dir, &self.config)
+            .execute_with_timeout(command, working_dir, &self.config, timeout)
             .await?;
         let duration = start.elapsed();
 

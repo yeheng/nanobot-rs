@@ -105,7 +105,6 @@ impl ProviderConfig {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Fastembed model adapter implementing rig's EmbeddingModel trait
 // ---------------------------------------------------------------------------
@@ -174,14 +173,20 @@ impl rig::embeddings::EmbeddingModel for FastembedModel {
             model.embed(&refs, None)
         })
         .await
-        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("embedding task failed: {e}")))?
-        .map_err(|e| rig::embeddings::EmbeddingError::ProviderError(format!("local embedding failed: {e}")))?;
+        .map_err(|e| {
+            rig::embeddings::EmbeddingError::ProviderError(format!("embedding task failed: {e}"))
+        })?
+        .map_err(|e| {
+            rig::embeddings::EmbeddingError::ProviderError(format!("local embedding failed: {e}"))
+        })?;
 
         if let Some(first) = result.first() {
             if first.len() != dim {
-                return Err(rig::embeddings::EmbeddingError::ProviderError(
-                    format!("local embedding returned {} dims, expected {}", first.len(), dim)
-                ));
+                return Err(rig::embeddings::EmbeddingError::ProviderError(format!(
+                    "local embedding returned {} dims, expected {}",
+                    first.len(),
+                    dim
+                )));
             }
         }
 
@@ -391,5 +396,4 @@ cache_dir: "/tmp/gasket-models"
             _ => panic!("expected LocalOnnx variant"),
         }
     }
-
 }

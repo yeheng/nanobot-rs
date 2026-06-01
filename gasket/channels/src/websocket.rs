@@ -191,7 +191,12 @@ impl WebSocketManager {
             return;
         };
 
-        if let Some(sender) = self.connections.get(&connection_id) {
+        let sender = self
+            .connections
+            .get(&connection_id)
+            .map(|entry| entry.value().clone());
+
+        if let Some(sender) = sender {
             let text = Self::message_text(&msg);
             if text.is_empty() {
                 warn!("WebSocketManager::send - empty message, skipping");
@@ -228,13 +233,18 @@ impl WebSocketManager {
 
         let text_arc: std::sync::Arc<str> = text.into();
         let mut failed = 0usize;
-        for entry in self.connections.iter() {
-            let sender = entry.value();
+        let senders: Vec<(ConnectionId, mpsc::Sender<Message>)> = self
+            .connections
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        for (connection_id, sender) in senders {
             if let Err(e) = sender
                 .send(Message::Text(text_arc.to_string().into()))
                 .await
             {
-                warn!("Failed to broadcast to connection {}: {}", entry.key(), e);
+                warn!("Failed to broadcast to connection {}: {}", connection_id, e);
                 failed += 1;
             }
         }

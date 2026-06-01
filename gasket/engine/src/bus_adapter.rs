@@ -44,9 +44,7 @@ impl gasket_broker::session::MessageHandler for EngineHandler {
             HandleOutcome::Replied { events, result } => (events, result),
         };
         // Drain events; in blocking mode we only care about the final result.
-        tokio::spawn(async move {
-            while events.recv().await.is_some() {}
-        });
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
         let resp = handle
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;

@@ -41,5 +41,6 @@ pub async fn execute_streaming(
     event_tx: mpsc::Sender<StreamEvent>,
 ) -> Result<ExecutionResult, KernelError> {
     let exec = build_executor(ctx);
-    exec.execute(messages, event_tx, &ExecutorOptions::new()).await
+    exec.execute(messages, event_tx, &ExecutorOptions::new())
+        .await
 }

@@ -32,8 +32,8 @@ pub use ingest::{
     SemanticDeduplicator, SourceFormat, SourceMetadata, SourceParser,
 };
 pub use lint::{
-    extract_page_references, FixReport, LintReport, Severity, StructuralIssue,
-    StructuralIssueType, StructuralLintConfig, WikiLinter,
+    extract_page_references, FixReport, LintReport, Severity, StructuralIssue, StructuralIssueType,
+    StructuralLintConfig, WikiLinter,
 };
 pub use log::{LogEntry, WikiLog};
 pub use query::{QueryResult, TokenBudget, WikiQueryEngine};

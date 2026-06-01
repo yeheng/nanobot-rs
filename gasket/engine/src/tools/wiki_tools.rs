@@ -105,10 +105,7 @@ impl Tool for WikiSearchTool {
             } else {
                 format!(" [{}]", summary.tags.join(", "))
             };
-            let summary_display = summary
-                .summary
-                .as_deref()
-                .unwrap_or("(no summary)");
+            let summary_display = summary.summary.as_deref().unwrap_or("(no summary)");
             output.push_str(&format!(
                 "━━━ {} ━━━\n  Summary: {}\n  Type: {} | Confidence: {:.1}{}\n  Path: {}\n\n",
                 summary.title,

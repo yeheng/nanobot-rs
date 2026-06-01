@@ -109,15 +109,14 @@ impl TokenLedger {
     }
 
     pub fn accumulate(&mut self, usage: &TokenUsage) {
-        self.total_usage = Some(match self.total_usage.take() {
-            Some(mut acc) => {
+        match &mut self.total_usage {
+            Some(acc) => {
                 acc.input_tokens += usage.input_tokens;
                 acc.output_tokens += usage.output_tokens;
                 acc.total_tokens += usage.total_tokens;
-                acc
             }
-            None => usage.clone(),
-        });
+            None => self.total_usage = Some(usage.clone()),
+        }
     }
 }
 

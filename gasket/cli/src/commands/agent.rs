@@ -8,17 +8,20 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
+use gasket_channels::SessionKey;
 use gasket_command::builtins::{clear, exit, help, model, new as builtin_new, sessions};
 use gasket_command::dispatcher::shared_help_snapshot;
 use gasket_command::{CommandCompleter, CommandResult, DispatcherBuilder, RouteOutcome};
-use gasket_channels::SessionKey;
-use gasket_types::events::ChatEvent;
-use gasket_engine::config::ModelRegistry;
+use gasket_engine::config::{load_config, ModelRegistry};
 use gasket_engine::providers::ProviderRegistry;
 use gasket_engine::session::{AgentResponse, AgentSession};
 use gasket_engine::subagents::SimpleSpawner;
 use gasket_engine::token_tracker::ModelPricing;
 use gasket_engine::ModelResolver;
+use gasket_engine::SqliteStore;
+use gasket_types::events::ChatEvent;
+
+use gasket_engine::broker::MemoryBroker;
 
 use super::command_host::CliCommandHost;
 use super::registry::CliModelResolver;
@@ -144,31 +147,30 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // single bundle so the channel invariant is encoded in the type: either
     // all three are present, or none are.
     #[cfg(feature = "embedding")]
-    let (history_search, embedding_recall) =
-        if let Some(ref emb_cfg) = config.embedding {
-            let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
-            let tx = event_store.sender();
-            match gasket_engine::session::history::builder::setup_embedding_recall(
-                &event_store,
-                emb_cfg,
-            )
-            .await
-            {
-                Ok((searcher, indexer)) => {
-                    let params = gasket_engine::tools::HistorySearchParams {
-                        searcher: searcher.clone(),
-                        config: emb_cfg.recall.clone(),
-                    };
-                    (Some(params), Some((searcher, indexer, tx)))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize embedding recall: {}", e);
-                    (None, None)
-                }
+    let (history_search, embedding_recall) = if let Some(ref emb_cfg) = config.embedding {
+        let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
+        let tx = event_store.sender();
+        match gasket_engine::session::history::builder::setup_embedding_recall(
+            &event_store,
+            emb_cfg,
+        )
+        .await
+        {
+            Ok((searcher, indexer)) => {
+                let params = gasket_engine::tools::HistorySearchParams {
+                    searcher: searcher.clone(),
+                    config: emb_cfg.recall.clone(),
+                };
+                (Some(params), Some((searcher, indexer, tx)))
             }
-        } else {
-            (None, None)
-        };
+            Err(e) => {
+                tracing::warn!("Failed to initialize embedding recall: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     // (non-embedding builds skip semantic recall initialization)
 
     // Spawn wiki indexing service for auto Tantivy + vector updates
@@ -183,7 +185,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         if let Some(ref searcher) = history_search {
             use gasket_engine::tools::{WikiEmbeddingAdapter, WikiVectorAdapter};
             svc = svc.with_semantic(
-                Arc::new(WikiEmbeddingAdapter::new(searcher.searcher.provider().clone())),
+                Arc::new(WikiEmbeddingAdapter::new(
+                    searcher.searcher.provider().clone(),
+                )),
                 Arc::new(WikiVectorAdapter::new(searcher.searcher.store().clone())),
             );
         }
@@ -318,9 +322,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             info!("Processing message: {}", msg);
             let session_key = SessionKey::new(gasket_channels::ChannelType::Cli, "direct");
             use gasket_engine::session::HandleOutcome;
-            let outcome = agent
-                .handle_inbound(&msg, &session_key, None)
-                .await?;
+            let outcome = agent.handle_inbound(&msg, &session_key, None).await?;
             match outcome {
                 HandleOutcome::Consumed => {
                     if use_streaming {
@@ -351,9 +353,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         }
                     } else {
                         // Drain events in non-streaming mode; only the final result matters.
-                        tokio::spawn(async move {
-                            while event_rx.recv().await.is_some() {}
-                        });
+                        tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
                         let resp = result_handle
                             .await
                             .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
@@ -494,9 +494,7 @@ async fn run_llm_input(
 ) {
     println!();
     use gasket_engine::session::HandleOutcome;
-    let outcome = agent
-        .handle_inbound(text, session_key, tool_filter)
-        .await;
+    let outcome = agent.handle_inbound(text, session_key, tool_filter).await;
 
     match outcome {
         Ok(HandleOutcome::Consumed) => {
@@ -532,9 +530,7 @@ async fn run_llm_input(
                 }
             } else {
                 // Drain events in non-streaming mode; only the final result matters.
-                tokio::spawn(async move {
-                    while event_rx.recv().await.is_some() {}
-                });
+                tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
                 match result_handle.await {
                     Ok(Ok(resp)) => {
                         print_response_with_reasoning(&resp, render_md);

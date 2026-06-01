@@ -12,9 +12,7 @@ use std::collections::HashMap;
 use tracing::{debug, instrument};
 
 use crate::rig_bridge::{from_rig_response, from_rig_stream, to_rig_request};
-use crate::{
-    ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError,
-};
+use crate::{ChatRequest, ChatResponse, ChatStream, LlmProvider, ProviderError};
 
 /// Default model for Copilot
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -90,7 +88,11 @@ impl CopilotProvider {
         if let Some(key) = api_key {
             return Self::build(
                 rig::providers::copilot::CopilotAuth::ApiKey(key),
-                None, None, None, None, default_model,
+                None,
+                None,
+                None,
+                None,
+                default_model,
                 HashMap::new(),
             );
         }
@@ -102,7 +104,11 @@ impl CopilotProvider {
         if let Some(token) = github_token {
             return Self::build(
                 rig::providers::copilot::CopilotAuth::GitHubAccessToken(token),
-                None, None, None, None, default_model,
+                None,
+                None,
+                None,
+                None,
+                default_model,
                 HashMap::new(),
             );
         }
@@ -110,7 +116,11 @@ impl CopilotProvider {
         // No env credentials found — fall back to OAuth
         Self::build(
             rig::providers::copilot::CopilotAuth::GitHubAccessToken(String::new()),
-            None, None, None, None, default_model,
+            None,
+            None,
+            None,
+            None,
+            default_model,
             HashMap::new(),
         )
     }
@@ -200,9 +210,7 @@ impl CopilotProvider {
     /// Tokens are cached in `token_dir` for subsequent use.
     ///
     /// Returns `Ok(())` on success.
-    pub async fn oauth_device_flow(
-        token_dir: &std::path::Path,
-    ) -> Result<(), ProviderError> {
+    pub async fn oauth_device_flow(token_dir: &std::path::Path) -> Result<(), ProviderError> {
         let client = rig::providers::copilot::Client::builder()
             .oauth()
             .token_dir(token_dir)
@@ -233,7 +241,9 @@ impl LlmProvider for CopilotProvider {
         let model = self.rig_client.completion_model(&request.model);
         let rig_request = to_rig_request(request);
 
-        let response = model.completion(rig_request).await
+        let response = model
+            .completion(rig_request)
+            .await
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
         Ok(from_rig_response(response))
@@ -246,7 +256,9 @@ impl LlmProvider for CopilotProvider {
         let model = self.rig_client.completion_model(&request.model);
         let rig_request = to_rig_request(request);
 
-        let stream_response = model.stream(rig_request).await
+        let stream_response = model
+            .stream(rig_request)
+            .await
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
         Ok(from_rig_stream(stream_response))

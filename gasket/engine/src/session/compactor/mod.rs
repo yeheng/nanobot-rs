@@ -386,11 +386,7 @@ impl ContextCompactor {
         if current_tokens < threshold {
             debug!(
                 "Skipping compaction for {}: {} tokens < threshold {} (budget={}, mult={})",
-                sk,
-                current_tokens,
-                threshold,
-                self.token_budget,
-                self.compaction_threshold
+                sk, current_tokens, threshold, self.token_budget, self.compaction_threshold
             );
             return false;
         }
@@ -489,10 +485,8 @@ impl ContextCompactor {
                     *state.lock() = CompactorState::Cooldown(Instant::now());
                 } else {
                     // Check if a follow-up was requested while we were running.
-                    follow_up = matches!(
-                        *state.lock(),
-                        CompactorState::Compressing { pending: true }
-                    );
+                    follow_up =
+                        matches!(*state.lock(), CompactorState::Compressing { pending: true });
                 }
             };
 

@@ -44,9 +44,13 @@ impl<'a> RequestHandler<'a> {
                 None
             },
         };
-        if let Ok(json) = serde_json::to_string(&request) {
-            tracing::debug!("[RequestHandler] built request: {}", json);
-        }
+        tracing::debug!(
+            model = %request.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            thinking = request.thinking.is_some(),
+            "[RequestHandler] built request"
+        );
         request
     }
 

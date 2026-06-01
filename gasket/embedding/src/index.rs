@@ -48,15 +48,14 @@ impl MemoryIndex {
     /// Insert (or overwrite) a vector. The vector is unit-normalized in-place
     /// before being stored, so subsequent `search` calls compute cosine
     /// similarity via plain dot product.
-    pub fn insert(&self, event_id: String, mut vector: Vec<f32>) {
+    pub fn insert(&self, event_id: String, mut vector: Vec<f32>) -> anyhow::Result<()> {
         if vector.len() != self.dim {
-            tracing::warn!(
-                "MemoryIndex::insert: skipping event {} — wrong dim ({}, expected {})",
+            anyhow::bail!(
+                "MemoryIndex::insert: event {} has wrong dim ({}, expected {})",
                 event_id,
                 vector.len(),
                 self.dim
             );
-            return;
         }
         normalize_in_place(&mut vector);
 
@@ -71,6 +70,7 @@ impl MemoryIndex {
             data.ids.push(id.clone());
             data.by_id.insert(id, row);
         }
+        Ok(())
     }
 
     /// Search for the `k` nearest vectors to the given query.
@@ -200,8 +200,8 @@ mod tests {
     #[test]
     fn test_insert_and_search() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e2".into(), vec3(0.0, 1.0, 0.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e2".into(), vec3(0.0, 1.0, 0.0)).unwrap();
 
         let results = index.search(&vec3(1.0, 0.0, 0.0), 1);
         assert_eq!(results.len(), 1);
@@ -216,8 +216,8 @@ mod tests {
     #[test]
     fn test_remove() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e2".into(), vec3(0.9, 0.1, 0.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e2".into(), vec3(0.9, 0.1, 0.0)).unwrap();
 
         index.remove("e1");
 
@@ -231,9 +231,9 @@ mod tests {
     #[test]
     fn test_remove_first_then_search() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e2".into(), vec3(0.0, 1.0, 0.0));
-        index.insert("e3".into(), vec3(0.0, 0.0, 1.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e2".into(), vec3(0.0, 1.0, 0.0)).unwrap();
+        index.insert("e3".into(), vec3(0.0, 0.0, 1.0)).unwrap();
 
         index.remove("e1");
         assert_eq!(index.len(), 2);
@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn test_len() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e2".into(), vec3(0.0, 1.0, 0.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e2".into(), vec3(0.0, 1.0, 0.0)).unwrap();
         assert_eq!(index.len(), 2);
 
         index.remove("e1");
@@ -260,9 +260,9 @@ mod tests {
     #[test]
     fn test_search_returns_multiple_results() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e2".into(), vec3(0.9, 0.1, 0.0));
-        index.insert("e3".into(), vec3(0.0, 0.0, 1.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e2".into(), vec3(0.9, 0.1, 0.0)).unwrap();
+        index.insert("e3".into(), vec3(0.0, 0.0, 1.0)).unwrap();
 
         let results = index.search(&vec3(1.0, 0.0, 0.0), 2);
         assert_eq!(results.len(), 2);
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn test_overwrite_reuses_key() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
-        index.insert("e1".into(), vec3(0.0, 1.0, 0.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
+        index.insert("e1".into(), vec3(0.0, 1.0, 0.0)).unwrap();
 
         let results = index.search(&vec3(0.0, 1.0, 0.0), 1);
         assert_eq!(results.len(), 1);
@@ -291,16 +291,17 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_dim_insert_skipped() {
+    fn test_wrong_dim_insert_returns_error() {
         let index = MemoryIndex::new(3);
-        index.insert("bad".into(), vec![1.0, 0.0]); // wrong dim
+        let err = index.insert("bad".into(), vec![1.0, 0.0]); // wrong dim
+        assert!(err.is_err());
         assert_eq!(index.len(), 0);
     }
 
     #[test]
     fn test_wrong_dim_query_returns_empty() {
         let index = MemoryIndex::new(3);
-        index.insert("e1".into(), vec3(1.0, 0.0, 0.0));
+        index.insert("e1".into(), vec3(1.0, 0.0, 0.0)).unwrap();
         let results = index.search(&[1.0, 0.0], 1);
         assert!(results.is_empty());
     }

@@ -134,7 +134,12 @@ impl SessionBuilder {
         let event_store = EventStore::new(pool);
 
         // ── 2. Query provider for real model limits ──────────────────
-        let model_limits = self.provider.model_limits(&self.config.model).await.ok().flatten();
+        let model_limits = self
+            .provider
+            .model_limits(&self.config.model)
+            .await
+            .ok()
+            .flatten();
         let effective_max_tokens = if let Some(ref limits) = model_limits {
             let capped = self.config.max_tokens.min(limits.max_output_tokens as u32);
             if capped != self.config.max_tokens {

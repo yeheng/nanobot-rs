@@ -75,7 +75,12 @@ impl RpcHandler for SubagentSpawnHandler {
         // Use the streaming variant so the frontend receives live
         // thinking/content events instead of a frozen UI.
         let (subagent_id, event_rx, result_rx, _cancel_token) = (*spawner)
-            .spawn_with_stream(request.task.clone(), request.model_id.clone(), &tool_ctx, None)
+            .spawn_with_stream(
+                request.task.clone(),
+                request.model_id.clone(),
+                &tool_ctx,
+                None,
+            )
             .await
             .map_err(|e| RpcError::internal_error(format!("Subagent spawn failed: {}", e)))?;
 

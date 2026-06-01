@@ -250,7 +250,11 @@ mod tests {
         let k = key("a");
         // Deadline in the past — slot is immediately expired.
         let _r = reg
-            .register(k.clone(), "q".into(), Instant::now() - Duration::from_secs(1))
+            .register(
+                k.clone(),
+                "q".into(),
+                Instant::now() - Duration::from_secs(1),
+            )
             .unwrap();
 
         let msg = dummy_inbound("answer", &k);
@@ -263,7 +267,11 @@ mod tests {
         let reg = PendingAskRegistryImpl::new();
         let k = key("a");
         let _r1 = reg
-            .register(k.clone(), "q".into(), Instant::now() - Duration::from_secs(1))
+            .register(
+                k.clone(),
+                "q".into(),
+                Instant::now() - Duration::from_secs(1),
+            )
             .unwrap();
 
         // Even though the receiver is still alive, the expired slot is evicted.

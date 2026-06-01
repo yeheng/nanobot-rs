@@ -222,7 +222,7 @@ impl EventStore {
             r#"
             SELECT * FROM session_events
             WHERE channel = ? AND chat_id = ?
-            ORDER BY created_at ASC
+            ORDER BY sequence ASC
             "#,
         )
         .bind(&channel)
@@ -315,7 +315,7 @@ impl EventStore {
         let chat_id = &session_key.chat_id;
         let placeholders: String = event_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT * FROM session_events WHERE channel = ? AND chat_id = ? AND id IN ({}) ORDER BY created_at ASC",
+            "SELECT * FROM session_events WHERE channel = ? AND chat_id = ? AND id IN ({}) ORDER BY sequence ASC",
             placeholders
         );
 
@@ -342,7 +342,7 @@ impl EventStore {
         }
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT * FROM session_events WHERE id IN ({}) ORDER BY created_at ASC",
+            "SELECT * FROM session_events WHERE id IN ({}) ORDER BY session_key ASC, sequence ASC",
             placeholders
         );
         let mut q = sqlx::query_as::<_, EventRow>(&query);
@@ -451,7 +451,7 @@ impl EventStore {
             r#"
             SELECT * FROM session_events
             WHERE channel = ? AND chat_id = ? AND event_type = 'summary'
-            ORDER BY created_at DESC
+            ORDER BY sequence DESC
             LIMIT 1
             "#,
         )
@@ -610,7 +610,7 @@ impl EventStoreTrait for EventStore {
             }
         }
 
-        sql.push_str(" ORDER BY created_at ASC");
+        sql.push_str(" ORDER BY sequence ASC");
 
         // SQLite does not support `LIMIT ?` parameterized queries, so we
         // append the limit directly. This is safe because `filter.limit` is

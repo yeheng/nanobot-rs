@@ -193,7 +193,7 @@ async fn test_full_recall_flow_returns_hits_with_content() {
             event_type: event_type_str.to_string(),
             content_hash: format!("hash-{i}"),
         });
-        index.insert(event_id.clone(), embedding);
+        index.insert(event_id.clone(), embedding).unwrap();
         event_ids.push(event_id);
     }
     store.upsert(records).await.unwrap();

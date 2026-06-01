@@ -141,21 +141,13 @@ impl WikiIndexingService {
                 let refs = extract_page_references(&page.content);
                 if !refs.is_empty() {
                     // First clear old outgoing relations for this page.
-                    if let Err(e) = self
-                        .relation_store
-                        .delete_all_outgoing(path)
-                        .await
-                    {
+                    if let Err(e) = self.relation_store.delete_all_outgoing(path).await {
                         debug!(
                             "WikiIndexingService: failed to clear old relations for {}: {}",
                             path, e
                         );
                     }
-                    if let Err(e) = self
-                        .relation_store
-                        .add_many(path, &refs, "mentions")
-                        .await
-                    {
+                    if let Err(e) = self.relation_store.add_many(path, &refs, "mentions").await {
                         debug!(
                             "WikiIndexingService: failed to add relations for {}: {}",
                             path, e
@@ -180,19 +172,13 @@ impl WikiIndexingService {
                     match provider.embed(&embed_text).await {
                         Ok(vector) => {
                             if let Err(e) = vstore.upsert(path, vector, &embed_text).await {
-                                warn!(
-                                    "WikiIndexingService: failed to vectorize {}: {}",
-                                    path, e
-                                );
+                                warn!("WikiIndexingService: failed to vectorize {}: {}", path, e);
                             } else {
                                 debug!("WikiIndexingService: vectorized {}", path);
                             }
                         }
                         Err(e) => {
-                            warn!(
-                                "WikiIndexingService: embedding failed for {}: {}",
-                                path, e
-                            );
+                            warn!("WikiIndexingService: embedding failed for {}: {}", path, e);
                         }
                     }
                 }

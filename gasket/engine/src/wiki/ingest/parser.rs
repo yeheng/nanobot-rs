@@ -324,7 +324,9 @@ impl HtmlParser {
         static H1_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 
         // Try <title> tag first
-        let title_re = TITLE_RE.get_or_init(|| regex::Regex::new(r"<title[^>]*>(.*?)</title>").expect("static title regex"));
+        let title_re = TITLE_RE.get_or_init(|| {
+            regex::Regex::new(r"<title[^>]*>(.*?)</title>").expect("static title regex")
+        });
         if let Some(caps) = title_re.captures(html) {
             if let Some(title) = caps.get(1) {
                 let title = Self::decode_entities(title.as_str());
@@ -336,7 +338,8 @@ impl HtmlParser {
         }
 
         // Try <h1> tag
-        let h1_re = H1_RE.get_or_init(|| regex::Regex::new(r"<h1[^>]*>(.*?)</h1>").expect("static h1 regex"));
+        let h1_re = H1_RE
+            .get_or_init(|| regex::Regex::new(r"<h1[^>]*>(.*?)</h1>").expect("static h1 regex"));
         if let Some(caps) = h1_re.captures(html) {
             if let Some(title) = caps.get(1) {
                 let title = Self::strip_tags(title.as_str());

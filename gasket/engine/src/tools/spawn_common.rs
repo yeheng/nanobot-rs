@@ -29,13 +29,11 @@ pub fn spawn_event_forwarder(
                 ChatEvent::Thinking { content } => {
                     Some(ChatEvent::subagent_thinking(&subagent_id, content.as_ref()))
                 }
-                ChatEvent::ToolStart { name, arguments } => {
-                    Some(ChatEvent::subagent_tool_start(
-                        &subagent_id,
-                        name.as_ref(),
-                        arguments.as_ref().map(|s| s.to_string()),
-                    ))
-                }
+                ChatEvent::ToolStart { name, arguments } => Some(ChatEvent::subagent_tool_start(
+                    &subagent_id,
+                    name.as_ref(),
+                    arguments.as_ref().map(|s| s.to_string()),
+                )),
                 ChatEvent::ToolEnd { name, output } => Some(ChatEvent::subagent_tool_end(
                     &subagent_id,
                     name.as_ref(),

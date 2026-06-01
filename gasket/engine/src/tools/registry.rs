@@ -100,11 +100,13 @@ impl ToolRegistry {
     /// `Some(slice)` returns only those whose name appears in the slice.
     /// `Some(&[])` returns no tools at all — explicit "forbid all".
     pub fn get_definitions_filtered(&self, filter: Option<&[String]>) -> Vec<ToolDefinition> {
+        let allowed: Option<std::collections::HashSet<&str>> =
+            filter.map(|f| f.iter().map(|s| s.as_str()).collect());
         self.items
             .iter()
-            .filter(|(name, _)| match filter {
+            .filter(|(name, _)| match &allowed {
                 None => true,
-                Some(set) => set.iter().any(|s| s == *name),
+                Some(set) => set.contains(name.as_str()),
             })
             .map(|(_, entry)| {
                 ToolDefinition::function(

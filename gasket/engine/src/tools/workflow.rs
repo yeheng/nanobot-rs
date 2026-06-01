@@ -20,8 +20,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use super::{Tool, ToolContext, ToolError, ToolResult};
 use super::spawn_common::spawn_event_forwarder;
+use super::{Tool, ToolContext, ToolError, ToolResult};
 
 // ── Data structures ─────────────────────────────────────────────────────────
 
@@ -79,7 +79,9 @@ fn placeholder_re() -> &'static Regex {
 /// Strip all `{{key}}` template placeholders from a prompt, replacing them
 /// with the literal text `[see above]` for readability in skill-mode output.
 fn clean_template_placeholders(template: &str) -> String {
-    placeholder_re().replace_all(template, "[see above]").to_string()
+    placeholder_re()
+        .replace_all(template, "[see above]")
+        .to_string()
 }
 
 /// Step definition as it appears in the YAML manifest.
@@ -199,13 +201,14 @@ impl Workflow {
         // path is exhausted.
         let mut ordered = Vec::with_capacity(manifest.steps.len());
         let mut visited = std::collections::HashSet::new();
-        let mut secondary: std::collections::VecDeque<String> =
-            std::collections::VecDeque::new();
+        let mut secondary: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut current = manifest.start_step.clone();
 
         loop {
             while current != "DONE" && !visited.contains(&current) {
-                let Some(step) = manifest.steps.get(&current) else { break };
+                let Some(step) = manifest.steps.get(&current) else {
+                    break;
+                };
                 visited.insert(current.clone());
                 ordered.push(current.clone());
                 if let Some(ref eval) = step.evaluate {
@@ -241,8 +244,11 @@ impl Workflow {
             ));
         }
 
-        let name_to_idx: HashMap<String, usize> =
-            ordered.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+        let name_to_idx: HashMap<String, usize> = ordered
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i))
+            .collect();
         let start_idx = *name_to_idx
             .get(&manifest.start_step)
             .expect("invariant: start_step is the first entry in `ordered`");
@@ -286,11 +292,7 @@ impl Workflow {
                     Transition::Done
                 } else {
                     let next_idx = *name_to_idx.get(next).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "step '{}' next '{}' not found",
-                            name,
-                            next
-                        )
+                        anyhow::anyhow!("step '{}' next '{}' not found", name, next)
                     })?;
                     Transition::Next(next_idx)
                 }
@@ -332,7 +334,11 @@ impl Workflow {
         out.push('\n');
 
         // Parameters guidance
-        if let Some(props) = self.parameters.get("properties").and_then(|v| v.as_object()) {
+        if let Some(props) = self
+            .parameters
+            .get("properties")
+            .and_then(|v| v.as_object())
+        {
             if !props.is_empty() {
                 out.push_str("\n**Parameters**:\n");
                 for (k, v) in props {
@@ -351,9 +357,13 @@ impl Workflow {
         }
 
         out.push_str("\n**Execution Rules**:\n");
-        out.push_str("1. Execute the following steps in order. Confirm completion before proceeding.\n");
+        out.push_str(
+            "1. Execute the following steps in order. Confirm completion before proceeding.\n",
+        );
         out.push_str("2. Context flows naturally through conversation history; explicit step numbers are not required.\n");
-        out.push_str("3. If a step is clearly unnecessary, skip it flexibly but inform the user.\n");
+        out.push_str(
+            "3. If a step is clearly unnecessary, skip it flexibly but inform the user.\n",
+        );
 
         out.push_str("\n### Execution Steps\n");
 
@@ -373,13 +383,16 @@ impl Workflow {
             out.push('\n');
 
             if let Transition::Evaluate(gate) = &step.transition {
-                let pass_name = gate.on_pass.map(|idx| self.steps[idx].name.as_str()).unwrap_or("DONE");
-                let fail_name = gate.on_fail.map(|idx| self.steps[idx].name.as_str()).unwrap_or("DONE");
+                let pass_name = gate
+                    .on_pass
+                    .map(|idx| self.steps[idx].name.as_str())
+                    .unwrap_or("DONE");
+                let fail_name = gate
+                    .on_fail
+                    .map(|idx| self.steps[idx].name.as_str())
+                    .unwrap_or("DONE");
                 out.push_str("\n*Review Rules*:\n");
-                out.push_str(&format!(
-                    "- On pass proceed to: **{}**\n",
-                    pass_name
-                ));
+                out.push_str(&format!("- On pass proceed to: **{}**\n", pass_name));
                 out.push_str(&format!(
                     "- On fail return to: **{}** (max retries: {})\n",
                     fail_name, gate.max_retries
@@ -411,13 +424,14 @@ impl Workflow {
 /// Unknown keys are left as-is so that missing variables are obvious in the
 /// LLM prompt rather than silently replaced with empty strings.
 fn substitute_template(template: &str, ctx: &HashMap<String, String>) -> String {
-    placeholder_re().replace_all(template, |caps: &regex::Captures| {
-        let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        ctx.get(key)
-            .cloned()
-            .unwrap_or_else(|| caps.get(0).unwrap().as_str().to_owned())
-    })
-    .to_string()
+    placeholder_re()
+        .replace_all(template, |caps: &regex::Captures| {
+            let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            ctx.get(key)
+                .cloned()
+                .unwrap_or_else(|| caps.get(0).unwrap().as_str().to_owned())
+        })
+        .to_string()
 }
 
 // ── Verdict parsing ─────────────────────────────────────────────────────────
@@ -458,19 +472,30 @@ fn parse_verdict(text: &str) -> Result<(String, String), String> {
             "Workflow verdict using deprecated alias 'pass_gate'; \
              please migrate to {{\"verdict\":\"PASS|FAIL\",\"reason\":...}}"
         );
-        if b { "PASS".to_string() } else { "FAIL".to_string() }
+        if b {
+            "PASS".to_string()
+        } else {
+            "FAIL".to_string()
+        }
     } else if let Some(b) = obj.get("validation_passed").and_then(|v| v.as_bool()) {
         warn!(
             "Workflow verdict using deprecated alias 'validation_passed'; \
              please migrate to {{\"verdict\":\"PASS|FAIL\",\"reason\":...}}"
         );
-        if b { "PASS".to_string() } else { "FAIL".to_string() }
+        if b {
+            "PASS".to_string()
+        } else {
+            "FAIL".to_string()
+        }
     } else {
         return Err("Missing 'verdict' field".to_string());
     };
 
     if verdict != "PASS" && verdict != "FAIL" {
-        return Err(format!("Invalid verdict '{}', expected PASS or FAIL", verdict));
+        return Err(format!(
+            "Invalid verdict '{}', expected PASS or FAIL",
+            verdict
+        ));
     }
 
     // `reason` is informational. Prefer the explicit field; otherwise serialize
@@ -529,7 +554,12 @@ impl WorkflowTool {
 
         // Spawn with streaming so the frontend sees real-time progress.
         let (subagent_id, event_rx, result_rx, _cancel_token) = spawner
-            .spawn_with_stream(prompt.to_string(), step.model.clone(), ctx, step.tools.clone())
+            .spawn_with_stream(
+                prompt.to_string(),
+                step.model.clone(),
+                ctx,
+                step.tools.clone(),
+            )
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
@@ -613,7 +643,10 @@ impl Tool for WorkflowTool {
         let mut context_map = HashMap::new();
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
-                let val_str = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+                let val_str = v
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| v.to_string());
                 context_map.insert(format!("input.{}", k), val_str);
             }
         }
@@ -641,10 +674,7 @@ impl Tool for WorkflowTool {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => warn!(
-                    "[Workflow {}] KV read failed: {}",
-                    self.workflow.name, e
-                ),
+                Err(e) => warn!("[Workflow {}] KV read failed: {}", self.workflow.name, e),
             }
         }
 
@@ -662,9 +692,7 @@ impl Tool for WorkflowTool {
             let prompt = substitute_template(&step.prompt, &context_map);
 
             // Execute the step via subagent.
-            let result = self
-                .run_step(step, &prompt, step_index, ctx)
-                .await?;
+            let result = self.run_step(step, &prompt, step_index, ctx).await?;
             step_index += 1;
 
             // Store result keyed by step name so templates like {{research}} resolve.
@@ -680,10 +708,7 @@ impl Tool for WorkflowTool {
                 };
                 if let Ok(json) = serde_json::to_string(&state) {
                     if let Err(e) = kv.write(&state_key, &json).await {
-                        warn!(
-                            "[Workflow {}] KV write failed: {}",
-                            self.workflow.name, e
-                        );
+                        warn!("[Workflow {}] KV write failed: {}", self.workflow.name, e);
                     }
                 }
             }
@@ -731,10 +756,7 @@ impl Tool for WorkflowTool {
         // ── Cleanup: delete KV snapshot on successful completion ──
         if let Some(ref kv) = self.kv_store {
             if let Err(e) = kv.delete(&state_key).await {
-                warn!(
-                    "[Workflow {}] KV delete failed: {}",
-                    self.workflow.name, e
-                );
+                warn!("[Workflow {}] KV delete failed: {}", self.workflow.name, e);
             }
         }
 
@@ -745,8 +767,9 @@ impl Tool for WorkflowTool {
             let final_output = serde_json::json!({
                 "context": context_map,
             });
-            serde_json::to_string(&final_output)
-                .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize result: {}", e)))
+            serde_json::to_string(&final_output).map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to serialize result: {}", e))
+            })
         }
     }
 }
@@ -775,9 +798,8 @@ pub fn discover_workflows(
         .with_context(|| format!("Failed to read workflows directory {:?}", workflows_dir))?;
 
     for entry in entries {
-        let entry = entry.with_context(|| {
-            format!("Failed to read directory entry in {:?}", workflows_dir)
-        })?;
+        let entry = entry
+            .with_context(|| format!("Failed to read directory entry in {:?}", workflows_dir))?;
 
         let path = entry.path();
         if path.is_dir() {
@@ -918,7 +940,10 @@ Note: this was a clean run with no issues."#;
         let text = r#"{"verdict": "FAIL"}"#;
         let (v, r) = parse_verdict(text).unwrap();
         assert_eq!(v, "FAIL");
-        assert!(r.contains("FAIL"), "fallback reason should include serialized object");
+        assert!(
+            r.contains("FAIL"),
+            "fallback reason should include serialized object"
+        );
     }
 
     #[test]
@@ -961,7 +986,8 @@ steps:
     #[test]
     fn load_real_dev_yaml_has_output_template() {
         let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let manifest = load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
+        let manifest =
+            load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
         assert!(
             manifest.output_template.is_some(),
             "dev.yaml should have output_template"
@@ -1035,7 +1061,10 @@ steps:
         assert!(content.contains("A test workflow"));
         assert!(content.contains("#### 1. step1"));
         assert!(content.contains("#### 2. step2"));
-        assert!(content.contains("[see above]"), "Template placeholders should be cleaned");
+        assert!(
+            content.contains("[see above]"),
+            "Template placeholders should be cleaned"
+        );
         assert!(content.contains("On pass proceed to: **DONE**"));
         assert!(content.contains("On fail return to: **step1** (max retries: 2)"));
     }
@@ -1043,7 +1072,8 @@ steps:
     #[test]
     fn to_skill_content_dev_workflow() {
         let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let manifest = load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
+        let manifest =
+            load_workflow(&crate_root.join("../../workspace/workflows/dev.yaml")).unwrap();
         assert_eq!(manifest.mode, WorkflowMode::Skill);
 
         let workflow = Workflow::from_manifest(&manifest).unwrap();
@@ -1071,7 +1101,10 @@ steps:
     next: "DONE"
 "#;
         let result: Result<WorkflowManifest, _> = serde_yaml::from_str(yaml);
-        assert!(result.is_err(), "unknown top-level field should be rejected");
+        assert!(
+            result.is_err(),
+            "unknown top-level field should be rejected"
+        );
     }
 
     #[test]

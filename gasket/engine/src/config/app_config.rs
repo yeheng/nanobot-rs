@@ -19,7 +19,7 @@ pub use gasket_types::channel_config::ChannelsConfig;
 use crate::config::ToolsConfig;
 
 // Re-export provider config types (unified in gasket-providers)
-pub use gasket_providers::{ModelConfig, ProviderConfig, ProviderType};
+pub use gasket_providers::{ModelConfig, ModelSpec, ProviderConfig, ProviderType};
 
 /// Agent profile for model switching
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -340,8 +340,8 @@ impl ProviderRegistry {
                 .insert(name.clone(), provider_config.clone());
         }
         if let Some(ref model) = config.agents.defaults.model {
-            let provider_name: Option<&str> = model.split('/').next();
-            if let Some(name) = provider_name {
+            let spec: ModelSpec = model.parse().expect("ModelSpec::from_str is infallible");
+            if let Some(name) = spec.provider() {
                 registry.default_provider = Some(name.to_string());
             }
         }

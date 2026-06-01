@@ -1,12 +1,21 @@
 //! Type conversion bridge between gasket provider types and rig-core types.
 
 use futures_util::stream::StreamExt;
-use rig::completion::{CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Message as RigMessage, ToolDefinition as RigToolDefinition};
-use rig::message::{AssistantContent, Reasoning, ReasoningContent, ToolCall as RigToolCall, ToolFunction as RigToolFunction};
+use rig::completion::{
+    CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Message as RigMessage,
+    ToolDefinition as RigToolDefinition,
+};
+use rig::message::{
+    AssistantContent, Reasoning, ReasoningContent, ToolCall as RigToolCall,
+    ToolFunction as RigToolFunction,
+};
 use rig::streaming::{StreamedAssistantContent, ToolCallDeltaContent};
 use rig::OneOrMany;
 
-use crate::{ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall, MessageRole, ProviderError, ToolCall, ToolCallDelta, Usage};
+use crate::{
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, ChatStreamChunk, ChatStreamDelta,
+    FinishReason, FunctionCall, MessageRole, ProviderError, ToolCall, ToolCallDelta, Usage,
+};
 
 /// Convert gasket ChatMessage to rig Message
 pub fn to_rig_message(msg: ChatMessage) -> RigMessage {
@@ -44,18 +53,15 @@ pub fn to_rig_message(msg: ChatMessage) -> RigMessage {
             } else {
                 RigMessage::Assistant {
                     id: None,
-                    content: OneOrMany::many(contents).unwrap_or_else(|_| {
-                        OneOrMany::one(AssistantContent::text(String::new()))
-                    }),
+                    content: OneOrMany::many(contents)
+                        .unwrap_or_else(|_| OneOrMany::one(AssistantContent::text(String::new()))),
                 }
             }
         }
-        MessageRole::Tool => {
-            RigMessage::tool_result(
-                msg.tool_call_id.unwrap_or_default(),
-                msg.content.unwrap_or_default(),
-            )
-        }
+        MessageRole::Tool => RigMessage::tool_result(
+            msg.tool_call_id.unwrap_or_default(),
+            msg.content.unwrap_or_default(),
+        ),
     }
 }
 
@@ -81,19 +87,22 @@ pub fn to_rig_request(request: ChatRequest) -> CompletionRequest {
     CompletionRequest {
         model: Some(request.model),
         preamble,
-        chat_history: OneOrMany::many(messages).unwrap_or_else(|_| OneOrMany::one(RigMessage::user(""))),
+        chat_history: OneOrMany::many(messages)
+            .unwrap_or_else(|_| OneOrMany::one(RigMessage::user(""))),
         documents: vec![],
-        tools: request.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|t| RigToolDefinition {
-                    name: t.function.name,
-                    description: t.function.description,
-                    parameters: t.function.parameters,
-                })
-                .collect()
-        })
-        .unwrap_or_default(),
+        tools: request
+            .tools
+            .map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|t| RigToolDefinition {
+                        name: t.function.name,
+                        description: t.function.description,
+                        parameters: t.function.parameters,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         temperature: request.temperature.map(|t| t as f64),
         max_tokens: request.max_tokens.map(|t| t as u64),
         tool_choice: None,
@@ -124,10 +133,16 @@ pub fn from_rig_response<T>(response: CompletionResponse<T>) -> ChatResponse {
                 });
             }
             AssistantContent::Reasoning(reasoning) => {
-                reasoning_content = Some(reasoning.content.iter().map(|r| match r {
-                    ReasoningContent::Text { text, .. } => text.clone(),
-                    _ => String::new(),
-                }).collect::<String>());
+                reasoning_content = Some(
+                    reasoning
+                        .content
+                        .iter()
+                        .map(|r| match r {
+                            ReasoningContent::Text { text, .. } => text.clone(),
+                            _ => String::new(),
+                        })
+                        .collect::<String>(),
+                );
             }
             _ => {}
         }
@@ -148,73 +163,73 @@ pub fn from_rig_response<T>(response: CompletionResponse<T>) -> ChatResponse {
 /// Convert rig streaming response to gasket ChatStream
 pub fn from_rig_stream<S, R>(stream: S) -> ChatStream
 where
-    S: futures_util::Stream<Item = Result<StreamedAssistantContent<R>, CompletionError>> + Send + 'static,
+    S: futures_util::Stream<Item = Result<StreamedAssistantContent<R>, CompletionError>>
+        + Send
+        + 'static,
     R: GetTokenUsage + Send + 'static,
 {
-    let mapped = stream.map(|result| {
-        match result {
-            Ok(content) => {
-                let chunk = match content {
-                    StreamedAssistantContent::Text(text) => ChatStreamChunk {
-                        delta: ChatStreamDelta {
-                            content: Some(text.text),
-                            reasoning_content: None,
-                            tool_calls: vec![],
-                        },
-                        finish_reason: None,
-                        usage: None,
+    let mapped = stream.map(|result| match result {
+        Ok(content) => {
+            let chunk = match content {
+                StreamedAssistantContent::Text(text) => ChatStreamChunk {
+                    delta: ChatStreamDelta {
+                        content: Some(text.text),
+                        reasoning_content: None,
+                        tool_calls: vec![],
                     },
-                    StreamedAssistantContent::ToolCallDelta { id, content, .. } => {
-                        let (function_name, function_arguments) = match content {
-                            ToolCallDeltaContent::Name(name) => (Some(name), None),
-                            ToolCallDeltaContent::Delta(delta) => (None, Some(delta)),
-                        };
-                        ChatStreamChunk {
-                            delta: ChatStreamDelta {
-                                content: None,
-                                reasoning_content: None,
-                                tool_calls: vec![ToolCallDelta {
-                                    index: 0,
-                                    id: Some(id),
-                                    function_name,
-                                    function_arguments,
-                                }],
-                            },
-                            finish_reason: None,
-                            usage: None,
-                        }
-                    }
-                    StreamedAssistantContent::ReasoningDelta { reasoning, .. } => ChatStreamChunk {
+                    finish_reason: None,
+                    usage: None,
+                },
+                StreamedAssistantContent::ToolCallDelta { id, content, .. } => {
+                    let (function_name, function_arguments) = match content {
+                        ToolCallDeltaContent::Name(name) => (Some(name), None),
+                        ToolCallDeltaContent::Delta(delta) => (None, Some(delta)),
+                    };
+                    ChatStreamChunk {
                         delta: ChatStreamDelta {
                             content: None,
-                            reasoning_content: Some(reasoning),
-                            tool_calls: vec![],
+                            reasoning_content: None,
+                            tool_calls: vec![ToolCallDelta {
+                                index: 0,
+                                id: Some(id),
+                                function_name,
+                                function_arguments,
+                            }],
                         },
                         finish_reason: None,
                         usage: None,
-                    },
-                    StreamedAssistantContent::Final(res) => {
-                        let usage = res.token_usage().map(|u| Usage {
-                            input_tokens: u.input_tokens as usize,
-                            output_tokens: u.output_tokens as usize,
-                            total_tokens: u.total_tokens as usize,
-                        });
-                        ChatStreamChunk {
-                            delta: ChatStreamDelta::default(),
-                            finish_reason: Some(FinishReason::Stop),
-                            usage,
-                        }
                     }
-                    _ => ChatStreamChunk {
-                        delta: ChatStreamDelta::default(),
-                        finish_reason: None,
-                        usage: None,
+                }
+                StreamedAssistantContent::ReasoningDelta { reasoning, .. } => ChatStreamChunk {
+                    delta: ChatStreamDelta {
+                        content: None,
+                        reasoning_content: Some(reasoning),
+                        tool_calls: vec![],
                     },
-                };
-                Ok(chunk)
-            }
-            Err(e) => Err(ProviderError::Other(e.to_string())),
+                    finish_reason: None,
+                    usage: None,
+                },
+                StreamedAssistantContent::Final(res) => {
+                    let usage = res.token_usage().map(|u| Usage {
+                        input_tokens: u.input_tokens as usize,
+                        output_tokens: u.output_tokens as usize,
+                        total_tokens: u.total_tokens as usize,
+                    });
+                    ChatStreamChunk {
+                        delta: ChatStreamDelta::default(),
+                        finish_reason: Some(FinishReason::Stop),
+                        usage,
+                    }
+                }
+                _ => ChatStreamChunk {
+                    delta: ChatStreamDelta::default(),
+                    finish_reason: None,
+                    usage: None,
+                },
+            };
+            Ok(chunk)
         }
+        Err(e) => Err(ProviderError::Other(e.to_string())),
     });
 
     Box::pin(mapped)

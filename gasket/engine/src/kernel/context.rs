@@ -69,7 +69,12 @@ impl RuntimeContext {
         tools: Arc<ToolRegistry>,
         config: KernelConfig,
     ) -> Self {
-        Self::new_with_role(provider, tools, config, gasket_types::AgentRole::Orchestrator)
+        Self::new_with_role(
+            provider,
+            tools,
+            config,
+            gasket_types::AgentRole::Orchestrator,
+        )
     }
 
     /// Constructs a Worker context (subagent leaf). `spawner` is forced to None

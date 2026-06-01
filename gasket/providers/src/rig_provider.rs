@@ -36,10 +36,7 @@ impl<C> RigCompletionProvider<C> {
     }
 
     /// Inject a message-normalization function (e.g. for MiniMax workaround).
-    pub fn with_normalizer(
-        mut self,
-        f: fn(Vec<ChatMessage>) -> Vec<ChatMessage>,
-    ) -> Self {
+    pub fn with_normalizer(mut self, f: fn(Vec<ChatMessage>) -> Vec<ChatMessage>) -> Self {
         self.normalize_fn = Some(f);
         self
     }

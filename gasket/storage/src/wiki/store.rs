@@ -236,7 +236,8 @@ impl PageStore {
     // -- private helpers --
 
     fn parse_tags(tags: Option<&str>) -> Vec<String> {
-        tags.and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default()
+        tags.and_then(|t| serde_json::from_str(t).ok())
+            .unwrap_or_default()
     }
 
     fn parse_rfc3339(s: &str) -> chrono::DateTime<chrono::Utc> {

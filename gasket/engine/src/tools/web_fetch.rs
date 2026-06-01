@@ -176,8 +176,9 @@ async fn extract_core_content(url_str: &str, html: String) -> Result<String, any
         // ── Primary: dom_smoothie ───────────────────────────────────────
         let dom_result = (|| -> anyhow::Result<String> {
             let cfg = dom_smoothie::Config::default();
-            let mut readability = dom_smoothie::Readability::new(html.clone(), Some(url_clone.as_str()), Some(cfg))
-                .map_err(|e| anyhow::anyhow!("Readability init failed: {}", e))?;
+            let mut readability =
+                dom_smoothie::Readability::new(html.clone(), Some(url_clone.as_str()), Some(cfg))
+                    .map_err(|e| anyhow::anyhow!("Readability init failed: {}", e))?;
             let article = readability
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Readability parse failed: {}", e))?;

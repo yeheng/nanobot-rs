@@ -240,10 +240,7 @@ impl SandboxBackend for HostExecutor {
 
         let output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
             let mut command = Command::new("cmd");
-            command
-                .arg("/C")
-                .arg(&cmd)
-                .current_dir(&validated);
+            command.arg("/C").arg(&cmd).current_dir(&validated);
 
             debug!("Windows command: {:?}", command);
 

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use gasket_storage::wiki::{slugify, PageSearchIndex, PageStore, PageSummary, PageType, SearchHit, WikiPage};
+use gasket_storage::wiki::{
+    slugify, PageSearchIndex, PageStore, PageSummary, PageType, SearchHit, WikiPage,
+};
 
 use super::indexing_service::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 
@@ -157,8 +159,7 @@ impl WikiQueryEngine {
                 let query_vec = provider.embed(query).await?;
                 let vector_future = vstore.search(&query_vec, limit, 0.3);
 
-                let (bm25_results, vector_results) =
-                    tokio::join!(bm25_future, vector_future);
+                let (bm25_results, vector_results) = tokio::join!(bm25_future, vector_future);
 
                 let bm25_hits = bm25_results.unwrap_or_default();
                 let vector_hits = vector_results.unwrap_or_default();

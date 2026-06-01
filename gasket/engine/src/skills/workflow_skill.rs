@@ -65,10 +65,7 @@ pub fn discover_workflow_skills(workflows_dir: &Path) -> anyhow::Result<Vec<Skil
                 let workflow = match Workflow::from_manifest(&manifest) {
                     Ok(wf) => wf,
                     Err(e) => {
-                        warn!(
-                            "Failed to validate workflow-skill from {:?}: {}",
-                            path, e
-                        );
+                        warn!("Failed to validate workflow-skill from {:?}: {}", path, e);
                         continue;
                     }
                 };
@@ -146,7 +143,9 @@ steps:
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name(), "skill_mode_workflow");
         assert!(skills[0].always_load());
-        assert!(skills[0].content().contains("Workflow: skill_mode_workflow"));
+        assert!(skills[0]
+            .content()
+            .contains("Workflow: skill_mode_workflow"));
     }
 
     #[test]

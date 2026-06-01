@@ -70,7 +70,6 @@ impl TaskSpec {
         self
     }
 
-
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
@@ -365,11 +364,14 @@ impl SimpleSpawner {
     }
 
     pub fn with_thinking_enabled(mut self, enabled: bool) -> Self {
-            self.thinking_enabled = enabled;
-            self
-        }
+        self.thinking_enabled = enabled;
+        self
+    }
 
-    pub fn with_pending_asks(mut self, registry: gasket_types::pending_ask::DynPendingAskRegistry) -> Self {
+    pub fn with_pending_asks(
+        mut self,
+        registry: gasket_types::pending_ask::DynPendingAskRegistry,
+    ) -> Self {
         self.pending_asks = Some(registry);
         self
     }
@@ -417,11 +419,7 @@ impl SimpleSpawner {
         }
     }
 
-    fn error_result(
-        id: &str,
-        task: &str,
-        message: &str,
-    ) -> TypesSubagentResult {
+    fn error_result(id: &str, task: &str, message: &str) -> TypesSubagentResult {
         TypesSubagentResult {
             id: id.to_string(),
             task: task.to_string(),
@@ -457,8 +455,8 @@ impl SubagentSpawner for SimpleSpawner {
 
         let (provider, model) = self.resolve_provider_model(model_id.as_deref());
 
-        let task_spec = TaskSpec::new(&subagent_id, task)
-            .with_thinking_enabled(self.thinking_enabled);
+        let task_spec =
+            TaskSpec::new(&subagent_id, task).with_thinking_enabled(self.thinking_enabled);
         let task_spec = if let Some(m) = model {
             task_spec.with_model(m)
         } else {
@@ -574,7 +572,11 @@ impl SubagentSpawner for SimpleSpawner {
                         response: result.response.into(),
                         model: result.model,
                     },
-                    None => Self::error_result(&result_subagent_id, &task_desc, "Subagent completed but no result received"),
+                    None => Self::error_result(
+                        &result_subagent_id,
+                        &task_desc,
+                        "Subagent completed but no result received",
+                    ),
                 },
                 Err(e) => Self::error_result(&result_subagent_id, &task_desc, &e.to_string()),
             };

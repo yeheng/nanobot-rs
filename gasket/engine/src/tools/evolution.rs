@@ -332,11 +332,7 @@ impl EvolutionTool {
         for mem in &memories {
             match mem.memory_type.as_str() {
                 "skill" => {
-                    if self
-                        .persist_as_sop(&mem, page_store)
-                        .await
-                        .is_ok()
-                    {
+                    if self.persist_as_sop(&mem, page_store).await.is_ok() {
                         persisted += 1;
                     }
                 }
@@ -411,11 +407,17 @@ impl EvolutionTool {
             match self.distill_memories(&memories, ps).await {
                 Ok(distill_count) => {
                     if distill_count > 0 {
-                        info!("Evolution: distilled {} meta-item(s) for session {}", distill_count, session_key);
+                        info!(
+                            "Evolution: distilled {} meta-item(s) for session {}",
+                            distill_count, session_key
+                        );
                     }
                 }
                 Err(e) => {
-                    warn!("Evolution: distill failed for session {}: {}", session_key, e);
+                    warn!(
+                        "Evolution: distill failed for session {}: {}",
+                        session_key, e
+                    );
                 }
             }
         }
@@ -482,12 +484,16 @@ impl EvolutionTool {
         page_store: &PageStore,
     ) -> Result<usize, ToolError> {
         if memories.len() < 3 {
-            debug!("Evolution: skipping distill — only {} memories (< 3)", memories.len());
+            debug!(
+                "Evolution: skipping distill — only {} memories (< 3)",
+                memories.len()
+            );
             return Ok(0);
         }
 
-        let memories_json = serde_json::to_string(memories)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to serialize memories for distill: {}", e)))?;
+        let memories_json = serde_json::to_string(memories).map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to serialize memories for distill: {}", e))
+        })?;
 
         let template = self
             .distill_prompt
@@ -504,9 +510,10 @@ impl EvolutionTool {
             thinking: None,
         };
 
-        let response = self.provider.chat(request).await.map_err(|e| {
-            ToolError::ExecutionError(format!("Distill LLM call failed: {}", e))
-        })?;
+        let response =
+            self.provider.chat(request).await.map_err(|e| {
+                ToolError::ExecutionError(format!("Distill LLM call failed: {}", e))
+            })?;
 
         let content = response.content.unwrap_or_default();
         let distill: DistillResult = match extract_distill_json(&content) {
@@ -521,14 +528,28 @@ impl EvolutionTool {
 
         // Persist skill patterns as SOP pages.
         for skill in &distill.skill_patterns {
-            if self.persist_distill_item(skill, "sops", "auto_distilled", PageType::Sop, page_store).await.is_ok() {
+            if self
+                .persist_distill_item(skill, "sops", "auto_distilled", PageType::Sop, page_store)
+                .await
+                .is_ok()
+            {
                 persisted += 1;
             }
         }
 
         // Persist anti-patterns as topic pages.
         for anti in &distill.anti_patterns {
-            if self.persist_distill_item(anti, "topics/anti-patterns", "auto_distilled", PageType::Topic, page_store).await.is_ok() {
+            if self
+                .persist_distill_item(
+                    anti,
+                    "topics/anti-patterns",
+                    "auto_distilled",
+                    PageType::Topic,
+                    page_store,
+                )
+                .await
+                .is_ok()
+            {
                 persisted += 1;
             }
         }
@@ -536,7 +557,10 @@ impl EvolutionTool {
         // Persist meta-observations as a single page per session batch.
         if !distill.meta_observations.is_empty() {
             let path = format!("topics/meta-observations/{}", Utc::now().format("%Y-%m-%d"));
-            let content = distill.meta_observations.iter().enumerate()
+            let content = distill
+                .meta_observations
+                .iter()
+                .enumerate()
                 .map(|(i, obs)| format!("{}. {}", i + 1, obs))
                 .collect::<Vec<_>>()
                 .join("\n\n");
@@ -555,7 +579,10 @@ impl EvolutionTool {
         }
 
         if persisted > 0 {
-            info!("Evolution: distill produced {} persisted item(s)", persisted);
+            info!(
+                "Evolution: distill produced {} persisted item(s)",
+                persisted
+            );
         }
 
         Ok(persisted)
@@ -579,17 +606,19 @@ impl EvolutionTool {
             match page_store.read(&path).await {
                 Ok(mut existing) => {
                     let today = Utc::now().format("%Y-%m-%d").to_string();
-                    existing.content.push_str(&format!(
-                        "\n\n### {} Update\n\n{}",
-                        today, item.content
-                    ));
+                    existing
+                        .content
+                        .push_str(&format!("\n\n### {} Update\n\n{}", today, item.content));
                     merge_tags(&mut existing.tags, &tags);
                     page_store.write(&existing).await.map_err(|e| {
                         ToolError::ExecutionError(format!("Failed to append distilled page: {}", e))
                     })?;
                 }
                 Err(e) => {
-                    warn!("Evolution: failed to read existing distilled page '{}': {}", path, e);
+                    warn!(
+                        "Evolution: failed to read existing distilled page '{}': {}",
+                        path, e
+                    );
                 }
             }
         } else {
@@ -623,10 +652,9 @@ impl EvolutionTool {
             match page_store.read(&path).await {
                 Ok(mut existing_page) => {
                     let today = Utc::now().format("%Y-%m-%d").to_string();
-                    existing_page.content.push_str(&format!(
-                        "\n\n### {} Update\n\n{}",
-                        today, mem.content
-                    ));
+                    existing_page
+                        .content
+                        .push_str(&format!("\n\n### {} Update\n\n{}", today, mem.content));
                     merge_tags(&mut existing_page.tags, &tags);
                     if let Some(ref summary) = mem.summary {
                         existing_page.summary = Some(summary.clone());

@@ -141,7 +141,7 @@ impl EmbeddingIndexer {
         let total = embeddings.len();
 
         for stored in embeddings {
-            index.insert(stored.event_id, stored.embedding);
+            index.insert(stored.event_id, stored.embedding)?;
         }
 
         tracing::info!("rebuild_index: loaded {total} embeddings into index (limit={limit:?})");
@@ -228,7 +228,7 @@ impl EmbeddingIndexer {
 
         // Step 5: Update in-memory index.
         for (id, embedding) in ids_and_embeddings {
-            index.insert(id, embedding);
+            index.insert(id, embedding)?;
         }
 
         Ok(())

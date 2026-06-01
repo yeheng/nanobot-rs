@@ -203,10 +203,7 @@ pub async fn save_ask_checkpoint(
     {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            warn!(
-                "Ask checkpoint LLM call failed for {}: {}",
-                session_key, e
-            );
+            warn!("Ask checkpoint LLM call failed for {}: {}", session_key, e);
             return Ok(());
         }
         Err(_) => {

@@ -4,9 +4,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::wiki::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 use async_trait::async_trait;
 use gasket_embedding::{EmbeddingProvider, VectorStore};
-use crate::wiki::{WikiEmbeddingProvider, WikiVectorHit, WikiVectorStore};
 
 /// Adapter: wraps an `EmbeddingProvider` as a `WikiEmbeddingProvider`.
 pub struct WikiEmbeddingAdapter {

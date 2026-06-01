@@ -99,7 +99,9 @@ impl HttpClientExt for LoggingHttpClient {
             tracing::debug!(method = %method, uri = %uri, "rig HTTP (multipart) →");
             let result = fut.await;
             match &result {
-                Ok(resp) => tracing::debug!(status = %resp.status(), uri = %uri, "rig HTTP (multipart) ←"),
+                Ok(resp) => {
+                    tracing::debug!(status = %resp.status(), uri = %uri, "rig HTTP (multipart) ←")
+                }
                 Err(e) => tracing::debug!(error = %e, uri = %uri, "rig HTTP (multipart) ✗"),
             }
             result
@@ -121,7 +123,9 @@ impl HttpClientExt for LoggingHttpClient {
             tracing::debug!(method = %method, uri = %uri, "rig HTTP (stream) →");
             let result = fut.await;
             match &result {
-                Ok(resp) => tracing::debug!(status = %resp.status(), uri = %uri, "rig HTTP (stream) ←"),
+                Ok(resp) => {
+                    tracing::debug!(status = %resp.status(), uri = %uri, "rig HTTP (stream) ←")
+                }
                 Err(e) => tracing::debug!(error = %e, uri = %uri, "rig HTTP (stream) ✗"),
             }
             result

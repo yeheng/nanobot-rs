@@ -304,7 +304,11 @@ pub fn slugify(s: &str) -> String {
     let re_trim = Regex::new(r"^-+|-+$").unwrap();
     re_trim
         .replace_all(
-            &slug.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-"),
+            &slug
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("-"),
             "",
         )
         .to_string()

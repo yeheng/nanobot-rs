@@ -131,7 +131,10 @@ impl PathValidator {
                 } else {
                     allowed.join(&path)
                 };
-                resolved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| allowed.clone())
+                resolved
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| allowed.clone())
             } else {
                 return Err(ToolError::NotFound(format!(
                     "Parent directory not found: {}",
@@ -148,8 +151,7 @@ impl PathValidator {
 
             // Reject writing directly to the workspace root.
             if let Some(allowed) = &self.allowed_dir {
-                let canonical_allowed =
-                    allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+                let canonical_allowed = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
                 if canonical_parent == canonical_allowed {
                     return Err(ToolError::PermissionDenied(
                         "Writing directly to the workspace root is forbidden. \

@@ -45,11 +45,11 @@ pub mod wiki;
 
 // ── Root-level re-exports (used by external crates at crate root) ──
 
+pub use error::ConfigValidationError;
+pub use gasket_storage::{EventStore, SessionStore, SqliteStore};
+pub use gasket_types::SubagentSpawner;
 pub use session::AgentConfig;
 pub use subagents::ModelResolver;
-pub use gasket_types::SubagentSpawner;
-pub use gasket_storage::{EventStore, SessionStore, SqliteStore};
-pub use error::ConfigValidationError;
 pub use wiki::create_wiki_tables;
 
 // ── Facade re-exports (merged from gasket-core) ─────────────
@@ -68,6 +68,8 @@ pub mod providers {
     pub use gasket_providers::build_gemini_provider;
     #[cfg(feature = "provider-minimax")]
     pub use gasket_providers::build_minimax_provider;
+    #[cfg(feature = "provider-copilot")]
+    pub use gasket_providers::CopilotProvider;
     #[cfg(feature = "provider-moonshot")]
     pub use gasket_providers::MoonshotProvider;
     pub use gasket_providers::{
@@ -77,8 +79,6 @@ pub mod providers {
         ProviderBuildError, ProviderConfig, ProviderResult, ThinkingConfig, ToolCall,
         ToolCallDelta, ToolDefinition, Usage,
     };
-    #[cfg(feature = "provider-copilot")]
-    pub use gasket_providers::CopilotProvider;
 }
 
 // Embedding (re-exported for CLI when feature is enabled)

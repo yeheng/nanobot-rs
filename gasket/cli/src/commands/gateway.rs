@@ -22,8 +22,8 @@ use gasket_engine::EventStore;
 use gasket_engine::SqliteStore;
 use gasket_engine::SubagentSpawner;
 
-use gasket_engine::broker::{BrokerPayload, SessionManager};
 use crate::commands::broker_outbound::OutboundDispatcher;
+use gasket_engine::broker::{BrokerPayload, MemoryBroker, SessionManager};
 use gasket_types::SessionKey;
 
 use super::registry::CliModelResolver;
@@ -92,9 +92,9 @@ pub async fn cmd_gateway() -> Result<()> {
                 let manager = adapter.manager().clone();
                 let router = Arc::new(gasket_channels::ApprovalRouter::new());
                 manager.set_approval_router(router.clone());
-                callback = Some(Arc::new(
-                    gasket_channels::WebSocketApprovalCallback::new(manager, router),
-                ));
+                callback = Some(Arc::new(gasket_channels::WebSocketApprovalCallback::new(
+                    manager, router,
+                )));
             }
         }
         callback
@@ -356,31 +356,30 @@ async fn setup_agent_pipeline(
     // channel invariant is encoded in the type: either all three are present
     // or none are.
     #[cfg(feature = "embedding")]
-    let (history_search, embedding_recall) =
-        if let Some(ref emb_cfg) = config.embedding {
-            let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
-            let tx = event_store.sender();
-            match gasket_engine::session::history::builder::setup_embedding_recall(
-                &event_store,
-                emb_cfg,
-            )
-            .await
-            {
-                Ok((searcher, indexer)) => {
-                    let params = gasket_engine::tools::HistorySearchParams {
-                        searcher: searcher.clone(),
-                        config: emb_cfg.recall.clone(),
-                    };
-                    (Some(params), Some((searcher, indexer, tx)))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize embedding recall: {}", e);
-                    (None, None)
-                }
+    let (history_search, embedding_recall) = if let Some(ref emb_cfg) = config.embedding {
+        let event_store = gasket_engine::EventStore::new(sqlite_store.pool());
+        let tx = event_store.sender();
+        match gasket_engine::session::history::builder::setup_embedding_recall(
+            &event_store,
+            emb_cfg,
+        )
+        .await
+        {
+            Ok((searcher, indexer)) => {
+                let params = gasket_engine::tools::HistorySearchParams {
+                    searcher: searcher.clone(),
+                    config: emb_cfg.recall.clone(),
+                };
+                (Some(params), Some((searcher, indexer, tx)))
             }
-        } else {
-            (None, None)
-        };
+            Err(e) => {
+                tracing::warn!("Failed to initialize embedding recall: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     // (non-embedding builds skip semantic recall initialization)
 
     let orchestrator_tools = build_tool_registry(ToolRegistryConfig {
@@ -492,7 +491,9 @@ async fn setup_agent_pipeline(
         })),
     );
 
-    agent = agent.with_pricing(pricing).with_spawner(subagent_spawner.clone());
+    agent = agent
+        .with_pricing(pricing)
+        .with_spawner(subagent_spawner.clone());
     let agent = Arc::new(agent);
 
     Ok((agent, tools, subagent_spawner))
@@ -849,9 +850,8 @@ fn start_cron_checker(
                             // Create a temporary mpsc channel for tool output,
                             // then forward to broker. This preserves the
                             // ToolContext API while using broker underneath.
-                            let (tx, mut rx) = tokio::sync::mpsc::channel::<
-                                gasket_channels::OutboundMessage,
-                            >(16);
+                            let (tx, mut rx) =
+                                tokio::sync::mpsc::channel::<gasket_channels::OutboundMessage>(16);
                             let broker2 = broker.clone();
                             tokio::spawn(async move {
                                 while let Some(msg) = rx.recv().await {
@@ -877,9 +877,7 @@ fn start_cron_checker(
                             let out_msg = if is_broadcast {
                                 gasket_channels::OutboundMessage::broadcast(channel, result)
                             } else {
-                                gasket_channels::OutboundMessage::new(
-                                    channel, &chat_id, result,
-                                )
+                                gasket_channels::OutboundMessage::new(channel, &chat_id, result)
                             };
                             let envelope = gasket_engine::broker::Envelope::new(
                                 gasket_engine::broker::Topic::Outbound,
@@ -892,13 +890,9 @@ fn start_cron_checker(
                             // Send error to output channel
                             let error_msg = format!("Cron job error: {}", e);
                             let out_msg = if is_broadcast {
-                                gasket_channels::OutboundMessage::broadcast(
-                                    channel, error_msg,
-                                )
+                                gasket_channels::OutboundMessage::broadcast(channel, error_msg)
                             } else {
-                                gasket_channels::OutboundMessage::new(
-                                    channel, &chat_id, error_msg,
-                                )
+                                gasket_channels::OutboundMessage::new(channel, &chat_id, error_msg)
                             };
                             let envelope = gasket_engine::broker::Envelope::new(
                                 gasket_engine::broker::Topic::Outbound,
@@ -909,10 +903,8 @@ fn start_cron_checker(
                     }
                 } else if is_broadcast {
                     // Broadcast path: send the message directly to all connected clients
-                    let out_msg = gasket_channels::OutboundMessage::broadcast(
-                        channel,
-                        job.message.clone(),
-                    );
+                    let out_msg =
+                        gasket_channels::OutboundMessage::broadcast(channel, job.message.clone());
                     let envelope = gasket_engine::broker::Envelope::new(
                         gasket_engine::broker::Topic::Outbound,
                         BrokerPayload::Outbound(out_msg),

@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::{simple_schema, Tool, ToolContext, ToolError, ToolResult};
-use crate::wiki::{PageIndex, PageType, PageSummary};
+use crate::wiki::{PageIndex, PageSummary, PageType};
 
 /// Search the wiki for SOP pages relevant to the given query.
 ///

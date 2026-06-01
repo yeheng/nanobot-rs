@@ -61,9 +61,7 @@ pub enum ProviderBuildError {
 /// Result type for provider operations.
 pub type ProviderResult<T> = Result<T, ProviderBuildError>;
 
-use crate::{
-    ChatRequest, ChatResponse, ChatStream, LlmProvider, RigCompletionProvider,
-};
+use crate::{ChatRequest, ChatResponse, ChatStream, LlmProvider, RigCompletionProvider};
 
 /// Build an HTTP client with optional proxy support.
 ///
@@ -219,7 +217,7 @@ pub struct OpenAICompatibleProvider {
 
 impl OpenAICompatibleProvider {
     /// Create a new OpenAI-compatible provider
-    pub fn new(name: impl Into<String>, config: ProviderConfig) -> Self {
+    pub fn new(name: impl Into<String>, config: ProviderConfig) -> anyhow::Result<Self> {
         let api_key = config.api_key.clone().unwrap_or_default();
         let supports_thinking = config.supports_thinking;
 
@@ -237,39 +235,28 @@ impl OpenAICompatibleProvider {
                 .api_key(api_key)
                 .http_client(logging_client.clone())
                 .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to create rig client: {}", e);
-                    openai::CompletionsClient::builder()
-                        .api_key("")
-                        .http_client(logging_client.clone())
-                        .build()
-                        .expect("fallback rig client creation should not fail")
-                })
+                .map_err(|e| anyhow::anyhow!("failed to create rig client: {e}"))?
         } else {
             openai::CompletionsClient::builder()
                 .api_key(api_key.clone())
                 .base_url(&config.api_base)
                 .http_client(logging_client.clone())
                 .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to create rig client with base_url: {}", e);
-                    openai::CompletionsClient::builder()
-                        .api_key(api_key)
-                        .http_client(logging_client.clone())
-                        .build()
-                        .unwrap_or_else(|e2| {
-                            panic!("Fallback rig client creation also failed: {}", e2)
-                        })
-                })
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to create rig client with base_url '{}': {e}",
+                        config.api_base
+                    )
+                })?
         };
         let name = name.into();
         let inner = RigCompletionProvider::new(&name, config.default_model.clone(), rig_client)
             .with_thinking(supports_thinking);
-        Self {
+        Ok(Self {
             api_base: config.api_base.clone(),
             name,
             inner,
-        }
+        })
     }
 
     /// Create a provider by name with explicit configuration.
@@ -306,7 +293,7 @@ impl OpenAICompatibleProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
 
         Self::new(
@@ -339,7 +326,7 @@ impl OpenAICompatibleProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
         Self::new(
             name,
@@ -371,7 +358,7 @@ impl OpenAICompatibleProvider {
         proxy_url: Option<String>,
         proxy_username: Option<String>,
         proxy_password: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
@@ -640,13 +627,105 @@ pub fn build_provider(
                 "Copilot provider is not compiled in. Rebuild with --features provider-copilot"
             )
         }
-        ProviderKind::OpenAi => {
-            // `supports_thinking` is driven by the registry — adding a new
-            // OpenAI-compatible vendor only requires one row in
-            // PROVIDER_REGISTRY, no edits here.
-            let supports_thinking = lookup_profile(name)
-                .map(|p| p.supports_thinking)
-                .unwrap_or(false);
+        _ => dispatch_by_type(name, api_key, provider_config, model),
+    }
+}
+
+/// Fallback: dispatch by `provider_type` for unknown provider names.
+#[allow(unused_variables)]
+fn dispatch_by_type(
+    name: &str,
+    api_key: &str,
+    provider_config: &ProviderConfig,
+    model: &str,
+) -> anyhow::Result<std::sync::Arc<dyn crate::LlmProvider>> {
+    let proxy_url = provider_config.proxy_url.clone();
+    let proxy_username = provider_config.proxy_username.clone();
+    let proxy_password = provider_config.proxy_password.clone();
+    let extra_headers = provider_config.extra_headers.clone();
+    let api_base = provider_config.api_base.clone();
+
+    match provider_config.provider_type {
+        ProviderType::Gemini => {
+            #[cfg(feature = "provider-gemini")]
+            {
+                let provider = crate::build_gemini_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-gemini"))]
+            anyhow::bail!(
+                "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+            )
+        }
+        ProviderType::Minimax => {
+            #[cfg(feature = "provider-minimax")]
+            {
+                let provider = crate::build_minimax_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-minimax"))]
+            anyhow::bail!(
+                "MiniMax provider is not compiled in. Rebuild with --features provider-minimax"
+            )
+        }
+        ProviderType::Moonshot => {
+            #[cfg(feature = "provider-moonshot")]
+            {
+                let provider = crate::MoonshotProvider::with_config(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-moonshot"))]
+            anyhow::bail!(
+                "Moonshot provider is not compiled in. Rebuild with --features provider-moonshot"
+            )
+        }
+        ProviderType::Anthropic => {
+            #[cfg(feature = "provider-anthropic")]
+            {
+                let provider = crate::build_anthropic_provider(
+                    api_key.to_string(),
+                    Some(api_base),
+                    Some(model.to_string()),
+                    None,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    extra_headers,
+                );
+                Ok(std::sync::Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-anthropic"))]
+            anyhow::bail!(
+                "Anthropic provider is not compiled in. Rebuild with --features provider-anthropic"
+            )
+        }
+        ProviderType::Openai => {
+            let supports_thinking =
+                matches!(name, "deepseek" | "kimi" | "moonshot" | "zhipu" | "xiaomi");
             let config = ProviderConfig {
                 provider_type: ProviderType::Openai,
                 api_base: provider_config.api_base.clone(),
@@ -661,7 +740,9 @@ pub fn build_provider(
                 default_currency: provider_config.default_currency.clone(),
                 supports_thinking,
             };
-            Ok(std::sync::Arc::new(OpenAICompatibleProvider::new(name, config)))
+            Ok(std::sync::Arc::new(OpenAICompatibleProvider::new(
+                name, config,
+            )?))
         }
     }
 }
@@ -711,7 +792,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "https://api.openai.com/v1");
@@ -727,7 +809,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
@@ -742,7 +825,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
@@ -757,7 +841,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(
@@ -776,7 +861,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
@@ -791,7 +877,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
         assert_eq!(provider.api_base(), "https://open.bigmodel.cn/api/paas/v4");
@@ -807,7 +894,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }
@@ -822,7 +910,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
         assert_eq!(provider.api_base(), "http://localhost:11434/v1");
@@ -838,7 +927,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
         assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");
@@ -854,7 +944,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "http://localhost:4000/v1");
@@ -870,7 +961,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "claude-3-opus");
         assert_eq!(provider.api_base(), "http://192.168.1.100:4000/v1");
@@ -886,7 +978,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(provider.name(), "custom-provider");
         assert_eq!(provider.api_base(), "https://custom.api.com/v1");
         assert_eq!(provider.default_model(), "custom-model");

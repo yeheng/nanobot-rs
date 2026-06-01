@@ -38,8 +38,9 @@ async fn main() -> Result<()> {
         std::env::var("GASKET_LOG_FILE").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
 
     // Initialize logging and OpenTelemetry
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,tantivy::directory::managed_directory=warn,html5ever=error"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,tantivy::directory::managed_directory=warn,html5ever=error")
+    });
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
     #[cfg(feature = "telemetry")]

@@ -63,7 +63,13 @@ impl ResponseFinalizer {
 
         save_assistant_event(&self.event_store, &result, ctx, vault_values).await;
         trigger_compaction(self.compactor.as_ref(), ctx, vault_values);
-        execute_after_response_hooks(&self.hooks, &result, ctx, self.after_response_hook_timeout_secs).await;
+        execute_after_response_hooks(
+            &self.hooks,
+            &result,
+            ctx,
+            self.after_response_hook_timeout_secs,
+        )
+        .await;
 
         let cost = calculate_cost(&result.token_usage, self.pricing.as_ref());
         log_token_stats(&result.token_usage, cost, self.max_tokens);

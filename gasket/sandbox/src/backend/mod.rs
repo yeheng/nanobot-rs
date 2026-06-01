@@ -11,6 +11,7 @@ pub use platform::*;
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -152,6 +153,25 @@ pub trait SandboxBackend: Send + Sync {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult>;
+
+    /// Execute a command with a caller-supplied wall-clock timeout.
+    ///
+    /// Backends that can hold the child process handle should override this and
+    /// kill the child directly on timeout. The default exists for older/simple
+    /// backends and still applies a wall-clock bound.
+    async fn execute_with_timeout(
+        &self,
+        cmd: &str,
+        working_dir: &Path,
+        config: &SandboxConfig,
+        timeout: Duration,
+    ) -> Result<ExecutionResult> {
+        tokio::time::timeout(timeout, self.execute(cmd, working_dir, config))
+            .await
+            .map_err(|_| SandboxError::Timeout {
+                timeout_secs: timeout.as_secs(),
+            })?
+    }
 }
 
 /// Create the appropriate sandbox backend based on configuration and platform.

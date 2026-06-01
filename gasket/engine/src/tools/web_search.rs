@@ -84,9 +84,7 @@ impl SearchProvider for DuckDuckGoProvider {
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .send()
             .await
-            .map_err(|e| {
-                ToolError::ExecutionError(format!("DuckDuckGo request failed: {}", e))
-            })?;
+            .map_err(|e| ToolError::ExecutionError(format!("DuckDuckGo request failed: {}", e)))?;
 
         check_status(&response, "DuckDuckGo").await?;
 
@@ -394,9 +392,7 @@ async fn send_get<T: serde::de::DeserializeOwned>(
     api_key: &str,
     provider_name: &str,
 ) -> Result<T, ToolError> {
-    let mut req = client
-        .get(url)
-        .header("Accept", "application/json");
+    let mut req = client.get(url).header("Accept", "application/json");
 
     if !key_header.is_empty() {
         req = req.header(key_header, api_key);

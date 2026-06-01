@@ -40,10 +40,10 @@ pub(crate) mod spawn_common;
 mod spawn_parallel;
 mod web_fetch;
 mod web_search;
-#[cfg(feature = "embedding")]
-mod wiki_semantic;
 mod wiki_decay;
 mod wiki_refresh;
+#[cfg(feature = "embedding")]
+mod wiki_semantic;
 mod wiki_tools;
 pub(crate) mod workflow;
 
@@ -64,7 +64,9 @@ pub use create_plan::CreatePlanTool;
 pub use cron::CronTool;
 pub use evolution::{EvolutionConfig, EvolutionTool};
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
-pub use format::{extract_json_array, extract_json_object, format_subagent_response, truncate_for_display};
+pub use format::{
+    extract_json_array, extract_json_object, format_subagent_response, truncate_for_display,
+};
 pub use history_query::HistoryQueryTool;
 #[cfg(feature = "embedding")]
 pub use history_search::HistorySearchTool;
@@ -84,4 +86,6 @@ pub use wiki_refresh::WikiRefreshTool;
 #[cfg(feature = "embedding")]
 pub use wiki_semantic::{WikiEmbeddingAdapter, WikiVectorAdapter};
 pub use wiki_tools::{WikiDeleteTool, WikiReadTool, WikiSearchTool, WikiWriteTool};
-pub use workflow::{discover_workflows, Workflow, WorkflowManifest, WorkflowMode, WorkflowStepDef, WorkflowTool};
+pub use workflow::{
+    discover_workflows, Workflow, WorkflowManifest, WorkflowMode, WorkflowStepDef, WorkflowTool,
+};

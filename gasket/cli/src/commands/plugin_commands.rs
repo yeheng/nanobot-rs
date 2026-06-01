@@ -157,5 +157,3 @@ pub fn register_tool_commands(
     }
     builder
 }
-
-

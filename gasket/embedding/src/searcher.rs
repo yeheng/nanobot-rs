@@ -307,8 +307,12 @@ mod tests {
         event_store.append_event(&e1).await.unwrap();
         event_store.append_event(&e2).await.unwrap();
 
-        index.insert(e1.id.to_string(), vec![1.0, 0.0, 0.0]);
-        index.insert(e2.id.to_string(), vec![0.0, 1.0, 0.0]);
+        index
+            .insert(e1.id.to_string(), vec![1.0, 0.0, 0.0])
+            .unwrap();
+        index
+            .insert(e2.id.to_string(), vec![0.0, 1.0, 0.0])
+            .unwrap();
         use crate::vector_store::VectorRecord;
         store
             .upsert(vec![
@@ -356,7 +360,9 @@ mod tests {
 
         let e1 = make_event("anything", EventType::UserMessage);
         event_store.append_event(&e1).await.unwrap();
-        index.insert(e1.id.to_string(), vec![1.0, 0.0, 0.0]);
+        index
+            .insert(e1.id.to_string(), vec![1.0, 0.0, 0.0])
+            .unwrap();
 
         let searcher = RecallSearcher::new(provider, index, store, event_store);
 
@@ -380,7 +386,7 @@ mod tests {
         for i in 0..20 {
             let e = make_event(&format!("msg-{i}"), EventType::UserMessage);
             event_store.append_event(&e).await.unwrap();
-            index.insert(e.id.to_string(), vec![1.0, 0.0, 0.0]);
+            index.insert(e.id.to_string(), vec![1.0, 0.0, 0.0]).unwrap();
         }
 
         let searcher = RecallSearcher::new(provider, index, store, event_store);

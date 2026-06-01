@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use crate::kernel::{StepResult, SteppableExecutor, TokenLedger, StreamEvent};
+use crate::kernel::{StepResult, SteppableExecutor, StreamEvent, TokenLedger};
 use crate::session::config::AgentConfigExt;
 use crate::session::AgentResponse;
 use crate::tools::ToolRegistry;

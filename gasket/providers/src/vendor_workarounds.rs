@@ -30,7 +30,8 @@ pub fn build_anthropic_provider(
     proxy_username: Option<String>,
     proxy_password: Option<String>,
     extra_headers: HashMap<String, String>,
-) -> RigCompletionProvider<rig::providers::anthropic::Client<crate::logging_http::LoggingHttpClient>> {
+) -> RigCompletionProvider<rig::providers::anthropic::Client<crate::logging_http::LoggingHttpClient>>
+{
     let http = crate::common::build_http_client(
         proxy_url.as_deref(),
         proxy_username.as_deref(),
@@ -38,14 +39,20 @@ pub fn build_anthropic_provider(
     );
     let mut builder = rig::providers::anthropic::Client::builder()
         .api_key(api_key)
-        .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
+        .http_client(
+            crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers),
+        );
     if let Some(base) = api_base {
         builder = builder.base_url(&base);
     }
     let client = builder.build().expect("Failed to create Anthropic client");
-    RigCompletionProvider::new("anthropic", default_model.unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL.to_string()), client)
-        .with_max_tokens(default_max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS))
-        .with_thinking(true)
+    RigCompletionProvider::new(
+        "anthropic",
+        default_model.unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL.to_string()),
+        client,
+    )
+    .with_max_tokens(default_max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS))
+    .with_thinking(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -71,12 +78,18 @@ pub fn build_gemini_provider(
     );
     let mut builder = rig::providers::gemini::Client::builder()
         .api_key(api_key)
-        .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
+        .http_client(
+            crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers),
+        );
     if let Some(base) = api_base {
         builder = builder.base_url(&base);
     }
     let client = builder.build().expect("Failed to create Gemini client");
-    RigCompletionProvider::new("gemini", default_model.unwrap_or_else(|| GEMINI_DEFAULT_MODEL.to_string()), client)
+    RigCompletionProvider::new(
+        "gemini",
+        default_model.unwrap_or_else(|| GEMINI_DEFAULT_MODEL.to_string()),
+        client,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +200,8 @@ pub fn build_minimax_provider(
     proxy_username: Option<String>,
     proxy_password: Option<String>,
     extra_headers: HashMap<String, String>,
-) -> RigCompletionProvider<rig::providers::minimax::Client<crate::logging_http::LoggingHttpClient>> {
+) -> RigCompletionProvider<rig::providers::minimax::Client<crate::logging_http::LoggingHttpClient>>
+{
     let http = crate::common::build_http_client(
         proxy_url.as_deref(),
         proxy_username.as_deref(),
@@ -195,13 +209,19 @@ pub fn build_minimax_provider(
     );
     let mut builder = rig::providers::minimax::Client::builder()
         .api_key(api_key)
-        .http_client(crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers));
+        .http_client(
+            crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers),
+        );
     if let Some(base) = api_base {
         builder = builder.base_url(&base);
     }
     let client = builder.build().expect("Failed to create MiniMax client");
-    RigCompletionProvider::new("minimax", default_model.unwrap_or_else(|| MINIMAX_DEFAULT_MODEL.to_string()), client)
-        .with_normalizer(normalize_messages)
+    RigCompletionProvider::new(
+        "minimax",
+        default_model.unwrap_or_else(|| MINIMAX_DEFAULT_MODEL.to_string()),
+        client,
+    )
+    .with_normalizer(normalize_messages)
 }
 
 // ---------------------------------------------------------------------------
@@ -268,28 +288,27 @@ impl MoonshotProvider {
             .build()
             .expect("Failed to create Moonshot client");
 
-        let anthropic_client = if final_api_base.contains("/coding")
-            || final_api_base.contains("/anthropic")
-        {
-            Some(
-                rig::providers::moonshot::AnthropicClient::builder()
-                    .api_key(api_key)
-                    .base_url(&final_api_base)
-                    .http_client(
-                        crate::logging_http::LoggingHttpClient::new(http).with_extra_headers(extra_headers),
-                    )
-                    .build()
-                    .expect("Failed to create Moonshot Anthropic client"),
-            )
-        } else {
-            None
-        };
+        let anthropic_client =
+            if final_api_base.contains("/coding") || final_api_base.contains("/anthropic") {
+                Some(
+                    rig::providers::moonshot::AnthropicClient::builder()
+                        .api_key(api_key)
+                        .base_url(&final_api_base)
+                        .http_client(
+                            crate::logging_http::LoggingHttpClient::new(http)
+                                .with_extra_headers(extra_headers),
+                        )
+                        .build()
+                        .expect("Failed to create Moonshot Anthropic client"),
+                )
+            } else {
+                None
+            };
 
         Self {
             openai_provider: RigCompletionProvider::new("moonshot", model.clone(), openai_client),
-            anthropic_provider: anthropic_client.map(|c| {
-                RigCompletionProvider::new("moonshot", model, c)
-            }),
+            anthropic_provider: anthropic_client
+                .map(|c| RigCompletionProvider::new("moonshot", model, c)),
             api_base: final_api_base,
         }
     }
@@ -310,10 +329,9 @@ impl LlmProvider for MoonshotProvider {
         let format = self.api_format();
         let provider: &dyn LlmProvider = match format {
             ApiFormat::OpenAI => &self.openai_provider,
-            ApiFormat::Anthropic => self
-                .anthropic_provider
-                .as_ref()
-                .ok_or_else(|| ProviderError::Other("Anthropic client not available".to_string()))?,
+            ApiFormat::Anthropic => self.anthropic_provider.as_ref().ok_or_else(|| {
+                ProviderError::Other("Anthropic client not available".to_string())
+            })?,
         };
         provider.chat(request).await
     }
@@ -323,10 +341,9 @@ impl LlmProvider for MoonshotProvider {
         let format = self.api_format();
         let provider: &dyn LlmProvider = match format {
             ApiFormat::OpenAI => &self.openai_provider,
-            ApiFormat::Anthropic => self
-                .anthropic_provider
-                .as_ref()
-                .ok_or_else(|| ProviderError::Other("Anthropic client not available".to_string()))?,
+            ApiFormat::Anthropic => self.anthropic_provider.as_ref().ok_or_else(|| {
+                ProviderError::Other("Anthropic client not available".to_string())
+            })?,
         };
         provider.chat_stream(request).await
     }
@@ -340,7 +357,7 @@ impl LlmProvider for MoonshotProvider {
 mod tests {
     use super::*;
     use crate::{ChatMessage, ChatRequest, ToolCall};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     // --- MiniMax ---
 

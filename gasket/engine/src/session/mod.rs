@@ -17,17 +17,17 @@ pub mod history;
 pub mod pending_ask;
 pub(crate) mod pipeline;
 pub mod prompt;
+pub mod skills_loader;
 
 pub use compactor::{ContextCompactor, UsageStats, WatermarkInfo};
 pub use config::{AgentConfig, EvolutionConfig};
 pub use pending_ask::PendingAskRegistryImpl;
+pub use skills_loader::{find_builtin_skills_dir, load_skills};
 
-pub(crate) use pipeline::{bridge_outbound_to_chat, early_abort_response, RequestPipeline};
-
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::error::AgentError;
 use crate::hooks::HookRegistry;
@@ -192,118 +192,6 @@ impl crate::kernel::CheckpointCallback for SessionCheckpointCallback {
     }
 }
 
-// ── Skill loading (inlined from agent/core/mod.rs) ──
-
-use crate::skills::{SkillsLoader, SkillsRegistry};
-
-/// Load skills from builtin and user directories, plus skill-mode workflows.
-///
-/// Returns a context summary string if any skills were loaded, or None otherwise.
-pub async fn load_skills(workspace: &Path) -> Option<String> {
-    let user_skills_dir = workspace.join("skills");
-    let builtin_skills_dir = find_builtin_skills_dir();
-
-    if builtin_skills_dir.is_none() {
-        debug!("Built-in skills directory not found, loading user skills only");
-        if !user_skills_dir.exists() {
-            debug!("No skills directories found");
-            // Still continue — workflow skills may exist even without regular skills
-        }
-    }
-
-    let loader = SkillsLoader::new(user_skills_dir, builtin_skills_dir);
-    let mut registry = match SkillsRegistry::from_loader(loader).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to load skills: {}", e);
-            SkillsRegistry::new()
-        }
-    };
-
-    // Discover skill-mode workflows and register alongside regular skills
-    let workflows_dir = workspace.join("workflows");
-    if workflows_dir.exists() {
-        match crate::skills::discover_workflow_skills(&workflows_dir) {
-            Ok(wf_skills) => {
-                for skill in wf_skills {
-                    registry.register(skill);
-                }
-            }
-            Err(e) => {
-                warn!("Failed to discover workflow skills: {}", e);
-            }
-        }
-    }
-
-    let summary = registry.generate_context_summary().await;
-    if summary.is_empty() {
-        info!("No skills loaded");
-        None
-    } else {
-        info!(
-            "Loaded {} skills ({} available)",
-            registry.len(),
-            registry.list_available().len()
-        );
-        Some(summary)
-    }
-}
-
-/// Find the builtin skills directory.
-///
-/// Resolution order:
-/// 1. `GASKET_SKILLS_DIR` environment variable
-/// 2. Executable-relative heuristic (for dev builds)
-/// 3. Current working directory fallback
-pub fn find_builtin_skills_dir() -> Option<PathBuf> {
-    // 1. Environment variable override (production deployments)
-    if let Ok(env_dir) = std::env::var("GASKET_SKILLS_DIR") {
-        let candidate = PathBuf::from(env_dir);
-        if candidate.exists() {
-            info!(
-                "Found builtin skills from GASKET_SKILLS_DIR at {:?}",
-                candidate
-            );
-            return Some(candidate);
-        }
-        warn!(
-            "GASKET_SKILLS_DIR set to {:?} but directory does not exist",
-            candidate
-        );
-    }
-
-    // 2. Executable-relative heuristic (development builds)
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(project_root) = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-        {
-            let candidate = project_root.join("engine").join("skills");
-            if candidate.exists() {
-                debug!("Found builtin skills at {:?}", candidate);
-                return Some(candidate);
-            }
-        }
-    }
-
-    // 3. Current working directory fallback
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("engine").join("skills");
-        if candidate.exists() {
-            debug!("Found builtin skills at {:?}", candidate);
-            return Some(candidate);
-        }
-        let candidate = cwd.join("skills");
-        if candidate.exists() {
-            debug!("Found builtin skills at {:?}", candidate);
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
 /// Stateful session management — wraps the kernel, adds session lifecycle.
 ///
 /// Owns session-level state (events, prompts, compaction, cost tracking) and
@@ -437,7 +325,12 @@ impl AgentSession {
     ///
     /// Queries the session store for all sessions with at least one event.
     pub async fn list_sessions(&self) -> Vec<gasket_types::SessionSummary> {
-        match self.context_builder.session_store().scan_active_sessions().await {
+        match self
+            .context_builder
+            .session_store()
+            .scan_active_sessions()
+            .await
+        {
             Ok(rows) => rows
                 .into_iter()
                 .filter_map(|(key_str, count, updated_at)| {
@@ -617,14 +510,9 @@ impl AgentSession {
 
         // Inject the synthesis callback at the session layer — the kernel
         // itself stays oblivious to specific channel implementations.
-        let synth_session_key = ctx
-            .runtime_ctx
-            .refs
-            .session_key
-            .clone()
-            .unwrap_or_else(|| {
-                gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
-            });
+        let synth_session_key = ctx.runtime_ctx.refs.session_key.clone().unwrap_or_else(|| {
+            gasket_types::SessionKey::new(gasket_types::events::ChannelType::Cli, "default")
+        });
         ctx.runtime_ctx.refs.synthesis_callback = Some(Arc::new(
             crate::kernel::synthesis::WebSocketSynthesizer::new(
                 ctx.runtime_ctx.provider.clone(),
@@ -651,5 +539,47 @@ impl AgentSession {
     }
 }
 
-// Pipeline stages (preprocess / execute / postprocess / spawn_pipeline_task /
-// early_abort_response / bridge_outbound_to_chat) moved into `pipeline.rs`.
+// Post-processing logic lives in `session::finalizer::ResponseFinalizer`.
+
+// ── Free-function helpers for streaming entry point ─────────────────────────
+
+/// Construct the response pair for the early-abort path (BeforeRequest hook
+/// aborted the pipeline). No kernel is invoked; just emits the abort message.
+fn early_abort_response(
+    msg: String,
+    model: String,
+) -> (
+    tokio::sync::mpsc::Receiver<ChatEvent>,
+    tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    let handle = tokio::spawn(async move {
+        let _ = tx.send(ChatEvent::done()).await;
+        Ok(AgentResponse {
+            content: msg,
+            reasoning_content: None,
+            tools_used: vec![],
+            model: Some(model),
+            token_usage: None,
+            cost: 0.0,
+        })
+    });
+    (rx, handle)
+}
+
+/// Spawn a bridge task: every `OutboundMessage::Stream` payload is forwarded
+/// as a `ChatEvent` onto `chat_tx`. Returns the sender for tools to use.
+fn bridge_outbound_to_chat(
+    chat_tx: tokio::sync::mpsc::Sender<ChatEvent>,
+) -> tokio::sync::mpsc::Sender<gasket_types::events::OutboundMessage> {
+    let (outbound_tx, mut outbound_rx) =
+        tokio::sync::mpsc::channel::<gasket_types::events::OutboundMessage>(64);
+    tokio::spawn(async move {
+        while let Some(msg) = outbound_rx.recv().await {
+            if let gasket_types::events::OutboundPayload::Stream(chat_event) = msg.payload {
+                let _ = chat_tx.send(chat_event).await;
+            }
+        }
+    });
+    outbound_tx
+}

@@ -68,7 +68,10 @@ async fn handle_outcome_enum_compiles() {
     fn _accept(out: HandleOutcome) {
         match out {
             HandleOutcome::Consumed => {}
-            HandleOutcome::Replied { events: _, result: _ } => {}
+            HandleOutcome::Replied {
+                events: _,
+                result: _,
+            } => {}
         }
     }
 }

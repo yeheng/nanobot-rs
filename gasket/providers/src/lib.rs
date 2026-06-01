@@ -87,8 +87,7 @@ pub use common::{
 #[cfg(feature = "provider-copilot")]
 pub use copilot::CopilotProvider;
 pub use vendor_workarounds::{
-    build_anthropic_provider, build_gemini_provider, build_minimax_provider,
-    MoonshotProvider,
+    build_anthropic_provider, build_gemini_provider, build_minimax_provider, MoonshotProvider,
 };
 
 // Re-export model spec

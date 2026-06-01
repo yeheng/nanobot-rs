@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export sandbox config types to eliminate duplication.
-pub use gasket_sandbox::config::{CommandPolicyConfig, ResourceLimits as ResourceLimitsConfig, SandboxConfig};
+pub use gasket_sandbox::config::{
+    CommandPolicyConfig, ResourceLimits as ResourceLimitsConfig, SandboxConfig,
+};
 
 /// Tools configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
